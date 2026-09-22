@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W3D3 · 关联查询（一对多 / 多对多） | Go 全栈修炼手册</title>
+<meta name="description" content="Day 3：GORM 一对多 HasMany 与多对多 many2many 中间表、Preload 预加载与 N+1 陷阱（对照 JS 的 await-in-loop）、Joins 查询、关联的创建与级联保存注意事项，全部含可运行代码。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w3d3">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 3 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 3 周</a> / Day 3</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 3 · DAY 3</span>
+    <span class="chip alt">预计 2.5–3 小时</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>关联查询：一对多与多对多</h1>
+  <p>单表 CRUD 只是及格线，真实业务的力量在<b>关系</b>上：一篇文章属于某个作者（一对多）、可以贴多个标签（多对多）。今天你要搞定 GORM 的关联声明与 <code>Preload</code>，并且<b>亲眼看一次 N+1 灾难</b>——这是规划「常见坑」清单第 6 条，也是面试高频题。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w3d3g1">能写出 <code>HasMany</code>（用户→文章）与 <code>many2many</code>（文章↔标签）的模型声明，并说出中间表 <code>article_tags</code> 的列结构</label></li>
+      <li><label><input type="checkbox" data-key="w3d3g2">会用 <code>Preload</code> 一次带出关联数据，并解释它和循环里逐条查的 SQL 条数差别</label></li>
+      <li><label><input type="checkbox" data-key="w3d3g3">能给 <code>Preload</code> 加条件/字段裁剪/排序限量，也能写嵌套 <code>Preload("Articles.Tags")</code></label></li>
+      <li><label><input type="checkbox" data-key="w3d3g4">完成 <code>GET /users/:id/articles</code>（带作者信息）与 <code>GET /articles/:id</code>（带 tags）两个接口</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>课前须知：关系在数据库里到底是什么</h2>
+    <div class="callout js"><p><b>没有「对象嵌套」这回事，只有外键。</b>数据库里 <code>articles.user_id = 1</code> 就是一个数字。所谓「拿到用户和他的文章」，永远是<b>两条 SQL</b>：先查 <code>users</code>，再查 <code>articles WHERE user_id IN (1)</code>。GORM 的关联功能只是把这两条 SQL 的编排自动化了。理解这点，Preload 为什么有时变 N+1、为什么 Joins 只要一条 SQL，全都通了。</p></div>
+    <div class="callout note"><p>ORM 世界里的四种关系，对应 JS 里你熟悉的数据形状：<code>BelongsTo</code>（文章 → 一个作者）、<code>HasOne</code>（用户 → 一个头像）、<code>HasMany</code>（用户 → 多篇文章）、<code>Many2Many</code>（文章 ↔ 多个标签）。声明方向很重要：<b>外键在哪张表，哪张表就写 belongs-to</b>。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 关联声明：模型补全</h3>
+    <p>昨天的模型只有字段，今天把关系补齐（三个模型的最终形态，本周后面都用它）：</p>
+    <pre><span class="code-label">internal/model/user.go</span><span class="k">type</span> User <span class="k">struct</span> {
+    gorm.Model
+
+    Name     <span class="t">string</span> <span class="s">`gorm:"type:varchar(64);not null" json:"name"`</span>
+    Email    <span class="t">string</span> <span class="s">`gorm:"type:varchar(128);not null;uniqueIndex" json:"email"`</span>
+    Password <span class="t">string</span> <span class="s">`gorm:"type:varchar(255);not null" json:"-"`</span>
+
+    <span class="c">// 一对多：外键 UserID 在 articles 表上。foreignKey 指「对方表里的外键列」</span>
+    Articles []Article <span class="s">`gorm:"foreignKey:UserID" json:"articles,omitempty"`</span>
+}</pre>
+    <pre><span class="code-label">internal/model/article.go</span><span class="k">type</span> Article <span class="k">struct</span> {
+    gorm.Model
+
+    Title   <span class="t">string</span> <span class="s">`gorm:"type:varchar(128);not null;index" json:"title"`</span>
+    Content <span class="t">string</span> <span class="s">`gorm:"type:text" json:"content"`</span>
+    Views   <span class="t">int</span>    <span class="s">`gorm:"not null;default:0" json:"views"`</span>
+
+    UserID <span class="t">uint</span> <span class="s">`gorm:"not null;index" json:"user_id"`</span>
+    User   User <span class="s">`gorm:"foreignKey:UserID;references:ID" json:"user,omitempty"`</span> <span class="c">// belongs to：外键在我身上</span>
+
+    <span class="c">// 多对多：GORM 自动建中间表 article_tags(article_id, tag_id)，两个列即联合主键</span>
+    Tags []Tag <span class="s">`gorm:"many2many:article_tags;" json:"tags,omitempty"`</span>
+}</pre>
+    <pre><span class="code-label">internal/model/tag.go</span><span class="k">type</span> Tag <span class="k">struct</span> {
+    ID        <span class="t">uint</span>      <span class="s">`gorm:"primaryKey" json:"id"`</span>
+    Name      <span class="t">string</span>    <span class="s">`gorm:"type:varchar(32);not null;uniqueIndex" json:"name"`</span>
+    CreatedAt <span class="t">time.Time</span> <span class="s">`json:"created_at"`</span>
+}</pre>
+    <p>迁移别忘了把三个模型一起交给 AutoMigrate（顺序影响外键约束，中间表由 GORM 自动建）：</p>
+    <pre><span class="code-label">cmd/server/main.go</span><span class="k">if</span> err := db.AutoMigrate(&amp;model.User{}, &amp;model.Tag{}, &amp;model.Article{}); err != <span class="k">nil</span> {
+    log.Fatalf(<span class="s">"迁移失败: %v"</span>, err)
+}
+
+<span class="code-label">shell</span>$ docker exec -it golearn-mysql mysql -ugolearn -pgolearn123 --database=study_plan -e <span class="s">"SHOW TABLES; DESCRIBE article_tags;"</span>
++------------------------+
+| Tables_in_study_plan   |
++------------------------+
+| article_tags | articles | tags | users |
++------------------------+
+Field      Type            Null Key Default
+article_id bigint unsigned NO  PRI NULL
+tag_id     bigint unsigned NO  PRI NULL</pre>
+
+    <h3>2. 造点种子数据：关联的创建与级联保存</h3>
+    <p>GORM 在 <code>Create</code> 时会自动保存关联对象——这既是便利也是陷阱：</p>
+    <pre><span class="code-label">cmd/seed/main.go</span><span class="k">func</span> seed(db *gorm.DB) {
+    u := model.User{Name: <span class="s">"小明"</span>, Email: <span class="s">"xm@example.com"</span>, Password: <span class="s">"h1"</span>}
+    db.Create(&amp;u)   <span class="c">// 拿到 u.ID = 1</span>
+
+    <span class="c">// ⚠️ 一次 Create 带上 Tags：GORM 会连带 INSERT tags 与 article_tags，共 3 类写入</span>
+    a := model.Article{
+        Title:   <span class="s">"Go 的 Preload 为什么快"</span>,
+        Content: <span class="s">"……"</span>,
+        UserID:  u.ID,
+        Tags: []model.Tag{
+            {Name: <span class="s">"go"</span>},
+            {Name: <span class="s">"gorm"</span>},
+        },
+    }
+    <span class="k">if</span> err := db.Create(&amp;a).Error; err != <span class="k">nil</span> {
+        log.Fatal(err)
+    }
+    fmt.Printf(<span class="s">"article=%d tags=%d(id=%d,id=%d)\n"</span>, a.ID, len(a.Tags), a.Tags[0].ID, a.Tags[1].ID)
+}</pre>
+    <div class="callout warn"><p><b>级联保存的两个注意事项：</b>① 关联的 Tag 是<b>新 struct 零 ID</b>，所以每次 Create 文章都会<b>新插入</b>标签行；因为 <code>Name</code> 上有唯一索引，第二篇也用 <code>"go"</code> 时会报 <code>Error 1062 Duplicate entry</code>，而不是复用已有标签。<b>正确做法：先按名字查/建标签拿到 ID，再把带 ID 的 tag 挂上去</b>（见第 3 节与练习 4）。② <code>Save(&amp;a)</code> 会连带更新关联：想只改文章本身，用 <code>Updates</code>；想整体替换关联，用 <code>db.Session(&amp;gorm.Session{FullSaveAssociations: true}).Save(&amp;a)</code>。</p></div>
+
+    <h3>3. 只维护关系，不创建记录：Association 模式</h3>
+    <pre><span class="code-label">关系维护</span><span class="c">// 拿或建标签（有则复用，无则插入）—— 多对多的标准起手式</span>
+<span class="k">func</span> firstOrCreateTag(db *gorm.DB, name <span class="t">string</span>) (model.Tag, <span class="t">error</span>) {
+    <span class="k">var</span> tag model.Tag
+    err := db.Where(<span class="t">map</span>[<span class="t">string</span>]<span class="t">any</span>{<span class="s">"name"</span>: name}).FirstOrCreate(&amp;tag).Error
+    <span class="k">return</span> tag, err
+}
+
+<span class="k">var</span> a model.Article
+db.First(&amp;a, <span class="n">1</span>)
+goTag, _ := firstOrCreateTag(db, <span class="s">"go"</span>)
+dockerTag, _ := firstOrCreateTag(db, <span class="s">"docker"</span>)
+
+db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Append([]model.Tag{goTag, dockerTag}) <span class="c">// 追加，只写中间表</span>
+db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Replace([]model.Tag{goTag})           <span class="c">// 整体替换成这组</span>
+db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Delete([]model.Tag{dockerTag})        <span class="c">// 断开指定关系（标签本身还在）</span>
+
+<span class="k">var</span> tags []model.Tag
+db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Find(&amp;tags)       <span class="c">// 读关系</span>
+n, err := db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Count() <span class="c">// 数一下</span></pre>
+    <div class="callout js"><p>类比 JS：这就像 <code>Object.assign</code>（Append）、整份替换（Replace）、把外键设成 null（Disconnect / Erase）。<b>Association 模式只动中间表，永远不会删除 tags 表的行</b>，所以「删一篇文章」不会误删别人也在用的标签。</p></div>
+
+    <h3>4. Preload：一次把关联带出（以及 N+1 灾难）</h3>
+    <p>默认情况下关联字段是<b>空的</b>——GORM 不查它，一条 SQL 都不多发：</p>
+    <pre><span class="code-label">N+1 对比</span><span class="c">// ❌ 手写循环查询：1 + N 条 SQL</span>
+<span class="k">var</span> users []model.User
+db.Find(&amp;users)                                   <span class="c">// SQL 1：SELECT * FROM users</span>
+<span class="k">for</span> i := <span class="k">range</span> users {
+    db.Where(<span class="s">"user_id = ?"</span>, users[i].ID).Find(&amp;users[i].Articles) <span class="c">// 每个用户一条 → N 条</span>
+}
+
+<span class="c">// ✅ Preload：固定 2 条 SQL，不管多少用户</span>
+db.Preload(<span class="s">"Articles"</span>).Find(&amp;users)              <span class="c">// SQL 1: SELECT * FROM users</span>
+                                                  <span class="c">// SQL 2: SELECT * FROM articles WHERE user_id IN (1,2,3,...)</span></pre>
+    <div class="callout js"><p>这就是你在 JS 里写过的坑：<code>for (const u of users) { u.articles = await api.getArticles(u.id) }</code>——串行 N 次请求。GORM 的 N+1 完全同构，只是把「await 网络」换成「round-trip 数据库」。修正思路也一样：<b>把 N 次单查合并成一次批查</b>（SQL 里就是 <code>IN (...)</code>），或者一次性 join 出来。区别在于：JS 里你还能 <code>Promise.all</code> 并发掩盖问题，数据库里 100 次 round-trip 就是实打实的 100 次网络往返。</p></div>
+    <p>Preload 的四种进阶形态：</p>
+    <pre><span class="code-label">Preload 进阶</span><span class="c">// ① 带条件（字符串 + 占位符）</span>
+db.Preload(<span class="s">"Articles"</span>, <span class="s">"views &gt; ?"</span>, <span class="n">100</span>).First(&amp;user, <span class="n">1</span>)
+db.Preload(<span class="s">"Articles"</span>, <span class="s">"title LIKE ?"</span>, <span class="s">"%"</span>+kw+<span class="s">"%"</span>).First(&amp;user, <span class="n">1</span>)
+
+<span class="c">// ② 裁剪字段 + 排序 + 限量（回调里返回一个加了条件的 *gorm.DB）—— 列表页「最近 5 篇」</span>
+db.Preload(<span class="s">"Articles"</span>, <span class="k">func</span>(db *gorm.DB) *gorm.DB {
+    <span class="k">return</span> db.Select(<span class="s">"id"</span>, <span class="s">"title"</span>, <span class="s">"user_id"</span>, <span class="s">"created_at"</span>).Order(<span class="s">"created_at desc"</span>).Limit(<span class="n">5</span>)
+}).Find(&amp;users)
+
+<span class="c">// ③ 嵌套：用户 → 文章 → 文章标签（三条 SQL）</span>
+db.Preload(<span class="s">"Articles.Tags"</span>).Find(&amp;users)
+
+<span class="c">// ④ 反向：文章带作者、带标签（多对多与 belongs-to 都能 Preload）</span>
+<span class="k">var</span> article model.Article
+db.Preload(<span class="s">"Tags"</span>).Preload(<span class="s">"User"</span>).First(&amp;article, <span class="n">1</span>)</pre>
+    <div class="callout tip"><p>Preload 是「懒加载 + 显式批量」的组合，好处是<b>主查询干净、支持 order/limit/条件</b>；代价是每次关联多一条 SQL。列表接口里关联只需用于显示一两个字段时，考虑下面的 Joins。</p></div>
+
+    <h3>5. Joins：一条 SQL 搞定</h3>
+    <pre><span class="code-label">Joins</span><span class="c">// ① 简写：belongsto / hasone 关联可以直接写名字（不支持 has-many / many2many）</span>
+<span class="k">var</span> arts []model.Article
+db.Joins(<span class="s">"User"</span>).Where(<span class="s">"users.name = ?"</span>, <span class="s">"小明"</span>).Preload(<span class="s">"Tags"</span>).Find(&amp;arts)
+
+<span class="c">// ② 原生 JOIN + 自定义结果结构体：只要作者名，不要整个 User 对象</span>
+<span class="k">type</span> ArticleRow <span class="k">struct</span> {
+    ID        <span class="t">uint</span>   <span class="s">`gorm:"column:id" json:"id"`</span>
+    Title     <span class="t">string</span> <span class="s">`gorm:"column:title" json:"title"`</span>
+    UserEmail <span class="t">string</span> <span class="s">`gorm:"column:user_email" json:"user_email"`</span>
+}
+<span class="c">// ↑ 若结构体名恰好匹配表名，GORM 会做内嵌扫描；用独立 DTO 结构最稳</span>
+<span class="k">var</span> rows []ArticleRow
+db.Table(<span class="s">"articles"</span>).
+    Select(<span class="s">"articles.id, articles.title, users.email AS user_email"</span>).
+    Joins(<span class="s">"LEFT JOIN users ON users.id = articles.user_id"</span>).
+    Where(<span class="s">"articles.views &gt; ?"</span>, <span class="n">0</span>).
+    Scan(&amp;rows)
+
+<span class="c">// ③ 关联计数：某用户有多少篇文章（不 Preload 整份数据）</span>
+<span class="k">var</span> cnt <span class="t">int64</span>
+db.Model(&amp;model.Article{}).Where(<span class="s">"user_id = ?"</span>, <span class="n">1</span>).Count(&amp;cnt)</pre>
+    <table>
+      <tr><th>手段</th><th>SQL 条数</th><th>能带出 has-many？</th><th>能对关联表 where/order/limit？</th><th>什么时候用</th></tr>
+      <tr><td>循环里查（N+1）</td><td>1 + N</td><td>能</td><td>能</td><td>永远不用</td></tr>
+      <tr><td><code>Preload</code></td><td>1 + 每种关联 1 条</td><td>能</td><td>能（条件/裁剪/限量都行）</td><td>详情接口、要返回嵌套 JSON</td></tr>
+      <tr><td><code>Joins</code></td><td>1 条</td><td>不能（会行放大）</td><td>能，但要自己写 ON/WHERE</td><td>只取关联的少量字段、需要按关联表条件过滤/排序</td></tr>
+    </table>
+    <div class="callout warn"><p><code>Count</code> 和 <code>Joins</code> 混用要小心：一对多 JOIN 会让行数翻倍，<code>db.Model(&amp;a).Joins("User").Count(&amp;n)</code> 统计的是 join 后的行数。需要去重时写 <code>Distinct("articles.id")</code>，或干脆拆成两次查询。另外 <b>GORM 的 <code>Delete(&amp;user, 1)</code> 不会级联删除他的文章</b>——删除用户时要在事务里手工删/软删其文章（Day 5 会说），或建表时加数据库级外键约束。</p></div>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：种子数据 + 亲眼看 N+1（30 分钟）</div>
+      <p>跑第 2 节的 seed 程序，建 3 个用户、每人 2 篇带标签的文章。然后写两版「列出所有用户及其文章」：循环版与 <code>Preload("Articles")</code> 版，把终端里 <code>[rows:n]</code> 的 SQL 行数分别记下来。</p>
+      <p><b>参考答案</b>：循环版 <code>1 + 3 = 4</code> 条 SELECT（用户多了就是几十条）；Preload 版恒定 <code>2</code> 条，第二条是 <code>WHERE user_id IN (1,2,3)</code>。标签版 Preload("Articles.Tags") 是 <code>3</code> 条，多一条 <code>WHERE article_tags.article_id IN (...)</code>。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：GET /users/:id/articles（40 分钟）</div>
+      <p>返回该用户的分页文章列表，<b>每篇带作者信息</b>（id、name、email，不含 password），并带出评论位（标签）。要求只发 2 条 SQL。</p>
+      <pre><span class="code-label">internal/handler/article.go</span><span class="k">func</span> (h *ArticleHandler) ListByUser(c *gin.Context) {
+    id, err := strconv.ParseUint(c.Param(<span class="s">"id"</span>), <span class="n">10</span>, <span class="n">64</span>)
+    <span class="k">if</span> err != <span class="k">nil</span> || id == <span class="n">0</span> {
+        c.JSON(<span class="n">400</span>, gin.H{<span class="s">"code"</span>: <span class="n">1004</span>, <span class="s">"message"</span>: <span class="s">"id 必须是正整数"</span>})
+        <span class="k">return</span>
+    }
+
+    <span class="k">var</span> user model.User
+    <span class="k">if</span> err := h.db.Select(<span class="s">"id"</span>, <span class="s">"name"</span>, <span class="s">"email"</span>).First(&amp;user, id).Error; err != <span class="k">nil</span> {
+        <span class="k">if</span> errors.Is(err, gorm.ErrRecordNotFound) {
+            c.JSON(<span class="n">404</span>, gin.H{<span class="s">"code"</span>: <span class="n">1001</span>, <span class="s">"message"</span>: <span class="s">"用户不存在"</span>})
+            <span class="k">return</span>
+        }
+        c.JSON(<span class="n">500</span>, gin.H{<span class="s">"code"</span>: <span class="n">5000</span>, <span class="s">"message"</span>: <span class="s">"服务异常"</span>})
+        <span class="k">return</span>
+    }
+
+    <span class="k">var</span> arts []model.Article
+    <span class="k">if</span> err := h.db.Preload(<span class="s">"Tags"</span>).
+        Where(<span class="s">"user_id = ?"</span>, user.ID).
+        Order(<span class="s">"created_at desc"</span>).
+        Find(&amp;arts).Error; err != <span class="k">nil</span> {
+        c.JSON(<span class="n">500</span>, gin.H{<span class="s">"code"</span>: <span class="n">5000</span>, <span class="s">"message"</span>: <span class="s">"服务异常"</span>})
+        <span class="k">return</span>
+    }
+
+    c.JSON(<span class="n">200</span>, gin.H{<span class="s">"code"</span>: <span class="n">0</span>, <span class="s">"message"</span>: <span class="s">"success"</span>, <span class="s">"data"</span>: gin.H{
+        <span class="s">"user"</span>:    user,   <span class="c">// password 因 json:"-" 不会出现</span>
+        <span class="s">"list"</span>:    arts,
+        <span class="s">"total"</span>:   len(arts),
+    }})
+}</pre>
+      <p><b>验收</b>：<code>curl -s localhost:8080/users/1/articles</code> 的 <code>data.list[0].tags</code> 非空，响应里搜不到 <code>password</code>。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：GET /articles/:id 带 tags 与作者（30 分钟）</div>
+      <p>一次请求返回 <code>{ id, title, content, views, user:{id,name}, tags:[{id,name}] }</code>。</p>
+      <pre><span class="code-label">repository/article.go</span><span class="k">func</span> (r *gormArticleRepo) DetailWithRels(id <span class="t">uint</span>) (*model.Article, <span class="t">error</span>) {
+    <span class="k">var</span> a model.Article
+    err := r.db.Preload(<span class="s">"Tags"</span>).
+        Joins(<span class="s">"User"</span>).          <span class="c">// belongs-to 用 Joins 一条 SQL 带出作者，省一条</span>
+        Select(<span class="s">"articles.*"</span>).   <span class="c">// 避免 join 后列名歧义，显式只要主表列</span>
+        First(&amp;a, id).Error
+    <span class="k">if</span> errors.Is(err, gorm.ErrRecordNotFound) {
+        <span class="k">return</span> <span class="k">nil</span>, ErrArticleNotFound
+    }
+    <span class="k">return</span> &amp;a, err
+}</pre>
+      <p><b>参考答案</b>：跑起来共 2 条 SQL（<code>articles LEFT JOIN users</code> 一条 + <code>tags WHERE article_tags.article_id IN (id)</code> 一条）。若嫌 <code>Select("articles.*")</code> 麻烦，把 <code>Joins("User")</code> 换成 <code>Preload("User")</code> 也可以，只是变成 3 条 SQL。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：让标签可复用（25 分钟）</div>
+      <p>把 <code>POST /articles</code> 的入参改成带 <code>tags: ["go","docker"]</code>（字符串数组），落库时先 <code>FirstOrCreate</code> 拿标签 ID，再用 <code>Association("Tags").Replace</code> 建立关系。反复用同一篇相同标签创建两篇文章，确认 <code>tags</code> 表里没有重复行。</p>
+      <p><b>参考答案要点</b>：<code>db.Where(map[string]any{"name": n}).FirstOrCreate(&amp;tag)</code> 是幂等的；关系写入用 <code>Association</code> 而不是把 tag 塞进 <code>Article.Tags</code> 再 <code>Create</code>，后者在标签已存在时仍会尝试插入而撞唯一索引。若标签不存在又希望并发安全，第 4 周会补 <code>ON DUPLICATE KEY UPDATE id = id</code>（<code>clause.OnConflict</code>）写法。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>以为 Preload 自动生效</td><td><code>a.User.Name</code> 一直是零值，JSON 里没关联</td><td>关联必须显式 <code>Preload</code> / <code>Joins</code> / <code>Association().Find()</code>，GORM 没有惰性加载</td></tr>
+      <tr><td>循环里逐条查</td><td>列表页 50 条 SQL，日志刷屏，接口 800ms</td><td><code>Preload("X")</code>，让它变成 <code>WHERE ... IN (...)</code></td></tr>
+      <tr><td>Create 时直接塞新关联对象</td><td>标签表出现重复行或 <code>Error 1062</code></td><td>先 <code>FirstOrCreate</code> 拿 ID，再用 <code>Association().Append/Replace</code></td></tr>
+      <tr><td>foreignKey 方向搞反</td><td>报 <code>invalid field reference</code> 或结果永远是空</td><td>HasMany 写 <code>foreignKey:UserID</code>（对方表的外键），BelongsTo 外键在自己身上</td></tr>
+      <tr><td>many2many 表名带空格/写错</td><td>中间表建了但查不到关系；或 <code>Table "x doesn't exist"</code></td><td>tag 写成 <code>gorm:"many2many:article_tags;"</code>（结尾分号是习惯），AutoMigrate 后 <code>SHOW TABLES</code> 确认</td></tr>
+      <tr><td>Join 后列名歧义</td><td><code>Ambiguous column name 'id'</code>、Preload 结果被 join 污染</td><td><code>Select("articles.*")</code> 或写表名前缀；Count 时加 <code>Distinct</code></td></tr>
+      <tr><td>以为删父记录会级联</td><td>用户删了，文章还在，指向不存在的 user_id</td><td>事务里显式删关联数据，或建真正的数据库外键约束</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>N+1 查询</td><td>1 条主查询 + N 条子查询，ORM 最常见的性能事故，等价于 JS 的 await-in-loop</td></tr>
+      <tr><td>Preload</td><td>主查询完成后，用一条 <code>IN (...)</code> 批量把关联数据填进 struct 字段</td></tr>
+      <tr><td>Joins</td><td>把关联表拼进同一条 SQL，一条搞定，适合只取少数字段或按关联条件过滤</td></tr>
+      <tr><td>中间表（join table）</td><td>多对多的落地形式，两个外键列组成联合主键，GORM 用 <code>many2many:</code> 自动管理</td></tr>
+      <tr><td>Association 模式</td><td><code>db.Model(&amp;x).Association("Tags")</code>：只读写关系，不创建也不删除对方记录</td></tr>
+      <tr><td>级联保存</td><td>Create/Save 主记录时连带写入非零 ID 的关联 struct 的行为</td></tr>
+      <tr><td>行放大（row multiplication）</td><td>一对多 join 后父行按子行数重复出现，Count/分页都会失真</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w3d3c1"><code>SHOW TABLES</code> 有 <code>article_tags</code>，<code>DESCRIBE article_tags</code> 是 <code>article_id + tag_id</code> 联合主键</label></li>
+      <li><label><input type="checkbox" data-key="w3d3c2">练习 1：能报出两版的 SQL 条数，并贴出 <code>WHERE user_id IN (...)</code> 那一行日志</label></li>
+      <li><label><input type="checkbox" data-key="w3d3c3">练习 2：<code>GET /users/1/articles</code> 返回作者信息 + tags，响应无 <code>password</code></label></li>
+      <li><label><input type="checkbox" data-key="w3d3c4">练习 3：<code>GET /articles/1</code> 一条请求内带出 user 与 tags，SQL 不超过 3 条</label></li>
+      <li><label><input type="checkbox" data-key="w3d3c5">练习 4：重复创建带同名标签的文章后，<code>SELECT name, COUNT(*) FROM tags GROUP BY name</code> 没有重复行</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../index.html"><span class="hint">← 回到</span>8 周路线总览</a>
+    <a href="day4.html"><span class="hint">下一天 · W3D4 →</span>分页、搜索、排序</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W3D3 · 明天见 ⟩</footer>
+</body>
+</html>

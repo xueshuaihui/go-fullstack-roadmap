@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W7D4 · 数据库迁移 | Go 全栈修炼手册</title>
+<meta name="description" content="Day 4：AutoMigrate 在生产库的锁表与丢列风险、golang-migrate 安装与 up/down 成对迁移文件、schema_migrations 版本表与 dirty 修复、Compose 一次性 migrate 服务（profiles）、种子数据。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w7d4">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 7 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 7 周</a> / Day 4</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 7 · DAY 4</span>
+    <span class="chip alt">预计 2.5–3 小时</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>数据库迁移</h1>
+  <p>前三天把"程序"容器化了，今天动"<b>数据</b>"。第 3 周起你就在靠 GORM 的 <code>AutoMigrate</code> 建表——开发期它是好人，但把它带进生产库，等于让每个版本的代码"自由发挥"改表结构。今天要学的 <b>golang-migrate</b> 把表结构变成和代码一样<b>版本化、可回滚、可审查</b>的 SQL 文件。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w7d4g1">能列举 AutoMigrate 在生产至少 3 类事故（丢列残留/改类型锁表/无版本可回滚）</label></li>
+      <li><label><input type="checkbox" data-key="w7d4g2">装好 golang-migrate，会 <code>migrate create</code> 生成成对的 up/down SQL 并手写两对迁移</label></li>
+      <li><label><input type="checkbox" data-key="w7d4g3">理解 <code>schema_migrations</code> 版本表与 dirty 状态的成因和 <code>force</code> 修复</label></li>
+      <li><label><input type="checkbox" data-key="w7d4g4">在 Compose 里用 <code>profiles</code> 加一次性 migrate 服务，把博客表结构全面切换到版本化迁移</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. AutoMigrate 在生产库为什么危险</h3>
+    <p>先肯定它：本地开发改个 model 结构体，重启就建表加列，零心智负担。但看它的实现哲学——<b>"对比 struct 和当前表结构，缺什么补什么"</b>。这个"只增不减、默默对齐"的行为放到有真实数据的表上，每一类变更都有雷：</p>
+    <table>
+      <tr><th>你改了 model</th><th>AutoMigrate 实际干了什么</th><th>生产后果</th></tr>
+      <tr><td>删掉一个字段</td><td><b>什么都不做</b>——旧列原样留在表里</td><td>若旧列是 NOT NULL 且无默认值，代码已不再赋值 → INSERT 直接报错；若带唯一索引 → 幽灵冲突</td></tr>
+      <tr><td>字段改名（Nickname → DisplayName）</td><td>当作"删旧 + 加新"：新建 display_name 列</td><td>旧数据全在 nickname 列里睡死，新列一片 NULL，没人报错——<b>静默的数据分裂</b></td></tr>
+      <tr><td>改类型（varchar → text / 加长）</td><td>部分变更触发 <code>ALGORITHM=COPY</code> 的表重建</td><td>百万行的表重建数分钟，期间<b>锁写</b>，接口超时雪崩；MySQL 8 的 instant DDL 只救少数场景</td></tr>
+      <tr><td>加 NOT NULL 无默认值字段</td><td>对已有行的表执行 ALTER 失败或回填混乱</td><td>启动即报错，或列被隐式填上 <code>""</code>/0 这类脏值</td></tr>
+      <tr><td>任何变更</td><td>没有版本号、没有执行记录、<b>无法回滚</b></td><td>线上结构"现在是哪个版本？"无人能答；多副本滚动发布时两个版本同时 AutoMigrate，互相踩踏</td></tr>
+    </table>
+    <div class="callout warn"><p>今天的处置方案不是"删掉 AutoMigrate"一刀切，而是<b>分环境</b>：本地/CI 可以用它快速起库（启动时读环境变量开关）；生产镜像启动路径里彻底移除，结构变更只允许走迁移文件。</p></div>
+    <pre><span class="code-label">backend/cmd/server/main.go（节选改造）</span><span class="c">// 只保留给本地开发；.env 里 AUTO_MIGRATE=true 才执行</span>
+<span class="k">if</span> os.Getenv(<span class="s">"AUTO_MIGRATE"</span>) == <span class="s">"true"</span> {
+    <span class="k">if</span> err := db.AutoMigrate(&amp;model.User{}, &amp;model.Article{}); err != <span class="k">nil</span> {
+        slog.Error(<span class="s">"auto migrate failed"</span>, <span class="s">"err"</span>, err)
+        os.Exit(<span class="n">1</span>)
+    }
+} <span class="k">else</span> {
+    slog.Info(<span class="s">"skip AutoMigrate: schema is managed by golang-migrate"</span>)
+}</pre>
+
+    <h3>2. golang-migrate 安装与四个核心命令</h3>
+    <pre><span class="code-label">shell（macOS 本地）</span>$ brew install golang-migrate
+$ migrate -version
+<span class="n">4</span>.<span class="n">18</span>.<span class="n">1</span></pre>
+    <pre><span class="code-label">shell（Debian/Ubuntu 云服务器）</span>$ curl -L https://github.com/golang-migrate/migrate/releases/download/v<span class="n">4.18</span>.<span class="n">1</span>/migrate.linux-amd64.tar.gz | tar xvz
+$ sudo mv migrate /usr/local/bin/
+$ migrate -version</pre>
+    <pre><span class="code-label">shell（四个日常命令）</span><span class="c"># ① 生成一对带序号的空迁移文件（-seq 从 1 开始自增）</span>
+$ migrate create -ext sql -dir migrations -seq init_users
+migrations/<span class="n">000001</span>_init_users.up.sql      <span class="c"># 做</span>
+migrations/<span class="n">000001</span>_init_users.down.sql     <span class="c"># 撤（成对出现，必须手写！）</span>
+
+<span class="c"># ② 应用全部未执行的迁移（up 不带数字 = 升到最新版；带 N = 只升 N 步）</span>
+$ migrate -path ./migrations -database <span class="s">"mysql://goblog:&lt;密码&gt;@tcp(127.0.0.1:3306)/goblog"</span> up
+
+<span class="c"># ③ 看当前版本：输出两行——版本号 + dirty 标志</span>
+$ migrate -path ./migrations -database <span class="s">"mysql://..."</span> version
+<span class="n">2</span>
+dirty: <span class="k">false</span>
+
+<span class="c"># ④ 回滚最近 1 步（down 同样支持不带数字=全部回滚，慎用！）</span>
+$ migrate -path ./migrations -database <span class="s">"mysql://..."</span> down <span class="n">1</span></pre>
+    <div class="callout tip"><p>迁移号建议与功能同名可读（<code>000002_add_role_to_users</code>），review 时不用打开文件就知道线上发生了什么。</p></div>
+    <div class="callout note"><p>注意 CLI 的数据库 URL 是 <code>mysql://用户:密码@tcp(主机:端口)/库名</code> 格式，<b>和 GORM 的 DSN 不是一回事</b>（GORM 没有 mysql:// 前缀）。要在 URL 里执行多条语句需追加 <code>?multiStatements=true</code>。</p></div>
+
+    <h3>3. 成对迁移文件实战：建 users 表 + 加 role 列</h3>
+    <p>第一对，<code>migrations/000001_init_users.up.sql</code>（列设计对齐第 4 周的 GORM model：GORM 默认蛇形列名、软删字段 deleted_at 可空）：</p>
+    <pre><span class="code-label">migrations/000001_init_users.up.sql</span><span class="k">CREATE TABLE</span> users (
+    id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    username    VARCHAR(<span class="n">32</span>)  NOT NULL,
+    email       VARCHAR(<span class="n">128</span>) NOT NULL,
+    password_hash VARCHAR(<span class="n">72</span>) NOT NULL,          <span class="c"># bcrypt 串固定 60 字符，72 留余量</span>
+    bio         VARCHAR(<span class="n">200</span>) NOT NULL DEFAULT <span class="s">''</span>,
+    created_at  DATETIME(<span class="n">3</span>) NULL,
+    updated_at  DATETIME(<span class="n">3</span>) NULL,
+    deleted_at  DATETIME(<span class="n">3</span>) NULL,               <span class="c"># GORM 软删除</span>
+    <span class="k">PRIMARY KEY</span> (id),
+    <span class="k">UNIQUE KEY</span> uk_users_username (username),
+    <span class="k">UNIQUE KEY</span> uk_users_email (email),
+    <span class="k">KEY</span> idx_users_deleted_at (deleted_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;</pre>
+    <pre><span class="code-label">migrations/000001_init_users.down.sql</span><span class="k">DROP TABLE IF EXISTS</span> users;</pre>
+    <p>第二对，模拟第 8 周要做的 RBAC——给 users 加 role 列：</p>
+    <pre><span class="code-label">migrations/000002_add_role_to_users.up.sql</span><span class="k">ALTER TABLE</span> users
+    <span class="k">ADD COLUMN</span> role VARCHAR(<span class="n">16</span>) NOT NULL DEFAULT <span class="s">'user'</span> <span class="k">AFTER</span> email;</pre>
+    <pre><span class="code-label">migrations/000002_add_role_to_users.down.sql</span><span class="k">ALTER TABLE</span> users
+    <span class="k">DROP COLUMN</span> role;</pre>
+    <div class="callout warn"><p><b>down 文件的两条纪律：</b>① 不许留空——空 down 会让"回滚"变成假动作；② <b>不可逆的数据变更要故意让 down 失败</b>。比如"把明文密码列删掉"这种迁移，回滚等于恢复明文，必须在 down.sql 里写一条必然报错的语句拦路：<code>SELECT '此迁移禁止回滚，见迁移说明';</code> 后面接 <code>DROP TABLE guard_against_rollback;</code>（不存在的表 → 迁移器报错终止）。结构可以回滚，<b>数据覆水难收</b>。</p></div>
+    <p>articles / tags / article_tags 三张表照此各写一对（练习 3 的素材），编号顺延 <code>000003_init_articles</code>……写迁移的口径：<b>一个迁移只做一件事</b>，文件名说清是什么事。</p>
+
+    <h3>4. schema_migrations：库结构状态的唯一答案</h3>
+    <p>migrate 第一次连上库时自动建一张 <code>schema_migrations</code> 表，全库只有一行：</p>
+    <pre><span class="code-label">shell（在 backend 容器里连库查看）</span>$ docker compose exec mysql mysql -ugoblog -p<span class="s">"$MYSQL_PASSWORD"</span> goblog <span class="k">-</span>e <span class="s">"SELECT * FROM schema_migrations;"</span>
++---------+-------+
+| version | dirty |
++---------+-------+
+|       <span class="n">2</span> |     <span class="n">0</span> |
++---------+-------+</pre>
+    <p><code>version</code> = 已应用到第几号迁移；<code>dirty</code> = 上一次迁移<b>执行到一半失败</b>的坏标记。dirty=1 时所有后续 up/down 都会拒绝执行（防止在结构不明的库上继续动刀）。修复流程：</p>
+    <ol>
+      <li>看报错，<b>手动把半途而废的 SQL 补完</b>（比如表建了一半就手工建完，或 DROP 掉半成品重来）；</li>
+      <li><code>migrate ... force &lt;目标版本号&gt;</code> 清除 dirty 标记；</li>
+      <li>再 <code>up</code> 续跑。<b>force 只是改标记，不动结构</b>——它不是"忽略错误继续"的橡皮擦。</li>
+    </ol>
+    <div class="callout js"><p>给前端同学的对位理解：<code>schema_migrations.version</code> ≈ lock 文件里的完整性哈希——它回答的唯一问题是"<b>眼前这个库处于第几号结构</b>"。Git 里 commit 有 SHA，库里结构有 version，两边一挂钩，"部署的版本配不配得上库的结构"就从玄学变成一次 <code>migrate version</code> 查询。</p></div>
+
+    <h3>5. 接入 Compose：profiles 一次性 migrate 服务</h3>
+    <p>服务器上不想装 CLI 也能跑迁移——用官方镜像 <code>migrate/migrate</code>，配成<b>一次性任务</b>服务。<code>profiles: ["tools"]</code> 让它平时完全不参与 up，只在显式点名时运行：</p>
+    <pre><span class="code-label">docker-compose.yml（在 services: 下追加）</span>  migrate:
+    image: migrate/migrate:v<span class="n">4.18</span>.<span class="n">1</span>
+    profiles: [<span class="s">"tools"</span>]                <span class="c"># 默认不启动：docker compose up 会跳过它</span>
+    volumes:
+      - ./migrations:/migrations:ro     <span class="c"># 迁移文件不进镜像，跑时挂载，改迁移无需 rebuild</span>
+    command:
+      - <span class="s">"-path"</span>
+      - <span class="s">"/migrations"</span>
+      - <span class="s">"-database"</span>
+      - <span class="s">"mysql://${MYSQL_USER:-goblog}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DB:-goblog}?multiStatements=true"</span>
+      - <span class="s">"up"</span>
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: <span class="s">"no"</span>                      <span class="c"># 跑完即退出，不留尸</span></pre>
+    <pre><span class="code-label">shell（标准发布序列——今天先演练）</span>$ docker compose up -d mysql                    <span class="c"># 1) 先起库，等 healthy</span>
+$ docker compose --profile tools run --rm migrate up    <span class="c"># 2) 点名跑迁移，退出码 0 即成功</span>
+$ docker compose up -d backend frontend          <span class="c"># 3) 结构就绪，再起应用</span></pre>
+    <div class="callout tip"><p>进阶玩法（第 8 周之后了解即可）：把 migrate 放进 backend 的启动 ENTRYPOINT 前置脚本，"up 即自动迁移"。代价是迁移和应用权限耦合、多副本并发启动会抢跑同一迁移，所以教科书方案永远是<b>显式、单独、一次性</b>地执行迁移。</p></div>
+
+    <h3>6. 种子数据：也做成迁移</h3>
+    <p>初始管理员这类"上线必备数据"同样版本化，编号 <code>000003</code>（若结构迁移已占则顺延）。bcrypt 哈希不要手写，用第 4 周的工具函数现生成：</p>
+    <pre><span class="code-label">scripts/hashpw/main.go（放仓库里长期有用）</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">fmt</span>
+    <span class="t">os</span>
+
+    <span class="t">golang.org/x/crypto/bcrypt</span>
+)
+
+<span class="k">func</span> main() {
+    h, err := bcrypt.GenerateFromPassword([]<span class="k">byte</span>(os.Args[<span class="n">1</span>]), bcrypt.DefaultCost)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        panic(err)
+    }
+    fmt.Println(<span class="k">string</span>(h))
+}</pre>
+    <pre><span class="code-label">shell</span>$ go run ./scripts/hashpw <span class="s">'&lt;你的强密码&gt;'</span>
+$2a$<span class="n">10</span>$N9abcDEfGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGhIjK   <span class="c"># ← 贴进下面的 SQL</span></pre>
+    <pre><span class="code-label">migrations/000004_seed_admin.up.sql</span><span class="k">INSERT INTO</span> users (username, email, password_hash, role, created_at, updated_at)
+<span class="k">VALUES</span> (<span class="s">'admin'</span>, <span class="s">'admin@yourdomain.com'</span>,
+        <span class="s">'$2a$10$N9abcDEfGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGhIjK'</span>,
+        <span class="s">'admin'</span>, NOW(<span class="n">3</span>), NOW(<span class="n">3</span>));</pre>
+    <pre><span class="code-label">migrations/000004_seed_admin.down.sql</span><span class="k">DELETE FROM</span> users <span class="k">WHERE</span> username = <span class="s">'admin'</span>;</pre>
+    <div class="callout warn"><p>SQL 文件里出现的 bcrypt 串是<b>占位示例</b>——上线前必须用<b>你自己</b>的强密码重新生成替换；种子迁移会进 Git，永远不要把真实密码/密钥写进迁移文件。测试数据（造 100 篇文章跑分页）建议用单独的 <code>scripts/seed.sql</code> 手动灌，和"线上必备种子"分开管理。</p></div>
+
+    <h3>7. 工具选型与迁移纪律</h3>
+    <p>Go 生态里做迁移的不止一家，先给结论再给理由：</p>
+    <table>
+      <tr><th>方案</th><th>形态</th><th>适合</th></tr>
+      <tr><td><b>golang-migrate</b>（本篇）</td><td>独立 CLI + 纯 SQL 文件</td><td>学习期首选：<b>SQL 手写可见</b>，每个变更都过你的眼；CI/服务器上执行方式统一</td></tr>
+      <tr><td>GORM 自带 Migrate（<code>db.Migrator()</code>）</td><td>Go 代码里调方法</td><td>想保留 AutoMigrate 语法糖又想要版本管理时用；但"迁移逻辑写在 Go 里"意味着改结构要重编程序，且回滚支持弱</td></tr>
+      <tr><td>Atlas / goose 等</td><td>声明式 / 命令式各有拥趸</td><td>团队项目常见，思想与本篇完全互通，学会一个全能上手</td></tr>
+    </table>
+    <p>不管用哪家，四条纪律通用：</p>
+    <ol>
+      <li><b>迁移文件一经合入 Git 永不修改</b>——写错了就加一个新迁移纠正，改旧文件会让"已在别处执行过 000002"的环境版本错乱；</li>
+      <li><b>序号只增不改</b>：两个人同时占 <code>000005</code> 是协作第一课，合并时后拉的 renumber 即可；</li>
+      <li><b>大表变更拆小步</b>：加带默认值的列、回填数据、建索引、删旧列各一个迁移——MySQL 8 很多 DDL 已是 online 的，但一步一迁移让你在中间任何一点都能停下来；</li>
+      <li><b>先在预发库全量跑一遍 <code>up</code></b>：生产永远执行"别人已经执行过一遍"的迁移。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：在一个干净库上跑通两条迁移（30 分钟）</div>
+      <p>按第 3 节写出 <code>000001</code>、<code>000002</code> 两对文件（放 <code>goblog/migrations/</code>）。用 compose 网络里的镜像执行，绕开本地安装：</p>
+      <pre><span class="code-label">shell</span>$ docker compose up -d mysql
+$ docker run --rm --network goblog_default <span class="c">\</span>
+    -v <span class="s">"$(pwd)"</span>/migrations:/migrations:ro migrate/migrate:v<span class="n">4.18</span>.<span class="n">1</span> <span class="c">\</span>
+    -path=/migrations/ <span class="c">\</span>
+    -database <span class="s">"mysql://goblog:&lt;你的密码&gt;@tcp(mysql:3306)/goblog?multiStatements=true"</span> up
+$ docker run --rm --network goblog_default <span class="c">\</span>
+    -v <span class="s">"$(pwd)"</span>/migrations:/migrations:ro migrate/migrate:v<span class="n">4.18</span>.<span class="n">1</span> <span class="c">\</span>
+    -path=/migrations/ -database <span class="s">"mysql://..."</span> version
+<span class="n">2</span>
+dirty: <span class="k">false</span>                          <span class="c"># ← 验收标准就是这两行</span></pre>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：体验 down 1 回滚（15 分钟）</div>
+      <p>先 <code>SHOW COLUMNS FROM users;</code> 确认 role 列在 → <code>down 1</code> → 再看列消失 → <code>up</code> 恢复到版本 2。感受"结构变更像 git 一样可进可退"。</p>
+      <p><b>思考题（写进笔记）：</b>如果 users 表里已经有一个用户注册时填了 role='admin' 的脏数据，回滚这条 down 会发生什么？（列没了、数据没了——所以生产回滚永远先想数据。）</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：把博客全部表切到版本化迁移（40 分钟）</div>
+      <p>为 articles、tags、article_tags 各写一对迁移（对照你第 3/6 周的 GORM model：外键 user_id、多对多中间表两列联合唯一）。然后：删掉 <code>goblog_mysql-data</code> 卷（<code>docker compose down; docker volume rm goblog_mysql-data</code>，<b>确认这是练手库才许删！</b>），按第 5 节"mysql → migrate → backend/frontend"三步曲全新拉起，再删掉代码里生产路径的 AutoMigrate 调用，重启 backend 日志出现 <code>skip AutoMigrate</code>。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：种子迁移 + 登录验证（20 分钟）</div>
+      <p>写 <code>000004_seed_admin</code> 对（哈希用 <code>scripts/hashpw</code> 现场生成），<code>up</code> 后用 admin 账号调登录接口：</p>
+      <pre><span class="code-label">shell</span>$ curl -s -X POST http://localhost/api/auth/login <span class="c">\</span>
+    -H <span class="s">"Content-Type: application/json"</span> <span class="c">\</span>
+    -d <span class="s">'{"username":"admin","password":"&lt;你的强密码&gt;"}'</span> | head -c <span class="n">120</span>
+{<span class="s">"code"</span>:<span class="n">0</span>,<span class="s">"message"</span>:<span class="s">"success"</span>,<span class="s">"data"</span>:{<span class="s">"access_token"</span>...   <span class="c"># ← 种子生效</span></pre>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>up/down 只写了单边</td><td><code>no migration found</code> 或回滚时炸出没定义的行为</td><td>migrate create 每次生成一对，up 与 down 都要手写内容</td></tr>
+      <tr><td>迁移进了 dirty 状态</td><td>之后任何命令都报 <code>Dirty database version N. Fix and force version.</code></td><td>先手动补齐/撤销半途 SQL，再 <code>force N</code>（它只清标记不动结构）</td></tr>
+      <tr><td>把 migrate CLI URL 写成 GORM DSN</td><td><code>unknown scheme</code> 或连不上库</td><td>CLI 用 <code>mysql://user:pass@tcp(host:3306)/db</code>，两处格式不同别互抄</td></tr>
+      <tr><td>一个 up 文件塞多条语句没开 multiStatements</td><td><code>driver: bad connection</code> 或语法错</td><td>CLI URL 加 <code>?multiStatements=true</code>（第 5 节镜像服务已带）</td></tr>
+      <tr><td>列名与 GORM 蛇形约定不一致</td><td>迁移跑"成功"了，接口却报 <code>Unknown column 'displayName'</code></td><td>以 GORM 默认蛇形为准（password_hash、user_id）；跑一次 <code>SHOW CREATE TABLE</code> 对账</td></tr>
+      <tr><td>AutoMigrate 和 migrate 双轨并存</td><td>迁移刚建好表，AutoMigrate 又"顺手补列"，结构漂移谁都不认</td><td>生产只留一条路：今天第 1 节的 AUTO_MIGRATE 开关就是隔离手段</td></tr>
+      <tr><td>改了已执行过的迁移文件</td><td>本地库版本领先/落后文件号，别人环境行为对不上</td><td>迁移号一旦执行过多处，只许新增纠正迁移，不许改旧文件</td></tr>
+      <tr><td>把含真实密码的种子提交进 Git</td><td>仓库一公开，admin 直接被登录</td><td>种子只放占位哈希 + 文档要求上线替换；真密钥永远走 .env</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>版本化迁移</td><td>每次结构变更 = 一对编号 SQL 文件，库结构状态用整数版本号表达</td></tr>
+      <tr><td>预发库</td><td>结构与生产一致、数据是副本的验证库，迁移先在那里跑一遍</td></tr>
+      <tr><td>schema_migrations</td><td>migrate 自动建的版本表，单行记录当前 version 与 dirty</td></tr>
+      <tr><td>dirty 状态</td><td>迁移执行到一半失败的"带病"标记，必须人工善后后 force 清除</td></tr>
+      <tr><td>force</td><td>只把版本号强行设为 N 并清 dirty，不执行任何 SQL</td></tr>
+      <tr><td>不可逆迁移</td><td>数据覆水难收的变更（删列、覆写密码），down 要故意写坏以拦截回滚</td></tr>
+      <tr><td>种子数据（seed）</td><td>上线即需的基础数据（admin 账号），同样编入迁移版本号管理</td></tr>
+      <tr><td>profiles（compose）</td><td>给服务打标签，默认 up 跳过，<code>--profile tools run</code> 时才被点名的一次性任务</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w7d4c1"><code>migrations/</code> 下至少 4 对 up/down 文件，users/role/articles 等表结构全部版本化</label></li>
+      <li><label><input type="checkbox" data-key="w7d4c2"><code>migrate version</code> 输出最新号且 <code>dirty: false</code>；见过并修复过一次 dirty（哪怕故意制造的）</label></li>
+      <li><label><input type="checkbox" data-key="w7d4c3">down 1 → up 往返演练完成，能说出哪类迁移必须"故意禁止 down"</label></li>
+      <li><label><input type="checkbox" data-key="w7d4c4">三步曲发布序列（mysql → profile migrate → 应用）跑通，backend 代码生产路径已无 AutoMigrate</label></li>
+      <li><label><input type="checkbox" data-key="w7d4c5">admin 种子登录成功，且迁移文件里只有占位哈希没有真实密码</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day3.html"><span class="hint">← 上一天 · W7D3</span>完整 Compose 编排</a>
+    <a href="day5.html"><span class="hint">下一天 · W7D5 →</span>部署到云服务器</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W7D4 · 结构即代码 · 明天见 ⟩</footer>
+</body>
+</html>

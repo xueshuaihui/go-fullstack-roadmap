@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W6D5 · CORS、代理与构建 | Go 全栈修炼手册</title>
+<meta name="description" content="Day 5：CORS 报错三连（预检 OPTIONS、Allow-Origin、credentials）与排查表、Vite proxy 配置、生产同源部署思路、npm run build 产物、VITE_API_BASE 环境变量与联调排错清单。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w6d5">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 6 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day5.html">第 6 周</a> / Day 5</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 6 · DAY 5</span>
+    <span class="chip alt">预计 2.5–3 小时</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>CORS、代理与构建</h1>
+  <p>功能齐了，今天补「工程闭环」：搞清这几天一直没裸奔的跨域问题（全被 Vite proxy 挡着）、学会生产构建与环境变量、并整理一份<b>联调排错清单</b>。收尾实验很有意思：今天故意把 proxy 拆掉让 CORS 炸一次，再修好——见过爆炸现场的人，才不怕线上冒烟。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w6d5g1">能解释 CORS 三类报错（预检 OPTIONS 失败 / Allow-Origin 缺失 / credentials 冲突）各自的成因</label></li>
+      <li><label><input type="checkbox" data-key="w6d5g2">Vite proxy 配置手写出来，说清它为什么能绕开 CORS</label></li>
+      <li><label><input type="checkbox" data-key="w6d5g3"><code>npm run build</code> 跑通，认识 dist 产物结构并用 preview 验证</label></li>
+      <li><label><input type="checkbox" data-key="w6d5g4">排错清单过一遍：401/403/404 各查什么、字段命名怎么对齐</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>课前须知：同源策略只约束浏览器</h2>
+    <div class="callout js"><p><b>1. curl / Postman 永远不会有 CORS 问题。</b>跨域是浏览器对「网页里的 JS 发起跨源请求」的管制，服务器之间、命令行之间不存在。所以「curl 通、前端不通」几乎必然是 CORS，而不是接口坏了。</p></div>
+    <div class="callout js"><p><b>2. 拦截发生在响应之后。</b>多数请求其实<b>已经打到后端执行了</b>，只是响应被浏览器拦下不给 JS。所以你在 Gin 日志里看到请求进来了、数据也查了，前端却报 CORS——不是没通，是「回程被扣」。</p></div>
+    <div class="callout js"><p><b>3. 端口不同即不同源。</b><code>localhost:5173</code> 的页面请求 <code>localhost:8080</code>，协议/域名/端口三者有一不同就是跨域——端口不同就够了。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. CORS 报错三连：认清每张案发现场的照片</h3>
+    <pre><span class="code-label">text</span>① Response to preflight request doesn't pass access control check:
+   No 'Access-Control-Allow-Origin' header is present on the requested resource.
+   Access to script at 'http://localhost:8080/api/v1/articles' from origin
+   'http://localhost:5173' has been blocked by CORS policy
+
+② OPTIONS /api/v1/articles 404   ← Network 里红色的小 OPTIONS 请求
+   （预检请求本身没被后端处理，浏览器直接判死刑）
+
+③ The value of the 'Access-Control-Allow-Origin' header in the response
+   must not be the wildcard '*' when the request's credentials mode is 'include'.</pre>
+    <table>
+      <tr><th>报错</th><th>成因</th><th>解法</th></tr>
+      <tr><td>①缺 Allow-Origin</td><td>响应头没允许该来源；任何简单请求也要带此头浏览器才放行</td><td>后端 CORS 中间件加 <code>Access-Control-Allow-Origin: http://localhost:5173</code></td></tr>
+      <tr><td>②预检 OPTIONS 挂掉</td><td>带 <code>Authorization</code>、<code>Content-Type: application/json</code> 的请求不是「简单请求」，浏览器先替 JS 发一个 OPTIONS 探路；后端没回应探路 = 正请求根本不发</td><td>中间件对 OPTIONS 返回 204，并带 <code>Access-Control-Allow-Methods / Allow-Headers</code></td></tr>
+      <tr><td>③credentials 与 * 冲突</td><td>请求开了 <code>withCredentials</code>（带 cookie）时，Allow-Origin 不允许通配 *，必须写明白名单</td><td>本手册用 localStorage 存 token，<b>不需要</b> withCredentials；若要用 cookie 会话则必须精确 origin</td></tr>
+    </table>
+    <div class="callout note"><p>记忆锚点：<b>简单请求看「响应头」，非简单请求先「预检」再响应头</b>。你的 API 全用 JSON + Bearer 头，所以每一个写请求都带预检——Network 面板里成对出现的 OPTIONS+POST 不是重复发送。</p></div>
+    <table>
+      <tr><th>你的请求</th><th>是否简单请求</th><th>原因</th></tr>
+      <tr><td><code>GET /articles?page=1</code>（不带自定义头）</td><td>是</td><td>GET + 无 Authorization，直接发，响应缺 Allow-Origin 才被拦</td></tr>
+      <tr><td><code>POST /auth/login</code>（JSON）</td><td>否</td><td><code>Content-Type: application/json</code> 不在简单白名单（仅 form 三种）</td></tr>
+      <tr><td>任何带 <code>Authorization</code> 的请求</td><td>否</td><td>自定义头必触发预检，预检会问 <code>Access-Control-Request-Headers: authorization</code></td></tr>
+    </table>
+
+    <h3>2. Go 侧 CORS 中间件（第 2 周写过，今天温故升级版）</h3>
+    <pre><span class="code-label">go</span><span class="c">// internal/middleware/cors.go —— 开发期够用的最小实现</span>
+<span class="k">func</span> <span class="t">Cors</span>() gin.<span class="t">HandlerFunc</span> {
+    <span class="k">return</span> <span class="k">func</span> (c *gin.<span class="t">Context</span>) {
+        <span class="c">// 学习期直接 * 图方便；上生产换白名单 map 精确匹配 Origin</span>
+        c.<span class="t">Header</span>(<span class="s">"Access-Control-Allow-Origin"</span>, <span class="s">"*"</span>)
+        c.<span class="t">Header</span>(<span class="s">"Access-Control-Allow-Methods"</span>, <span class="s">"GET,POST,PUT,DELETE,OPTIONS"</span>)
+        c.<span class="t">Header</span>(<span class="s">"Access-Control-Allow-Headers"</span>, <span class="s">"Content-Type,Authorization"</span>)
+        <span class="k">if</span> c.<span class="t">Request</span>.Method == <span class="s">"OPTIONS"</span> { <span class="c">// 预检到此为止，不必进业务逻辑</span>
+            c.<span class="t">AbortWithStatus</span>(<span class="n">204</span>)
+            <span class="k">return</span>
+        }
+        c.<span class="t">Next</span>()
+    }
+}
+<span class="c">// main.go 里全局挂上：r.Use(middleware.Cors())</span></pre>
+    <div class="callout warn"><p>允许 credentials 时 <code>Allow-Origin</code> 不能用 <code>*</code>（就是报错③）。如果将来上第 8 周的文件上传要走 cookie，记得同时补 <code>Access-Control-Allow-Credentials: true</code> 且 origin 写死白名单。</p></div>
+
+    <h3>3. 开发环境 Vite proxy：今天正式把它拆开看</h3>
+    <pre><span class="code-label">js</span><span class="c">// vite.config.js</span>
+<span class="k">import</span> { defineConfig } <span class="k">from</span> <span class="s">'vite'</span>
+<span class="k">import</span> react <span class="k">from</span> <span class="s">'@vitejs/plugin-react'</span>
+
+<span class="k">export default</span> <span class="t">defineConfig</span>({
+  plugins: [<span class="t">react</span>()],
+  server: {
+    proxy: {
+      <span class="c">// 所有以 /api 开头的请求，由 Vite 开发服务器"代转"给 Go</span>
+      <span class="s">'/api'</span>: {
+        target: <span class="s">'http://localhost:8080'</span>,
+        changeOrigin: <span class="k">true</span>, <span class="c">// 把请求头里的 Host 改写成 target，模拟同源服务</span>
+      },
+    },
+  },
+})</pre>
+    <p>为什么 proxy 能绕开 CORS？因为跨域是<b>浏览器</b>的规矩，Vite 的 Node 进程不是浏览器，它转发请求不受任何同源限制：</p>
+    <pre><span class="code-label">text</span>不用 proxy：  浏览器(5173) ──跨域请求──✗ 被拦 ✗──  Go(8080)
+用 proxy：    浏览器(5173) ──同源请求 /api/v1──▶  Vite(5173) ──Node 转发──▶  Go(8080)
+              浏览器以为一直在跟自己说话，压根没有跨域这回事</pre>
+    <div class="callout tip"><p>这也解释了 baseURL 为什么写 <code>/api/v1</code> 而不是 <code>http://localhost:8080/api/v1</code>：写绝对地址会<b>绕开 proxy 直接跨域</b>。路径叠错（请求变成 <code>/api/api/v1</code>）则多半是 proxy key 和 baseURL 都带了 <code>/api</code>——key 只要 <code>/api</code>，baseURL 从 <code>/api/v1</code> 起写。</p></div>
+    <p>proxy 配了不生效？按这张最小排查表走：</p>
+    <table>
+      <tr><th>检查点</th><th>怎么看</th><th>修复</th></tr>
+      <tr><td>Vite 重启了吗</td><td>改 vite.config.js 后终端会自己重启，但改 .env 系列不会都触发</td><td>Ctrl+C 后重新 <code>npm run dev</code>，别信热更新</td></tr>
+      <tr><td>请求真的走到 5173 吗</td><td>Network 里看 Request URL 的 host：是 <code>localhost:5173/api/v1/...</code> 才会被 proxy 截获</td><td>是 <code>:8080</code> 说明 baseURL 写了绝对地址，改回相对</td></tr>
+      <tr><td>后端在 8080 活着吗</td><td>proxy 转发失败时 Vite 终端会打 <code>ECONNREFUSED</code>，浏览器表现为 502/504</td><td><code>curl localhost:8080/api/v1/articles</code> 先验后端</td></tr>
+      <tr><td>转发路径对不对</td><td>默认不改路径：<code>/api/v1/login</code> → <code>http://localhost:8080/api/v1/login</code>，与 Gin 路由组一致即可</td><td>后端若没挂 <code>/api/v1</code> 前缀才需要 rewrite，本项目不需要</td></tr>
+    </table>
+
+    <h3>4. 生产环境：同源部署，CORS 直接消失</h3>
+    <p>线上没有 Vite 给你转发。正解是<b>让前端静态文件和 API 看起来同源</b>——Nginx 一个入口分流：</p>
+    <pre><span class="code-label">text</span>                 ┌─ /            → 返回 dist/ 里的 index.html 及静态资源
+用户 ──▶ Nginx:80 ┤
+                 └─ /api/*       → 反向代理 → Go 服务 :8080
+同一域名同一端口，浏览器眼里根本没有第二个"源"，CORS 配置甚至可以全关。</pre>
+    <p>具体 Nginx 配置、Docker 化部署是<b>第 7 周主线</b>（Day 2 就是「前端构建 + Nginx」），今天只需在 App.jsx 里先处理 SPA 路由的一个前奏问题：直接访问 <code>/post/3</code> 刷新时，Nginx 找不到这个「文件」。答案都是 <code>try_files $uri /index.html</code> 兜底，Vite preview 已内置同样行为。第 7 周你会亲手写的配置，提前混个脸熟：</p>
+    <pre><span class="code-label">text</span># nginx.conf —— 第 7 周正式逐行讲，今天只求认出结构
+server {
+    listen 80;
+    location / {
+        root  /usr/share/nginx/html;   <span class="c"># dist/ 拷进这里</span>
+        try_files $uri $uri/ /index.html;   <span class="c"># SPA 刷新兜底</span>
+    }
+    location /api/ {
+        proxy_pass http://backend:8080;     <span class="c"># /api/* 转给 Go 服务</span>
+    }
+}</pre>
+
+    <h3>5. npm run build 产物与环境变量</h3>
+    <pre><span class="code-label">shell</span>$ npm run build          <span class="c"># 产物默认在 dist/</span>
+$ npm run preview        <span class="c"># 起一个本地静态服务器模拟线上（默认 4173 端口）</span>
+$ ls -R dist
+dist/
+├── index.html           <span class="c"># 唯一入口，引用下面的 hash 文件名</span>
+└── assets/
+    ├── index-a1b2c3.js  <span class="c"># 打包+压缩后的 JS（名字带内容 hash，改代码 hash 变→天然缓存刷新）</span>
+    ├── vendor-d4e5f6.js <span class="c"># 依赖分包（Vite 自动 chunk 策略时才有）</span>
+    └── index-7g8h9i.css</pre>
+    <p>前后端分离的项目，后端地址不该硬编码。Vite 用 <code>VITE_</code> 前缀的环境变量：</p>
+    <pre><span class="code-label">shell</span><span class="c"># .env.development（进 git，开发默认值）</span>
+VITE_API_BASE=/api/v1
+
+<span class="c"># .env.production（进 git，线上走同源相对路径，仍是 /api/v1）</span>
+VITE_API_BASE=/api/v1
+
+<span class="c"># .env.local（只放密钥/本机覆写，必须进 .gitignore！）</span>
+VITE_API_BASE=http://192.168.1.8:8080/api/v1</pre>
+    <pre><span class="code-label">js</span><span class="c">// src/api/http.js 里消费：</span>
+<span class="k">const</span> http = axios.<span class="t">create</span>({ baseURL: import.meta.env.VITE_API_BASE, timeout: <span class="n">10000</span> })</pre>
+    <pre><span class="code-label">shell</span><span class="c"># .gitignore 确认包含（Vite 模板默认已有）：</span>
+node_modules
+dist
+.env.local
+.env.*.local</pre>
+    <pre><span class="code-label">js</span><span class="c">// env 是否生效，两行控制台就能验明正身（改完 .env 记得重启才看得见变化）：</span>
+console.<span class="t">log</span>(import.meta.env.MODE, import.meta.env.VITE_API_BASE)
+<span class="c">// 开发期望：development /api/v1   ← 若第二项 undefined，八成忘了 VITE_ 前缀或没重启</span></pre>
+    <div class="callout warn"><p>两个高频误会：①变量必须 <code>VITE_</code> 开头，没前缀的不会注入前端、读出来是 undefined；②env 是<b>构建时内联</b>进 JS 的，改完 .env 必须重启 dev server / 重新 build 才生效——「我明明改了 .env」的 80% 是没重启。也正因为内联，前端 env 里永远不放密钥，它是公开的。</p></div>
+
+    <h3>6. 联调排错清单（打印贴桌边的程度）</h3>
+    <table>
+      <tr><th>现象</th><th>第一动作</th><th>依次排查</th></tr>
+      <tr><td>请求 pending / 页面转圈</td><td>Network 看状态码</td><td>后端起了吗 → proxy 配置 → baseURL 是否绕开了 proxy</td></tr>
+      <tr><td>CORS 红字</td><td>看有没有成对的 OPTIONS 失败</td><td>后端 CORS 中间件 → Allow-Headers 是否含 Authorization → withCredentials 与 * 冲突</td></tr>
+      <tr><td>401</td><td>看 Request Headers 有没有 Authorization</td><td>localStorage 有 accessToken 吗 → 拦截器 return config 了吗 → 是不是该走静默刷新（day4）→ 后端 JWT 密钥是否与签发端一致、时间是否过期</td></tr>
+      <tr><td>403</td><td>确认是「未登录」还是「无权限」（看 code 1003）</td><td>非作者操作 → 前端 authorId 判断 → 后端权限中间件，用 curl 换两个账号复现</td></tr>
+      <tr><td>404</td><td>Network 看完整 URL</td><td>路径叠错（/api/api、少了 /v1）→ 路由没注册 → :id 传了 "new"/"undefined"（拼 URL 前 id 没拿到）</td></tr>
+      <tr><td>200 但字段 undefined</td><td>Preview 看响应 JSON 的真实键名</td><td>Go 结构体缺 <code>json:"xxx"</code> tag 返回了大写 → 大小写不一致 → 嵌套层级理解错（data.data）</td></tr>
+    </table>
+    <p>字段对齐的根因常在后端这几行，Go 导出字段但没 tag 时，JSON 键就是字段原名：</p>
+    <pre><span class="code-label">go</span><span class="c">// ❌ 返回 {"ID":1,"CoverImage":""} → 前端 article.coverImage 全 undefined</span>
+type Article struct {
+    ID         uint   `json:"id"`          <span class="c">// ✅ 补 tag，全周统一小驼峰</span>
+    CoverImage string `json:"coverImage"`
+}</pre>
+    <div class="callout js"><p>读响应头的习惯今天养成：DevTools → Network → 点开请求 → <b>Headers 标签看请求/响应头，Preview 标签看拆包前的原始 JSON</b>。「看请求头确认带没带 token，看 Preview 确认字段名」——排错清单的前两行全靠它。</p></div>
+    <h3>7. 三套环境全景：一张表看清 5173 / dist / 4173</h3>
+    <table>
+      <tr><th>环境</th><th>命令</th><th>端口</th><th>/api 请求谁处理</th><th>CORS 需要吗</th></tr>
+      <tr><td>开发</td><td><code>npm run dev</code></td><td>5173</td><td>Vite proxy → Go:8080</td><td>不需要（同源假象）</td></tr>
+      <tr><td>构建产物</td><td><code>npm run build</code></td><td>—</td><td>只产出 dist/，不发请求</td><td>—</td></tr>
+      <tr><td>本地模拟线上</td><td><code>npm run preview</code></td><td>4173</td><td><b>没有 proxy！</b>需自备反代或临时开后端 CORS</td><td>联调 API 时需要</td></tr>
+      <tr><td>生产</td><td>Nginx（第 7 周）</td><td>80/443</td><td>Nginx 反代 /api → Go</td><td>不需要（同源）</td></tr>
+    </table>
+    <div class="callout warn"><p>最容易迷惑的是 preview：它只是静态服务器，<b>不会</b>继承 vite.config 里的 server.proxy 行为给你转发 /api 以外的期望——preview 下打接口 404 别慌，那是设计如此，等第 7 周用真 Nginx 复现完整链路。</p></div>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：拆掉 proxy，亲手引爆 CORS（40 分钟）</div>
+      <p>把 <code>.env.local</code> 写 <code>VITE_API_BASE=http://localhost:8080/api/v1</code> 并重启 dev server（绝对地址会绕开 proxy 直接跨域）。预期依次看到：登录请求报 <code>No 'Access-Control-Allow-Origin'</code>、Network 里红色 OPTIONS。然后①确认后端 CORS 中间件没挂 → 挂上 → 刷新验证通了；②把中间件里 origin 改成精确写 <code>http://localhost:5173</code> 再验一次。最后删掉 .env.local 切回 proxy，确认恢复。</p>
+      <pre><span class="code-label">shell</span><span class="c"># 记录案发现场（把这三样贴进笔记，今天就算没白炸）：</span>
+# ① Console 红字原文        ② Network 里失败 OPTIONS 的 Request Headers 截图
+# ③ 修复后同一请求的 Response Headers（应含 Access-Control-Allow-* 三件套）
+$ curl -sI -X OPTIONS localhost:8080/api/v1/auth/login \
+  -H <span class="s">"Origin: http://localhost:5173"</span> \
+  -H <span class="s">"Access-Control-Request-Method: POST"</span> \
+  -H <span class="s">"Access-Control-Request-Headers: content-type,authorization"</span> | head -<span class="n">12</span></pre>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：构建 + preview 全流程（30 分钟）</div>
+      <p>注释掉 proxy 走不通的绝对地址配置，恢复后执行 <code>npm run build && npm run preview</code>。检查：①dist 里 index.html 引用的资源名带 hash；②4173 端口打开网站完整走一遍登录→发文；③直接访问 <code>localhost:4173/post/1</code> 刷新不 404（preview 自带 history fallback，线上要靠 Nginx 配 try_files）。</p>
+      <pre><span class="code-label">shell</span>$ npm run build
+vite v7.x building for production...
+dist/index.html                 0.46 kB │ gzip:  0.30 kB
+dist/assets/index-Bx2fQ7.js   214.53 kB │ gzip: 71.02 kB   <span class="c"># 主包</span>
+dist/assets/index-Cn9kL2.css    3.12 kB │ gzip:  1.31 kB
+✓ built in 1.8s
+$ npm run preview               <span class="c"># Local: http://localhost:4173/</span></pre>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：undefined 字段大搜捕（30 分钟）</div>
+      <p>给列表页每个渲染字段临时加 <code>console.assert(article.coverImage !== undefined, 'coverImage 缺')</code>，跑一圈页面。若有报缺，去后端模型找 json tag，修完再全绿。没报缺也要做一遍 curl 对照：<code>curl -s 'localhost:8080/api/v1/articles?page=1&size=1' | python3 -m json.tool</code>，逐字段核对前端用到的键名。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：把排错清单抄成自己的（20 分钟）</div>
+      <p>把第 6 节那张表誊进笔记，每一行「依次排查」旁补一个你这周真实踩过的例子（如「401：day4 忘 return config」）。下次联调卡住时先对着表走，再问人。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>proxy key 与 baseURL 叠 /api</td><td>请求变 <code>/api/api/v1/...</code>，本地也 404</td><td>key 写 <code>/api</code>，baseURL 从 <code>/api/v1</code> 起</td></tr>
+      <tr><td>env 变量没加 VITE_ 前缀</td><td><code>import.meta.env.XXX</code> 是 undefined，baseURL 变 "undefined/auth/login"</td><td>必须 <code>VITE_</code> 前缀；改完重启 dev server</td></tr>
+      <tr><td>.env.local 提交了 git</td><td>本机专属地址/密钥泄漏给协作者</td><td>.gitignore 里必须有 <code>.env.local</code>、<code>.env.*.local</code></td></tr>
+      <tr><td>以为 curl 通前端也该通</td><td>对着「接口没问题」四个大字怀疑人生</td><td>curl 无 CORS 约束；「curl 通、浏览器挂」先查 CORS</td></tr>
+      <tr><td>把预检 OPTIONS 当重复请求</td><td>Network 两枪同 URL，误以为代码发了两次</td><td>非简单请求浏览器自动先发 OPTIONS 探路，属正常</td></tr>
+      <tr><td>Go 字段缺 json tag</td><td>前端字段 undefined，Preview 里全是大写键</td><td>结构体每个对外字段都写 <code>`json:"camelCase"`</code></td></tr>
+      <tr><td>preview 下 API 全挂</td><td>dev 好好的，preview 里请求 404/跨域</td><td>preview 不带 proxy（见第 7 节表），要么后端开 CORS，要么等第 7 周 Nginx</td></tr>
+      <tr><td>改了 vite.config 没重启</td><td>proxy「配了没反应」</td><td>config 与 .env 变更都以重启为准，终端日志里看 re-start 提示</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>同源策略</td><td>浏览器规定：协议+域名+端口三者全同才算同源，跨源的 JS 请求默认被拦</td></tr>
+      <tr><td>CORS</td><td>跨源资源共享：服务端用一组响应头「发通行证」，浏览器验过才把响应交给 JS</td></tr>
+      <tr><td>预检请求（preflight）</td><td>非简单请求前浏览器自动发的 OPTIONS 探路枪，问「待会用这方法这头允许吗」</td></tr>
+      <tr><td>反向代理</td><td>Nginx/Vite 在服务端代收请求转给后端，对浏览器伪装成同一个源；绕 CORS 的正统姿势</td></tr>
+      <tr><td>内容 hash 文件名</td><td>构建产物名里的 <code>-a1b2c3</code>：内容变名字变，让 CDN/浏览器缓存自动失效更新</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w6d5c1">练习 1 完成：亲眼见过缺 Allow-Origin 报错和红色 OPTIONS，并靠中间件修好、切回 proxy</label></li>
+      <li><label><input type="checkbox" data-key="w6d5c2">vite.config.js 的 proxy 能默写并讲出 changeOrigin 与「Node 转发不受同源限制」两条原理</label></li>
+      <li><label><input type="checkbox" data-key="w6d5c3"><code>npm run build</code> 成功，dist 结构看懂，preview 里走完注册→登录→发文全流程</label></li>
+      <li><label><input type="checkbox" data-key="w6d5c4">.env 三件套与 .gitignore 检查无误，能口述「构建时内联所以不放密钥」</label></li>
+      <li><label><input type="checkbox" data-key="w6d5c5">排错清单已誊入笔记并各配了一个自己踩过的实例；全周功能回归测试通过（day1–4 的检查项重挑 3 条抽测）</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day4.html"><span class="hint">← 上一天 · W6D4</span>路由守卫与 axios 拦截器</a>
+    <a href="summary.html"><span class="hint">本 周 →</span>总结与验收</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W6D5 · 明天见 ⟩</footer>
+</body>
+</html>

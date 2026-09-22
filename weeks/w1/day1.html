@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W1D1 · 环境与基础语法 | Go 全栈修炼手册</title>
+<meta name="description" content="Day 1：安装 Go 环境、Hello World、变量与常量、控制流、多返回值与错误处理，全部含可运行代码与练习。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w1d1">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="../w1/summary.html">第 1 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 1 周</a> / Day 1</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 1 · DAY 1</span>
+    <span class="chip alt">预计 2.5–3 小时</span>
+    <span class="chip">难度 ★☆☆☆☆</span>
+  </div>
+  <h1>环境与基础语法</h1>
+  <p>今天是第一天。目标只有一个：<b>让 Go 在你电脑上跑起来，并掌握和 JavaScript 差别最大的三件事——静态类型、显式错误处理、多返回值。</b>所有示例都可以直接复制运行，不需要查任何外部资料。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w1d1g1">装好 Go 1.24+，<code>go version</code> 输出版本号</label></li>
+      <li><label><input type="checkbox" data-key="w1d1g2">跑通第一个 <code>hello</code> 程序，理解 <code>go mod</code> 是干什么的</label></li>
+      <li><label><input type="checkbox" data-key="w1d1g3">能说出 <code>var</code>、<code>:=</code>、常量 <code>iota</code> 的区别并写出示例</label></li>
+      <li><label><input type="checkbox" data-key="w1d1g4">能用多返回值 + <code>error</code> 写一个会出错的函数并处理它</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>课前须知：给 JS 开发者的三句话</h2>
+    <div class="callout js"><p><b>1. 编译型语言。</b>Go 代码先编译成一个可执行文件才能运行，没有 <code>node xxx.js</code> 这种"边解释边跑"。好消息：<code>go run</code> 命令把编译+运行合成了一步，体感和 <code>node</code> 几乎一样。</p></div>
+    <div class="callout js"><p><b>2. 类型在写代码时就定死。</b><code>int</code> 变量不可能在下一行变成字符串。<code>parseInt("abc")</code> 返回 <code>NaN</code> 继续往下传的事故，在 Go 里会以"编译失败"的形式当场暴露。</p></div>
+    <div class="callout js"><p><b>3. 没有 try/catch。</b>函数出错时不会"抛出"，而是把错误当作<b>普通返回值</b>给你：<code>result, err := doSomething()</code>，你必须当场检查 <code>err</code>。这是 Go 最有争议也最重要的设计，今天先养成肌肉记忆。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 安装 Go（约 15 分钟）</h3>
+    <p>打开官网下载页 <a href="https://go.dev/dl/" target="_blank">go.dev/dl</a>，下载对应你系统的安装包（Windows 用 <code>.msi</code>，macOS 芯片为 M 系列选 <code>arm64</code>、Intel 选 <code>amd64</code>，Linux 用 <code>.tar.gz</code>）。</p>
+    <table>
+      <tr><th>系统</th><th>安装方式</th><th>验证</th></tr>
+      <tr><td>Windows</td><td>双击 .msi 一路下一步（默认加入 PATH）</td><td rowspan="3">新开终端执行 <code>go version</code><br>输出如 <code>go version go1.24.x windows/amd64</code> 即成功</td></tr>
+      <tr><td>macOS</td><td>双击 .pkg，或 <code>brew install go</code></td><td></td></tr>
+      <tr><td>Linux</td><td><code>tar -C /usr/local -xzf go*.tar.gz</code> 后把 <code>/usr/local/go/bin</code> 加入 PATH</td><td></td></tr>
+    </table>
+    <div class="callout warn"><p><b>编辑器装 VS Code + Go 官方扩展</b>（扩展 ID <code>golang.go</code>）。装完扩展会提示安装 <code>gopls</code> 等工具，点 Install All 即可。它有代码补全、格式化、错误提示，和写 TS 的体验差不多。</p></div>
+    <div class="callout note"><p>不需要配置 <code>GOPATH</code>——那是 Go 1.11 之前的老古董。现在只认 <b>Go Modules</b>，任何目录都能写 Go。</p></div>
+
+    <h3>2. 第一个程序 &amp; go mod 是什么</h3>
+    <p>新建项目目录并初始化模块（模块名习惯写 <code>github.com/你的用户名/项目名</code>，本地练手随便起名也可以）：</p>
+    <pre><span class="code-label">shell</span>$ mkdir hello-go &amp;&amp; cd hello-go
+$ go mod init hello <span class="c"># 生成 go.mod 文件，相当于 package.json</span></pre>
+    <p>创建 <code>main.go</code>（文件名随意，但包为 <code>main</code> 时入口函数必须叫 <code>main</code>）：</p>
+    <pre><span class="code-label">main.go</span><span class="k">package</span> main
+
+<span class="k">import</span> <span class="t">fmt</span>
+
+<span class="k">func</span> main() {
+    fmt.Println(<span class="s">"Hello, Go!"</span>)
+}</pre>
+    <pre><span class="code-label">shell</span>$ go run main.go
+Hello, Go!</pre>
+    <table>
+      <tr><th>Node 世界</th><th>Go 世界</th><th>作用</th></tr>
+      <tr><td><code>package.json</code></td><td><code>go.mod</code></td><td>声明项目名、Go 版本、依赖列表</td></tr>
+      <tr><td><code>node_modules</code> + lock 文件</td><td>模块缓存 <code>GOPATH/pkg/mod</code> + <code>go.sum</code></td><td>锁定依赖内容防篡改</td></tr>
+      <tr><td><code>npm install lodash</code></td><td>代码里 <code>import</code> 后执行 <code>go mod tidy</code></td><td>下载依赖并写进 go.mod</td></tr>
+      <tr><td><code>npm run dev</code></td><td><code>go run .</code></td><td>编译并运行</td></tr>
+      <tr><td><code>npm run build</code></td><td><code>go build</code>（产出一个二进制文件）</td><td>编译产物</td></tr>
+    </table>
+    <div class="callout tip"><p>Go 官方直接帮你管依赖，没有 npm/yarn/pnpm 三件套选择困难。<code>go mod tidy</code> 永远幂等，忘了执行编译也会提醒你。</p></div>
+
+    <h3>3. 变量、常量</h3>
+    <pre><span class="code-label">main.go</span><span class="k">package</span> main
+
+<span class="k">import</span> <span class="t">fmt</span>
+
+<span class="k">func</span> main() {
+    <span class="c">// 写法一：完整声明（函数外只能用这种）</span>
+    <span class="k">var</span> name <span class="t">string</span> = <span class="s">"learner"</span>
+
+    <span class="c">// 写法二：类型可推断</span>
+    <span class="k">var</span> age = <span class="n">25</span> <span class="c">// int</span>
+
+    <span class="c">// 写法三：短声明，仅限函数内部，最常用（≈ 有类型的 const 之外都用它）</span>
+    city := <span class="s">"Hangzhou"</span>
+
+    <span class="c">// 声明了不用 = 编译错误！Go 不允许死变量</span>
+    <span class="c">// unused variable 'x' 会直接报错，而不是 warning</span>
+
+    fmt.Println(name, age, city)
+}</pre>
+    <p>常量用 <code>const</code>；配合 <code>iota</code> 可以生成一组自增枚举（Go 没有 enum 关键字）：</p>
+    <pre><span class="code-label">main.go</span><span class="k">const</span> (
+    StatusDraft <span class="t">int</span> = <span class="k">iota</span> <span class="c">// 0，iota 在 const 块内逐行 +1</span>
+    StatusPublished          <span class="c">// 1（自动继承上一行的表达式）</span>
+    StatusArchived           <span class="c">// 2</span>
+)
+
+<span class="k">const</span> Pi = <span class="n">3.14159</span> <span class="c">// 常量不可修改，编译期求值</span></pre>
+    <div class="callout js"><p>对比 JS：<code>let/const</code> 的区别是"能否重新赋值"；Go 的 <code>var</code> 和 <code>:=</code> 的区别只是<b>写法</b>（都能重新赋值），真正不可变的是 <code>const</code>。</p></div>
+
+    <h3>4. 基础数据类型速查</h3>
+    <table>
+      <tr><th>类别</th><th>类型</th><th>说明 / 与 JS 对照</th></tr>
+      <tr><td>整数</td><td><code>int</code> <code>int8/16/32/64</code>，<code>uint</code> 系列</td><td>一般无脑用 <code>int</code>；JS 里所有数字都是 float64，Go 整数除法会截断：<code>5/2 == 2</code></td></tr>
+      <tr><td>浮点</td><td><code>float64</code> <code>float32</code></td><td>默认用 <code>float64</code>，与 JS 的 Number 同精度</td></tr>
+      <tr><td>字符串</td><td><code>string</code></td><td>不可变；<code>"%s是%s"</code> 用 <code>fmt.Sprintf</code> 拼接；长度用 <code>len()</code>（按字节！中文 3 字节）</td></tr>
+      <tr><td>布尔</td><td><code>bool</code></td><td>只有 <code>true/false</code>，<b>不能</b>用 <code>if 1 {}</code> 或 <code>if "" {}</code> 做真值判断</td></tr>
+      <tr><td>零值</td><td>—</td><td>声明未赋值的变量必有默认值：数字 0、字符串 ""、bool false。没有 undefined/null 这两个坑</td></tr>
+    </table>
+    <pre><span class="code-label">main.go</span><span class="c">// 类型转换必须显式，Go 不做隐式转换</span>
+<span class="k">var</span> i <span class="t">int</span> = <span class="n">10</span>
+<span class="k">var</span> f <span class="t">float64</span> = <span class="t">float64</span>(i) / <span class="t">float64</span>(<span class="n">3</span>) <span class="c">// 3.3333...</span>
+fmt.Println(f)
+
+<span class="c">// 字符串 ≠ 数字，"5" + 5 直接编译失败</span>
+s := <span class="t">fmt.Sprint</span>(<span class="n">5</span>) + <span class="s">"abc"</span> <span class="c">// "5abc"，需要转字符串用 fmt.Sprint</span></pre>
+
+    <h3>5. 控制流：if / for / switch</h3>
+    <pre><span class="code-label">main.go</span><span class="c">// if 的条件不需要括号，但必须是大括号块</span>
+<span class="k">if</span> score := <span class="n">85</span>; score &gt;= <span class="n">90</span> {
+    fmt.Println(<span class="s">"A"</span>)
+} <span class="k">else if</span> score &gt;= <span class="n">60</span> {
+    fmt.Println(<span class="s">"B"</span>) <span class="c">// ← 命中这里；score 只在 if/else 作用内存活</span>
+} <span class="k">else</span> {
+    fmt.Println(<span class="s">"C"</span>)
+}
+
+<span class="c">// for 是 Go 唯一的循环关键字：</span>
+<span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="n">3</span>; i++ { fmt.Println(i) } <span class="c">// 经典三段式</span>
+n := <span class="n">0</span>
+<span class="k">for</span> n &lt; <span class="n">5</span> { n++ }                          <span class="c">// 相当于 while</span>
+<span class="k">for</span> { <span class="c">/* 死循环，用 break 退出 */</span> }        <span class="c">// 相当于 while(true)</span>
+
+<span class="c">// switch 默认自带 break（不会穿透），且 case 可以是任意表达式</span>
+<span class="k">switch</span> day {
+<span class="k">case</span> <span class="s">"Saturday"</span>, <span class="s">"Sunday"</span>:
+    fmt.Println(<span class="s">"周末写项目"</span>)
+<span class="k">default</span>:
+    fmt.Println(<span class="s">"工作日学习"</span>)
+}</pre>
+    <div class="callout warn"><p>三个高频编译错误先打预防针：① <code>if x = 1 {}</code>（写错赋值符号）；② 条件写成 <code>if 1 {}</code>（非 bool）；③ 行尾大括号换行——Go 要求 <code>}</code> 或 <code>else</code> 不能独占一行开头，格式化工具 <code>gofmt</code> 会自动修正，保存时让编辑器格式化即可。</p></div>
+
+    <h3>6. 多返回值与 error：Go 的灵魂</h3>
+    <p>JS 里函数出错靠 <code>throw</code>，调用方 <code>try/catch</code>；Go 里函数把"结果"和"错误"一起返回，调用方<b>必须当场处理</b>：</p>
+    <pre><span class="code-label">main.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">errors</span>
+    <span class="t">fmt</span>
+)
+
+<span class="c">// 返回值签名 (int, error)：要么给结果，要么给错误</span>
+<span class="k">func</span> divide(a, b <span class="t">float64</span>) (<span class="t">float64</span>, <span class="t">error</span>) {
+    <span class="k">if</span> b == <span class="n">0</span> {
+        <span class="k">return</span> <span class="n">0</span>, errors.New(<span class="s">"除数不能为 0"</span>)
+    }
+    <span class="k">return</span> a / b, <span class="k">nil</span> <span class="c">// nil ≈ 没有错误（相当于 null，但仅限指针/接口类型）</span>
+}
+
+<span class="k">func</span> main() {
+    result, err := divide(<span class="n">10</span>, <span class="n">0</span>)
+    <span class="k">if</span> err != <span class="k">nil</span> {          <span class="c">// ← Go 最经典的两行，全宇宙到处是它</span>
+        fmt.Println(<span class="s">"计算失败:"</span>, err)
+        <span class="k">return</span>
+    }
+    fmt.Println(<span class="s">"结果:"</span>, result)
+}</pre>
+    <div class="callout js"><p>习惯它。以后写 Web 后端，"参数错了返回 400、数据库挂了返回 500"全部建立在 <code>if err != nil</code> 这个模式上。<b>错误就是值（errors are values）</b>，可以传参、可以包装、可以单元测试。</p></div>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：BMI 计算器（30 分钟）</div>
+      <p>在 <code>hello-go</code> 项目里新建 <code>bmi.go</code>（和 main.go 同目录，同一个 package main 里只能有一个 main 函数，所以先把 main.go 改名或删掉，只保留一个入口）。要求：</p>
+      <ul>
+        <li>写函数 <code>bmi(weight, height float64) (float64, error)</code>：身高/体重 ≤ 0 时返回 error</li>
+        <li>main 里调用两次：正常数据 + 身高为 0，打印各自的返回值</li>
+        <li>用 <code>switch</code>（对 BMI 结果分段）打印 "偏瘦 / 正常 / 偏胖"</li>
+      </ul>
+      <p>参考输出：<code>BMI=24.00，正常</code>、<code>计算失败: 身高必须大于 0</code></p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：斐波那契 + 常量枚举（20 分钟）</div>
+      <p>写 <code>fib(n int) int</code> 打印前 10 项；再用 <code>iota</code> 定义 <code>RoleGuest/RoleUser/RoleAdmin</code> 三个常量，写一个 <code>roleName(r int) string</code> 用 switch 把数字翻译中文名。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：A Tour of Go 前 5 章（60–90 分钟）</div>
+      <p>打开 <a href="https://go.dev/tour" target="_blank">go.dev/tour</a>（中文镜像 go tour 中文版均可），做完 Basics / Methods / Generics 之前的全部小节练习。每节右侧有可运行编辑器，做完绿勾。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：故意制造 5 个编译错误（15 分钟）</div>
+      <p>分别写出：未使用的变量、类型不匹配、把 int 当 bool 用、忘了 import、<code>:=</code> 用在函数外。<b>记录报错原文</b>贴到笔记里——以后见到就不慌，这是"读错误信息"训练的第一步。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>声明不用</td><td><code>declared and not used</code> 编译失败</td><td>删掉或改成 <code>_ = x</code> 明确弃用</td></tr>
+      <tr><td>整数除法</td><td><code>1/2</code> 得 0</td><td>转 <code>float64</code> 再除</td></tr>
+      <tr><td>err 不看</td><td>程序带病运行，越跑越远</td><td>每个 err 当行处理，处理不了就 <code>return err</code> 上抛</td></tr>
+      <tr><td>字符串拼接</td><td>循环里 <code>s += x</code> 性能差</td><td>今天先知道，第 3 周会讲 <code>strings.Builder</code></td></tr>
+      <tr><td>大括号位置</td><td><code>return</code> 后换行写 <code>{}</code> 报错</td><td>让编辑器开"保存自动 gofmt"</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>Go Modules</td><td>官方依赖管理方案，<code>go.mod</code> 声明依赖，等效 package.json</td></tr>
+      <tr><td>零值（zero value）</td><td>变量声明后的默认值：0 / "" / false / nil，不存在 undefined</td></tr>
+      <tr><td>iota</td><td>const 块里的自增计数器，用来手写枚举</td></tr>
+      <tr><td>error 接口</td><td>内置接口 <code>type error interface { Error() string }</code>，函数用它返回失败原因</td></tr>
+      <tr><td>gofmt</td><td>官方格式化器，团队代码风格 100% 一致，没有 prettier vs  eslint 之争</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w1d1c1"><code>go version</code> ≥ 1.24，VS Code 保存时自动格式化已生效</label></li>
+      <li><label><input type="checkbox" data-key="w1d1c2">hello 项目和 <code>go.mod</code> 已生成，<code>go run .</code> 输出正常</label></li>
+      <li><label><input type="checkbox" data-key="w1d1c3">练习 1 BMI：能处理 <code>b==0</code> 的 error 并打印分段结果</label></li>
+      <li><label><input type="checkbox" data-key="w1d1c4">练习 3 Tour of Go 前 5 章绿勾完成</label></li>
+      <li><label><input type="checkbox" data-key="w1d1c5">练习 4 的 5 条报错原文已记进笔记，并能口述每个错误的原因</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../index.html"><span class="hint">← 回到</span>8 周路线总览</a>
+    <a href="day2.html"><span class="hint">下一天 · W1D2 →</span>结构体与方法</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W1D1 · 明天见 ⟩</footer>
+</body>
+</html>

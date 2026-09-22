@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W4D2 · JWT 双 token 鉴权 | Go 全栈修炼手册</title>
+<meta name="description" content="Day 2：拆解 JWT 三段结构、签名不等于加密、golang-jwt/v5 签发与解析、access 15 分钟 + refresh 7 天双 token、/auth/refresh 换发接口、鉴权中间件与 logout 的诚实讨论。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w4d2">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 4 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day2.html">第 4 周</a> / Day 2</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 4 · DAY 2</span>
+    <span class="chip alt">预计 2.5–3 小时</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>JWT 双 token 鉴权</h1>
+  <p>昨天登录成功只能拿回一个 user_id，今天要把「登录态」变成服务器可以无状态验证的凭证：<b>JWT</b>。我们直接采用生产级方案——<b>access(15 分钟) + refresh(7 天) 双 token</b>，第 6 周 React 前端的 axios 拦截器就对接今天的 <code>POST /auth/refresh</code>。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w4d2g1">能手工拆出一个真 JWT 的 header / payload / signature 三段</label></li>
+      <li><label><input type="checkbox" data-key="w4d2g2">能说清「签名防篡改，但不加密」，并知道 payload 里不能放什么</label></li>
+      <li><label><input type="checkbox" data-key="w4d2g3">用 jwt/v5 写出 access 15min + refresh 7d 两个签发函数和 <code>/auth/refresh</code></label></li>
+      <li><label><input type="checkbox" data-key="w4d2g4">鉴权中间件上线：坏 token 401+1005，好 token 放行并 <code>c.Set("userID")</code></label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>课前须知：给 JS 开发者的两句话</h2>
+    <div class="callout js"><p><b>1. 服务端 Session vs JWT。</b>Session 是「服务器记账」：登录态存内存/Redis，cookie 里只放个编号；JWT 是「带公章的纸条」：服务器不记任何东西，每次请求验证纸条上的签名即可。水平扩容友好，代价是「签发出去就收不回来」——这也是今天最后讨论 logout 的原因。</p></div>
+    <div class="callout js"><p><b>2. 你在 npm 里熟的 jwt/jsonwebtoken 库，Go 对应 <code>github.com/golang-jwt/jwt/v5</code>。</b>概念完全一致：sign 签发、verify 校验，只是 v5 的 API 把校验拆成了 ParseWithClaims + 手动断言 Claims 类型。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. JWT 三段结构：拆一个真 token</h3>
+    <p>JWT 就是 <code>header.payload.signature</code> 三段 <b>base64url</b> 字符串用点连接。下面是一个真实的 HS256 token（签名密钥为 <code>s3cr3t-key-change-me</code>，仅供教学）：</p>
+    <pre><span class="code-label">token</span>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9<span class="n">.</span>eyJ1aWQiOjEsInJvbGUiOiJ1c2VyIiwiaWF0IjoxNzU4NjA0ODAwLCJleHAiOjE3NTg2MDU3MDB9<span class="n">.</span>jjWqB0tiZM5DNL1O_fwvj0Gov_5-rAXBmF1M2yMffbU</pre>
+    <p>把前两段各做一次性 base64url 解码，原文立刻现形：</p>
+    <pre><span class="code-label">shell</span>$ echo <span class="s">'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'</span> | base64 -D
+{<span class="s">"alg"</span>:<span class="s">"HS256"</span>,<span class="s">"typ"</span>:<span class="s">"JWT"</span>}                    <span class="c"># header：算法与类型</span>
+
+$ echo <span class="s">'eyJ1aWQiOjEsInJvbGUiOiJ1c2VyIiwiaWF0IjoxNzU4NjA0ODAwLCJleHAiOjE3NTg2MDU3MDB9'</span> | base64 -D
+{<span class="s">"uid"</span>:1,<span class="s">"role"</span>:<span class="s">"user"</span>,<span class="s">"iat"</span>:1758604800,<span class="s">"exp"</span>:1758605700} <span class="c"># payload：claims 声明</span></pre>
+    <table>
+      <tr><th>段</th><th>内容</th><th>作用</th></tr>
+      <tr><td>header</td><td><code>{"alg":"HS256","typ":"JWT"}</code></td><td>声明签名算法</td></tr>
+      <tr><td>payload</td><td>业务字段 + 标准字段（<code>exp</code> 过期时间戳、<code>iat</code> 签发时间戳、<code>sub</code>、<code>iss</code> 等）</td><td>承载「谁、什么角色、何时过期」</td></tr>
+      <tr><td>signature</td><td><code>HMAC-SHA256(header + "." + payload, secret)</code> 再 base64url</td><td>公章：改一个字签名就对不上</td></tr>
+    </table>
+    <p>常用标准 Claims 先记四个：<code>exp</code>（过期时间，服务器强制校验）、<code>iat</code>（签发时间，refresh 判断用）、<code>sub</code>（主体标识）、<code>iss</code>(签发者)。今天我们把 userID/role 做成自定义字段。</p>
+
+    <h3>2. 签名 ≠ 加密</h3>
+    <div class="callout warn"><p>上面你亲手解码了 payload——<b>任何人都能</b>。signature 只保证「不被篡改」（改 <code>"role":"user"</code> 为 <code>"admin"</code> 后没有密钥就重算不出合法签名），<b>不保证不被看见</b>。铁律：payload 里只放 userID、role 这类不敏感标识，<b>绝不放</b>密码、手机号、身份证、支付信息。</p></div>
+    <div class="callout tip"><p>推论：JWT 的_SECRET_只有一个作用——签名。泄露 secret 等于攻击者可以任意伪造 admin token，所以它和数据库密码同级对待（明天配置课把它收进 .env）。</p></div>
+
+    <h3>3. 签发与解析：golang-jwt/jwt/v5</h3>
+    <pre><span class="code-label">shell</span>$ go get github.com/golang-jwt/jwt/v5</pre>
+    <pre><span class="code-label">internal/pkg/jwtutil/jwt.go</span><span class="k">package</span> jwtutil
+
+<span class="k">import</span> (
+    <span class="s">"errors"</span>
+    <span class="s">"time"</span>
+
+    <span class="s">"github.com/golang-jwt/jwt/v5"</span>
+)
+
+<span class="k">type</span> <span class="t">Claims</span> <span class="k">struct</span> {
+    UserID <span class="t">int64</span>  <span class="t">json</span>:<span class="s">"uid"</span>
+    Role   <span class="t">string</span> <span class="t">json</span>:<span class="s">"role"</span>
+    Type   <span class="t">string</span> <span class="t">json</span>:<span class="s">"typ"</span> <span class="c">// "access" 或 "refresh"，两种 token 靠它区分</span>
+    jwt.RegisteredClaims      <span class="c">// 内嵌标准字段：exp / iat / sub 全在这</span>
+}
+
+<span class="k">const</span> (
+    AccessTTL  = <span class="n">15</span> * time.Minute
+    RefreshTTL = <span class="n">7</span> * <span class="t">24</span> * time.Hour
+)
+
+<span class="c">// sign 通用签发：HS256 + 密钥字节</span>
+<span class="k">func</span> <span class="t">Sign</span>(secret <span class="t">string</span>, c <span class="t">Claims</span>) (<span class="t">string</span>, <span class="t">error</span>) {
+    <span class="k">return</span> jwt.<span class="t">NewWithClaims</span>(jwt.SigningMethodHS256, c).<span class="t">SignedString</span>([]<span class="t">byte</span>(secret))
+}
+
+<span class="k">func</span> <span class="t">NewAccessToken</span>(secret <span class="t">string</span>, userID <span class="t">int64</span>, role <span class="t">string</span>) (<span class="t">string</span>, <span class="t">error</span>) {
+    now := time.<span class="t">Now</span>()
+    <span class="k">return</span> <span class="t">Sign</span>(secret, <span class="t">Claims</span>{UserID: userID, Role: role, Type: <span class="s">"access"</span>,
+        RegisteredClaims: jwt.<span class="t">RegisteredClaims</span>{
+            IssuedAt:  jwt.<span class="t">NewNumericDate</span>(now),
+            ExpiresAt: jwt.<span class="t">NewNumericDate</span>(now.<span class="t">Add</span>(AccessTTL)),
+        }})
+}
+
+<span class="k">func</span> <span class="t">NewRefreshToken</span>(secret <span class="t">string</span>, userID <span class="t">int64</span>, role <span class="t">string</span>) (<span class="t">string</span>, <span class="t">error</span>) {
+    now := time.<span class="t">Now</span>()
+    <span class="k">return</span> <span class="t">Sign</span>(secret, <span class="t">Claims</span>{UserID: userID, Role: role, Type: <span class="s">"refresh"</span>,
+        RegisteredClaims: jwt.<span class="t">RegisteredClaims</span>{
+            IssuedAt:  jwt.<span class="t">NewNumericDate</span>(now),
+            ExpiresAt: jwt.<span class="t">NewNumericDate</span>(now.<span class="t">Add</span>(RefreshTTL)),
+        }})
+}
+
+<span class="c">// ErrTokenType 自定义错误：token 本身合法但用途不对（拿 access 当 refresh 用）</span>
+<span class="k">var</span> ErrTokenType = errors.<span class="t">New</span>(<span class="s">"token 类型不符"</span>)
+
+<span class="c">// Parse 校验签名 + exp，并确认 typ 字段符合预期用途</span>
+<span class="k">func</span> <span class="t">Parse</span>(secret, tokenStr, wantType <span class="t">string</span>) (<span class="t">Claims</span>, <span class="t">error</span>) {
+    <span class="k">var</span> empty <span class="t">Claims</span>
+    tok, err := jwt.<span class="t">ParseWithClaims</span>(tokenStr, &amp;empty, <span class="k">func</span>(t *jwt.<span class="t">Token</span>) (<span class="t">any</span>, <span class="t">error</span>) {
+        <span class="k">if</span> _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok { <span class="c">// 防算法混淆攻击</span>
+            <span class="k">return</span> <span class="k">nil</span>, jwt.ErrTokenSignatureInvalid
+        }
+        <span class="k">return</span> []<span class="t">byte</span>(secret), <span class="k">nil</span>
+    }, jwt.<span class="t">WithValidMethods</span>([]<span class="t">string</span>{<span class="s">"HS256"</span>}))
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="c">// 过期: errors.Is(err, jwt.ErrTokenExpired)</span>
+        <span class="k">return</span> empty, err
+    }
+    <span class="k">if</span> !tok.Valid || empty.Type != wantType {
+        <span class="k">return</span> empty, ErrTokenType
+    }
+    <span class="k">return</span> empty, <span class="k">nil</span>
+}</pre>
+    <div class="callout note"><p>v5 与旧版（v3/v4）最大区别：keyfunc 返回 <code>(any, error)</code>、过期判断用 <code>errors.Is(err, jwt.ErrTokenExpired)</code> 而不是布尔比较。网上大量老教程贴的是 v4 写法，抄过来编译会挂，认准 v5。</p></div>
+
+    <h3>4. 登录发双 token + /auth/refresh 换发</h3>
+    <pre><span class="code-label">internal/handler/auth.go</span><span class="c">// Login 成功后返回体（替换昨天只回 user_id 的版本）</span>
+<span class="k">func</span> (h *<span class="t">AuthHandler</span>) <span class="t">Login</span>(c *gin.<span class="t">Context</span>) {
+    <span class="k">var</span> req <span class="k">struct</span> {
+        Username <span class="t">string</span> <span class="t">json</span>:<span class="s">"username"</span> binding:<span class="s">"required"</span>
+        Password <span class="t">string</span> <span class="t">json</span>:<span class="s">"password"</span> binding:<span class="s">"required"</span>
+    }
+    <span class="k">if</span> err := c.<span class="t">ShouldBindJSON</span>(&amp;req); err != <span class="k">nil</span> {
+        resp.<span class="t">Fail</span>(c, <span class="n">400</span>, <span class="n">1004</span>, <span class="s">"参数错误"</span>); <span class="k">return</span>
+    }
+    user, err := h.svc.<span class="t">Login</span>(req.Username, req.Password) <span class="c">// svc.Login 今天把返回值升级为 (*model.User, error)</span>
+    <span class="k">if</span> err != <span class="k">nil</span> { resp.<span class="t">Fail</span>(c, <span class="n">401</span>, <span class="n">1002</span>, <span class="s">"用户名或密码错误"</span>); <span class="k">return</span> }
+
+    access, err1 := jwtutil.<span class="t">NewAccessToken</span>(h.secret, user.ID, user.Role)
+    refresh, err2 := jwtutil.<span class="t">NewRefreshToken</span>(h.secret, user.ID, user.Role)
+    <span class="k">if</span> err1 != <span class="k">nil</span> || err2 != <span class="k">nil</span> { resp.<span class="t">Fail</span>(c, <span class="n">500</span>, <span class="n">5000</span>, <span class="s">"签发失败"</span>); <span class="k">return</span> }
+    resp.<span class="t">OK</span>(c, <span class="n">200</span>, gin.<span class="t">H</span>{<span class="s">"access_token"</span>: access, <span class="s">"refresh_token"</span>: refresh})
+}
+
+<span class="c">// Refresh：只接受 refresh token，校验通过换发一对新 token（滚动续期）</span>
+<span class="k">func</span> (h *<span class="t">AuthHandler</span>) <span class="t">Refresh</span>(c *gin.<span class="t">Context</span>) {
+    <span class="k">var</span> req <span class="k">struct</span> {
+        RefreshToken <span class="t">string</span> <span class="t">json</span>:<span class="s">"refresh_token"</span> binding:<span class="s">"required"</span>
+    }
+    <span class="k">if</span> err := c.<span class="t">ShouldBindJSON</span>(&amp;req); err != <span class="k">nil</span> {
+        resp.<span class="t">Fail</span>(c, <span class="n">400</span>, <span class="n">1004</span>, <span class="s">"缺少 refresh_token"</span>); <span class="k">return</span>
+    }
+    claims, err := jwtutil.<span class="t">Parse</span>(h.secret, req.RefreshToken, <span class="s">"refresh"</span>)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        resp.<span class="t">Fail</span>(c, <span class="n">401</span>, <span class="n">1005</span>, <span class="s">"token 无效或已过期，请重新登录"</span>); <span class="k">return</span>
+    }
+    access, _ := jwtutil.<span class="t">NewAccessToken</span>(h.secret, claims.UserID, claims.Role)
+    refresh, _ := jwtutil.<span class="t">NewRefreshToken</span>(h.secret, claims.UserID, claims.Role)
+    resp.<span class="t">OK</span>(c, <span class="n">200</span>, gin.<span class="t">H</span>{<span class="s">"access_token"</span>: access, <span class="s">"refresh_token"</span>: refresh})
+}</pre>
+    <div class="callout tip"><p>为什么要两种 token？access 短命（15 分钟），被截获损失有限；refresh 长命（7 天）但只在 <code>/auth/refresh</code> 一个端点使用、不参与日常 API 调用，暴露面小。前端日常请求只带 access，401 时拿 refresh 静默换发——这就是第 6 周拦截器的完整闭环。</p></div>
+
+    <h3>5. 鉴权中间件</h3>
+    <pre><span class="code-label">internal/middleware/auth.go</span><span class="c">// import "strings"、"studyblog/internal/pkg/jwtutil"、"github.com/gin-gonic/gin"</span>
+<span class="k">func</span> <span class="t">Auth</span>(secret <span class="t">string</span>) gin.<span class="t">HandlerFunc</span> {
+    <span class="k">return</span> <span class="k">func</span>(c *gin.<span class="t">Context</span>) {
+        raw := c.<span class="t">GetHeader</span>(<span class="s">"Authorization"</span>)
+        <span class="k">const</span> prefix = <span class="s">"Bearer "</span>
+        <span class="k">if</span> !strings.<span class="t">HasPrefix</span>(raw, prefix) {       <span class="c">// 缺头 / 不是 Bearer 格式</span>
+            c.<span class="t">AbortWithStatusJSON</span>(<span class="n">401</span>, gin.<span class="t">H</span>{<span class="s">"code"</span>: <span class="n">1005</span>, <span class="s">"message"</span>: <span class="s">"未登录"</span>, <span class="s">"data"</span>: <span class="k">nil</span>})
+            <span class="k">return</span>                                <span class="c">// ← 这个 return 不能省！</span>
+        }
+        claims, err := jwtutil.<span class="t">Parse</span>(secret, raw[<span class="t">len</span>(prefix):], <span class="s">"access"</span>)
+        <span class="k">if</span> err != <span class="k">nil</span> {
+            c.<span class="t">AbortWithStatusJSON</span>(<span class="n">401</span>, gin.<span class="t">H</span>{<span class="s">"code"</span>: <span class="n">1005</span>, <span class="s">"message"</span>: <span class="s">"token 无效或已过期"</span>, <span class="s">"data"</span>: <span class="k">nil</span>})
+            <span class="k">return</span>
+        }
+        c.<span class="t">Set</span>(<span class="s">"userID"</span>, claims.UserID)          <span class="c">// 后续 handler 从这里取当前用户</span>
+        c.<span class="t">Set</span>(<span class="s">"role"</span>, claims.Role)
+        c.<span class="t">Next</span>()
+    }
+}
+
+<span class="c">// 受保护路由里取用户：</span>
+<span class="k">func</span> (h *<span class="t">ArticleHandler</span>) <span class="t">Create</span>(c *gin.<span class="t">Context</span>) {
+    uid := c.<span class="t">GetInt64</span>(<span class="s">"userID"</span>)   <span class="c">// 中间件保证进得来的必有值</span>
+    <span class="c">// ... 用 uid 作为文章作者写库；明天权限课就靠它做"仅作者可改删"</span>
+}</pre>
+
+    <h3>6. logout：一个诚实的讨论</h3>
+    <p>Session 时代登出 = 删服务器上的记录。JWT 无状态——服务器根本没记，<b>想「让已签发的 token 立刻作废」就必须重新引入状态</b>。三种务实选择：</p>
+    <table>
+      <tr><th>方案</th><th>做法</th><th>代价</th></tr>
+      <tr><td>纯前端「登出」</td><td>客户端删掉本地 token，服务端什么都不做</td><td>token 在有效期内其实还活着；对 15 分钟的 access 通常可接受</td></tr>
+      <tr><td>黑名单（Redis/内存表）</td><td>登出时把 access 的 jti、refresh 整串塞进黑名单，存活到原过期时间为止；中间件多查一次</td><td>重新引入状态与一次存储查询，但粒度可控，生产常用</td></tr>
+      <tr><td>库内版本戳</td><td>users 表加 <code>token_version</code>，改密码/全端登出时 +1，校验时比对</td><td>每请求多一次查询；实现简单，适合中小项目</td></tr>
+    </table>
+    <div class="callout note"><p>本项目今天采用第一档 + 说明：<code>POST /auth/logout</code> 只由前端清 token，README 写明「access 剩余有效期内仍可能可用」。等第 5 周学了并发、你有 Redis 经验后再升级黑名单——诚实地记录技术债，比假装安全强。</p></div>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：curl 走通全链路（60 分钟，主线）</div>
+      <p>注册 → 登录拿双 token → 带 access 访问受保护接口 → 用 refresh 换新 access → 用 access 串调 /auth/refresh 应被拒。</p>
+      <details><summary>参考答案</summary>
+        <pre><span class="code-label">shell</span>$ TOKENS=$(curl -s -X POST localhost:8080/auth/login -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"alice","password":"goodpass123"}'</span>)
+$ ACCESS=$(echo <span class="s">"$TOKENS"</span> | grep -o <span class="s">'"access_token":"[^"]*"'</span> | cut -d<span class="s">'"'</span> -f4)
+
+$ curl -s -X POST localhost:8080/articles -H <span class="s">"Authorization: Bearer <span class="n">$ACCESS</span>"</span> \
+  -H <span class="s">"Content-Type: application/json"</span> -d <span class="s">'{"title":"my first jwt post"}'</span>   <span class="c"># 201</span>
+
+$ curl -s -X POST localhost:8080/articles -H <span class="s">"Authorization: Bearer <span class="n">$ACCESS</span>x"</span> <span class="c"># 篡改一位</span>
+{<span class="s">"code"</span>:1005,<span class="s">"message"</span>:<span class="s">"token 无效或已过期"</span>}                                <span class="c"># 401</span>
+
+$ REFRESH=$(echo <span class="s">"$TOKENS"</span> | grep -o <span class="s">'"refresh_token":"[^"]*"'</span> | cut -d<span class="s">'"'</span> -f4)
+$ curl -s -X POST localhost:8080/auth/refresh -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">"{\"refresh_token\":\"$REFRESH\"}"</span>                                     <span class="c"># 200 新 token 对</span>
+
+$ <span class="c"># 把 access 串当 refresh 传 → 401（Type 字段不符）</span></pre>
+      </details>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：模拟过期（20 分钟）</div>
+      <p>临时把 <code>AccessTTL</code> 改成 <code>20*time.Second</code> 重跑服务：登录后等 30 秒访问受保护接口拿到 401+1005，再用 refresh 换发成功。</p>
+      <details><summary>参考答案</summary>
+        <p>预期三段式输出：改 TTL 前 201 成功 → sleep 30 后 <code>{"code":1005}</code> → /auth/refresh 返回新 <code>access_token</code> 再访问又 201。验收完记得把 TTL 改回 15 分钟。</p>
+      </details>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：解码自己的 token（15 分钟）</div>
+      <p>把练习 1 拿到的 access_token 复制到终端，按讲义第 1 节方法解码 payload，确认 <code>uid</code>、<code>typ:"access"</code>、<code>exp</code> 与「签发时间 + 15 分钟」吻合（<code>date -r 时间戳</code> 可换算）。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：写接口文档（20 分钟）</div>
+      <p>README 增补 /auth/login、/auth/refresh、/auth/logout 三个接口的请求响应示例，标注新业务码 1005 与「登出为客户端删除凭证」的实现说明。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>token 放 URL 查询参数</td><td><code>/articles?token=xxx</code> 能跑，但 token 泄进 Nginx access log、浏览器历史、Referer</td><td>一律走 <code>Authorization: Bearer</code> 请求头</td></tr>
+      <tr><td>Secret 用弱值且提交进 git</td><td><code>secret="123"</code> 直接写死在 main.go；仓库泄露 = 全员 token 可伪造</td><td>今天先环境变量读取（明天收进 .env），值 ≥ 32 位随机串，仓库只放 .env.example</td></tr>
+      <tr><td>中间件失败后忘记 return</td><td>返回了 401，但 handler 继续执行，日志出现「写了两份响应」或数据真的被改了</td><td><code>AbortWithStatusJSON</code> 之后必写 <code>return</code></td></tr>
+      <tr><td>往 payload 塞敏感数据</td><td>「反正有签名」——但 base64 一解码就裸奔</td><td>只放 uid/role/exp/iat，敏感数据永远在库里</td></tr>
+      <tr><td>refresh 和 access 混用</td><td>拿 refresh 串当 Bearer 调业务接口也放行，短令牌设计失效</td><td>Claims 带 <code>typ</code> 字段，Parse 强制比对用途</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>JWT</td><td>JSON Web Token：header.payload.signature 三段 base64url 编码的自包含凭证</td></tr>
+      <tr><td>Claims</td><td>payload 里的一组声明：标准字段（exp/iat/sub）+ 自定义字段（uid/role）</td></tr>
+      <tr><td>HS256</td><td>HMAC-SHA256 对称签名：签发和校验用同一个 secret，本项目用它</td></tr>
+      <tr><td>access token</td><td>短期令牌（15 分钟），随每个 API 请求携带</td></tr>
+      <tr><td>refresh token</td><td>长期令牌（7 天），仅用于 /auth/refresh 换发新 access</td></tr>
+      <tr><td>算法混淆攻击</td><td>攻击者把 header 的 alg 改成 none 或 RS/HS 互换试图绕过校验，用 WithValidMethods 挡住</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w4d2c1">登录返回 access + refresh 两个串，且解码 payload 能看到 uid/typ/exp</label></li>
+      <li><label><input type="checkbox" data-key="w4d2c2">带 Bearer access 能创建文章，篡改一位字符后得到 401+1005</label></li>
+      <li><label><input type="checkbox" data-key="w4d2c3">/auth/refresh 用 refresh 成功换发；用 access 串调用被拒 401</label></li>
+      <li><label><input type="checkbox" data-key="w4d2c4">模拟过期实验完成：过期 access → 401 → refresh 换发 → 再访问 201</label></li>
+      <li><label><input type="checkbox" data-key="w4d2c5">能口述「签名≠加密」与 logout 三方案取舍，README 已记录当前选型</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day1.html"><span class="hint">← 上一天 · W4D1</span>密码哈希与注册登录</a>
+    <a href="day3.html"><span class="hint">下一天 · W4D3 →</span>配置管理</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W4D2 · 明天见 ⟩</footer>
+</body>
+</html>

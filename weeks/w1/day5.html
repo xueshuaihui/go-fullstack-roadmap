@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W1D5 · HTTP 基础 + net/http | Go 全栈修炼手册</title>
+<meta name="description" content="Day 5：HTTP 报文/方法/状态码/请求头/响应体、REST 资源映射、net/http 的 Handler 与 ServeMux、JSON 收发，并给出本周项目「标准库 HTTP 待办服务」的完整核心代码。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w1d5">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="../w1/summary.html">第 1 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 1 周</a> / Day 5</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 1 · DAY 5</span>
+    <span class="chip alt">预计 2.5–3 小时</span>
+    <span class="chip">难度 ★★★★★</span>
+  </div>
+  <h1>HTTP 基础 + net/http</h1>
+  <p>前四天你写的全是"命令行里的小程序"，今天它们要变成<b>网络上的服务</b>。这一页会把 Day 3 的 JSON 文件持久化和 Day 4 的仓储接口拼到一起，交付本周唯一的项目：<b>标准库 HTTP 待办服务</b>。学完今天，你就拥有了一个能被 <code>curl</code> 打到、能被前端 fetch、能被写进简历接口文档的真后端。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w1d5g1">能拆开一段 <code>curl -v</code> 报文，指出请求行/请求头/请求体与状态行/响应头/响应体</label></li>
+      <li><label><input type="checkbox" data-key="w1d5g2">说清 GET/POST/PUT/PATCH/DELETE 的语义差别，以及 200/201/204/400/404/500 各自该在什么时候返回</label></li>
+      <li><label><input type="checkbox" data-key="w1d5g3">会用 <code>http.Handler</code>、<code>HandleFunc</code>、<code>ServeMux</code>（Go 1.22 方法路由 + <code>r.PathValue</code>）搭服务</label></li>
+      <li><label><input type="checkbox" data-key="w1d5g4">能用 <code>json.NewDecoder/Encoder</code> 收发 JSON，并把错误链翻译成正确状态码</label></li>
+      <li><label><input type="checkbox" data-key="w1d5g5">跑通本周项目：五个必做端点（+ 单条查询）+ JSON 文件落盘 + 重启数据仍在</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这五条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 一次请求长什么样：报文六件套</h3>
+    <p>HTTP 是<b>纯文本的问答协议</b>：客户端先说话（请求），服务端回答（响应）。<code>curl -v</code> 能把这层文本全打印出来，后端调试试错第一步就是读它。</p>
+    <pre><span class="code-label">shell：GET 的完整报文</span>$ curl -v http://localhost:8080/health
+&gt; GET /health HTTP/1.1        <span class="c"># 请求行 = 方法 + 路径 + 协议版本</span>
+&gt; Host: localhost:8080        <span class="c"># 请求头：每行一个 Key: Value</span>
+&gt; User-Agent: curl/8.4.0
+&gt;                             <span class="c"># 空行 = 头结束，下面本可以跟请求体</span>
+&lt; HTTP/1.1 200 OK             <span class="c"># 状态行 = 协议 + 状态码 + 原因短语</span>
+&lt; Content-Type: text/plain; charset=utf-8  <span class="c"># 响应头</span>
+&lt; Date: Sun, 20 Sep 2026 09:12:33 GMT
+&lt;                             <span class="c"># 空行</span>
+{"status":"ok"}               <span class="c"># 响应体：状态码和头之外，你真正要的数据</span>
+$ curl -v -X POST localhost:8080/todos -H <span class="s">"Content-Type: application/json"</span> -d <span class="s">'{"title":"学习Go"}'</span>
+&gt; POST /todos HTTP/1.1        <span class="c"># 方法换成 POST</span>
+&gt; Content-Type: application/json   <span class="c"># 告诉服务端 body 是什么格式</span>
+&gt; Content-Length: 20          <span class="c"># body 字节数：HTTP 靠它知道 body 到哪结束</span>
+&gt;
+&gt; {"title":"学习Go"}          <span class="c"># 请求体</span>
+&lt; HTTP/1.1 201 Created        <span class="c"># 新建成功是 201，不是 200</span>
+&lt; Location: /todos/3          <span class="c"># 新资源的地址，REST 的礼貌约定</span></pre>
+    <table>
+      <tr><th>方法</th><th>语义</th><th>有没有 body</th><th>幂等？</th><th>成功码</th></tr>
+      <tr><td>GET</td><td>取资源，不该有副作用</td><td>一般没有</td><td>是</td><td>200</td></tr>
+      <tr><td>POST</td><td>创建 / 提交处理</td><td>有</td><td>否（点一次建一条）</td><td>201 / 200</td></tr>
+      <tr><td>PUT</td><td>整体替换资源</td><td>有</td><td>是（换十次结果一样）</td><td>200 / 204</td></tr>
+      <tr><td>PATCH</td><td>局部更新（本周用它标记完成）</td><td>有（可空）</td><td>是（本项目）</td><td>200</td></tr>
+      <tr><td>DELETE</td><td>删除资源</td><td>一般没有</td><td>是</td><td>204 / 200</td></tr>
+    </table>
+    <table>
+      <tr><th>状态码</th><th>含义</th><th>本周什么时候返回</th></tr>
+      <tr><td>200 OK</td><td>成功，有 body</td><td>GET 列表 / GET 单条 / PATCH 成功</td></tr>
+      <tr><td>201 Created</td><td>创建成功，body 是新资源</td><td>POST /todos</td></tr>
+      <tr><td>204 No Content</td><td>成功，但故意没有 body</td><td>DELETE /todos/:id</td></tr>
+      <tr><td>400 Bad Request</td><td><b>客户端错了</b>：参数/JSON 不合法</td><td>坏 JSON、空 title、id 不是数字</td></tr>
+      <tr><td>404 Not Found</td><td>资源不存在（也可能路径没注册）</td><td>GET/PATCH/DELETE 一个不存在的 id</td></tr>
+      <tr><td>500 Internal Server Error</td><td><b>服务端错了</b>，且不是调用方的锅</td><td>写文件失败、panic 被兜住</td></tr>
+    </table>
+    <div class="callout js"><p>你在前端 fetch 里写的 <code>res.ok</code>、<code>res.status</code>、<code>res.headers.get("Content-Type")</code>，对应这里的状态行和响应头。4xx 与 5xx 的分界是后端最基本的职业素养：<b>4xx = 你请求得不对，5xx = 我这边出事了</b>。把数据库失败返回成 400，前端会以为是参数错而疯狂重试。</p></div>
+
+    <h3>2. REST：URL 是名词，方法是动词</h3>
+    <p>REST 的核心只有一句：<b>资源用 URL 表示，动作用 HTTP 方法表示</b>，不要把这个动作塞进 URL。</p>
+    <table>
+      <tr><th>需求</th><th>REST 写法</th><th>反面写法（别学）</th></tr>
+      <tr><td>待办列表</td><td><code>GET /todos</code></td><td><code>GET /getTodos</code>、<code>POST /todoList</code></td></tr>
+      <tr><td>新增一条</td><td><code>POST /todos</code> + body</td><td><code>GET /addTodo?title=xx</code></td></tr>
+      <tr><td>看单条</td><td><code>GET /todos/3</code></td><td><code>GET /getTodo?id=3</code></td></tr>
+      <tr><td>标记完成</td><td><code>PATCH /todos/3</code></td><td><code>GET /todos/3/done</code></td></tr>
+      <tr><td>删除</td><td><code>DELETE /todos/3</code></td><td><code>POST /deleteTodo</code></td></tr>
+      <tr><td>集合过滤 / 分页</td><td><code>GET /todos?done=false&amp;page=2</code>（查询参数）</td><td><code>GET /todos/done-false-page-2</code></td></tr>
+    </table>
+    <div class="callout note"><p>路径参数（<code>/todos/{id}</code>）标识"<b>哪一个</b>"，查询参数（<code>?done=false</code>）标识"<b>要哪些 / 怎么排</b>"。第 2 周 Gin、第 3 周 GORM 分页、第 6 周前端 axios 全都沿用这套约定，现在就把它当母语。</p></div>
+
+    <h3>3. net/http 三大件：Handler、ServeMux、Server</h3>
+    <p>标准库只有三个概念要记：<code>http.Handler</code>（接口，一个方法）、<code>http.ServeMux</code>（路由器，按路径+方法找到 Handler）、<code>http.Server</code>（监听端口、每个请求开一个 goroutine）。</p>
+    <pre><span class="code-label">hello.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"fmt"</span>
+    <span class="s">"log"</span>
+    <span class="s">"net/http"</span>
+    <span class="s">"time"</span>
+)
+
+<span class="c">// http.Handler 是只有一个方法的接口：ServeHTTP(w, r)</span>
+<span class="c">// 任何类型实现了它就是一个处理器——Day 4 的隐式实现立刻用上</span>
+<span class="k">type</span> <span class="t">greeter</span> <span class="k">struct</span> { name <span class="t">string</span> }
+
+<span class="k">func</span> (g <span class="t">greeter</span>) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+    fmt.Fprintf(w, <span class="s">"hi %s，你访问的是 %s"</span>, g.name, r.URL.Path)
+}
+
+<span class="k">func</span> main() {
+    mux := http.NewServeMux()
+    <span class="c">// ① 挂一个实现了 Handler 接口的值</span>
+    mux.Handle(<span class="s">"GET /greet"</span>, <span class="t">greeter</span>{name: <span class="s">"ada"</span>})
+    <span class="c">// ② 常用：直接挂函数，签名 func(w, r) 就是 http.HandlerFunc 类型</span>
+    mux.HandleFunc(<span class="s">"GET /health"</span>, <span class="k">func</span>(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set(<span class="s">"Content-Type"</span>, <span class="s">"application/json; charset=utf-8"</span>)
+        fmt.Fprintf(w, <span class="s">`{"status":"ok","time":%q}`</span>, time.Now().Format(time.RFC3339))
+    })
+    <span class="c">// ③ Go 1.22 起 pattern 可带方法与 {参数}，取值用 r.PathValue（不用再手写解析）</span>
+    mux.HandleFunc(<span class="s">"GET /todos/{id}"</span>, <span class="k">func</span>(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, <span class="s">"你要找的待办 id = %s"</span>, r.PathValue(<span class="s">"id"</span>))
+    })
+    log.Fatal(http.ListenAndServe(<span class="s">":8080"</span>, mux)) <span class="c">// 阻塞服务；它返回非 nil 就是出错了</span>
+}</pre>
+    <div class="callout tip"><p>两个细节：① 方法+通配的 pattern 要求 <b>Go 1.22 以上</b>，所以 <code>go.mod</code> 里的 <code>go</code> 版本别写太低（<code>go 1.22</code> 起生效）；② <code>w</code> 只能"往前写"：<code>w.Header().Set</code> 必须在 <code>WriteHeader</code>／第一次 <code>Write</code> 之前调用，之后设的头会被静默丢弃。</p></div>
+    <div class="callout js"><p>对比 Express/Koa：<code>app.get('/todos', (req, res) =&gt; …)</code> 里 req/res 是 Node 封装过的对象，还有 <code>next()</code> 串中间件；Go 的 <code>ResponseWriter</code> 极其朴素——它只是一个 <code>io.Writer</code> 加上头/状态码方法，写之前记得自己 <code>return</code>。第 2 周 Gin 的 <code>gin.Context</code> 才把这套东西包得顺手。</p></div>
+
+    <h3>4. JSON 收发：一个出口 + 一个入口</h3>
+    <p>API 的 body 就是 JSON。Go 用 <code>encoding/json</code> 在<b>结构体字段</b>和 <b>JSON key</b> 之间映射，靠的是 Day 2 结尾提到的 struct tag。</p>
+    <pre><span class="code-label">json.go（片段：只看读写两个动作，讲义 5 已把它们整合进 server.go）</span><span class="c">// 写：所有响应都走这一个出口，顺序固定——设头 → WriteHeader → 写 body</span>
+<span class="k">func</span> writeJSON(w http.ResponseWriter, status <span class="t">int</span>, v <span class="t">any</span>) {
+    w.Header().Set(<span class="s">"Content-Type"</span>, <span class="s">"application/json; charset=utf-8"</span>)
+    w.WriteHeader(status)
+    <span class="k">if</span> err := json.NewEncoder(w).Encode(v); err != nil {
+        log.Println(<span class="s">"encode:"</span>, err) <span class="c">// 头已发出，无法再改状态码，只能记日志</span>
+    }
+}
+
+<span class="c">// 读：用匿名 struct 只接你关心的字段，多传字段自动忽略，少传就是零值</span>
+<span class="k">func</span> createTodo(w http.ResponseWriter, r *http.Request) {
+    <span class="k">var</span> in <span class="k">struct</span> {
+        Title <span class="t">string</span> <span class="s">`json:"title"`</span>
+        Done  <span class="t">bool</span>   <span class="s">`json:"done"`</span>
+    }
+    <span class="k">if</span> err := json.NewDecoder(r.Body).Decode(&amp;in); err != nil {
+        writeJSON(w, http.StatusBadRequest, <span class="t">map</span>[<span class="t">string</span>]<span class="t">string</span>{<span class="s">"error"</span>: <span class="s">"body 不是合法 JSON"</span>})
+        <span class="k">return</span>                       <span class="c">// 忘了 return 会继续往下跑：这是 500 的头号来源</span>
+    }
+    <span class="k">if</span> strings.TrimSpace(in.Title) == <span class="s">""</span> {
+        writeJSON(w, http.StatusBadRequest, <span class="t">map</span>[<span class="t">string</span>]<span class="t">string</span>{<span class="s">"error"</span>: <span class="s">"title 不能为空"</span>})
+        <span class="k">return</span>
+    }
+    writeJSON(w, http.StatusCreated, in)
+}</pre>
+    <div class="callout warn"><p>JSON 映射三铁律（第 2 周 Gin 的 <code>ShouldBindJSON</code> 一模一样）：① 字段必须<b>大写开头</b>才导出，小写字段 JSON 里永远收不到；② 想要 snake_case 的 key 就写 <code>`json:"author_id"`</code> tag；③ 指针或 <code>omitempty</code> 用来区分"没传"和"传了零值"——本项目 <code>Done bool</code> 不传即为 <code>false</code>，正好符合语义。</p></div>
+
+    <h3>5. 本周项目核心代码：标准库 HTTP 待办服务</h3>
+    <p>把 Day 3 的 <code>Load/Save</code> 与 Day 4 的 <code>TodoRepository</code>（含 <code>MemRepo</code> / <code>FileRepo</code>、<code>ErrNotFound</code>、<code>ErrEmptyTitle</code>）放进同一个 <code>package main</code>，再写下面这个 <code>server.go</code>，项目就齐了。组装时注意：三处重复声明的 <code>Todo</code> 和哨兵错误<b>各只保留一份</b>（以 Day 4 的为准），Day 4 里的 <code>demo</code> 和它自己的 <code>main</code> 要删掉，一个包只能有一个 <code>main()</code>。<b>handler 只依赖接口</b>：明天想换 MySQL，只改仓储实现，这里一行不动。</p>
+    <pre><span class="code-label">server.go（与 Day 3/4 的代码同属 package main）</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"encoding/json"</span>
+    <span class="s">"errors"</span>
+    <span class="s">"fmt"</span>
+    <span class="s">"log"</span>
+    <span class="s">"net/http"</span>
+    <span class="s">"strconv"</span>
+    <span class="s">"time"</span>
+)
+
+<span class="k">const</span> dataFile = <span class="s">"todos.json"</span>
+<span class="k">var</span> (
+    ErrBadID   = errors.New(<span class="s">"id must be a number"</span>)       <span class="c">// 本文件新增的两个哨兵，都翻译成 400</span>
+    ErrBadJSON = errors.New(<span class="s">"body is not valid JSON"</span>)
+)
+<span class="c">// server 只持有一个接口：List / Get / Create / Complete / Delete 全在接口里</span>
+<span class="k">type</span> <span class="t">server</span> <span class="k">struct</span> { repo <span class="t">TodoRepository</span> }
+
+<span class="k">func</span> writeJSON(w http.ResponseWriter, status <span class="t">int</span>, v <span class="t">any</span>) {
+    w.Header().Set(<span class="s">"Content-Type"</span>, <span class="s">"application/json; charset=utf-8"</span>)
+    w.WriteHeader(status)
+    <span class="k">if</span> err := json.NewEncoder(w).Encode(v); err != nil { log.Println(<span class="s">"encode:"</span>, err) }
+}
+
+<span class="c">// fail：把 Day 4 的错误链翻译成状态码——验收要的 400 / 404 / 500 全在这一段</span>
+<span class="k">func</span> (s *<span class="t">server</span>) fail(w http.ResponseWriter, err <span class="t">error</span>) {
+    <span class="k">switch</span> {
+    <span class="k">case</span> errors.Is(err, ErrEmptyTitle), errors.Is(err, ErrBadID), errors.Is(err, ErrBadJSON):
+        writeJSON(w, http.StatusBadRequest, <span class="t">map</span>[<span class="t">string</span>]<span class="t">string</span>{<span class="s">"error"</span>: err.Error()})
+    <span class="k">case</span> errors.Is(err, ErrNotFound):
+        writeJSON(w, http.StatusNotFound, <span class="t">map</span>[<span class="t">string</span>]<span class="t">string</span>{<span class="s">"error"</span>: <span class="s">"待办不存在"</span>})
+    <span class="k">default</span>:
+        log.Println(<span class="s">"internal:"</span>, err)      <span class="c">// 500 要把真实原因写日志，只给客户端一句人话</span>
+        writeJSON(w, http.StatusInternalServerError, <span class="t">map</span>[<span class="t">string</span>]<span class="t">string</span>{<span class="s">"error"</span>: <span class="s">"服务内部错误"</span>})
+    }
+}
+
+<span class="k">func</span> (s *<span class="t">server</span>) health(w http.ResponseWriter, r *http.Request) {
+    writeJSON(w, http.StatusOK, <span class="t">map</span>[<span class="t">string</span>]<span class="t">any</span>{<span class="s">"status"</span>: <span class="s">"ok"</span>, <span class="s">"time"</span>: time.Now().Format(time.RFC3339)})
+}
+
+<span class="k">func</span> (s *<span class="t">server</span>) listTodos(w http.ResponseWriter, r *http.Request) {
+    todos, err := s.repo.List()
+    <span class="k">if</span> err != nil { s.fail(w, err); <span class="k">return</span> }
+    writeJSON(w, http.StatusOK, todos)    <span class="c">// slice 编码成 JSON 数组；空列表是 [] 而不是 null</span>
+}
+
+<span class="k">func</span> (s *<span class="t">server</span>) getTodo(w http.ResponseWriter, r *http.Request) {
+    id, err := strconv.Atoi(r.PathValue(<span class="s">"id"</span>))
+    <span class="k">if</span> err != nil { s.fail(w, ErrBadID); <span class="k">return</span> }
+    t, err := s.repo.Get(id)
+    <span class="k">if</span> err != nil { s.fail(w, err); <span class="k">return</span> }
+    writeJSON(w, http.StatusOK, t)
+}
+
+<span class="k">func</span> (s *<span class="t">server</span>) createTodo(w http.ResponseWriter, r *http.Request) {
+    <span class="k">var</span> in <span class="k">struct</span> { Title <span class="t">string</span> <span class="s">`json:"title"`</span> }
+    <span class="k">if</span> err := json.NewDecoder(r.Body).Decode(&amp;in); err != nil {
+        s.fail(w, fmt.Errorf(<span class="s">"decode: %w"</span>, ErrBadJSON)); <span class="k">return</span> <span class="c">// 坏 JSON 也是客户端的错 -> 400</span>
+    }
+    t, err := s.repo.Create(in.Title)     <span class="c">// 仓储内部会落盘，接口自己返回错误</span>
+    <span class="k">if</span> err != nil { s.fail(w, err); <span class="k">return</span> }
+    w.Header().Set(<span class="s">"Location"</span>, <span class="s">"/todos/"</span>+strconv.Itoa(t.ID))
+    writeJSON(w, http.StatusCreated, t)   <span class="c">// 201 + Location：新建资源的标准响应</span>
+}
+
+<span class="k">func</span> (s *<span class="t">server</span>) completeTodo(w http.ResponseWriter, r *http.Request) {
+    id, err := strconv.Atoi(r.PathValue(<span class="s">"id"</span>))
+    <span class="k">if</span> err != nil { s.fail(w, ErrBadID); <span class="k">return</span> }
+    t, err := s.repo.Complete(id)
+    <span class="k">if</span> err != nil { s.fail(w, err); <span class="k">return</span> }
+    writeJSON(w, http.StatusOK, t)
+}
+
+<span class="k">func</span> (s *<span class="t">server</span>) deleteTodo(w http.ResponseWriter, r *http.Request) {
+    id, err := strconv.Atoi(r.PathValue(<span class="s">"id"</span>))
+    <span class="k">if</span> err != nil { s.fail(w, ErrBadID); <span class="k">return</span> }
+    <span class="k">if</span> err := s.repo.Delete(id); err != nil { s.fail(w, err); <span class="k">return</span> }
+    w.WriteHeader(http.StatusNoContent)   <span class="c">// 204：成功但没有 body，别再 Write</span>
+}
+
+<span class="k">func</span> main() {
+    repo, err := NewFileRepo(dataFile)    <span class="c">// Day 4 练习 3 的文件仓储（内部用 Day 3 的 Load/Save）</span>
+    <span class="k">if</span> err != nil { log.Fatal(<span class="s">"启动失败:"</span>, err) }
+    s := &amp;<span class="t">server</span>{repo: repo}
+
+    mux := http.NewServeMux()
+    mux.HandleFunc(<span class="s">"GET /health"</span>, s.health)
+    mux.HandleFunc(<span class="s">"GET /todos"</span>, s.listTodos)
+    mux.HandleFunc(<span class="s">"POST /todos"</span>, s.createTodo)
+    mux.HandleFunc(<span class="s">"GET /todos/{id}"</span>, s.getTodo)
+    mux.HandleFunc(<span class="s">"PATCH /todos/{id}"</span>, s.completeTodo)
+    mux.HandleFunc(<span class="s">"DELETE /todos/{id}"</span>, s.deleteTodo)
+
+    <span class="c">// 最简日志中间件：http.Handler 是接口，包一层就能在处理前后加动作</span>
+    logged := http.HandlerFunc(<span class="k">func</span>(w http.ResponseWriter, r *http.Request) {
+        start := time.Now()
+        mux.ServeHTTP(w, r)               <span class="c">// 交给真正的路由</span>
+        log.Printf(<span class="s">"%s %s -> %s"</span>, r.Method, r.URL.Path, time.Since(start))
+    })
+
+    srv := &amp;http.Server{Addr: <span class="s">":8080"</span>, Handler: logged, ReadHeaderTimeout: <span class="n">5</span> * time.Second}
+    log.Println(<span class="s">"待办服务已启动: http://localhost:8080"</span>)
+    log.Fatal(srv.ListenAndServe())       <span class="c">// 一直阻塞，Ctrl+C 退出；返回错误说明服务挂了</span>
+}</pre>
+    <pre><span class="code-label">shell：验收命令（另开一个终端执行）</span>$ go run .                                 <span class="c"># 或 go run ./cmd/server，看到"已启动"即可</span>
+$ curl -s localhost:8080/health            <span class="c"># {"status":"ok","time":"..."} 200</span>
+$ curl -si -X POST localhost:8080/todos -d <span class="s">'{"title":"学习Go"}'</span> | head -n 1  <span class="c"># 201 Created</span>
+$ curl -s localhost:8080/todos             <span class="c"># [{"id":1,"title":"学习Go","done":false}]</span>
+$ curl -si localhost:8080/todos/999 | head -n 1     <span class="c"># 404 Not Found</span>
+$ curl -si -X POST localhost:8080/todos -d <span class="s">'{bad json'</span> | head -n 1  <span class="c"># 400 Bad Request</span>
+$ curl -si -X PATCH localhost:8080/todos/1 | head -n 1   <span class="c"># 200，done 已变 true</span>
+$ curl -si -X DELETE localhost:8080/todos/1 | head -n 1  <span class="c"># 204 No Content</span>
+$ cat todos.json                           <span class="c"># 落盘确认；Ctrl+C 重启后数据仍在 = 验收通过</span></pre>
+    <div class="callout tip"><p>注意 <code>POST</code> 那条 curl <b>没带</b> <code>Content-Type</code>（curl <code>-d</code> 默认 <code>application/x-www-form-urlencoded</code>）也照样能通——因为我们直接解 body，不看头。真实项目会校验头，那是第 2 周 Gin 绑定层做的事。</p></div>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：最小的 /health 服务（20 分钟）</div>
+      <p>不抄讲义，自己从零写一个只监听 8080、只有一个 <code>GET /health</code> 的服务，返回 <code>{"status":"ok"}</code> 和 <code>Content-Type: application/json</code>。然后用 <code>curl -v</code> 检查：状态行是不是 <code>200 OK</code>、响应头有没有 Content-Type、换一个不存在的路径（<code>/healt</code>）服务器返回什么。</p>
+      <pre><span class="code-label">answer.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (<span class="s">"log"</span>; <span class="s">"net/http"</span>)
+
+<span class="k">func</span> main() {
+    mux := http.NewServeMux()
+    mux.HandleFunc(<span class="s">"GET /health"</span>, <span class="k">func</span>(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set(<span class="s">"Content-Type"</span>, <span class="s">"application/json; charset=utf-8"</span>)
+        w.WriteHeader(http.StatusOK)
+        w.Write([]<span class="t">byte</span>(<span class="s">`{"status":"ok"}`</span>))
+    })
+    log.Fatal(http.ListenAndServe(<span class="s">":8080"</span>, mux))
+}</pre>
+      <p><b>观察点：</b>没注册的路径由 ServeMux 兜底返回 <code>404 page not found</code>（纯文本）。第 2 周会把它换成统一 JSON 响应。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：POST 收发 JSON 并做校验（25 分钟）</div>
+      <p>加一个 <code>POST /echo</code>：请求体形如 <code>{"name":"ada","age":30}</code>，服务端解析后原样返回并附加一个字段 <code>"hello":"hi ada"</code>。要求：① 坏 JSON → 400；② <code>name</code> 为空 → 400；③ 正常 → 200。注意每一步都要 <code>return</code>。</p>
+      <pre><span class="code-label">answer.go（另需在 main 里注册 POST /echo）</span><span class="k">func</span> echo(w http.ResponseWriter, r *http.Request) {
+    <span class="k">var</span> in <span class="k">struct</span> {
+        Name <span class="t">string</span> <span class="s">`json:"name"`</span>
+        Age  <span class="t">int</span>    <span class="s">`json:"age"`</span>
+    }
+    <span class="k">if</span> err := json.NewDecoder(r.Body).Decode(&amp;in); err != nil {
+        writeJSON(w, http.StatusBadRequest, <span class="t">map</span>[<span class="t">string</span>]<span class="t">string</span>{<span class="s">"error"</span>: <span class="s">"bad json"</span>})
+        <span class="k">return</span>
+    }
+    <span class="k">if</span> in.Name == <span class="s">""</span> {
+        writeJSON(w, http.StatusBadRequest, <span class="t">map</span>[<span class="t">string</span>]<span class="t">string</span>{<span class="s">"error"</span>: <span class="s">"name 不能为空"</span>})
+        <span class="k">return</span>
+    }
+    writeJSON(w, http.StatusOK, <span class="t">map</span>[<span class="t">string</span>]<span class="t">any</span>{<span class="s">"name"</span>: in.Name, <span class="s">"age"</span>: in.Age,
+        <span class="s">"hello"</span>: <span class="s">"hi "</span> + in.Name})
+}</pre>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：路径参数与状态码四连（25 分钟）</div>
+      <p>实现 <code>GET /todos/{id}</code>：id 不是数字返回 400，数字合法但没有这条返回 404，存在返回 200 + JSON。再用 <code>curl</code> 逐一验证四种情况：正常 200、不存在 404、<code>/todos/abc</code> 得 400、对 <code>/todos</code> 用 <code>DELETE</code> 方法（只注册了 GET/POST）得 405。</p>
+      <pre><span class="code-label">answer.go</span><span class="k">func</span> (s *<span class="t">server</span>) getTodo(w http.ResponseWriter, r *http.Request) {
+    raw := r.PathValue(<span class="s">"id"</span>)            <span class="c">// 拿到的一律是 string</span>
+    id, err := strconv.Atoi(raw)
+    <span class="k">if</span> err != nil {                     <span class="c">// "/todos/abc"：客户端写错了</span>
+        writeJSON(w, http.StatusBadRequest, <span class="t">map</span>[<span class="t">string</span>]<span class="t">string</span>{<span class="s">"error"</span>: <span class="s">"id 必须是数字: "</span>+raw})
+        <span class="k">return</span>
+    }
+    t, err := s.repo.Get(id)
+    <span class="k">if</span> err != nil {                     <span class="c">// 数字合法但没有这条：ErrNotFound -> 404</span>
+        s.fail(w, err)
+        <span class="k">return</span>
+    }
+    writeJSON(w, http.StatusOK, t)
+}</pre>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：把项目跑通并亲手制造 400 / 404 / 500（45 分钟）</div>
+      <p>按讲义 5 把 Day 3 的 <code>Load/Save</code>、Day 4 的 <code>TodoRepository + MemRepo + FileRepo</code>、本页的 <code>server.go</code> 组装成能 <code>go run .</code> 的项目，逐条跑完验收命令。然后<b>故意制造三种错误状态码</b>并记录你看到的日志输出：① <code>-d '{bad'</code> → 400；② <code>GET /todos/999</code> → 404；③ 另开终端执行 <code>chmod 000 todos.json</code> 再 POST → <code>Save</code> 失败一路 <code>%w</code> 上抛 → 500（记得 <code>chmod 644 todos.json</code> 还原）。最后 <code>Ctrl+C</code> 重启服务，确认列表还在。</p>
+      <div class="callout warn"><p>如果 POST 之后重启数据没了，九成是 <code>Create</code> 里忘了调用 <code>Save</code>，或者 <code>FileRepo</code> 用的是 <code>MemRepo</code> 的副本却没写回文件。先在 <code>Save</code> 里加一行 <code>log.Println("写入", path)</code> 确认它到底有没有被执行——<b>后端调试第一招：把怀疑的函数打日志</b>。</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>先 Write 再设头</td><td>Content-Type 永远是 text/plain，头设置被丢弃</td><td><code>w.Header().Set</code> → <code>WriteHeader</code> → 写 body，顺序不能换</td></tr>
+      <tr><td>写完响应不 return</td><td>日志出现 <code>superfluous WriteHeader call</code>，body 里两个 JSON 拼在一起</td><td>每个失败分支写完后立刻 <code>return</code></td></tr>
+      <tr><td>204 还写 body</td><td>客户端解析出错、连接行为诡异</td><td>204 只 <code>WriteHeader</code>，不写任何字节</td></tr>
+      <tr><td>手写字符串切路径</td><td><code>strings.Split(r.URL.Path, "/")</code> 一旦加层级就崩</td><td>用 Go 1.22 pattern <code>GET /todos/{id}</code> + <code>r.PathValue</code></td></tr>
+      <tr><td>JSON 字段小写开头</td><td>Decode 后字段全是零值，Encode 出来是 <code>{}</code></td><td>导出字段 + <code>`json:"snake_case"`</code> tag</td></tr>
+      <tr><td>500 把内部错误原文吐给客户端</td><td>泄漏路径 / SQL / 依赖版本，前端也看不懂</td><td>日志里存详情，响应里给一句人话</td></tr>
+      <tr><td>不检查 <code>ListenAndServe</code> 返回值</td><td>端口被占，程序"看起来在跑"其实秒退</td><td><code>log.Fatal</code> 或自己处理，别把 error 丢了</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>报文（message）</td><td>一次 HTTP 问答的文本格式：请求行/头/体，状态行/头/体</td></tr>
+      <tr><td>幂等（idempotent）</td><td>同一请求执行一次和执行 N 次，服务器状态一样：GET/PUT/DELETE 幂等，POST 不幂等</td></tr>
+      <tr><td>REST</td><td>URL 表示资源（名词）、方法表示动作（动词）、状态码表达结果的接口风格</td></tr>
+      <tr><td>http.Handler</td><td>只有一个方法 <code>ServeHTTP(ResponseWriter, *Request)</code> 的接口，万物皆处理器</td></tr>
+      <tr><td>ServeMux</td><td>路由器：按"方法 + 路径 pattern"找到 Handler，没匹配上返回 404</td></tr>
+      <tr><td>ResponseWriter</td><td>响应对象的写接口：设头、写状态码、写 body，只能按顺序往前用</td></tr>
+      <tr><td>中间件雏形</td><td>包一层 Handler，在调用真实路由前后加日志/计时，第 2 周正式展开</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w1d5c1">练习 1：<code>curl -v localhost:8080/health</code> 能看到 200 状态行和 <code>Content-Type: application/json</code> 响应头</label></li>
+      <li><label><input type="checkbox" data-key="w1d5c2">练习 2/3：400（坏 JSON、空 name、非数字 id）与 404（不存在的 id）都真实返回过，且响应也是 JSON</label></li>
+      <li><label><input type="checkbox" data-key="w1d5c3">练习 4：GET/POST/PATCH/DELETE 四个端点全通，POST 返回 201 且 <code>cat todos.json</code> 能看到新数据</label></li>
+      <li><label><input type="checkbox" data-key="w1d5c4"><code>chmod 000</code> 制造出过一次 500，并确认服务端日志里有真实原因</label></li>
+      <li><label><input type="checkbox" data-key="w1d5c5">Ctrl+C 重启服务后待办仍在，并能口述为什么——数据在 JSON 文件里，启动时 <code>Load</code> 回内存</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>扩展阅读（补充，不影响今日完成度）</h2>
+    <ul>
+      <li><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP" target="_blank">MDN HTTP 基础</a>：方法、状态码、头的权威清单</li>
+      <li><a href="https://go.dev/blog/routing-enhancements" target="_blank">Go Blog · 1.22 路由增强</a> + <a href="https://pkg.go.dev/net/http#Handler" target="_blank">net/http · Handler</a>：方法 pattern 与 <code>PathValue</code> 的官方说明</li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day4.html"><span class="hint">← 上一天 · W1D4</span>接口、错误处理、包管理</a>
+    <a href="summary.html"><span class="hint">本周收尾 · SUMMARY →</span>第 1 周总结与项目验收</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W1D5 · 本周项目冲刺 ⟩</footer>
+</body>
+</html>

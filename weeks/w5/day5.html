@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W5D5 · 并发模式与本周项目 | Go 全栈修炼手册</title>
+<meta name="description" content="Day 5：worker pool 工作池、golang.org/x/sync/errgroup（WithContext/SetLimit/错误聚合）、本周项目「并发 URL 聚合 API」完整可运行实现：/aggregate + /mock-slow、errgroup+5 秒超时、串行与并发耗时对比、curl 验收。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w5d5">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 5 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day5.html">第 5 周</a> / Day 5</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 5 · DAY 5</span>
+    <span class="chip alt">预计 3 小时</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>并发模式与本周项目：并发 URL 聚合 API</h1>
+  <p>四天零件都齐了：goroutine 启动任务（D1）、channel 传结果（D2）、Mutex 保共享状态（D3）、context 管超时取消（D4）。今天把它们装成两个工业级模式——<b>worker pool</b> 与 <b>errgroup</b>——然后完成本周项目：<b>一个并发 URL 聚合 API</b>。验收标准已锁定为固定模拟延迟：5 个各 sleep 1 秒的端点，<b>串行 ≈ 5s、并发 ≈ 1s</b>，含 8 秒慢端点时 5 秒截停返回部分结果——不受网络波动影响，数字必须漂亮地稳定。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w5d5g1">能默写 worker pool 骨架：任务 channel + N 个固定 worker + for range 取活</label></li>
+      <li><label><input type="checkbox" data-key="w5d5g2">会用 <code>errgroup.WithContext</code>、<code>SetLimit</code>、<code>g.Go</code>、<code>g.Wait</code>，并理解"首个出错自动取消兄弟任务"</label></li>
+      <li><label><input type="checkbox" data-key="w5d5g3">独立跑通聚合 API：并发 5 个 1s 端点总耗时 ≈ 1s；混入 8s 端点 5s 截停、<code>partial:true</code></label></li>
+      <li><label><input type="checkbox" data-key="w5d5g4">用 <code>go run -race</code> 验证项目零竞态</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. worker pool：任务分发流水线</h3>
+    <p>问题：10000 个任务，无脑一人一个 goroutine 会把下游打挂。<b>worker pool：固定开 N 个工人，任务从一条 channel 排队发出去，谁空闲谁领活。</b>并发度被你钉死在 N，channel 满了生产者自动被背压减速（day2 学的）：</p>
+    <pre><span class="code-label">main.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">fmt</span>
+    <span class="t">sync</span>
+    <span class="t">time</span>
+)
+
+<span class="k">func</span> main() {
+    jobs := <span class="k">make</span>(<span class="k">chan</span> <span class="t">int</span>) <span class="c">// 任务队列（无缓冲：领一个发一个）</span>
+    <span class="k">var</span> wg <span class="t">sync</span>.WaitGroup
+
+    <span class="k">for</span> w := <span class="n">1</span>; w &lt;= <span class="n">3</span>; w++ { <span class="c">// 固定 3 个工人</span>
+        wg.Add(<span class="n">1</span>)
+        <span class="k">go</span> <span class="k">func</span>(id <span class="t">int</span>) {
+            <span class="k">defer</span> wg.Done()
+            <span class="k">for</span> j := <span class="k">range</span> jobs { <span class="c">// jobs 被 close 且取空前一直领活</span>
+                fmt.Println(<span class="s">"工人"</span>, id, <span class="s">"处理任务"</span>, j)
+                time.Sleep(<span class="n">200</span> * time.Millisecond)
+            }
+        }(w)
+    }
+
+    <span class="k">go</span> <span class="k">func</span>() { <span class="c">// 生产者：投 10 个任务后关闸</span>
+        <span class="k">for</span> i := <span class="n">1</span>; i &lt;= <span class="n">10</span>; i++ { jobs &lt;- i }
+        close(jobs) <span class="c">// 忘 close：worker 的 for range 永不退出 → 死锁</span>
+    }()
+
+    wg.Wait()
+    fmt.Println(<span class="s">"10 个任务全部消化"</span>)
+}</pre>
+    <div class="callout js"><p>JS 类比：你以前用 <code>p-limit</code> 包一层 <code>await limit.add(() =&gt; fetch(...))</code> 控制并发数——worker pool 就是它的语言原生版，且工人是<b>真并行</b>的，CPU 密集任务也能吃满多核。</p></div>
+
+    <h3>2. errgroup：带超时、带取消、带错误聚合的 WaitGroup</h3>
+    <p><code>golang.org/x/sync/errgroup</code> 是官方扩展库，把本周前四天揉成一个小结构体：</p>
+    <ul>
+      <li><b>≈ WaitGroup</b>：<code>g.Go(func() error)</code> 起任务，<code>g.Wait()</code> 等全部收工；</li>
+      <li><b>错误聚合</b>：<code>Wait()</code> 返回<b>第一个</b>非 nil 错误，不用自己攒 err；</li>
+      <li><b>WithContext</b>：返回的 ctx 在<b>任一任务首次出错时自动取消</b>——失败快跑，兄弟任务立刻停工，不烧无用资源；</li>
+      <li><b>SetLimit(n)</b>：最多同时跑 n 个，天然的 worker pool 限流。</li>
+    </ul>
+    <pre><span class="code-label">main.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">context</span>
+    <span class="t">errors</span>
+    <span class="t">fmt</span>
+    <span class="t">time</span>
+
+    <span class="t">"golang.org/x/sync/errgroup"</span>
+)
+
+<span class="k">func</span> main() {
+    <span class="c">// WithContext：派生可自动取消的 ctx（再叠 5 秒总超时就是完整保险）</span>
+    parent, cancel := context.WithTimeout(context.Background(), <span class="n">5</span>*time.Second)
+    <span class="k">defer</span> cancel()
+    g, ctx := errgroup.WithContext(parent)
+    g.SetLimit(<span class="n">2</span>) <span class="c">// 同时最多 2 个任务在跑</span>
+
+    tasks := []<span class="k">struct</span>{
+        name <span class="t">string</span>
+        cost <span class="t">time</span>.Duration
+        fail <span class="t">bool</span>
+    }{
+        {<span class="s">"查用户"</span>, <span class="n">300</span> * time.Millisecond, <span class="k">false</span>},
+        {<span class="s">"查订单"</span>, <span class="n">500</span> * time.Millisecond, <span class="k">true</span>},  <span class="c">// 故意失败</span>
+        {<span class="s">"查推荐"</span>, <span class="n">900</span> * time.Millisecond, <span class="k">false</span>},
+    }
+    <span class="k">for</span> _, t := <span class="k">range</span> tasks {
+        t := t <span class="c">// Go 1.22+ 可省略，老代码常见防共享写法</span>
+        g.Go(<span class="k">func</span>() <span class="t">error</span> {
+            <span class="k">select</span> {
+            <span class="k">case</span> &lt;-time.After(t.cost):
+                <span class="k">if</span> t.fail {
+                    <span class="k">return</span> errors.New(t.name + <span class="s">" 炸了"</span>)
+                }
+                fmt.Println(t.name, <span class="s">"完成"</span>)
+                <span class="k">return</span> <span class="k">nil</span>
+            <span class="k">case</span> &lt;-ctx.Done(): <span class="c">// 别的任务出错 → g 的 ctx 被取消 → 我提前撤退</span>
+                fmt.Println(t.name, <span class="s">"被取消:"</span>, ctx.Err())
+                <span class="k">return</span> ctx.Err()
+            }
+        })
+    }
+
+    if err := g.Wait(); err != nil {
+        fmt.Println(<span class="s">"聚合结果: 任务组失败 -"</span>, err) <span class="c">// 返回首个错误</span>
+    } <span class="k">else</span> {
+        fmt.Println(<span class="s">"全部成功"</span>)
+    }
+}</pre>
+    <div class="callout warn"><p><b>关键取舍：聚合场景别滥用 WithContext。</b>今天的聚合 API 要的是"部分成功也算成功"，所以每个任务把错误<b>写进自己的结果里、永远 return nil</b>，errgroup 只当"并发调度+等待"用；如果换成"任何一页抓取失败整个报表作废"的场景，才让任务 return error 触发全员取消。两种语义都要会，选型看业务。</p></div>
+
+    <h3>3. 本周项目：并发 URL 聚合 API —— 完整实现</h3>
+    <p>新建目录 <code>url-aggregator</code>，<code>go mod init url-aggregator</code> 后执行 <code>go get golang.org/x/sync/errgroup</code>。全部代码就一个 <code>main.go</code>，直接复制可运行：</p>
+    <pre><span class="code-label">main.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">context</span>
+    <span class="t">encoding/json</span>
+    <span class="t">fmt</span>
+    <span class="t">log</span>
+    <span class="t">net/http</span>
+    <span class="t">time</span>
+
+    <span class="t">"golang.org/x/sync/errgroup"</span>
+)
+
+<span class="c">// ---------- 数据结构 ----------</span>
+<span class="k">type</span> reqBody <span class="k">struct</span> {
+    URLs []<span class="t">string</span> <span class="k">json</span>:<span class="s">"urls"</span>
+}
+
+<span class="k">type</span> urlResult <span class="k">struct</span> {
+    URL     <span class="t">string</span> <span class="k">json</span>:<span class="s">"url"</span>
+    Status  <span class="t">int</span>    <span class="k">json</span>:<span class="s">"status"</span>
+    Elapsed <span class="t">string</span> <span class="k">json</span>:<span class="s">"elapsed"</span>
+    Error   <span class="t">string</span> <span class="k">json</span>:<span class="s">"error,omitempty"</span>
+}
+
+<span class="k">type</span> aggResponse <span class="k">struct</span> {
+    Mode    <span class="t">string</span>      <span class="k">json</span>:<span class="s">"mode"</span>
+    TotalMS <span class="t">int64</span>       <span class="k">json</span>:<span class="s">"total_ms"</span>
+    Partial <span class="t">bool</span>        <span class="k">json</span>:<span class="s">"partial"</span>
+    Results []urlResult <span class="k">json</span>:<span class="s">"results"</span>
+}
+
+<span class="c">// ---------- 模拟慢端点：固定 sleep，排除网络波动 ----------</span>
+<span class="k">func</span> mockSlow(w <span class="t">http</span>.ResponseWriter, r *<span class="t">http</span>.Request) {
+    d, err := time.ParseDuration(r.URL.Query().Get(<span class="s">"d"</span>))
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        d = <span class="n">1</span> * time.Second
+    }
+    <span class="k">select</span> {
+    <span class="k">case</span> &lt;-time.After(d):
+        fmt.Fprintf(w, <span class="s">"pong after %v"</span>, d)
+    <span class="k">case</span> &lt;-r.Context().Done(): <span class="c">// 聚合器 5s 截停后，这里立刻感知</span>
+        log.Println(<span class="s">"mock-slow 被取消:"</span>, d)
+    }
+}
+
+<span class="c">// ---------- 抓取单个 URL：错误写进结果，绝不 panic ----------</span>
+<span class="k">func</span> fetchOne(ctx <span class="t">context</span>.Context, url <span class="t">string</span>) urlResult {
+    start := time.Now()
+    res := urlResult{URL: url}
+
+    req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, <span class="k">nil</span>)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        res.Error, res.Elapsed = err.Error(), time.Since(start).String()
+        <span class="k">return</span> res
+    }
+    resp, err := http.DefaultClient.Do(req)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        res.Error, res.Elapsed = err.Error(), time.Since(start).String()
+        <span class="k">return</span> res
+    }
+    <span class="k">defer</span> resp.Body.Close()
+    res.Status = resp.StatusCode
+    res.Elapsed = time.Since(start).Round(<span class="n">10</span> * time.Millisecond).String()
+    <span class="k">return</span> res
+}
+
+<span class="c">// ---------- POST /aggregate?mode=serial|concurrent ----------</span>
+<span class="k">func</span> aggregate(w <span class="t">http</span>.ResponseWriter, r *<span class="t">http</span>.Request) {
+    <span class="k">var</span> body reqBody
+    <span class="k">if</span> err := json.NewDecoder(r.Body).Decode(&amp;body); err != <span class="k">nil</span> || <span class="k">len</span>(body.URLs) == <span class="n">0</span> {
+        http.Error(w, <span class="s">`{"error":"需要 JSON: {\"urls\": [...]}"}`</span>, http.StatusBadRequest)
+        <span class="k">return</span>
+    }
+
+    ctx, cancel := context.WithTimeout(r.Context(), <span class="n">5</span>*time.Second) <span class="c">// 本周验收：5 秒总预算</span>
+    <span class="k">defer</span> cancel()
+    start := time.Now()
+    results := <span class="k">make</span>([]urlResult, <span class="k">len</span>(body.URLs)) <span class="c">// 预分配按下标写：不重叠，免锁（D2 练习 2 结论）</span>
+
+    mode := r.URL.Query().Get(<span class="s">"mode"</span>)
+    <span class="k">if</span> mode == <span class="s">"serial"</span> {
+        <span class="k">for</span> i, u := <span class="k">range</span> body.URLs {
+            results[i] = fetchOne(ctx, u) <span class="c">// 串行：一个跑完才轮到下一个</span>
+        }
+    } <span class="k">else</span> {
+        g, _ := errgroup.WithContext(ctx)
+        g.SetLimit(<span class="n">5</span>) <span class="c">// 并发上限 5，防止 URL 列表过长打挂下游</span>
+        <span class="k">for</span> i, u := <span class="k">range</span> body.URLs {
+            i, u := i, u
+            g.Go(<span class="k">func</span>() <span class="t">error</span> {
+                results[i] = fetchOne(ctx, u)
+                <span class="k">return</span> <span class="k">nil</span> <span class="c">// 聚合语义：错误进 results，不触发全员取消</span>
+            })
+        }
+        _ = g.Wait()
+    }
+
+    partial := ctx.Err() != <span class="k">nil</span>
+    <span class="k">for</span> _, res := <span class="k">range</span> results {
+        <span class="k">if</span> res.Error != <span class="s">""</span> {
+            partial = <span class="k">true</span>
+        }
+    }
+    <span class="k">if</span> partial { <span class="c">// 超时提示：让调用方知道结果不完整</span>
+        <span class="k">for</span> i := <span class="k">range</span> results {
+            <span class="k">if</span> results[i].Error == <span class="s">""</span> &amp;&amp; results[i].Status == <span class="n">0</span> {
+                results[i].Error = <span class="s">"context deadline exceeded（5s 内未完成）"</span>
+            }
+        }
+    }
+
+    w.Header().Set(<span class="s">"Content-Type"</span>, <span class="s">"application/json; charset=utf-8"</span>)
+    json.NewEncoder(w).Encode(aggResponse{
+        Mode:    <span class="k">map</span>[<span class="t">bool</span>]<span class="t">string</span>{<span class="k">true</span>: <span class="s">"serial"</span>, <span class="k">false</span>: <span class="s">"concurrent"</span>}[mode == <span class="s">"serial"</span>],
+        TotalMS: time.Since(start).Milliseconds(),
+        Partial: partial,
+        Results: results,
+    })
+}
+
+<span class="k">func</span> main() {
+    mux := http.NewServeMux()
+    mux.HandleFunc(<span class="s">"/mock-slow"</span>, mockSlow)
+    mux.HandleFunc(<span class="s">"/aggregate"</span>, aggregate)
+    log.Println(<span class="s">"listening :8080"</span>)
+    log.Fatal(http.ListenAndServe(<span class="s">":8080"</span>, mux))
+}</pre>
+    <div class="callout note"><p>读代码时对照本周日历：<code>errgroup</code>=今天的 D5；预分配按下标写=D2 练习 2；<code>fetchOne</code> 检查 <code>ctx</code>=D4；<code>mockSlow</code> 的 <code>r.Context().Done()</code>=D4 练习 2。这就是"周中零件周末装配"的本手册节奏。</p></div>
+
+    <h3>4. 计时与验收姿势</h3>
+    <pre><span class="code-label">shell</span><span class="c"># 终端 1：启动服务</span>
+$ go run -race .
+
+<span class="c"># 终端 2：5 个固定 1 秒端点 —— 并发模式，总耗时应 ≈ 1s</span>
+$ time curl -s localhost:8080/aggregate -d <span class="s">'{"urls":[
+    "http://localhost:8080/mock-slow?d=1s",
+    "http://localhost:8080/mock-slow?d=1s",
+    "http://localhost:8080/mock-slow?d=1s",
+    "http://localhost:8080/mock-slow?d=1s",
+    "http://localhost:8080/mock-slow?d=1s"]}'</span> | python3 -m json.tool | tail -<span class="n">8</span>
+
+<span class="c"># 串行模式 —— 总耗时应 ≈ 5s（同一请求加 ?mode=serial）</span>
+<span class="c"># 超时场景 —— 混入一个 8s 端点：约 5s 返回，partial:true，error 提示 deadline</span></pre>
+    <p>响应示例（超时场景）：</p>
+    <pre><span class="code-label">json</span>{
+  "mode": "concurrent",
+  "total_ms": 5003,
+  "partial": true,
+  "results": [
+    { "url": ".../mock-slow?d=1s", "status": 200, "elapsed": "1.01s" },
+    { "url": ".../mock-slow?d=8s", "status": 0, "elapsed": "5.00s",
+      "error": "Get \"...d=8s\": context deadline exceeded" }
+  ]
+}</pre>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：手搓 worker pool（必做，25 分钟）</div>
+      <p>照讲义第 1 节默写 worker pool：10 个任务、3 个工人。完成后改造：① 把 <code>close(jobs)</code> 删掉，观察死锁报错原文；② 工人数改成 10，对比 200ms/任务的总耗时变化（3 人≈0.8s 级 vs 10 人≈0.2s 级），体会儿"并发度是旋钮不是越多越好"。</p>
+      <details><summary>参考答案</summary>
+        <p>讲义第 1 节代码即完整答案。删 close 后约 1 分钟得到 <code>fatal error: all goroutines are asleep - deadlock!</code>（3 个工人在等 jobs，生产者在等被取走，main 在等 wg.Wait）。改 10 工人后 10 个任务同时开跑，总耗时从 ≈800ms 降到 ≈200ms——但注意这是 <b>sleep 模拟 IO</b>，换成 CPU 计算则工人超过核数后不再线性加速。</p>
+      </details>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：errgroup 三种语义对比（25 分钟）</div>
+      <p>基于讲义第 2 节做三组实验：① 原样跑，记录"查推荐被取消"日志与 <code>Wait()</code> 返回的首错；② 把 <code>fail</code> 全改 false，确认"全部成功"；③ 把 <code>g.Go</code> 里改成"错误写进结果、永远 return nil"，确认 WithContext 不再取消任何人——亲手验证"何时 return error、何时吞 error"的选型。</p>
+      <details><summary>参考答案要点</summary>
+        <p>①：500ms"查订单"炸，900ms 的"查推荐"在 500ms 时刻被取消（提前 400ms 收工），<code>g.Wait()</code> 返回 <code>查订单 炸了</code>。③：三个任务各自完成，<code>Wait()</code> 返回 nil，错误信息都在你自己收集的结构里。今天项目用的是 ③ 的语义（聚合要部分结果），批处理结算类场景才用 ①（一错全撤）。</p>
+      </details>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：装配本周项目并记录三组数字（必做，60 分钟）</div>
+      <p>照讲义第 3 节建好 <code>url-aggregator</code> 并跑通三组验收，把数字写进笔记：① 5 个 d=1s <b>并发</b>（期望 total_ms 约 1000–1200）；② 同请求 <code>?mode=serial</code>（期望约 5000）；③ 把其中一个换成 <code>d=8s</code>（期望约 5000 截停、partial:true、8s 项带 error，且终端 1 出现"mock-slow 被取消"日志）。全程用 <code>go run -race .</code> 启动，确认零 WARNING。</p>
+      <details><summary>排错提示</summary>
+        <ul>
+          <li>并发模式耗时接近 5s → 多半把 <code>g.Go(func() error {...})</code> 误写成末尾带调用的 <code>g.Go(func() error {...}())</code>：后者会<b>先同步跑完</b>再把返回值交给 g.Go，等于串行。</li>
+          <li>超时场景 8s 项 error 为空 → 确认 ctx 传进了 <code>http.NewRequestWithContext</code>（D4 头号坑）。</li>
+          <li><code>-race</code> 报 results 切片竞态 → 检查是否有人绕过下标去 <code>append</code>。</li>
+        </ul>
+      </details>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：给聚合器加一个"健康检查+计数"（选做，20 分钟）</div>
+      <p>加全局 <code>atomic.Int64</code> 记录 aggregate 被调次数，新增 <code>GET /stats</code> 返回 <code>{"calls": N}</code>；再想想：<code>calls</code> 若改用普通 int++，-race 会说什么？（D3 练习 1 的镜像题）</p>
+      <details><summary>参考答案</summary>
+        <p><code>var calls atomic.Int64</code>（Go 1.19+ 方法式 API），aggregate 开头 <code>calls.Add(1)</code>，/stats 里 <code>fmt.Fprintf(w, "{&quot;calls&quot;: %d}", calls.Load())</code>。改成裸 int++ 后并发请求 aggregate 时 -race 立刻报 WARNING: DATA RACE，两次 Write 指向同一 <code>calls</code> 地址——D3 学的报告逐行对应上了。</p>
+      </details>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>ctx 没传到底</td><td>5 秒超时形同虚设：handler 到点了，<code>http.Get</code> 裸调用还在傻等 8 秒，接口 8 秒后才返回</td><td>抓取必须走 <code>http.NewRequestWithContext(ctx, ...)</code>；GORM 用 <code>db.WithContext(ctx)</code>。超时不生效先全仓搜裸 <code>http.Get</code></td></tr>
+      <tr><td>聚合场景误用 errgroup 首错取消</td><td>一个 URL 失败，其余结果全变 <code>context canceled</code>，partial 响应里一半是取消噪音</td><td>聚合语义任务 <code>return nil</code>、错误进结果字段；只有"一错全撤"的业务才让 error 上抛</td></tr>
+      <tr><td>忘 close 任务 channel</td><td>worker 的 <code>for range</code> 永不结束，wg.Wait 死等 → 全局死锁 fatal error</td><td>生产者投完必关闸；多生产者用 WaitGroup+看守 goroutine 统一关（D2 练习 1）</td></tr>
+      <tr><td>并发结果用 append 不加锁</td><td>结果偶发缺条、错乱，-race 高亮 append 行</td><td>预分配 <code>make([]T, n)</code> 按下标写（互不重叠免锁），或老老实实 Mutex</td></tr>
+      <tr><td>worker 数拍脑袋</td><td>开 5000 并发打下游，对面连接池爆掉、超时雪崩，比串行还慢</td><td><code>SetLimit</code>/工人数按下游承受力设（常见 4–32），并配重试与熔断意识</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>worker pool</td><td>固定数量工人从任务 channel 领活的模式，并发度可控、自带背压</td></tr>
+      <tr><td>errgroup.Group</td><td>会收集 error 的 WaitGroup：Go/Wait/SetLimit/WithContext 四板斧</td></tr>
+      <tr><td>失败快跑（fail fast）</td><td>任一子任务失败立即取消全组，把资源留给值得的活</td></tr>
+      <tr><td>部分结果（partial）</td><td>超时/失败时把已完成部分+缺失说明一起返回，而不是整个请求报废</td></tr>
+      <tr><td>固定模拟延迟</td><td>验收用 /mock-slow?d=1s 的 sleep 代替真实外网，耗时数字 5s/1s 稳定可复现</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w5d5c1">练习 1 完成：worker pool 默写跑通，见过删 close 的死锁报告</label></li>
+      <li><label><input type="checkbox" data-key="w5d5c2">练习 2 完成：能一句话说清"何时 return error（全员取消）、何时吞进结果（部分成功）"</label></li>
+      <li><label><input type="checkbox" data-key="w5d5c3">练习 3 完成：三组数字入档——并发 ≈1s、串行 ≈5s、混 8s 端点 5s 截停 partial:true</label></li>
+      <li><label><input type="checkbox" data-key="w5d5c4"><code>go run -race .</code> 全程零 WARNING</label></li>
+      <li><label><input type="checkbox" data-key="w5d5c5">项目已 <code>git init</code> 提交并写好 README（接口说明+三组耗时数字）</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day4.html"><span class="hint">上一天 · W5D4 ←</span>context 取消与超时</a>
+    <a href="summary.html"><span class="hint">下一站 · W5 →</span>本周总结与验收</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W5D5 · 明天见 ⟩</footer>
+</body>
+</html>

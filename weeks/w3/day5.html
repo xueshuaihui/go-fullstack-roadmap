@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W3D5 · 事务、连接池、软删除 | Go 全栈修炼手册</title>
+<meta name="description" content="Day 5：GORM 的 db.Transaction 闭包回滚语义（对照 Promise 链的补偿操作）、出错自动 Rollback、连接池 SetMaxOpenConns/SetMaxIdleConns/SetConnMaxLifetime 参数怎么定、gorm.DeletedAt 软删除与 Unscoped 查询。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w3d5">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 3 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 3 周</a> / Day 5</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 3 · DAY 5</span>
+    <span class="chip alt">预计 3 小时</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>事务、连接池、软删除</h1>
+  <p>本周最后一天，把三件「上线前必须懂」的事补上：<b>事务</b>保证多步写入要么全成要么全废；<b>连接池</b>决定你的服务在并发下是稳还是崩；<b>软删除</b>让数据可以「消失但不丢」。今天的练习会要求你<b>故意制造一次失败</b>，亲眼看数据库回滚。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w3d5g1">能解释 <code>db.Transaction(func(tx *gorm.DB) error)</code> 的三种结局：返回 nil 提交、返回 error 回滚、panic 回滚后重抛</label></li>
+      <li><label><input type="checkbox" data-key="w3d5g2">把「创建文章 + 挂标签」写进同一事务，并故意让它失败，验证 <code>articles</code> 表里没留下脏数据</label></li>
+      <li><label><input type="checkbox" data-key="w3d5g3">会用 <code>db.DB()</code> 拿到 <code>*sql.DB</code> 并设置 <code>SetMaxOpenConns/SetMaxIdleConns/SetConnMaxLifetime</code>，能说清每个参数调大调小的后果</label></li>
+      <li><label><input type="checkbox" data-key="w3d5g4">掌握 <code>gorm.DeletedAt</code> 的自动过滤行为、<code>Unscoped()</code> 的两种用法，以及软删除与唯一索引的冲突怎么解</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>课前须知：为什么这三件事放在一起讲</h2>
+    <div class="callout js"><p>它们都关于<b>「连接」这个稀缺资源</b>。事务会把一条连接独占到你 <code>return nil</code> 为止；连接池决定同时能有几条连接；软删除则让「删数据」变成一次普通的 UPDATE——不需要级联删除大量行，也就不会长事务占着连接。把它们一起理解，你就从「会写 CRUD」升级到「会写服务端」。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 事务是什么：全成或全废</h3>
+    <p>没有事务时，一个「创建文章 + 关联 3 个标签」的接口由 2 条以上 SQL 组成。如果第 2 步挂了（标签唯一索引冲突、连接断了、进程被 kill），你会看到<b>文章存在但没有标签</b>的脏数据——这类残留数据是最难查的线上问题之一。</p>
+    <pre><span class="code-label">无事务 vs 有事务</span><span class="c">// ❌ 裸写：第二步失败，第一步不会撤销</span>
+db.Create(&amp;article)                        <span class="c">// 成功 → id=42 落库</span>
+db.Model(&amp;article).Association(<span class="s">"Tags"</span>).Replace(badTags) <span class="c">// 失败</span>
+
+<span class="c">// ✅ 事务：两步要么都留痕，要么都不留</span>
+err := db.Transaction(<span class="k">func</span>(tx *gorm.DB) <span class="t">error</span> {
+    <span class="k">if</span> err := tx.Create(&amp;article).Error; err != <span class="k">nil</span> {
+        <span class="k">return</span> err            <span class="c">// ← 返回 error：自动 ROLLBACK，文章也不会留下</span>
+    }
+    <span class="k">if</span> err := tx.Model(&amp;article).Association(<span class="s">"Tags"</span>).Replace(tags); err != <span class="k">nil</span> {
+        <span class="k">return</span> err
+    }
+    <span class="k">return</span> <span class="k">nil</span>                <span class="c">// ← 返回 nil：自动 COMMIT</span>
+})</pre>
+    <div class="callout js"><p>类比你在 JS 里写过多步副作用的补偿逻辑：<code>try { await stepA(); await stepB(); } catch (e) { await undoA(); throw e }</code>。<b>事务就是数据库帮你写好了那个 catch</b>——你只管把「失败就 return err」写清楚，ROLLBACK 由数据库执行，不存在「补偿失败」或忘记补偿。而且它比手写补偿更强：undoA 只能撤销 A 的可回退部分，事务能撤销任意多条写入。</p></div>
+    <table>
+      <tr><th>闭包结局</th><th>GORM 行为</th><th>Transaction 的返回值</th></tr>
+      <tr><td><code>return nil</code></td><td>COMMIT</td><td><code>nil</code></td></tr>
+      <tr><td><code>return err</code></td><td>ROLLBACK</td><td>就是你返回的那个 err（会原样传给你）</td></tr>
+      <tr><td>闭包内 <code>panic</code></td><td>先 ROLLBACK，再<b>把 panic 重抛出去</b></td><td>不会返回，panic 继续向上传（Gin 的 Recovery 中间件会兜住）</td></tr>
+    </table>
+    <div class="callout warn"><p>三条铁律：① 闭包里<b>只能用 <code>tx</code></b>，写成 <code>db.Create(...)</code> 就跳出事务了（这是本周最容易犯且最难发现的 bug）；② 事务里<b>不要有网络调用、不要 <code>time.Sleep</code></b>，连接被独占期间别人拿不到；③ 嵌套调用 <code>tx.Transaction(...)</code> GORM 会用 <b>savepoint</b>，内层回滚不影响外层，但别把逻辑绕复杂。</p></div>
+
+    <h3>2. 事务跨层：把 tx 当参数传下去</h3>
+    <p>真实项目里「创建文章」还要写「操作日志」「更新用户文章数」，它们分布在多个 repository。标准做法是让 repository 方法接收一个 <code>*gorm.DB</code>，谁开事务谁负责：</p>
+    <pre><span class="code-label">repository / service 协作</span><span class="c">// repository：不自己开事务，用传进来的 handle</span>
+<span class="k">func</span> (r *articleRepo) CreateWith(ctx <span class="t">context.Context</span>, tx *gorm.DB, a *model.Article) <span class="t">error</span> {
+    <span class="k">return</span> tx.WithContext(ctx).Create(a).Error       <span class="c">// WithContext 让请求取消能传导到 SQL</span>
+}
+
+<span class="k">func</span> (r *statRepo) IncArticleCount(tx *gorm.DB, userID <span class="t">uint</span>) <span class="t">error</span> {
+    <span class="c">// 前提：User 模型上有一个冗余计数字段 ArticleCount int（gorm:"not null;default:0"）</span>
+    <span class="k">return</span> tx.Model(&amp;model.User{}).Where(<span class="s">"id = ?"</span>, userID).
+        UpdateColumn(<span class="s">"article_count"</span>, gorm.Expr(<span class="s">"article_count + ?"</span>, <span class="n">1</span>)).Error <span class="c">// DB 端自增，避免读改写丢数</span>
+}
+
+<span class="c">// service：业务边界 = 事务边界</span>
+<span class="k">func</span> (s *articleService) Publish(ctx <span class="t">context.Context</span>, in dto.CreateArticleReq) <span class="t">error</span> {
+    a := &amp;model.Article{Title: in.Title, Content: in.Content, UserID: in.UserID}
+    <span class="k">return</span> s.db.Transaction(<span class="k">func</span>(tx *gorm.DB) <span class="t">error</span> {
+        <span class="k">if</span> err := s.articles.CreateWith(ctx, tx, a); err != <span class="k">nil</span> {
+            <span class="k">return</span> err
+        }
+        tags := s.tags.FindOrCreateMany(tx, in.Tags)
+        <span class="k">if</span> err := tx.Model(a).Association(<span class="s">"Tags"</span>).Replace(tags); err != <span class="k">nil</span> {
+            <span class="k">return</span> err
+        }
+        <span class="k">return</span> s.stats.IncArticleCount(tx, in.UserID)
+    })
+}</pre>
+    <div class="callout note"><p>顺带一个 GORM 冷知识：<b><code>Create</code> 单条记录（含关联）默认就已经包在一个事务里</b>，日志里会看到 <code>BEGIN;...COMMIT;</code>。如果你的写入路径单一、不需要这些额外 BEGIN/COMMIT，可以在配置里 <code>SkipDefaultTransaction: true</code> 关掉；<b>但学习阶段建议保持默认 false（即不跳过）</b>，多一层保护。</p></div>
+
+    <h3>3. 手工事务：Begin / Commit / Rollback</h3>
+    <pre><span class="code-label">等价写法</span>tx := db.Begin()
+<span class="k">if</span> tx.Error != <span class="k">nil</span> {
+    <span class="k">return</span> tx.Error
+}
+
+<span class="c">// 用一个内联函数把多步收成一个 error，出口只剩两条路径</span>
+err := <span class="k">func</span>() <span class="t">error</span> {
+    <span class="k">if</span> err := tx.Create(&amp;article).Error; err != <span class="k">nil</span> {
+        <span class="k">return</span> err
+    }
+    <span class="k">if</span> err := tx.Model(&amp;article).Association(<span class="s">"Tags"</span>).Replace(tags).Error; err != <span class="k">nil</span> {
+        <span class="k">return</span> err
+    }
+    <span class="k">return</span> <span class="k">nil</span>
+}()
+
+<span class="k">if</span> err != <span class="k">nil</span> {
+    tx.Rollback()      <span class="c">// ← 每条失败路径都必须显式回滚，这就是闭包版存在的理由</span>
+    <span class="k">return</span> err
+}
+<span class="k">return</span> tx.Commit().Error</pre>
+    <div class="callout tip"><p>能用 <code>db.Transaction</code> 就用它——闭包版本不会忘记 Rollback（每个 return 路径都自动处理）。手工 <code>Begin</code> 只在你需要「事务生命周期比一个函数更长」的少见场景使用，且必须保证每条出口都 Commit 或 Rollback，否则<b>连接泄漏，池子被耗尽</b>。</p></div>
+
+    <h3>4. 连接池：三个参数的调法</h3>
+    <p><code>gorm.Open</code> 返回的 <code>db</code> 内部持有一个 <code>*sql.DB</code>（<b>不是连接，是连接池</b>），Go 标准库 <code>database/sql</code> 自带池化。想调参数就取出来：</p>
+    <pre><span class="code-label">internal/repository/db.go</span><span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="t">fmt</span>
+    <span class="t">time</span>
+
+    <span class="t">gorm.io/driver/mysql</span>
+    <span class="t">gorm.io/gorm</span>
+    <span class="t">gorm.io/gorm/logger</span>
+)
+
+<span class="k">func</span> New(dsn <span class="t">string</span>) (*gorm.DB, <span class="t">error</span>) {
+    db, err := gorm.Open(mysql.Open(dsn), &amp;gorm.Config{
+        Logger:            logger.Default.LogMode(logger.Warn),
+        BlockGlobalUpdate: <span class="k">true</span>,
+    })
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, fmt.Errorf(<span class="s">"open mysql: %w"</span>, err)
+    }
+
+    sqlDB, err := db.DB()          <span class="c">// 拿到标准库的连接池</span>
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, err
+    }
+    sqlDB.SetMaxOpenConns(<span class="n">25</span>)      <span class="c">// 池内同时最多 25 条连接（含在用+空闲）；0 = 不限</span>
+    sqlDB.SetMaxIdleConns(<span class="n">10</span>)      <span class="c">// 空闲时保留 10 条，避免高峰期反复握手</span>
+    sqlDB.SetConnMaxLifetime(<span class="n">10</span> * time.Minute) <span class="c">// 活够 10 分钟就换新，防被中间设备悄悄断</span>
+    sqlDB.SetConnMaxIdleTime(<span class="n">3</span> * time.Minute)  <span class="c">// 闲 3 分钟就关，夜里不占 MySQL 名额</span>
+
+    <span class="k">if</span> err := sqlDB.Ping(); err != <span class="k">nil</span> {   <span class="c">// 启动即探活，别等第一个请求才发现连不上</span>
+        <span class="k">return</span> <span class="k">nil</span>, err
+    }
+    <span class="k">return</span> db, <span class="k">nil</span>
+}</pre>
+    <table>
+      <tr><th>参数</th><th>调太小</th><th>调太大</th><th>怎么定</th></tr>
+      <tr><td><code>SetMaxOpenConns</code></td><td>并发请求排队等连接，接口 P99 飙升（但不会崩）</td><td>MySQL 侧 <code>max_connections</code>（默认 151）被打满，报 <code>Error 1040: Too many connections</code>，别人也连不上</td><td>单个 Go 进程取 <b>10~25</b> 起步；算法：<code>实例数 × MaxOpen ≤ max_connections × 0.8</code></td></tr>
+      <tr><td><code>SetMaxIdleConns</code></td><td>波峰时反复建连（TCP + MySQL 认证握手，几毫秒到几十毫秒）</td><td>白占 MySQL 内存（每连接约几百 KB~几 MB）</td><td>约为 MaxOpen 的 <b>1/3~1/2</b>；流量平稳时可与 MaxOpen 相等</td></tr>
+      <tr><td><code>SetConnMaxLifetime</code></td><td>频繁重建连接，浪费握手</td><td>比 MySQL <code>wait_timeout</code>（默认 28800s）或云 LB 空闲超时（常为 60~3600s）还长时，会拿到已被对端关掉的连接 → <code>invalid connection</code> / <code>driver: bad connection</code></td><td><b>取「所有中间层超时里最小的那个」再除以 2</b>，本地/学习项目 <code>10 * time.Minute</code> 很稳</td></tr>
+    </table>
+    <div class="callout js"><p>对照 Node：<code>mysql2</code> 的 <code>connectionLimit: 10</code> 就是 <code>SetMaxOpenConns</code>。区别在于 Go 的 <code>db</code> 变量<b>本身就是池</b>，全进程共用一个 <code>*gorm.DB</code> 就对了——不要每次请求 <code>gorm.Open</code> 一次，那等于每次握手新建连接，性能立刻塌方。</p></div>
+
+    <h3>5. 软删除：gorm.DeletedAt 与 Unscoped</h3>
+    <p>只要模型里有 <code>DeletedAt gorm.DeletedAt</code> 字段（内嵌 <code>gorm.Model</code> 已含），<code>Delete</code> 就自动变成 UPDATE：</p>
+    <pre><span class="code-label">模型与行为</span><span class="k">type</span> Article <span class="k">struct</span> {
+    ID        <span class="t">uint</span>           <span class="s">`gorm:"primaryKey" json:"id"`</span>
+    Title     <span class="t">string</span>         <span class="s">`gorm:"type:varchar(128);not null;index" json:"title"`</span>
+    UserID    <span class="t">uint</span>           <span class="s">`gorm:"not null;index" json:"user_id"`</span>
+    CreatedAt <span class="t">time.Time</span>      <span class="s">`json:"created_at"`</span>
+    UpdatedAt <span class="t">time.Time</span>      <span class="s">`json:"updated_at"`</span>
+    DeletedAt gorm.DeletedAt <span class="s">`gorm:"index" json:"-"`</span>   <span class="c">// ← 软删除开关</span>
+}</pre>
+    <pre><span class="code-label">shell / Go 对照</span><span class="c">// ① 删除：不是 DELETE，而是打上时间戳</span>
+db.Delete(&amp;model.Article{}, <span class="n">1</span>)
+<span class="c">// UPDATE articles SET deleted_at='2026-09-23 10:00:00' WHERE articles.id = 1</span>
+
+<span class="c">// ② 所有普通查询自动加 WHERE deleted_at IS NULL（First/Find/Count/Preload 全都加）</span>
+db.Find(&amp;list)                 <span class="c">// SELECT * FROM articles WHERE articles.deleted_at IS NULL</span>
+db.Model(&amp;model.Article{}).Count(&amp;total)  <span class="c">// total 不含已软删的行 ✅ 统计口径天然正确</span>
+
+<span class="c">// ③ Unscoped：绕过软删除过滤</span>
+db.Unscoped().First(&amp;a, <span class="n">1</span>)     <span class="c">// 能读到刚「删掉」的那篇（含 deleted_at 值）</span>
+db.Unscoped().Find(&amp;all)       <span class="c">// 管理后台「回收站」列全部</span>
+db.Unscoped().Delete(&amp;model.Article{}, <span class="n">1</span>) <span class="c">// 真·DELETE FROM articles WHERE id = 1</span>
+
+<span class="c">// ④ 只列已删除的</span>
+db.Unscoped().Where(<span class="s">"deleted_at IS NOT NULL"</span>).Find(&amp;trash)</pre>
+    <div class="callout warn"><p>软删除的四个代价要知道：① <b>唯一索引仍占位</b>——软删了 <code>a@x.com</code> 的用户后，注册同名邮箱会撞 <code>Error 1062</code>；解法是把唯一索引改成 <code>(email, deleted_at)</code> 联合，或删除时把邮箱改名（<code>deleted_1_a@x.com</code>），或用 <code>is_deleted</code> 标记列而非 NULL。<br>② <b>Preload 的关联也会被过滤</b>，作者被软删后文章的 <code>User</code> 字段是零值，展示要留 <code>user_name</code> 冗余字段。<br>③ <b>AutoMigrate 不会因为删掉 <code>DeletedAt</code> 字段就恢复硬删除</b>——列还在表里，得手工 DROP。<br>④ 第 3 周说的「删除用户不会级联删文章」在软删除下同样成立，业务上要么在事务里一起软删，要么允许「孤儿文章」并在 UI 显示「已注销用户」。</p></div>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：事务 + 故意失败，观察回滚（45 分钟 · 本周最重要的练习）</div>
+      <p>实现 <code>POST /articles</code>（带 <code>tags: ["go","docker"]</code>），把「建文章 + 挂标签」放进同一事务；再加一个开关 <code>?fail=1</code>，让事务在第二步之后返回一个错误。</p>
+      <pre><span class="code-label">internal/handler/article.go</span><span class="k">func</span> (h *ArticleHandler) Create(c *gin.Context) {
+    <span class="k">var</span> req dto.CreateArticleReq
+    <span class="k">if</span> err := c.ShouldBindJSON(&amp;req); err != <span class="k">nil</span> {
+        c.JSON(<span class="n">400</span>, gin.H{<span class="s">"code"</span>: <span class="n">1004</span>, <span class="s">"message"</span>: <span class="s">"参数错误: "</span> + err.Error()})
+        <span class="k">return</span>
+    }
+
+    <span class="k">var</span> a model.Article
+    <span class="k">var</span> relTags []model.Tag
+    err := h.db.Transaction(<span class="k">func</span>(tx *gorm.DB) <span class="t">error</span> {
+        a = model.Article{Title: req.Title, Content: req.Content, UserID: req.UserID}
+        <span class="k">if</span> err := tx.Create(&amp;a).Error; err != <span class="k">nil</span> {
+            <span class="k">return</span> err
+        }
+        <span class="k">for</span> _, name := <span class="k">range</span> req.Tags {
+            <span class="k">var</span> tag model.Tag
+            <span class="k">if</span> err := tx.Where(<span class="t">map</span>[<span class="t">string</span>]<span class="t">any</span>{<span class="s">"name"</span>: name}).FirstOrCreate(&amp;tag).Error; err != <span class="k">nil</span> {
+                <span class="k">return</span> fmt.Errorf(<span class="s">"创建标签 %s 失败: %w"</span>, name, err)
+            }
+            relTags = append(relTags, tag)
+        }
+        <span class="k">if</span> err := tx.Model(&amp;a).Association(<span class="s">"Tags"</span>).Replace(relTags); err != <span class="k">nil</span> {
+            <span class="k">return</span> err
+        }
+        <span class="k">if</span> c.Query(<span class="s">"fail"</span>) == <span class="s">"1"</span> {
+            <span class="k">return</span> errors.New(<span class="s">"故意失败：观察回滚"</span>)   <span class="c">// ← 触发 ROLLBACK</span>
+        }
+        <span class="k">return</span> <span class="k">nil</span>
+    })
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        c.JSON(<span class="n">500</span>, gin.H{<span class="s">"code"</span>: <span class="n">5001</span>, <span class="s">"message"</span>: <span class="s">"创建失败: "</span> + err.Error()})
+        <span class="k">return</span>
+    }
+    c.JSON(<span class="n">201</span>, gin.H{<span class="s">"code"</span>: <span class="n">0</span>, <span class="s">"message"</span>: <span class="s">"success"</span>, <span class="s">"data"</span>: a})
+}</pre>
+      <pre><span class="code-label">验收 shell</span><span class="c"># 正常创建</span>
+$ curl -s -X POST localhost:8080/articles -H <span class="s">"Content-Type: application/json"</span> \
+    -d <span class="s">'{"title":"事务实验","user_id":1,"tags":["go","docker"]}'</span>
+{"code":0,"message":"success","data":{"id":26,...}}
+
+<span class="c"># 故意失败</span>
+$ curl -s -X POST <span class="s">"localhost:8080/articles?fail=1"</span> -H <span class="s">"Content-Type: application/json"</span> \
+    -d <span class="s">'{"title":"我不该存在","user_id":1,"tags":["go","docker"]}'</span>
+{"code":5001,"message":"创建失败: 故意失败：观察回滚"}
+
+<span class="c"># 关键验证：文章没留下，标签也没多</span>
+$ docker exec -it golearn-mysql mysql -ugolearn -pgolearn123 --database=study_plan -e \
+  <span class="s">"SELECT COUNT(*) FROM articles WHERE title='我不该存在'; SELECT COUNT(*) FROM tags;"</span>
+0
+2</pre>
+      <p><b>参考答案</b>：日志里能看到 <code>BEGIN</code> → 若干 INSERT → <code>ROLLBACK</code>；<code>articles</code> 表里查不到那篇（自增 ID 会跳号，这是正常的——InnoDB 不回滚 AUTO_INCREMENT）。标签数不变，因为 <code>FirstOrCreate</code> 建的标签也在同一事务里被撤销。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：连接池参数实验（30 分钟）</div>
+      <p>把 <code>SetMaxOpenConns(1)</code> 打开，用 <code>for i in $(seq 1 10); do curl -s "localhost:8080/articles?size=20" -o /dev/null -w "%{time_total}\n" &amp;; done; wait</code> 并发打 10 个请求；然后改回 <code>25</code> 再打一次，比较总耗时。再打印 <code>sqlDB.Stats()</code>。</p>
+      <pre><span class="code-label">观察池状态</span>st := sqlDB.Stats()
+fmt.Printf(<span class="s">"open=%d inuse=%d idle=%d 等待中=%d 累计等待时长=%v\n"</span>,
+    st.OpenConnections, st.InUse, st.Idle, st.WaitCount, st.WaitDuration)</pre>
+      <p><b>参考答案</b>：<code>maxOpen=1</code> 时 10 个请求变成串行，总耗时 ≈ 单请求 × 10，<code>WaitCount</code> 明显 &gt; 0；<code>maxOpen=25</code> 时总耗时接近单请求。<b>这告诉你：池子大小就是吞吐上限之一</b>，也和第 5 周的并发直接相关。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：软删除三件套（35 分钟）</div>
+      <p>实现 ① <code>DELETE /articles/:id</code>（软删）；② <code>GET /articles/:id</code> 删后返回 404；③ <code>GET /admin/articles/trash</code> 用 <code>Unscoped().Where("deleted_at IS NOT NULL")</code> 列出回收站；④ 再补一个永久删除（<code>Unscoped().Delete</code>）。</p>
+      <pre><span class="code-label">internal/repository/article.go</span><span class="k">func</span> (r *articleRepo) SoftDelete(id <span class="t">uint</span>) <span class="t">error</span> {
+    res := r.db.Delete(&amp;model.Article{}, id)   <span class="c">// 有 DeletedAt → UPDATE deleted_at</span>
+    <span class="k">if</span> res.Error != <span class="k">nil</span> { <span class="k">return</span> res.Error }
+    <span class="k">if</span> res.RowsAffected == <span class="n">0</span> { <span class="k">return</span> ErrArticleNotFound }
+    <span class="k">return</span> <span class="k">nil</span>
+}
+
+<span class="k">func</span> (r *articleRepo) Trash() ([]model.Article, <span class="t">error</span>) {
+    <span class="k">var</span> list []model.Article
+    err := r.db.Unscoped().Where(<span class="s">"deleted_at IS NOT NULL"</span>).Order(<span class="s">"deleted_at desc"</span>).Find(&amp;list).Error
+    <span class="k">return</span> list, err
+}</pre>
+      <p><b>参考答案</b>：软删后 <code>SELECT COUNT(*) FROM articles</code> 行数<b>不变</b>（这就是证据），但 <code>GET /articles</code> 少了一条、<code>total</code> 也少 1；回收站里能看到它，且 <code>deleted_at</code> 有值。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：设计题（20 分钟，写进笔记）</div>
+      <p>用户软删后，为什么再用同一邮箱注册会失败？给出三种解法并说明取舍。</p>
+      <p><b>参考答案</b>：① 联合唯一索引 <code>uniqueIndex:idx_email_del</code> 同时挂在 <code>Email</code> 和 <code>DeletedAt</code> 上——NULL 在 MySQL 唯一索引里不参与去重，所以软删行不冲突；缺点：两条同邮箱的<b>已软删</b>记录仍会冲突（MySQL 8 可用函数索引绕）。② 删除时改写业务键（<code>email = fmt.Sprintf("%s#%d.deleted", email, id)</code>）——实现最简单，缺点：真实邮箱被污染，导出统计要小心。③ 不用 <code>deleted_at</code>，改用 <code>status</code> 字段（active/disabled）+ 部分索引思路——最贴近业务（「注销」本来就不是「删除」），但要自己在 base 查询里加条件。学习项目选 ①，生产项目多数选 ③。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>事务闭包里用 <code>db</code> 而不是 <code>tx</code></td><td>回滚了，但那一步的数据还在——因为它在事务外</td><td>闭包内所有写操作只用 <code>tx</code>；把 repository 方法设计成接收 <code>tx</code> 参数</td></tr>
+      <tr><td>忘了 <code>return err</code></td><td>出错却照常 COMMIT，脏数据入库</td><td>每步 <code>if err != nil { return err }</code>，最后一行 <code>return nil</code></td></tr>
+      <tr><td>事务里放外部 HTTP 调用</td><td>接口一慢连接就被长期占用，池子耗尽</td><td>把外部调用挪到事务外，事务只包数据库写入</td></tr>
+      <tr><td>手工 <code>Begin</code> 某条出口没 Rollback</td><td>连接泄漏，一段时间后全线卡死</td><td>优先 <code>db.Transaction</code></td></tr>
+      <tr><td>每次请求都 <code>gorm.Open</code></td><td>连接数暴涨，MySQL 1040 Too many connections</td><td>进程启动时建一个 <code>*gorm.DB</code> 全生命周期复用</td></tr>
+      <tr><td><code>ConnMaxLifetime</code> 比网络层超时还长</td><td>偶发 <code>invalid connection</code> / <code>bad connection</code>，重试即好</td><td>设为最小超时的 1/2；重启容器也能复现该现象</td></tr>
+      <tr><td>以为软删是硬删</td><td>表越来越大、唯一索引被占、磁盘不降</td><td>需要真删时定时任务 <code>Unscoped().Delete</code>；或明确这就是「归档」</td></tr>
+      <tr><td><code>Unscoped().Find</code> 后按 <code>deleted_at IS NULL</code> 手动过滤忘写</td><td>回收站数据混进正常列表</td><td>Unscoped 只在管理员/恢复场景用，且条件写清楚</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>事务 / Transaction</td><td>多条写操作的原子单元：要么全部生效，要么全部撤销</td></tr>
+      <tr><td>ACID</td><td>原子性、一致性、隔离性、持久性——数据库对事务的承诺</td></tr>
+      <tr><td>savepoint</td><td>事务内的「存档点」，嵌套事务靠它实现只回滚内层</td></tr>
+      <tr><td>连接池 / <code>*sql.DB</code></td><td>预先建好、可复用的连接集合；Go 里 <code>db.DB()</code> 拿到的就是它</td></tr>
+      <tr><td>MaxOpenConns</td><td>池内连接总数上限，进程吞吐的硬边界</td></tr>
+      <tr><td>ConnMaxLifetime</td><td>连接最长存活期，必须小于任何中间层（MySQL/LB）的空闲超时</td></tr>
+      <tr><td>软删除 / Soft Delete</td><td>用 <code>deleted_at</code> 时间戳标记删除，行还在表里，查询自动过滤</td></tr>
+      <tr><td>Unscoped</td><td>关掉 GORM 的软删除过滤，读全量或执行真 DELETE</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w3d5c1">练习 1：<code>?fail=1</code> 时日志出现 <code>ROLLBACK</code>，<code>SELECT COUNT(*) FROM articles WHERE title='我不该存在'</code> 为 0</label></li>
+      <li><label><input type="checkbox" data-key="w3d5c2">练习 1 正常路径：文章创建成功且 <code>article_tags</code> 里有对应关系行</label></li>
+      <li><label><input type="checkbox" data-key="w3d5c3">练习 2：<code>maxOpen=1</code> 与 <code>25</code> 两组总耗时数字记进了笔记，并能解释 <code>WaitCount</code></label></li>
+      <li><label><input type="checkbox" data-key="w3d5c4">练习 3：软删后 <code>GET /articles</code> 少一条、表行数不变，回收站接口能看到 <code>deleted_at</code></label></li>
+      <li><label><input type="checkbox" data-key="w3d5c5">能口述事务三种结局、三个池参数各调大/调小的后果</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../index.html"><span class="hint">← 回到</span>8 周路线总览</a>
+    <a href="summary.html"><span class="hint">本周收官 · W3 总结 →</span>项目冲刺与验收</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W3D5 · 明天见 ⟩</footer>
+</body>
+</html>

@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W8D5 · 部署、README 与 API 文档 | Go 全栈修炼手册</title>
+<meta name="description" content="Day 5：更新版发布流程（migrate 先跑、健康检查再切流）、README 完整模板（架构图/功能清单/一键启动/环境变量表）、手写 markdown API 文档与 swaggo/swag 生成 Swagger 两种做法、最终验收清单、GitHub 仓库整理与作品集写法。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w8d5">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 8 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 8 周</a> / Day 5</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 8 · DAY 5</span>
+    <span class="chip alt">预计 3–4 小时</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>部署、README 与 API 文档：把作品立起来</h1>
+  <p>第 7 周你已经上过云，今天是「带增量功能的重新发布 + 把项目变成可展示的作品」。代码写得好只是及格线——<b>README 决定别人会不会点开，API 文档决定别人能不能用起来，发布流程决定你敢不敢再改第二版</b>。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w8d5g1">掌握本周版发布流程：build → migrate 先跑 → 健康检查 → 再切流</label></li>
+      <li><label><input type="checkbox" data-key="w8d5g2">按模板重写 README：架构图、功能清单、三步启动、环境变量表全齐</label></li>
+      <li><label><input type="checkbox" data-key="w8d5g3">API 文档双轨落地：手写 markdown 总表 + swaggo 生成可交互 Swagger</label></li>
+      <li><label><input type="checkbox" data-key="w8d5g4">跑完最终验收清单，公网 HTTPS 可访问，仓库整理干净</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 更新发布流程：migrate 先跑，健康检查再切流</h3>
+    <p>这周改了表结构（role 列、comments 表）又加了上传。<b>新代码依赖新列，老库没有列</b>——所以顺序不能错：先备份、先迁移、再起新版本、健康检查过了才算完。把第 7 周的「一把梭 up -d」升级成下面这条流水线（服务器上执行，或写进 deploy.sh）：</p>
+    <pre><span class="code-label">shell（发布六步）</span>$ cd /opt/blog &amp;&amp; git pull                     <span class="c"># 1) 拉新代码</span>
+$ docker compose ps -q mysql &gt; /dev/null \
+  &amp;&amp; mysqldump -h127.0.0.1 -uroot -p"$DB_PASS" blog &gt; backup_$(date +%F).sql
+                                                <span class="c"># 2) 迁移前备份，30 秒保命</span>
+$ docker compose run --rm migrate up            <span class="c"># 3) 迁移先跑（role 列 + comments 表）</span>
+$ docker compose build backend frontend         <span class="c"># 4) 构建新镜像</span>
+$ docker compose up -d backend                  <span class="c"># 5) 只重启 backend，老容器还在服务</span>
+$ for i in $(seq 1 10); do
+    curl -fsS http://127.0.0.1:8080/healthz &amp;&amp; break || sleep 2
+  done                                          <span class="c"># 6) 健康检查通过才收工；</span>
+                                                <span class="c">#    多实例架构时这一步通过后才把流量切新机</span></pre>
+    <p>compose 里给 backend 补上健康检查（第 7 周只给 MySQL 配了，应用自己也要有）：</p>
+    <pre><span class="code-label">docker-compose.yml（backend 节选）</span>  backend:
+    build: ./backend
+    volumes:
+      - ./uploads:/app/uploads
+    healthcheck:
+      test: [<span class="s">"CMD"</span>, <span class="s">"wget"</span>, <span class="s">"-qO-"</span>, <span class="s">"http://localhost:8080/healthz"</span>]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s</pre>
+    <p>配套的 Go 端点三行搞定（查一次 DB 才算真健康）：</p>
+    <pre><span class="code-label">cmd/server/main.go</span>r.GET(<span class="s">"/healthz"</span>, <span class="k">func</span>(c *gin.Context) {
+    sqlDB, err := db.DB()
+    <span class="k">if</span> err != <span class="k">nil</span> || sqlDB.Ping() != <span class="k">nil</span> {
+        c.JSON(http.StatusServiceUnavailable, gin.H{<span class="s">"status"</span>: <span class="s">"db down"</span>})
+        <span class="k">return</span>
+    }
+    c.JSON(http.StatusOK, gin.H{<span class="s">"status"</span>: <span class="s">"ok"</span>, <span class="s">"version"</span>: <span class="s">"w8"</span>})
+})</pre>
+    <p>本周加了 /uploads 与 /swagger 两个新入口，Nginx 的 server 块最终形态一次配齐（第 4 节结尾会用到）：</p>
+    <pre><span class="code-label">nginx/conf.d/blog.conf（最终版）</span>server {
+    listen 80;
+    server_name blog.yourname.dev;
+
+    location /api/ {
+        proxy_pass http://backend:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        client_max_body_size 8m;      <span class="c"># ← 上传必经：默认 1m 会把 5MB 图挡在 Nginx 层</span>
+    }
+
+    location /uploads/ {
+        alias /data/blog/uploads/;    <span class="c"># 与 backend 挂的宿主目录一致</span>
+        expires 30d;
+    }
+
+    location /swagger/ {
+        proxy_pass http://backend:8080;   <span class="c"># 上线记得加 Basic Auth 或仅内网</span>
+    }
+
+    location / {
+        root /usr/share/nginx/html;       <span class="c"># React 构建产物</span>
+        try_files $uri $uri/ /index.html; <span class="c"># SPA 路由回退，第 7 周已配</span>
+    }
+}</pre>
+    <div class="callout warn"><p>回滚预案也要一句话写死：新版本 500 飙升时 <code>git checkout 上一tag &amp;&amp; docker compose up -d --build backend</code>；<b>但数据库不自动回滚</b>（down 迁移会丢 comments 数据），所以第 2 步的备份不是仪式，是救命的。</p></div>
+
+    <h3>2. README 完整模板：直接改名套用</h3>
+    <p>README 的 KPI 只有一个：<b>让一个没见过的程序员在 10 分钟内把项目跑起来，并在 60 秒内看懂它是什么</b>。以下模板把本周全部内容装进去了：</p>
+    <pre><span class="code-label">README.md</span># GoBlog · Go 全栈博客（Gin + GORM + React + Docker）
+
+面向学习者的完整全栈博客：JWT 双 token 认证、RBAC 管理员、图片上传、评论、分页搜索，
+一键 Docker 部署，已通过 HTTPS 公网访问：**https://blog.yourname.dev**
+
+## 架构
+
+```mermaid
+flowchart LR
+  Browser[浏览器 React SPA] -- /api --&gt; Nginx
+  Browser -- /uploads --&gt; Nginx
+  Nginx -- 反代 --&gt; Backend[Go · Gin · JWT/RBAC/上传]
+  Backend --&gt; MySQL[(MySQL 8)]
+  Backend --&gt; Disk[(uploads 卷)]
+```
+
+## 功能清单
+- 认证：注册 / 登录 / access(15m)+refresh(7d) 双 token 静默续期
+- 文章：CRUD、分页、标题搜索、封面图上传；作者可管理自己的文章
+- 评论：登录可评；作者本人或管理员可删
+- 权限：users.role（0 用户 / 1 管理员）；/api/v1/admin 组 RequireRole 保护；
+  管理员可查用户列表、强制下架任意文章、查看统计
+- 上传：扩展名白名单 + 魔数 MIME 嗅探 + 5MB 限制；随机文件名防覆盖防穿越
+- 部署：多阶段 Dockerfile、Compose 编排 backend/nginx/mysql/migrate、数据卷持久化
+
+## 本地一键启动（3 步）
+```bash
+git clone https://github.com/you/goblog &amp;&amp; cd goblog
+cp .env.example .env          # 按文件内注释填 6 个变量
+docker compose up -d          # migrate 会先跑，四个容器起来即完成
+open http://localhost         # 前端；API 在 http://localhost:8080
+```
+
+## 环境变量
+| 变量 | 示例 | 说明 |
+|---|---|---|
+| DB_PASSWORD | change-me | MySQL root 密码（compose 与 backend 共用） |
+| JWT_SECRET | openssl rand -hex 32 | access/refresh 签名密钥，泄露=全体伪造 |
+| JWT_REFRESH_SECRET | 同上，另取一个 | 与 ACCESS 分开，防互相顶替 |
+| SERVER_PORT | 8080 | Go 监听端口 |
+| UPLOAD_DIR | ./uploads | 上传落盘目录（compose 已挂卷） |
+| CORS_ORIGIN | http://localhost | 允许的前端源，逗号分隔 |
+
+## API 文档
+- 在线 Swagger：https://blog.yourname.dev/swagger/index.html（由 swaggo 生成，见下节）
+- 速查表：docs/api.md（手写，含错误码 1001–1005 与双层状态码约定）
+
+## 截图
+&lt;!-- 首页列表 / 文章详情带评论 / 管理后台 / 上传预览，四张 1200px 截图，README 首屏放两张 --&gt;
+
+## 技术栈
+Go 1.24 · Gin · GORM · MySQL 8 · golang-migrate · JWT · bcrypt · Docker Compose ·
+React 18 · React Router · axios · Nginx · Let's Encrypt
+
+## 说明
+本项目为 8 周学习工程的收官之作，开发日志见 git history 与 docs/BUGLOG.md。
+```</pre>
+    <div class="callout tip"><p>架构图用 mermaid 即可（GitHub 原生渲染），不会 mermaid 就贴 ASCII 版（模板里 flowchart 换成箭头文本）。<b>「本地一键启动」必须在你自己的新目录里真跑一遍</b>——README 里没验证过的命令都是谣言。</p></div>
+
+    <h3>3. API 文档两种做法（一）：手写 markdown 表</h3>
+    <p>全量 20 多个端点，先用最笨但最清楚的方式留一份速查表 <code>docs/api.md</code>——它同时是给面试官看的「接口设计能力」证明：</p>
+    <pre><span class="code-label">docs/api.md（节选）</span>统一响应：`{ "code": 0, "message": "success", "data": {} }`
+错误码：1001 用户不存在 · 1002 密码错误 · 1003 无权限 · 1004 参数错误 · 1005 token 无效/过期
+鉴权：除标注「公开」外均需 `Authorization: Bearer &lt;access&gt;`
+
+| 方法 | 路径 | 鉴权 | 说明 | 关键参数 |
+|---|---|---|---|---|
+| POST | /api/v1/auth/register | 公开 | 注册 | username, password |
+| POST | /api/v1/auth/login | 公开 | 登录，返回双 token + user(含 role) | username, password |
+| POST | /api/v1/auth/refresh | refreshToken | 换发新 access | refreshToken |
+| GET | /api/v1/articles | 公开 | 分页列表 | page, size, keyword |
+| POST | /api/v1/articles | 登录 | 发文（≤200 字标题，含 cover_image） | title, content, cover_image |
+| PUT | /api/v1/articles/:id | 作者 | 编辑 | title, content |
+| DELETE | /api/v1/articles/:id | 作者 | 删除（软删） | — |
+| POST | /api/v1/uploads/avatar | 登录 | 头像（multipart 字段 file） | file |
+| POST | /api/v1/uploads/cover | 登录 | 文章封面 | file, article_id? |
+| GET | /api/v1/articles/:id/comments | 公开 | 评论列表（带作者） | — |
+| POST | /api/v1/articles/:id/comments | 登录 | 发评论 | content ≤500 字 |
+| DELETE | /api/v1/comments/:id | 作者或管理员 | 删评论 | — |
+| GET | /api/v1/admin/users | 管理员 | 用户分页列表 | page, size(≤50) |
+| DELETE | /api/v1/admin/articles/:id | 管理员 | 强制下架 | — |
+| GET | /api/v1/admin/stats | 管理员 | 用户/文章/评论计数 | — |</pre>
+
+    <h3>4. API 文档两种做法（二）：swaggo 注解生成 Swagger</h3>
+    <p>手写表清楚但不能交互。用 <b>swaggo/swag</b>：在 handler 上写注释注解，命令行扫代码生成 OpenAPI 文档，再挂一个 <code>/swagger</code> 路由得到可以「Try it out」的网页。五分钟上手：</p>
+    <pre><span class="code-label">shell</span>$ go install github.com/swaggo/swag/cmd/swag@latest
+$ swag init -g cmd/server/main.go -o docs/swagger   <span class="c"># 扫注释生成 docs/swagger/{docs.go,swagger.json}</span></pre>
+    <pre><span class="code-label">internal/handler/admin.go（注解示例）</span><span class="c">// ListUsers 管理员用户列表
+//
+//	@Summary		[admin] 用户分页列表
+//	@Tags			admin
+//	@Security		BearerAuth
+//	@Produce		json
+//	@Param			page	query		int	false	"页码，默认 1"
+//	@Param			size	query		int	false	"每页条数，默认 10，上限 50"
+//	@Success		200		{object}	response.Body{data=[]model.User}
+//	@Failure		403		{object}	response.Body
+//	@Router			/api/v1/admin/users [get]</span>
+<span class="k">func</span> (h *UserHandler) ListUsers(c *gin.Context) { <span class="c">/* ...原实现不动... */</span> }</pre>
+    <pre><span class="code-label">cmd/server/main.go（挂载 + 全局注解）</span><span class="k">import</span> (
+    swaggerfiles <span class="s">"github.com/swaggo/files"</span>
+    ginswagger   <span class="s">"github.com/swaggo/gin-swagger"</span>
+    _            <span class="s">"blog/docs/swagger"</span> <span class="c">// swag init 生成的包，只需 _ 导入</span>
+)
+
+<span class="c">// @title			GoBlog API
+// @version		1.0
+// @description	Gin + GORM + React 全栈博客（含 RBAC 与文件上传）
+// @securityDefinitions.apikey	BearerAuth
+// @in							header
+// @name						Authorization</span>
+func main() {
+    ...
+    r.GET(<span class="s">"/swagger/*any"</span>, ginswagger.WrapHandler(swaggerfiles.Handler))
+    ...
+}</pre>
+    <p>访问：<code>http://localhost:8080/swagger/index.html</code> 是交互页（Try it out 会真的调你的接口），<code>http://localhost:8080/swagger/doc.json</code> 是 OpenAPI/Swagger 的 JSON 源文件（可导入 Postman）。上线时给 Nginx 加一句 <code>location /swagger { proxy_pass http://backend:8080; }</code> 即可公网可访。</p>
+    <div class="callout warn"><p>两个安全提醒：① <code>swag init</code> 要在每次改注解后重跑并<b>把生成物提交进仓库</b>，否则别人 clone 下来编译不过；② 生产环境要么给 Swagger 加 Basic Auth，要么只在 README 里放 <code>doc.json</code> 链接——<b>公开可交互的 API 控制台等于给攻击者发了张地图</b>。</p></div>
+
+    <h3>5. 最终验收清单：一条龙走完才算毕业</h3>
+    <ul class="check">
+      <li><label>① 公网域名 HTTPS 打开首页，无证书告警，注册一个新账号成功</label></li>
+      <li><label>② 登录 → 上传头像（Navbar 立刻显示）</label></li>
+      <li><label>③ 上传封面并发布文章 → 列表页看到缩略图 → 详情页刷新仍在</label></li>
+      <li><label>④ 换普通账号发评论 → 作者删自己评论 → 用 admin 删他人评论</label></li>
+      <li><label>⑤ 普通账号手敲 /admin URL → 403 页；curl 直连接口 → code 1003</label></li>
+      <li><label>⑥ 服务器 <code>docker compose restart backend</code> 后：登录态、文章、图片全部无损</label></li>
+    </ul>
+
+    <h3>6. GitHub 仓库整理与作品集一句话</h3>
+    <table>
+      <tr><th>动作</th><th>标准</th></tr>
+      <tr><td>commit 规范</td><td>历史太乱就整理成 10–20 个语义化提交：<code>feat: RBAC 中间件与 admin 路由组</code>、<code>fix: 上传 0 字节文件返回 500 (#2)</code>、<code>docs: README 架构图与 API 表</code>；每周一个 squash 也可接受</td></tr>
+      <tr><td>README 首屏</td><td>标题下一句话定位 + 公网链接 + 两张截图；GitHub About 栏填 URL 并打上 <code>go gin gorm react mysql docker</code> 标签</td></tr>
+      <tr><td>仓库卫生</td><td><code>.gitignore</code> 排除 <code>.env</code>、uploads、备份 sql；<code>.env.example</code> 进仓库；删掉调试残留（console.log / fmt.Println）</td></tr>
+      <tr><td>作品集一句话</td><td>简历项目栏：<b>「独立完成 Go+React 全栈博客：JWT 双 token 无感续期、RBAC 管理端、带魔数校验与路径穿越防护的文件上传、多阶段 Docker 部署至公网，含测试与 Swagger 文档」</b>——每个短语背后都有今天之前你写的真实代码兜底，面试随便深挖</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：按六步流水线重新发布（60 分钟）</div>
+      <p>把第 1 节流程在云服务器完整执行一次（这周代码还没上线的话，现在正是时候）。要求逐步截图：migrate up 输出、healthz 200、公网打开管理后台。</p>
+      <p><b>参考答案</b>：高频翻车点依次为——① 服务器 .env 忘了加新变量（UPLOAD_DIR/CORS_ORIGIN），backend 起了又 crash，<code>docker compose logs backend</code> 一眼看到「missing env」；② migrate 容器没配 role/comments 两个迁移就 up -d，接口报 Unknown column 'role'；③ uploads 卷在服务器路径与本地不同，挂到了空目录——现象是「本地有图线上没图」，按 D2 练习 2 的对照法排查。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：README + api.md 成稿（60 分钟）</div>
+      <p>按模板写完整 README.md 与 docs/api.md，截图四张（首页/详情评论/管理后台/Swagger 页），并把「本地一键启动」在全新目录 <code>git clone</code> 后验证一遍。</p>
+      <p><b>参考答案</b>：自检三问：新人能在 3 条命令内跑起来吗？mermaid 图在 GitHub 上渲染出来了吗？环境变量表里每个变量都能在后端 config 里找到对应读取点吗？三问有一个「否」就回炉。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：swaggo 上线（45 分钟）</div>
+      <p>给 admin 三个接口 + 上传两个接口 + 登录补注解，<code>swag init</code> 生成、挂载路由、打开 <code>/swagger/index.html</code>，用 Authorize 填 admin token 后 Try it out 调通 <code>GET /admin/stats</code>。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：真人验收（30 分钟 + 等待）</div>
+      <p>把 <code>https://你的域名</code> + README 链接发给一位朋友（最好是同行），话术就一句：「我做的博客，帮我 5 分钟随便点点，挑一个 bug 或一个不爽」。把反馈原话记进 README 下方「Known issues / Feedback」小节——这一条真实反馈就是你面试时「用户视角」的证据。</p>
+      <p><b>参考答案</b>：非技术朋友最常见的三条反馈：图片上传没有进度条（其实网络很快，但没转圈就是「感觉坏了」）、评论区没有排版、移动端表格溢出。修其中成本最低的一条并回复对方——完成一次真实的用户反馈闭环。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>uploads 目录误提交进 Git</td><td>仓库暴涨、别人 clone 带一堆测试图；.dockerignore 也漏了它导致镜像膨胀</td><td><code>.gitignore</code> 加 <code>uploads/</code>；<code>git rm -r --cached uploads</code> 清历史暂存</td></tr>
+      <tr><td>迁移忘跑就重启 backend</td><td>admin 接口 500：Unknown column 'role' in 'field list'</td><td>发布六步顺序焊死：备份 → migrate up → build → up -d → 健康检查</td></tr>
+      <tr><td>Swagger 裸奔公网</td><td>攻击者照着可交互文档逐个端点试攻击</td><td>加 Basic Auth、内网访问，或生产只放静态 doc.json</td></tr>
+      <tr><td>README 写了没验证的命令</td><td>朋友照做第一步就报错，作品印象分清零</td><td>每条命令在全新 clone 里跑过才许进 README</td></tr>
+      <tr><td>健康检查只返回 200 不查 DB</td><td>数据库挂了 healthz 仍绿，切流照切，故障放大</td><td><code>/healthz</code> 里 Ping 一次 DB，ping 不通返 503</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w8d5c1">发布六步流水线完整执行成功，healthz 带 DB Ping 且 compose 配了 healthcheck</label></li>
+      <li><label><input type="checkbox" data-key="w8d5c2">README 含 mermaid/ASCII 架构图、功能清单、三步启动、环境变量表、截图 ≥2 张</label></li>
+      <li><label><input type="checkbox" data-key="w8d5c3">docs/api.md 覆盖全部端点且标注了鉴权级别与错误码约定</label></li>
+      <li><label><input type="checkbox" data-key="w8d5c4">/swagger/index.html 可打开并能 Try it out 调通至少一个接口</label></li>
+      <li><label><input type="checkbox" data-key="w8d5c5">第 5 节验收清单六项全过 + 已发出验收链接收到 ≥1 条真实反馈并记录</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day4.html"><span class="hint">← 上一天 · W8D4</span>联调测试修 bug</a>
+    <a href="summary.html"><span class="hint">下一站 · 毕业 →</span>第 8 周总结 · 8 周毕业检查</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W8D5 · 最后一步就在下一页 ⟩</footer>
+</body>
+</html>

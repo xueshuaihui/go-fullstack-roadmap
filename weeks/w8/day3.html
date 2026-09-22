@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W8D3 · 前端权限与功能收尾 | Go 全栈修炼手册</title>
+<meta name="description" content="Day 3：useAuth 扩展存储 userInfo.role、ProtectedRoute 加 role 参数拦截 /admin、菜单按角色显隐、管理员页面（用户表格+强制删文）、评论功能查漏（GORM 一对多模型 + 评论区组件：列表/提交/作者删评）。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w8d3">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 8 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 8 周</a> / Day 3</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 8 · DAY 3</span>
+    <span class="chip alt">预计 2.5–3 小时</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>前端权限与功能收尾</h1>
+  <p>后端已有 RBAC 和上传，今天回到 React：把第 6 周的路由守卫升级成<b>带角色的守卫</b>，给管理员拼一个后台页面，再把评论功能查缺补漏。记住 D1 的那句话——<b>前端所有权限代码都只是「体验」，后端中间件才是「安全」</b>；今天写的每一行防御，都要假设对方能绕过它直接 curl。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w8d3g1">登录后把含 role 的 userInfo 存进 store，全局可用</label></li>
+      <li><label><input type="checkbox" data-key="w8d3g2"><code>ProtectedRoute</code> 支持 role 参数：非管理员访问 /admin 显示 403 页</label></li>
+      <li><label><input type="checkbox" data-key="w8d3g3">导航菜单按角色显隐，管理员页能用上 D1 的三个接口</label></li>
+      <li><label><input type="checkbox" data-key="w8d3g4">评论功能前后端闭环：列表、提交、作者/管理员可删</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. userInfo.role 进 store：扩展第 6 周的 useAuth</h3>
+    <p>第 6 周的 <code>useAuth</code> 只存了 token。现在登录接口返回的 <code>data.user</code> 里已经带 <code>role</code>（D1 改了 JSON），把它一起收进来即可。<code>role</code> 数字与后端 <code>model.Role</code> 对齐：0=user，1=admin。</p>
+    <pre><span class="code-label">src/auth/useAuth.jsx</span><span class="k">import</span> { createContext, useContext, useState, useCallback } <span class="k">from</span> <span class="s">"react"</span>
+<span class="k">import</span> api <span class="k">from</span> <span class="s">"../api"</span>
+
+<span class="k">const</span> AuthCtx = createContext(<span class="k">null</span>)
+<span class="k">export const</span> ROLE_USER = <span class="n">0</span>
+<span class="k">export const</span> ROLE_ADMIN = <span class="n">1</span>
+
+<span class="k">export function</span> AuthProvider({ children }) {
+  <span class="c">// 刷新页面后从 localStorage 恢复；user 里必须带 role</span>
+  <span class="k">const</span> [user, setUser] = useState(() =&gt; {
+    <span class="k">try</span> { <span class="k">return</span> JSON.parse(localStorage.getItem(<span class="s">"user"</span>) || <span class="s">"null"</span>) }
+    <span class="k">catch</span> { <span class="k">return</span> <span class="k">null</span> }
+  })
+
+  <span class="k">const</span> login = useCallback(<span class="k">async</span> (username, password) =&gt; {
+    <span class="k">const</span> { data } = <span class="k">await</span> api.post(<span class="s">"/api/v1/auth/login"</span>, { username, password })
+    localStorage.setItem(<span class="s">"accessToken"</span>, data.data.accessToken)
+    localStorage.setItem(<span class="s">"refreshToken"</span>, data.data.refreshToken)
+    localStorage.setItem(<span class="s">"user"</span>, JSON.stringify(data.data.user)) <span class="c">// ← 含 role</span>
+    setUser(data.data.user)
+  }, [])
+
+  <span class="k">const</span> logout = useCallback(() =&gt; {
+    [<span class="s">"accessToken"</span>, <span class="s">"refreshToken"</span>, <span class="s">"user"</span>].forEach(k =&gt; localStorage.removeItem(k))
+    setUser(<span class="k">null</span>)
+  }, [])
+
+  <span class="k">const</span> value = { user, isAdmin: user?.role &gt;= ROLE_ADMIN, login, logout }
+  <span class="k">return</span> &lt;AuthCtx.Provider value={value}&gt;{children}&lt;/AuthCtx.Provider&gt;
+}
+
+<span class="k">export function</span> useAuth() {
+  <span class="k">const</span> ctx = useContext(AuthCtx)
+  <span class="k">if</span> (!ctx) <span class="k">throw new</span> Error(<span class="s">"useAuth 必须在 AuthProvider 内使用"</span>)
+  <span class="k">return</span> ctx
+}</pre>
+    <div class="callout warn"><p>localStorage 里的 role 是<b>用户可随意篡改的快照</b>（开 DevTools 把 0 改成 1 就能"自封管理员"）。它只决定「看不看得见入口」；管理员页发出的每个请求都会被后端 <code>RequireRole</code> 用真 token 里的 role 把关——这就是为什么 D1 坚持服务端也要判。</p></div>
+
+    <h3>2. ProtectedRoute 加 role 参数</h3>
+    <p>第 6 周的路由守卫只判「有没有登录」。升级后签名变成 <code>&lt;ProtectedRoute role={1}&gt;</code>：未登录 → 跳登录页（登录后送回原页）；登录了但角色不够 → 渲染 403 提示（<b>不要跳回首页装没发生</b>，明确报错对调试和用户都更诚实）。</p>
+    <pre><span class="code-label">src/auth/ProtectedRoute.jsx</span><span class="k">import</span> { useLocation, Navigate, Link } <span class="k">from</span> <span class="s">"react-router-dom"</span>
+<span class="k">import</span> { useAuth } <span class="k">from</span> <span class="s">"./useAuth"</span>
+
+<span class="k">export default function</span> ProtectedRoute({ children, role }) {
+  <span class="k">const</span> { user } = useAuth()
+  <span class="k">const</span> location = useLocation()
+
+  <span class="k">if</span> (!user) {
+    <span class="c">// 记录来路：登录成功后跳回来，第 6 周已做，保持不动</span>
+    <span class="k">return</span> &lt;Navigate to=<span class="s">"/login"</span> state={{ from: location }} replace /&gt;
+  }
+  <span class="k">if</span> (role !== undefined &amp;&amp; user.role &lt; role) {
+    <span class="k">return</span> (
+      &lt;div className=<span class="s">"denied"</span>&gt;
+        &lt;h2&gt;403 · 无权限&lt;/h2&gt;
+        &lt;p&gt;这个页面只对管理员开放。&lt;Link to=<span class="s">"/"</span>&gt;回到首页&lt;/Link&gt;&lt;/p&gt;
+      &lt;/div&gt;
+    )
+  }
+  <span class="k">return</span> children
+}</pre>
+    <pre><span class="code-label">src/App.jsx（路由表节选）</span>&lt;Route path=<span class="s">"/editor/:id?"</span> element={
+  &lt;ProtectedRoute&gt;&lt;ArticleEditor /&gt;&lt;/ProtectedRoute&gt;        <span class="c">// 只要登录</span>} /&gt;
+&lt;Route path=<span class="s">"/admin"</span> element={
+  &lt;ProtectedRoute role={<span class="n">1</span>}&gt;&lt;AdminPanel /&gt;&lt;/ProtectedRoute&gt; <span class="c">// 必须是管理员</span>} /&gt;</pre>
+    <div class="callout js"><p>对比 JS 前端老思路：以前「藏路由」就完事；现在你要能说出<b>三层防御</b>——菜单不显示（体验）→ 路由守卫 403（体验）→ 后端 RequireRole（安全）。前两层被绕过无所谓，第三层才是墙。</p></div>
+
+    <h3>3. 菜单按角色显隐：一段渲染判断</h3>
+    <pre><span class="code-label">src/components/Navbar.jsx</span><span class="k">import</span> { NavLink } <span class="k">from</span> <span class="s">"react-router-dom"</span>
+<span class="k">import</span> { useAuth } <span class="k">from</span> <span class="s">"../auth/useAuth"</span>
+
+<span class="k">export default function</span> Navbar() {
+  <span class="k">const</span> { user, isAdmin, logout } = useAuth()
+  <span class="k">return</span> (
+    &lt;nav className=<span class="s">"nav"</span>&gt;
+      &lt;NavLink to=<span class="s">"/"</span>&gt;文章&lt;/NavLink&gt;
+      {user ? (
+        &lt;&gt;
+          &lt;NavLink to=<span class="s">"/editor"</span>&gt;写文章&lt;/NavLink&gt;
+          {isAdmin &amp;&amp; &lt;NavLink to=<span class="s">"/admin"</span>&gt;管理后台&lt;/NavLink&gt;}  <span class="c">// ← 就这一行</span>
+          &lt;button onClick={logout}&gt;退出（{user.username}）&lt;/button&gt;
+        &lt;/&gt;
+      ) : (
+        &lt;NavLink to=<span class="s">"/login"</span>&gt;登录&lt;/NavLink&gt;
+      )}
+    &lt;/nav&gt;
+  )
+}</pre>
+    <p>可以在头像旁加一个小徽标强化演示效果：<code>{isAdmin &amp;&amp; &lt;span className="badge"&gt;ADMIN&lt;/span&gt;}</code>。</p>
+
+    <h3>4. 管理员页面：用户表格 + 强制删文</h3>
+    <p>完全复用第 6 周列表页的写法（useEffect 拉数据 + map 渲染 + 按钮调接口），只是接口换成 D1 的 <code>/admin/*</code>。被 403 时后端返回 <code>code:1003</code>，axios 拦截器已有统一错误提示，页面不用特判。</p>
+    <pre><span class="code-label">src/pages/AdminPanel.jsx</span><span class="k">import</span> { useEffect, useState, useCallback } <span class="k">from</span> <span class="s">"react"</span>
+<span class="k">import</span> api <span class="k">from</span> <span class="s">"../api"</span>
+
+<span class="k">export default function</span> AdminPanel() {
+  <span class="k">const</span> [users, setUsers] = useState([])
+  <span class="k">const</span> [articles, setArticles] = useState([])
+  <span class="k">const</span> [stats, setStats] = useState(<span class="k">null</span>)
+
+  <span class="k">const</span> load = useCallback(<span class="k">async</span> () =&gt; {
+    <span class="k">const</span> [u, a, s] = <span class="k">await</span> Promise.all([
+      api.get(<span class="s">"/api/v1/admin/users"</span>, { params: { page: <span class="n">1</span>, size: <span class="n">20</span> } }),
+      api.get(<span class="s">"/api/v1/articles"</span>, { params: { page: <span class="n">1</span>, size: <span class="n">20</span> } }),
+      api.get(<span class="s">"/api/v1/admin/stats"</span>),
+    ])
+    setUsers(u.data.data.list)
+    setArticles(a.data.data.list)
+    setStats(s.data.data)
+  }, [])
+
+  useEffect(() =&gt; { load().catch(() =&gt; {}) }, [load])
+
+  <span class="k">async function</span> forceDelete(id) {
+    <span class="k">if</span> (!confirm(<span class="s">"确定强制下架这篇文章？（软删除，可恢复）"</span>)) <span class="k">return</span>
+    <span class="k">await</span> api.delete(<span class="s">`/api/v1/admin/articles/${id}`</span>)
+    load() <span class="c">// 删完重新拉，比本地 splice 更不易出 bug</span>
+  }
+
+  <span class="k">return</span> (
+    &lt;div className=<span class="s">"admin"</span>&gt;
+      &lt;h1&gt;管理后台&lt;/h1&gt;
+      {stats &amp;&amp; &lt;p&gt;用户 {stats.users} · 文章 {stats.articles} · 评论 {stats.comments}&lt;/p&gt;}
+
+      &lt;h2&gt;用户&lt;/h2&gt;
+      &lt;table border=<span class="s">"1"</span> cellPadding=<span class="s">"6"</span>&gt;
+        &lt;thead&gt;&lt;tr&gt;&lt;th&gt;ID&lt;/th&gt;&lt;th&gt;用户名&lt;/th&gt;&lt;th&gt;角色&lt;/th&gt;&lt;th&gt;注册时间&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+        &lt;tbody&gt;
+          {users.map(u =&gt; (
+            &lt;tr key={u.ID}&gt;
+              &lt;td&gt;{u.ID}&lt;/td&gt;&lt;td&gt;{u.username}&lt;/td&gt;
+              &lt;td&gt;{u.role === <span class="n">1</span> ? <span class="s">"管理员"</span> : <span class="s">"普通用户"</span>}&lt;/td&gt;
+              &lt;td&gt;{<span class="k">new</span> Date(u.CreatedAt).toLocaleDateString()}&lt;/td&gt;
+            &lt;/tr&gt;
+          ))}
+        &lt;/tbody&gt;
+      &lt;/table&gt;
+
+      &lt;h2&gt;文章管理&lt;/h2&gt;
+      &lt;ul&gt;
+        {articles.map(a =&gt; (
+          &lt;li key={a.ID}&gt;
+            &lt;Link to={`/article/${a.ID}`}&gt;{a.title}&lt;/Link&gt;（{a.author?.username}）
+            &lt;button className=<span class="s">"danger"</span> onClick={() =&gt; forceDelete(a.ID)}&gt;强制下架&lt;/button&gt;
+          &lt;/li&gt;
+        ))}
+      &lt;/ul&gt;
+    &lt;/div&gt;
+  )
+}</pre>
+
+    <h3>5. 评论查漏（一）：后端 Comment 模型与接口</h3>
+    <p>规划第 8 周「保留功能」里写了评论——如果第 3~4 周你没做，现在补，一次到位。一对多复用上第 3 周：<code>Article → []Comment</code>、<code>Comment belongsTo Author</code>。注意 JSON 里带出 <code>author</code>，前端才知道「谁写的、我能不能删」。</p>
+    <pre><span class="code-label">internal/model/comment.go</span><span class="k">type</span> Comment <span class="k">struct</span> {
+    gorm.Model
+    Content   <span class="t">string</span> <span class="s">`gorm:"type:text;notNull" json:"content"`</span>
+    ArticleID <span class="t">uint</span>   <span class="s">`gorm:"index;notNull" json:"article_id"`</span>
+    AuthorID  <span class="t">uint</span>   <span class="s">`gorm:"index;notNull" json:"author_id"`</span>
+    Author    User   <span class="s">`gorm:"foreignKey:AuthorID" json:"author"`</span>
+}</pre>
+    <pre><span class="code-label">internal/handler/comment.go</span><span class="c">// ListComments GET /api/v1/articles/:id/comments —— 游客可读</span>
+<span class="k">func</span> (h *CommentHandler) ListComments(c *gin.Context) {
+    <span class="k">var</span> list []model.Comment
+    h.db.Where(<span class="s">"article_id = ?"</span>, c.Param(<span class="s">"id"</span>)).
+        Preload(<span class="s">"Author"</span>).Order(<span class="s">"id DESC"</span>).Find(&amp;list)
+    response.OK(c, list)
+}
+
+<span class="c">// CreateComment POST /api/v1/articles/:id/comments —— 需登录</span>
+<span class="k">func</span> (h *CommentHandler) CreateComment(c *gin.Context) {
+    <span class="k">var</span> req <span class="k">struct</span> {
+        Content <span class="t">string</span> <span class="s">`json:"content" binding:"required,max=500"`</span>
+    }
+    <span class="k">if</span> err := c.ShouldBindJSON(&amp;req); err != <span class="k">nil</span> {
+        response.Fail(c, <span class="n">400</span>, <span class="n">1004</span>, <span class="s">"评论内容 1–500 字"</span>)
+        <span class="k">return</span>
+    }
+    cm := model.Comment{
+        Content: req.Content,
+        ArticleID: <span class="t">uint</span>(h.mustUint(c.Param(<span class="s">"id"</span>))),
+        AuthorID:  c.GetUint(<span class="s">"uid"</span>),
+    }
+    <span class="k">if</span> err := h.db.Create(&amp;cm).Error; err != <span class="k">nil</span> {
+        response.Fail(c, <span class="n">400</span>, <span class="n">1004</span>, <span class="s">"文章不存在或提交失败"</span>)
+        <span class="k">return</span>
+    }
+    h.db.Preload(<span class="s">"Author"</span>).First(&amp;cm, cm.ID)
+    response.Created(c, cm)
+}
+
+<span class="c">// DeleteComment DELETE /api/v1/comments/:id —— 作者本人或管理员，二选一</span>
+<span class="k">func</span> (h *CommentHandler) DeleteComment(c *gin.Context) {
+    <span class="k">var</span> cm model.Comment
+    <span class="k">if</span> err := h.db.First(&amp;cm, c.Param(<span class="s">"id"</span>)).Error; err != <span class="k">nil</span> {
+        response.Fail(c, <span class="n">404</span>, <span class="n">1001</span>, <span class="s">"评论不存在"</span>)
+        <span class="k">return</span>
+    }
+    isOwner := cm.AuthorID == c.GetUint(<span class="s">"uid"</span>)
+    isAdmin := c.GetInt8(<span class="s">"role"</span>) == <span class="n">1</span> <span class="c">// RBAC 与所有权在同一接口合体</span>
+    <span class="k">if</span> !isOwner &amp;&amp; !isAdmin {
+        response.Fail(c, <span class="n">403</span>, <span class="n">1003</span>, <span class="s">"只能删除自己的评论"</span>)
+        <span class="k">return</span>
+    }
+    h.db.Delete(&amp;cm)
+    response.OK(c, gin.H{<span class="s">"deleted"</span>: cm.ID})
+}</pre>
+    <pre><span class="code-label">迁移 SQL（与 D1 同套路）</span>CREATE TABLE IF NOT EXISTS comments (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  created_at DATETIME(3) NULL,
+  updated_at DATETIME(3) NULL,
+  deleted_at DATETIME(3) NULL,
+  content TEXT NOT NULL,
+  article_id BIGINT UNSIGNED NOT NULL,
+  author_id BIGINT UNSIGNED NOT NULL,
+  INDEX idx_comments_article (article_id),
+  INDEX idx_comments_deleted (deleted_at)
+);</pre>
+
+    <h3>6. 评论查漏（二）：前端评论区组件</h3>
+    <pre><span class="code-label">src/components/Comments.jsx</span><span class="k">import</span> { useEffect, useState } <span class="k">from</span> <span class="s">"react"</span>
+<span class="k">import</span> { Link } <span class="k">from</span> <span class="s">"react-router-dom"</span>
+<span class="k">import</span> api <span class="k">from</span> <span class="s">"../api"</span>
+<span class="k">import</span> { useAuth } <span class="k">from</span> <span class="s">"../auth/useAuth"</span>
+
+<span class="k">export default function</span> Comments({ articleId }) {
+  <span class="k">const</span> { user, isAdmin } = useAuth()
+  <span class="k">const</span> [list, setList] = useState([])
+  <span class="k">const</span> [text, setText] = useState(<span class="s">""</span>)
+
+  <span class="k">const</span> load = () =&gt;
+    api.get(<span class="s">`/api/v1/articles/${articleId}/comments`</span>).then(r =&gt; setList(r.data.data))
+  useEffect(() =&gt; { load() }, [articleId])
+
+  <span class="k">async function</span> submit(e) {
+    e.preventDefault()
+    <span class="k">if</span> (!text.trim()) <span class="k">return</span>
+    <span class="k">await</span> api.post(<span class="s">`/api/v1/articles/${articleId}/comments`</span>, { content: text.trim() })
+    setText(<span class="s">""</span>); load()
+  }
+
+  <span class="k">async function</span> remove(id) {
+    <span class="k">if</span> (!confirm(<span class="s">"删除这条评论？"</span>)) <span class="k">return</span>
+    <span class="k">await</span> api.delete(<span class="s">`/api/v1/comments/${id}`</span>)   <span class="c">// 后端判断 owner 或 admin</span>
+    load()
+  }
+
+  <span class="k">return</span> (
+    &lt;section className=<span class="s">"comments"</span>&gt;
+      &lt;h3&gt;评论（{list.length}）&lt;/h3&gt;
+      {user ? (
+        &lt;form onSubmit={submit}&gt;
+          &lt;textarea value={text} rows={<span class="n">3</span>} maxLength={<span class="n">500</span>}
+            onChange={e =&gt; setText(e.target.value)} placeholder=<span class="s">"友善发言…"</span> /&gt;
+          &lt;button disabled={!text.trim()}&gt;发布&lt;/button&gt;
+        &lt;/form&gt;
+      ) : &lt;p&gt;&lt;Link to=<span class="s">"/login"</span>&gt;登录&lt;/Link&gt; 后参与讨论&lt;/p&gt;}
+
+      &lt;ul&gt;
+        {list.map(cm =&gt; (
+          &lt;li key={cm.ID}&gt;
+            &lt;b&gt;{cm.author?.username}&lt;/b&gt;：{cm.content}
+            {(user?.ID === cm.author_id || isAdmin) &amp;&amp; (
+              &lt;button className=<span class="s">"link"</span> onClick={() =&gt; remove(cm.ID)}&gt;删除&lt;/button&gt;
+            )}
+          &lt;/li&gt;
+        ))}
+      &lt;/ul&gt;
+    &lt;/section&gt;
+  )
+}</pre>
+    <div class="callout tip"><p>「作者能删自己的、管理员能删所有」这条规则<b>后端已经实现</b>了，前端的显示条件只是把不该出现的按钮藏起来。哪怕用户改前端强显删除按钮去调接口，不是他的评论照样吃 403。</p></div>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：核心验收——非管理员手敲 /admin URL（30 分钟）</div>
+      <p>用普通账号登录，地址栏直接输入 <code>http://localhost:5173/admin</code>。预期：不跳登录页（人已登录）、不渲染后台，而是出现你的 403 提示。再用管理员登录：正常进后台；退出后访问：被重定向到 /login。</p>
+      <p><b>参考答案</b>：三种状态分别对应 <code>ProtectedRoute</code> 的三个分支。若普通用户能进 /admin，检查两点：路由表是否传了 <code>role={1}</code>；登录后 localStorage 的 user 是否真的带 role（旧登录态是升级前存的，<b>退出重登一次</b>再看，这个坑今天必踩一次）。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：绕过前端直捣接口（20 分钟）</div>
+      <p>普通用户登录状态下，DevTools 把 localStorage 的 user.role 改成 1 —— 后台入口出现了！点进去、强制下架一篇文章。预期：接口返回 <code>403 / code 1003</code>，删除失败。</p>
+      <p><b>参考答案</b>：这就是「前端权限是纸糊的」实锤演示；token 里的 role 才是后端看到的身份。把这次体验写进 README 的权限设计一节，面试可直接讲。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：评论闭环（60 分钟）</div>
+      <p>跑迁移建 comments 表 → 挂三个评论路由 → 详情页嵌 <code>&lt;Comments articleId={id}/&gt;</code>。验收：游客可看；A 发评论；B 看 A 的评论旁无删除按钮；A 自己和管理员有。管理员删任何评论均 200。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4（选做）：把 D2 头像接进 Navbar（30 分钟）</div>
+      <p>个人信息页放 <code>&lt;ImageUpload kind="avatar" onDone={url =&gt; { localStorage 更新 user.avatar; 触发重渲染 }}/&gt;</code>，Navbar 右上角用 <code>&lt;img&gt;</code> 显示头像。注意 onDone 后要同步 localStorage 里的 user 快照。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>升级前登录的旧 user 快照没有 role</td><td>管理员也不见后台入口，守卫判定 <code>undefined &lt; 1</code> 为 false 还处处诡异</td><td>改字段后强制重新登录；读快照时兜底 <code>user.role ?? 0</code></td></tr>
+      <tr><td>ProtectedRoute 把权限不足重定向回首页</td><td>用户以为页面坏了，问题无法暴露</td><td>渲染明确的 403 文案，别静默跳转</td></tr>
+      <tr><td>只在菜单里藏入口，不加路由守卫</td><td>手敲 /admin 直接进，接口 403 刷满页面</td><td>守卫 + 后端双保险，缺一层都不算完成</td></tr>
+      <tr><td>Comment 忘 Preload("Author")</td><td>前端 <code>cm.author.username</code> 报错白屏</td><td>接口返回带作者；前端渲染再写 <code>cm.author?.username</code></td></tr>
+      <tr><td>软删除评论后列表计数不同步</td><td>stats 里 comments 数与列表对不上</td><td>GORM Count 自动排除软删行；手写 SQL 才要加 <code>deleted_at IS NULL</code></td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w8d3c1">普通用户手敲 /admin 看到 403 页、管理员能进、未登录被弹去 /login（练习 1 三状态）</label></li>
+      <li><label><input type="checkbox" data-key="w8d3c2">DevTools 篡改 role 后强进后台，强制下架被后端 403 拦截（练习 2）</label></li>
+      <li><label><input type="checkbox" data-key="w8d3c3">Navbar 的「管理后台」入口只对管理员渲染，且不影响别人被后端拦住</label></li>
+      <li><label><input type="checkbox" data-key="w8d3c4">评论三件套可用：游客看、登录发、作者/管理员删，软删除生效</label></li>
+      <li><label><input type="checkbox" data-key="w8d3c5">AdminPanel 用户表格带角色列，stats 三个数字与真实数据一致</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day2.html"><span class="hint">← 上一天 · W8D2</span>文件上传</a>
+    <a href="day4.html"><span class="hint">下一天 · W8D4 →</span>联调测试修 bug</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W8D3 · 明天见 ⟩</footer>
+</body>
+</html>

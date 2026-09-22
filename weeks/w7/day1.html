@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W7D1 · Go 多阶段 Dockerfile | Go 全栈修炼手册</title>
+<meta name="description" content="Day 1：从「镜像为什么小」讲起的多阶段 Dockerfile——分层缓存、CGO_ENABLED=0 静态编译、alpine/scratch 运行阶段、ca-certificates 与 tzdata，附体积观察命令与练习。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w7d1">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 7 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 7 周</a> / Day 1</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 7 · DAY 1</span>
+    <span class="chip alt">预计 2.5–3 小时</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>Go 多阶段 Dockerfile</h1>
+  <p>本周的任务是把第 6 周跑通的全栈博客<b>交出去</b>：本地一键启动、云服务器上线。第 3 周我们已经用 <code>docker compose</code> 拉起过 MySQL 官方镜像，但那只是"用别人的镜像"；今天要<b>为自己的 Go 代码造镜像</b>——用多阶段构建，把一个 Gin 后端压进 60MB 以内的小盒子。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w7d1g1">能解释"把源码和 node_modules 全拷进镜像"错在哪，说清多阶段构建的核心思想</label></li>
+      <li><label><input type="checkbox" data-key="w7d1g2">能逐行讲出 10 行 Go 多阶段 Dockerfile：为什么 <code>COPY go.mod</code> 要放最前面、<code>CGO_ENABLED=0</code> 和 <code>-ldflags="-s -w"</code> 各管什么</label></li>
+      <li><label><input type="checkbox" data-key="w7d1g3">知道 alpine 运行阶段为什么必须装 <code>ca-certificates</code> 和 <code>tzdata</code>，缺了各出什么事故</label></li>
+      <li><label><input type="checkbox" data-key="w7d1g4">把第 6 周后端容器化，<code>docker images</code> 显示最终镜像 ≤ 60MB，<code>curl /health</code> 返回 200</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>课前须知</h2>
+    <div class="callout note"><p>本篇假设你的仓库结构和第 4/6 周一致：<code>backend/</code> 目录含 <code>go.mod</code>、<code>go.sum</code>、<code>cmd/server/main.go</code>，服务监听 <code>8080</code> 端口，并提供一个<b>不查数据库</b>的 <code>GET /health</code>（第 4 周写的）。今天所有命令都在 <code>backend/</code> 目录下执行。</p></div>
+    <div class="callout js"><p><b>给前端同学的一句话类比：</b>你从来不会把 <code>node_modules</code> 和 TS 源码部署到 CDN，只上传 <code>dist</code> 产物。Docker 多阶段构建就是这个思路的容器版——第一阶段是"厨房"（装满编译工具），第二阶段是"餐桌"（只端上最终那道菜：一个二进制文件）。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 反面教材：镜像为什么要小</h3>
+    <p>最"省事"的 Dockerfile 长这样，它能跑，但错得离谱：</p>
+    <pre><span class="code-label">Dockerfile（反面教材）</span><span class="k">FROM</span> golang:<span class="n">1.24</span>            <span class="c"># 完整 Debian 环境 + Go 工具链，基座就 850MB</span>
+<span class="k">WORKDIR</span> /app
+<span class="k">COPY</span> . .                <span class="c"># 整个仓库进镜像：源码、.git、连 frontend/node_modules 都拷</span>
+<span class="k">ENTRYPOINT</span> [<span class="s">"go"</span>, <span class="s">"run"</span>, <span class="s">"./cmd/server"</span>] <span class="c"># 每次启动都现场编译，冷启动几十秒</span></pre>
+    <p>构建完执行 <code>docker images</code>，你会看到 <b>1.2GB+</b>：node_modules 动辄四五百 MB，全被塞了进去；而运行这个容器真正需要的东西只有一个 15MB 的二进制。对比各种基座镜像的裸体积：</p>
+    <table>
+      <tr><th>镜像</th><th>裸体积（约）</th><th>里面有什么</th><th>适合当</th></tr>
+      <tr><td><code>golang:1.24</code></td><td>850 MB</td><td>Debian + 完整 Go 工具链 + gcc</td><td>builder 阶段</td></tr>
+      <tr><td><code>golang:1.24-alpine</code></td><td>230 MB</td><td>alpine + Go 工具链</td><td>builder 阶段（推荐）</td></tr>
+      <tr><td><code>alpine:3.20</code></td><td>7.8 MB</td><td>busybox 提供的极简 shell 和 apk 包管理器</td><td>运行阶段（推荐）</td></tr>
+      <tr><td><code>scratch</code></td><td>0 MB</td><td>字面意义上一无所有，连 shell 都没有</td><td>运行阶段（极限版）</td></tr>
+      <tr><td><code>nginx:1.27-alpine</code></td><td>53 MB</td><td>alpine + nginx 本体</td><td>明天的前端运行阶段</td></tr>
+    </table>
+    <p>体积直接影响三件事：<b>push/pull 速度</b>（云服务器带宽小，1GB 镜像一次发布好几分钟）、<b>攻击面</b>（镜像里每一个工具都是潜在漏洞）、<b>冷启动</b>（拉镜像越快，容器调度越稳）。</p>
+
+    <h3>2. 正确姿势：完整的多阶段 Dockerfile</h3>
+    <p>把下面这份文件保存为 <code>backend/Dockerfile</code>（文件名无后缀），<b>每一个指令今天都会讲到，直接可用</b>：</p>
+    <pre><span class="code-label">backend/Dockerfile</span><span class="c"># ---------- 阶段一：编译（builder，只在构建时存在）----------</span>
+<span class="k">FROM</span> golang:<span class="n">1.24</span>-alpine <span class="k">AS</span> builder
+
+<span class="k">WORKDIR</span> /app
+
+<span class="c"># 先只拷依赖清单——go.mod/go.sum 不变时，下面的 download 层永远命中缓存</span>
+<span class="k">COPY</span> go.mod go.sum ./
+<span class="k">RUN</span> go mod download
+
+<span class="c"># 再拷全部源码（配合 .dockerignore 剔除垃圾），改业务代码只重跑这一层之后</span>
+<span class="k">COPY</span> . .
+
+<span class="c"># 静态编译：CGO 关掉才不依赖 libc；-s 去符号表、-w 去调试信息，二进制再瘦 20–30%</span>
+<span class="k">RUN</span> CGO_ENABLED=<span class="n">0</span> GOOS=linux go build -ldflags=<span class="s">"-s -w"</span> -o /out/server ./cmd/server
+
+<span class="c"># ---------- 阶段二：运行（最终镜像只包含这一阶段）----------</span>
+<span class="k">FROM</span> alpine:<span class="n">3.20</span>
+
+<span class="c"># 两个"必装件"，为什么必需见下一节；--no-cache 表示装完即清 apk 索引，不留垃圾</span>
+<span class="k">RUN</span> apk add --no-cache ca-certificates tzdata
+
+<span class="k">ENV</span> TZ=Asia/Shanghai
+
+<span class="c"># 从第一阶段只取那个二进制，builder 阶段的 230MB 工具链统统不带</span>
+<span class="k">COPY</span> --from=builder /out/server /server
+
+<span class="c"># EXPOSE 只是文档声明，真正映射端口靠 docker run -p / compose 的 ports</span>
+<span class="k">EXPOSE</span> <span class="n">8080</span>
+
+<span class="k">ENTRYPOINT</span> [<span class="s">"/server"</span>]</pre>
+    <p>逐条拆解最容易考到的三个点：</p>
+    <table>
+      <tr><th>指令</th><th>为什么这样写</th></tr>
+      <tr><td><code>COPY go.mod go.sum ./</code> 放在 <code>COPY . .</code> 前面</td><td>Docker 镜像按"层"叠放，每层有缓存 key（内容哈希）。依赖清单很少变、源码天天变——先拷清单，则改代码时 <code>go mod download</code> 层直接 <code>CACHED</code> 跳过，构建从 1 分钟降到 5 秒。<b>反过来先 <code>COPY . .</code> 是新手第一大错</b>，每次构建都重新下载全部依赖</td></tr>
+      <tr><td><code>CGO_ENABLED=0</code></td><td>默认 Go 会链接系统 libc。alpine 用的是 musl 而不是 glibc，动态链接的二进制放进 alpine 会报 <code>not found</code> 或 <code>GLIBC_x.y not found</code>。关掉 CGO 产出纯静态二进制，放进 alpine 甚至 scratch 都能跑。验证：<code>go build</code> 后在宿主机执行 <code>file server</code>，输出含 <code>statically linked</code> 即合格</td></tr>
+      <tr><td><code>-ldflags="-s -w"</code></td><td><code>-w</code> 去掉 DWARF 调试信息，<code>-s</code> 去掉符号表。对生产运行零影响（panic 堆栈的行号会略糙，日志里错误信息仍然完整），二进制体积减 20–30%</td></tr>
+    </table>
+    <div class="callout tip"><p>Go 是"编译成单个静态二进制"的语言，天生适合容器化——不像 Node 镜像必须带 node 运行时和 node_modules，我们的最终镜像里<b>连 Go 本身都不需要</b>。</p></div>
+    <p>顺手记住指令速查：<code>FROM</code> 选基座、<code>WORKDIR</code> 定目录、<code>COPY</code> 搬文件、<code>RUN</code> 在镜像里执行命令（产生新层）、<code>ENV</code> 设环境变量、<code>EXPOSE</code> 声明端口、<code>ENTRYPOINT/CMD</code> 定启动命令。今天这份 Dockerfile 已覆盖全部常用指令。</p>
+
+    <h3>3. 运行阶段的两个保命包：ca-certificates 与 tzdata</h3>
+    <p>alpine 裸镜像 7.8MB 的意思是"几乎什么都没有"。以下两个包缺一个，线上就炸一类事故：</p>
+    <table>
+      <tr><th>包</th><th>不装的事故</th><th>报错长相</th></tr>
+      <tr><td><code>ca-certificates</code></td><td>后端<b>调外部 HTTPS 接口</b>时（第 8 周文件上传要调对象存储、接 GitHub OAuth 要调 api.github.com），Go 的 <code>net/http</code> 找不到根证书验证对方身份，直接拒绝连接</td><td><code>x509: certificate signed by unknown authority</code></td></tr>
+      <tr><td><code>tzdata</code></td><td>容器默认 UTC：日志/评论时间比北京时间差 8 小时；代码里 <code>time.LoadLocation("Asia/Shanghai")</code> 直接报错，因为时区数据库文件 <code>/usr/share/zoneinfo</code> 根本不存在</td><td><code>unknown time zone Asia/Shanghai</code></td></tr>
+    </table>
+    <p>配套动作：<code>ENV TZ=Asia/Shanghai</code> 让容器内进程默认时区生效；MySQL 侧第 3 周就配过 <code>loc=Local</code>，两边一起才是完整闭环。</p>
+    <div class="callout warn"><p><b>为什么不用 scratch 当默认运行阶段？</b>scratch（见今日练习 2）体积极限最小，但没有 shell——线上出问题时 <code>docker exec</code> 进不去、<code>nslookup</code> 不了、什么调试都做不了，且 <code>psql/curl</code> 全缺。学习阶段和绝大多数生产 Go 服务，<b>alpine 是体积与可运维性的最佳折中</b>。</p></div>
+
+    <h3>4. .dockerignore：别让垃圾进厨房</h3>
+    <p><code>COPY . .</code> 拷的是"构建上下文"——Docker 会先把整个目录打包发给守护进程，再按 .dockerignore 过滤。不过滤的代价：每次构建白传几百 MB、.git 历史进缓存、<b>.env 密钥进镜像层（镜像是会 push 到公网仓库的！）</b>。保存为 <code>backend/.dockerignore</code>：</p>
+    <pre><span class="code-label">backend/.dockerignore</span>.git
+.gitignore
+<span class="c"># 前端目录整体与依赖：后端镜像不需要</span>
+node_modules
+frontend/node_modules
+frontend/dist
+dist
+<span class="c"># 密钥绝不入镜像：运行时由 compose 的 environment/--env-file 注入</span>
+.env
+.env.*
+<span class="c"># 杂项</span>
+*.md
+.idea
+.vscode
+*.test
+coverage.out
+Dockerfile
+docker-compose*.yml</pre>
+    <div class="callout js"><p>对比前端认知：.dockerignore ≈ .gitignore，但控制的是"哪些文件进入构建上下文"。两者建议都配上，内容高度重合。</p></div>
+
+    <h3>5. 构建、运行与体积观察</h3>
+    <pre><span class="code-label">shell（在 backend/ 目录）</span><span class="c"># 1) 构建最终镜像（默认执行到最后一个 FROM）</span>
+$ docker build -t goblog-api:<span class="n">0.1</span> .
+$ docker images goblog-api
+REPOSITORY   TAG    SIZE
+goblog-api   <span class="n">0.1</span>    <span class="n">28</span>.4MB      <span class="c"># ← 记下这个数字</span>
+
+<span class="c"># 2) 单独看 builder 阶段有多大：--target 指定停在哪个阶段</span>
+$ docker build --target builder -t goblog-api:builder-tmp .
+$ docker images goblog-api:builder-tmp
+goblog-api   builder-tmp   <span class="n">310</span>MB      <span class="c"># 工具链 + 依赖缓存 + 源码，但它不会成为交付物</span>
+
+<span class="c"># 3) 逐层查看每层贡献了多少体积</span>
+$ docker history goblog-api:<span class="n">0.1</span> | head -<span class="n">8</span>
+
+<span class="c"># 4) 跑起来验证</span>
+$ docker run -d --name api-dev -p <span class="n">8080</span>:<span class="n">8080</span> goblog-api:<span class="n">0.1</span>
+$ curl -i http://localhost:<span class="n">8080</span>/health
+HTTP/<span class="n">1.1</span> <span class="n">200</span> OK
+{"code":<span class="n">0</span>,<span class="s">"message"</span>:<span class="s">"ok"</span>}
+$ docker rm -f api-dev            <span class="c"># 清理，明天用 compose 统一管</span></pre>
+    <p>典型结果对比：<b>反面教材 1.2GB+ → 多阶段 alpine 约 28MB → scratch 约 15MB</b>，缩小了 40 倍以上。把这三个数字记进笔记，第 8 周 README 里"我为什么这样设计部署"的素材就是它。</p>
+    <div class="callout note"><p>如果你的 <code>/health</code> 处理函数里带了 <code>SELECT 1</code> 探库：今天容器里的后端连不到你宿主机的 MySQL（DSN 写 localhost 会指向容器自己，这是明天起的高频坑，今天先预习）。两个办法：把 DSN 主机临时改成 <code>host.docker.internal:3306</code>（macOS/Windows 的 Docker Desktop 天然可用；Linux 云服务器需在 docker run 加 <code>--add-host=host.docker.internal:host-gateway</code>）；或者确认 /health 是第 4 周那种不碰数据库的轻量版。</p></div>
+
+    <h3>6. 体检：一个健康的 /health 长什么样</h3>
+    <p>整周的健康检查都靠它，确认你的后端有这样一个<b>不依赖数据库</b>的探针（第 4 周应已写过，没有就补上）：</p>
+    <pre><span class="code-label">backend/cmd/server/main.go（节选）</span>r := gin.Default()
+r.GET(<span class="s">"/health"</span>, <span class="k">func</span>(c *gin.Context) {
+    c.JSON(<span class="n">200</span>, gin.H{<span class="s">"code"</span>: <span class="n">0</span>, <span class="s">"message"</span>: <span class="s">"ok"</span>})
+})
+<span class="c">// 依赖型检查（查 DB）另开 /readyz，探针与就绪分开是行业惯例</span></pre>
+    <p>探针不查库的原因：healthcheck 如果依赖 MySQL，那么"数据库挂了"会让<b>每个</b>容器的状态都变红，还容易在启动依赖链里造成死锁式的循环等待。</p>
+
+    <h3>7. 两个实用约定：镜像标签与构建平台</h3>
+    <ul>
+      <li><b>标签（tag）</b>：<code>goblog-api:0.1</code> 里的冒号后就是 tag，不写默认 <code>latest</code>——生产大忌（你永远不知道 latest 是哪版）。练习阶段用日期或 git 短哈希：<code>docker build -t goblog-api:$(git rev-parse --short HEAD) .</code>，出问题能精确追回某次构建。</li>
+      <li><b>平台（platform）</b>：M 系列 Mac 构建出的镜像是 <code>linux/arm64</code>，直接推到 x86 云服务器会报 <code>exec format error</code>。本手册的路线是<b>代码上服务器现构</b>（W7D5），天然规避；将来若走镜像仓库，构建命令加 <code>--platform linux/amd64</code> 即可，今天先知道有这回事。</li>
+    </ul>
+    <h3>8. 构建机制速览：一次 docker build 到底发生了什么</h3>
+    <pre><span class="code-label">shell（观察一次构建的完整动线）</span>$ docker build -t goblog-api:<span class="n">0.2</span> .
+<span class="c"># ① 打包当前目录（扣除 .dockerignore）→ 发送给 Docker daemon（"transferring context"）</span>
+<span class="c"># ② 从第一条指令起逐条执行，每条产出一层；层哈希 = 指令文本 + 输入文件内容</span>
+<span class="c"># ③ 命中缓存的指令打印 CACHED，直接复用旧层；一旦某层失效，其后所有层全部重做</span>
+<span class="c"># ④ 只有【最后一个 FROM 阶段】的文件系统被组装成最终镜像</span></pre>
+    <table>
+      <tr><th>现象</th><th>解释</th></tr>
+      <tr><td>改一行 Go 代码，构建要 8 秒而不是 90 秒</td><td>builder 层的 <code>go mod download</code> 命中缓存，只重跑 <code>COPY . .</code> 与其后的编译层</td></tr>
+      <tr><td>第一次构建某条 <code>RUN</code> 特别慢，之后秒过</td><td>该层入缓存了；<code>docker builder du</code> 可以看缓存占了多少磁盘，<code>docker builder prune</code> 可清理</td></tr>
+      <tr><td>没改任何东西也整个重来</td><td>多半是 Dockerfile 前置指令的输入变了（如 go.sum 被 <code>go mod tidy</code> 重排）——层缓存对"内容字节"严格敏感</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：把第 6 周后端容器化（必做，45 分钟）</div>
+      <p>按讲义写 <code>backend/Dockerfile</code> + <code>backend/.dockerignore</code>，构建出 <code>goblog-api:0.1</code>，要求最终镜像 ≤ 60MB 且 <code>curl /health</code> 返回 200。</p>
+      <p><b>参考答案（验收动作）：</b></p>
+      <pre><span class="code-label">shell</span>$ docker build -t goblog-api:<span class="n">0.1</span> .
+$ docker images --format <span class="s">"table {{.Repository}}\t{{.Tag}}\t{{.Size}}"</span> goblog-api
+$ docker run -d --name api-dev -p <span class="n">8080</span>:<span class="n">8080</span> goblog-api:<span class="n">0.1</span>
+$ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localhost:<span class="n">8080</span>/health
+<span class="n">200</span></pre>
+      <p>构建阶段最常见的报错是 <code>go: downloading ...</code> 卡住（网络问题，给 Docker Desktop 配代理或换镜像源）与 <code>pattern ./cmd/server: directory not found</code>（入口路径不对，按你实际 main 包位置改，比如 <code>go build -o /out/server .</code>）。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：scratch vs alpine 体积对比（20 分钟）</div>
+      <p>把运行阶段整段替换为 scratch 版本，重新构建为 <code>goblog-api:scratch</code>，对比 <code>docker images</code> 两个体积；再试着 <code>docker exec -it api-dev sh</code> 进容器，观察现象。</p>
+      <pre><span class="code-label">Dockerfile（scratch 运行阶段）</span><span class="k">FROM</span> scratch
+
+<span class="c"># scratch 连证书和时区文件都没有，从 builder 阶段（golang:alpine 里自带）抠出来</span>
+<span class="k">COPY</span> --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+<span class="k">COPY</span> --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+<span class="k">COPY</span> --from=builder /out/server /server
+
+<span class="k">ENTRYPOINT</span> [<span class="s">"/server"</span>]</pre>
+      <p><b>预期：</b>体积再小 12MB 左右（约等于 alpine 基座大小）；<code>docker exec</code> 报 <code>OCI runtime exec failed: exec: "sh": executable file not found</code>——这就是"不能调试"的实感。验证完换回 alpine 方案。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：分层缓存实验（15 分钟）</div>
+      <p>三轮构建并记录 <code>docker build</code> 输出里 <code>CACHED</code> 的出现情况：① 什么都不改再 build 一次；② 只在 <code>cmd/server/main.go</code> 里改一行注释后 build；③ 在 <code>go.mod</code> 里加一行（比如随便加一个 replace 注释使其内容变化）后 build。</p>
+      <p><b>预期结论：</b>① 全部 CACHED，秒完；② <code>COPY go.mod</code> 和 <code>go mod download</code> 仍 CACHED，从 <code>COPY . .</code> 层开始重做；③ 从 <code>COPY go.mod go.sum ./</code> 层开始全部失效——这正是"清单与源码分两次 COPY"的价值。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：把体积数据写进 README（10 分钟）</div>
+      <p>在 <code>backend/README.md</code> 增补「容器化」小节：Dockerfile 位置、build/run 命令、alpine 与 scratch 的体积对比数字。<b>用数据说话</b>是作品集项目 README 的基本素养，第 8 周验收会检查。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>先 <code>COPY . .</code> 再 <code>go mod download</code></td><td>每次改代码都重新下载依赖，构建慢十倍</td><td>清单与源码分两次 COPY，顺序不能反</td></tr>
+      <tr><td>忘了 <code>CGO_ENABLED=0</code></td><td>镜像构建"成功"，容器一起就 <code>exit code 127</code>、日志报 <code>/lib64/ld-linux-x86-64.so.2 not found</code></td><td>静态编译；用 <code>file server</code> 确认 <code>statically linked</code></td></tr>
+      <tr><td>alpine 忘装 ca-certificates</td><td>本地开发一切正常，容器里调任何 HTTPS 接口报 <code>x509: certificate signed by unknown authority</code></td><td><code>apk add --no-cache ca-certificates</code></td></tr>
+      <tr><td>把 EXPOSE 当端口映射</td><td><code>curl localhost:8080</code> 拒绝连接</td><td>EXPOSE 只是声明，必须 <code>-p 8080:8080</code>（或 compose 的 ports）</td></tr>
+      <tr><td>builder 用了 debian 基座</td><td>最终镜像莫名 900MB——多半是把 <code>golang:1.24</code> 当了两阶段的基座</td><td>builder 用 golang:1.24-alpine；最终镜像大小 ≈ alpine 基座 + 二进制，超纲即有诈</td></tr>
+      <tr><td>没有 .dockerignore</td><td>构建巨慢、镜像虚胖，<code>docker history</code> 里赫然一行 <code>COPY . .</code> 几百 MB，.env 密钥躺在层里</td><td>今天这份 .dockerignore 直接抄走，纳入 Git</td></tr>
+      <tr><td>go.sum 未同步就构建</td><td><code>missing go.sum entry</code>，本地 <code>go run</code> 却正常</td><td>提交前永远 <code>go mod tidy</code>，go.mod/go.sum 成对进 Git</td></tr>
+      <tr><td>容器里 DSN 写 localhost</td><td>日志刷 <code>dial tcp 127.0.0.1:3306: connect: connection refused</code></td><td>容器内的 localhost 是容器自己。今天临时用 host.docker.internal，明天 compose 网络彻底解决</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>多阶段构建（multi-stage）</td><td>一个 Dockerfile 里多个 FROM，最终镜像只保留最后一个阶段的文件系统</td></tr>
+      <tr><td>静态链接（上）</td><td>Go 交叉编译能力同源：GOOS/GOARCH 一变即产出对应平台的独立二进制</td></tr>
+      <tr><td>构建上下文（build context）</td><td>docker build 时先打包发给守护进程的当前目录，.dockerignore 控制其内容</td></tr>
+      <tr><td>apk add --no-cache</td><td>alpine 装包不留索引缓存，镜像层的标准姿势</td></tr>
+      <tr><td>层缓存（layer cache）</td><td>每条 Dockerfile 指令≈一层，指令内容与文件哈希未变则跳过（CACHED）</td></tr>
+      <tr><td>静态链接</td><td>二进制自带全部运行所需代码，不依赖系统 libc，是"一个文件到处跑"的前提</td></tr>
+      <tr><td>scratch</td><td>Docker 的空镜像，体积 0，Go 静态二进制极限部署方案</td></tr>
+      <tr><td>层缓存（build cache）</td><td>逐指令执行、按内容哈希复用旧层，<code>docker builder prune</code> 可清理</td></tr>
+      <tr><td>就绪探针 /readyz</td><td>与存活探针 /health 分工：前者查依赖（DB 可达），后者只证明进程活着</td></tr>
+    </table>
+    <div class="callout tip"><p>今日一句话总结：<b>把"工具链留在厨房，只把菜端上桌"贯彻到每一条 Dockerfile 指令里</b>——先清单后源码是它的缓存形态，多阶段是它的体积形态，.dockerignore 是它的卫生形态。明天的前端篇会原样复用这套思想（node 构建阶段 + nginx 运行阶段）。</p></div>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w7d1c1"><code>backend/Dockerfile</code> 两阶段构建成功，最终镜像 ≤ 60MB，<code>docker images</code> 数字记进了笔记</label></li>
+      <li><label><input type="checkbox" data-key="w7d1c2"><code>docker run -p 8080:8080</code> 后 <code>curl /health</code> 返回 200</label></li>
+      <li><label><input type="checkbox" data-key="w7d1c3">能口述"为什么 COPY go.mod 必须排在 COPY . 前面"，并用练习 3 的三轮 CACHED 输出佐证</label></li>
+      <li><label><input type="checkbox" data-key="w7d1c4">scratch 实验完成，能说出 <code>x509</code> 报错和"exec 不进去"两个后果的成因</label></li>
+      <li><label><input type="checkbox" data-key="w7d1c5"><code>.dockerignore</code> 已就位，<code>docker history</code> 确认镜像里没有 node_modules 与 .env</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../index.html"><span class="hint">← 回到</span>8 周路线总览</a>
+    <a href="day2.html"><span class="hint">下一天 · W7D2 →</span>前端构建 + Nginx</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W7D1 · 把每个镜像都当作品打磨 · 明天见 ⟩</footer>
+</body>
+</html>

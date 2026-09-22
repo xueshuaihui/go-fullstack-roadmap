@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W5D3 · Mutex 与竞态检测 | Go 全栈修炼手册</title>
+<meta name="description" content="Day 3：map 并发写 fatal error、sync.Mutex 与 defer 解锁、RWMutex 读多写少、死锁四条件、sync/atomic 原子计数、go run -race 竞态报告逐行解读，含制造竞态→定位→修复完整练习。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w5d3">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 5 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day3.html">第 5 周</a> / Day 3</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 5 · DAY 3</span>
+    <span class="chip alt">预计 2.5–3 小时</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>Mutex 与竞态检测</h1>
+  <p>昨天说"状态大家改时用锁"，今天正面迎战。你会先<b>亲手让程序崩溃</b>——多个 goroutine 同时写一个 map，Go 会毫不留情地当场判死刑；然后学会两样武器：<code>sync.Mutex</code>（互斥锁）保护共享状态，<code>-race</code>（竞态检测器）抓出你没锁漏的地方。<b>「并发代码必须过 <code>go test -race</code>」是 Go 团队的工程底线，也是本手册第 5 周验收标准第三条。</b></p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w5d3g1">跑出一次 <code>fatal error: concurrent map writes</code>，能解释它为什么比数据错乱"更幸运"</label></li>
+      <li><label><input type="checkbox" data-key="w5d3g2">会用 <code>Mutex.Lock/Unlock</code> + <code>defer</code> 保护临界区，知道锁要"抱住最小代码段"</label></li>
+      <li><label><input type="checkbox" data-key="w5d3g3">知道 RWMutex 适合读多写少、atomic 适合单个计数器，并能说出死锁的四个必要条件</label></li>
+      <li><label><input type="checkbox" data-key="w5d3g4">拿到一份 <code>-race</code> 报告能看懂：谁写、谁读、哪个变量、哪两行代码</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>课前须知：给 JS 开发者的一句话</h2>
+    <div class="callout js"><p>你过去几乎不需要"锁"这个概念：JS 单线程，一个函数从第一行到最后一行不会被人插队，这就是天然的原子性。Go 里同样十行代码，可能被另一个核上的 goroutine 从中间劈开穿插执行。<b>锁的本质，就是人为把你选中的几行代码变回"JS 那样不可打断的一整块"。</b></p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 案发现场：并发写 map 直接 fatal error</h3>
+    <p>Go 的内置 map <b>不是并发安全的</b>，它甚至自带"并发写报警器"。day2 练习 2 里"不加锁 append / 多个 goroutine 写 map"的遗留问题，今天正式引爆：</p>
+    <pre><span class="code-label">main.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">fmt</span>
+    <span class="t">sync</span>
+)
+
+<span class="k">func</span> main() {
+    m := <span class="k">make</span>(<span class="k">map</span>[<span class="t">int</span>]<span class="t">int</span>)
+    <span class="k">var</span> wg <span class="t">sync</span>.WaitGroup
+    <span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="n">1000</span>; i++ {
+        wg.Add(<span class="n">1</span>)
+        <span class="k">go</span> <span class="k">func</span>(n <span class="t">int</span>) {
+            <span class="k">defer</span> wg.Done()
+            m[n] = n <span class="c">// 多个 goroutine 同时改同一张 map 的内部结构</span>
+        }(i)
+    }
+    wg.Wait()
+    fmt.Println(<span class="k">len</span>(m))
+}</pre>
+    <pre><span class="code-label">运行结果（不是 error，是 fatal error）</span>$ go run main.go
+fatal error: concurrent map writes
+
+goroutine 27 [running]:
+runtime.mapassign_fast64(...)
+main.main.func1(0x1a?)
+        /Users/you/w5day3/main.go:14 +0x5c
+created by main.main in goroutine 1
+        /Users/you/w5day3/main.go:12 +0x88
+exit status 2</pre>
+    <div class="callout tip"><p>注意用词：这是 <code>fatal error</code>，<b>不可 recover、直接杀死进程</b>。换个角度它是幸运的——map 帮你当场抓到现行。更可怕的是那些"不崩溃但结果错"的竞态（比如练习 2 里不加锁的 append，偶尔少几个元素，没人发现）。所以光靠 map 报警远远不够，引出今天的二号主角 <code>-race</code>。</p></div>
+
+    <h3>2. sync.Mutex：把一段代码变成"独舞"</h3>
+    <p>互斥锁只有两个动作：<code>Lock()</code>（拿到钥匙进屋，别人只能在门外等）和 <code>Unlock()</code>（出来还钥匙）。规范写法是<b>拿到锁的下一行就 defer 解锁</b>，保证任何 return/panic 路径都不会把锁忘在手里：</p>
+    <pre><span class="k">var</span> mu <span class="t">sync</span>.Mutex
+<span class="k">var</span> m = <span class="k">make</span>(<span class="k">map</span>[<span class="t">int</span>]<span class="t">int</span>)
+
+<span class="k">func</span> write(n <span class="t">int</span>) {
+    mu.Lock()
+    <span class="k">defer</span> mu.Unlock() <span class="c">// defer 让"锁住的范围"= 函数体，永不泄漏</span>
+    m[n] = n
+}</pre>
+    <p>把上面练习代码里的 <code>m[n] = n</code> 用锁包住，1000 个 goroutine 瞬间安分。两条纪律：</p>
+    <ul>
+      <li><b>临界区越小越好。</b>只把真正碰共享变量的语句锁进去；在锁里做网络请求、sleep，等于抱着麦克风不让别人开会——并发度归零。</li>
+      <li><b>同一个数据的每一处读写都要过同一把锁。</b>99 处加锁 + 1 处裸奔 = 没加锁。读操作也一样（map 并发读+并发写同样是 fatal）。</li>
+    </ul>
+    <div class="callout js"><p>JS 里 <code>Mutex</code> 没有对应物，硬要类比：<code>Lock()</code> 之后的代码块 ≈ 一个不可被事件循环打断的同步函数。但别忘了 Go 里门外真的站着一排等着的 goroutine，它们会被真正阻塞（且不吃 CPU，调度器直接让它们睡）。</p></div>
+
+    <h3>3. sync.RWMutex：读多写少的优化</h3>
+    <p>普通 Mutex 连"两个人同时<b>只读</b>"都要排队——其实读读之间不会冲突。<code>RWMutex</code> 把锁分成两种：<code>RLock/RUnlock</code>（读锁，可多人同时持有）与 <code>Lock/Unlock</code>（写锁，独占）。适合缓存、配置这类"天天有人查、偶尔有人改"的数据：</p>
+    <pre><span class="k">var</span> rw <span class="t">sync</span>.RWMutex
+<span class="k">var</span> cache = <span class="k">map</span>[<span class="t">string</span>]<span class="t">string</span>{<span class="s">"k"</span>: <span class="s">"v"</span>}
+
+<span class="k">func</span> get(k <span class="t">string</span>) <span class="t">string</span> {
+    rw.RLock()      <span class="c">// 读锁：成百上千个读者可同时进入</span>
+    <span class="k">defer</span> rw.RUnlock()
+    <span class="k">return</span> cache[k]
+}
+
+<span class="k">func</span> set(k, v <span class="t">string</span>) {
+    rw.Lock()       <span class="c">// 写锁：独占，来得晚的读者全部排队</span>
+    <span class="k">defer</span> rw.Unlock()
+    cache[k] = v
+}</pre>
+    <div class="callout warn"><p>别反射性地"读多就用 RWMutex"。读锁本身也有计数开销，读操作极短（一次 map 取值）时 RWMutex 常比普通 Mutex <b>更慢</b>；而且写者长期抢不到独占权会饿死。默认用 Mutex，压测证明读锁是瓶颈再换。</p></div>
+
+    <h3>4. 死锁四要素：知道才能避开</h3>
+    <p>锁用过头的结局是死锁（deadlock）：所有人都在等所有人，谁也无法前进。学术上四个条件同时成立才会死锁，<b>破坏任意一条即可预防</b>：</p>
+    <table>
+      <tr><th>条件</th><th>含义</th><th>常用破解</th></tr>
+      <tr><td>互斥</td><td>资源（锁）同一时刻只能被一人持有</td><td>改无锁结构（atomic）或 channel</td></tr>
+      <tr><td>持有并等待</td><td>拿着一把锁的同时去等另一把</td><td>一次把所有锁按固定顺序拿齐</td></tr>
+      <tr><td>不可剥夺</td><td>锁不能被外力抢走，只能持有者自己放</td><td>带超时的等待（Go 锁不支持，context/channel 可模拟）</td></tr>
+      <tr><td>循环等待</td><td>A 等 B 的锁、B 等 A 的锁，成环</td><td><b>全局约定加锁顺序</b>（最实用），杜绝交叉持锁</td></tr>
+    </table>
+    <p>Go 运行时能检测到"所有 goroutine 都睡着"这种全局死锁并直接 <code>fatal error: all goroutines are asleep - deadlock!</code>；但两个 goroutine 互等、其余 goroutine 还在干活的那种<b>局部死锁</b>，运行时救不了你，只能靠 code review 和压测。</p>
+
+    <h3>5. sync/atomic：单个数字的无锁计数</h3>
+    <p><code>counter++</code> 看着一行，机器上是"读-改-写"三步，两个 goroutine 交错就丢更新。如果只是<b>一个数字</b>的增减比较，用 <code>sync/atomic</code> 让 CPU 直接保证这三步不可分，比锁轻得多：</p>
+    <pre><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">fmt</span>
+    <span class="t">sync</span>
+    <span class="t">sync/atomic</span>
+)
+
+<span class="k">func</span> main() {
+    <span class="k">var</span> counter <span class="t">int64</span>
+    <span class="k">var</span> wg <span class="t">sync</span>.WaitGroup
+    <span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="n">10000</span>; i++ {
+        wg.Add(<span class="n">1</span>)
+        <span class="k">go</span> <span class="k">func</span>() {
+            <span class="k">defer</span> wg.Done()
+            atomic.AddInt64(&amp;counter, <span class="n">1</span>) <span class="c">// 原子自增，永丢不了</span>
+        }()
+    }
+    wg.Wait()
+    fmt.Println(atomic.LoadInt64(&amp;counter)) <span class="c">// 稳定输出 10000</span>
+}</pre>
+    <div class="callout note"><p>选型速查：<b>单数字加减 → atomic；复合结构（map/struct/多字段一致性）→ Mutex；数据需要在 goroutine 间移交所有权 → channel。</b>拿不准就用 Mutex，它最不容易用错。</p></div>
+
+    <h3>6. <code>-race</code>：让隐形竞态现形</h3>
+    <p>把今天学到的串起来——下面这段只有一个共享 int、不崩溃、多数时候"看起来对"，只有竞态检测器能抓它：</p>
+    <pre><span class="code-label">main.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">fmt</span>
+    <span class="t">sync</span>
+)
+
+<span class="k">func</span> main() {
+    <span class="k">var</span> wg <span class="t">sync</span>.WaitGroup
+    count := <span class="n">0</span>
+    <span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="n">1000</span>; i++ {
+        wg.Add(<span class="n">1</span>)
+        <span class="k">go</span> <span class="k">func</span>() {
+            <span class="k">defer</span> wg.Done()
+            count++ <span class="c">// 第 13 行：读-改-写无保护</span>
+        }()
+    }
+    wg.Wait()
+    fmt.Println(count) <span class="c">// 每次输出都不同：873、921、956……</span>
+}</pre>
+    <pre><span class="code-label">shell</span>$ go run -race main.go   <span class="c"># 测试时用 go test -race ./...</span>
+==================
+WARNING: DATA RACE
+Write at 0x00c0000b4028 by goroutine 9:
+  main.main.func1()
+      /Users/you/w5day3/main.go:13 +0x38
+
+Previous write at 0x00c0000b4028 by goroutine 7:
+  main.main.func1()
+      /Users/you/w5day3/main.go:13 +0x4c
+
+Goroutine 9 (running) created at:
+  main.main()
+      /Users/you/w5day3/main.go:11 +0x5c
+==================
+923
+Found 2 data race(s)
+exit status 66</pre>
+    <p>逐行认脸：<b>① <code>WARNING: DATA RACE</code></b> 开头即有竞态；<b>② <code>Write at 0x...</code></b> 谁在何时访问了同一块内存（Write/Read）；<b>③ <code>Previous write ... by goroutine 7</code></b> 上一次访问是谁——两次堆栈就是冲突的两名凶手，直接给出文件行号；<b>④ <code>Goroutine created at</code></b> 涉案 goroutine 在哪被 <code>go</code> 出来的；<b>⑤ 末尾 <code>Found N data race(s)</code></b> 且进程以非 0 退出码失败——CI 里 <code>go test -race</code> 正是靠退出码卡住合并的。</p>
+    <div class="callout warn"><p><code>-race</code> 有性能开销（约 2–10 倍），<b>永远不要带进生产构建</b>；它只能发现"实际发生过的"交错，没跑到的路径不代表没竞态。所以它必须常驻测试环节，而不是出事后才想起。</p></div>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：制造 → 定位 → 修复一条龙（必做，30 分钟）</div>
+      <p>用讲义第 6 节的 <code>count++</code> 程序完成三步：① 不加任何保护 <code>go run</code> 三遍，记录三个不同的错误结果；② <code>go run -race</code> 抓到报告，指出报告里"两名凶手"分别是哪两个 goroutine、哪一行代码；③ 分别用 <b>Mutex</b> 和 <b>atomic</b> 两种方式修复，确认输出恒为 1000 且 <code>-race</code> 干净（无 WARNING）。</p>
+      <details><summary>参考答案</summary>
+        <pre><span class="c">// 修复 A：Mutex</span>
+<span class="k">var</span> mu <span class="t">sync</span>.Mutex
+mu.Lock()
+count++
+mu.Unlock()
+
+<span class="c">// 修复 B：atomic（count 需改成 int64）</span>
+atomic.AddInt64(&amp;count, <span class="n">1</span>)</pre>
+        <p>报告中 <code>Write at 0x00c...</code> 与 <code>Previous write ... by goroutine 7</code> 都指向 main.go 第 13 行的 <code>count++</code>——两处写、无任何同步，属于最典型的写写竞态。</p>
+      </details>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：并发安全计数器结构体（25 分钟）</div>
+      <p>把练习 1 封装成类型：定义 <code>type Counter struct { mu sync.Mutex; n int }</code>，提供方法 <code>Inc()</code> 与 <code>Value() int</code>，10 个 goroutine 各 Inc 100 次，最终 Value 恒为 1000。<b>注意方法必须用指针接收者</b>——想想为什么（提示：值接收者锁的是副本）。</p>
+      <details><summary>参考答案</summary>
+        <pre><span class="k">type</span> Counter <span class="k">struct</span> {
+    mu <span class="t">sync</span>.Mutex
+    n  <span class="t">int</span>
+}
+
+<span class="k">func</span> (c *Counter) Inc() {
+    c.mu.Lock()
+    <span class="k">defer</span> c.mu.Unlock()
+    c.n++
+}
+
+<span class="k">func</span> (c *Counter) Value() <span class="t">int</span> {
+    c.mu.Lock()
+    <span class="k">defer</span> c.mu.Unlock()
+    <span class="k">return</span> c.n
+}
+
+<span class="c">// 使用时：</span>
+c := &amp;Counter{} <span class="c">// 注意是 &amp;，Counter 不可拷贝</span></pre>
+        <p>若写成值接收者 <code>func (c Counter) Inc()</code>，每次调用锁的、改的都是 c 的<b>副本</b>，原值纹丝不动，且 <code>go vet</code> 会报 <code>passes lock by value</code>。这个类型模板就是你以后所有"内存 session 表 / 内存统计面板"的标准底子。</p>
+      </details>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：读多写少的 RWMutex 实测（20 分钟）</div>
+      <p>写一个 <code>map[string]int</code> 缓存，启动 100 个只读 goroutine + 5 个写 goroutine（各跑 1 万次）。先全程用 Mutex，再换成 RWMutex（读走 RLock），用 <code>time.Since</code> 比较两种实现总耗时。把结论写进笔记：你的机器上谁赢了？和讲义第 3 节的警告对得上吗？</p>
+      <details><summary>参考答案要点</summary>
+        <p>读操作只有一行 map 取值时，RWMutex 与 Mutex 差距通常在一成上下，甚至 Mutex 略快（读锁计数也有开销）；把读操作改重（循环拼接字符串）后 RWMutex 才明显赢。结论：<b>换锁之前先压测，别凭教条。</b>本练习两种写法都必须过 <code>go run -race</code>。</p>
+      </details>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>只锁写、不锁读</td><td>map 并发读写照样 fatal error；struct 读到"半更新"状态</td><td>同一数据的<b>所有</b>读写路径使用同一把锁</td></tr>
+      <tr><td>忘 Unlock / 提前 return</td><td>第一轮正常，第二轮 Lock 永久阻塞——程序挂死</td><td>Lock 的下一行永远写 <code>defer Unlock()</code></td></tr>
+      <tr><td>锁的粒度过大</td><td>锁里 sleep/发 HTTP，全部 goroutine 排长队，"并发了但没完全并发"</td><td>临界区缩到几行以内；耗时操作放锁外，结果拿回来再加锁合并</td></tr>
+      <tr><td>把带锁结构体按值传参</td><td><code>go vet</code> 报 <code>copylocks</code>；锁副本导致两边各锁各的</td><td>指针接收者 + 传 <code>*T</code>；WaitGroup/Mutex 同理不可拷贝</td></tr>
+      <tr><td>对 atomic 的错觉</td><td>两个 atomic 各自安全，但 <code>if n &lt; limit { n++ }</code> 两步合起来照样超卖</td><td>跨多个值的复合判断要么用锁，要么用 <code>CompareAndSwap</code> 类接口</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>数据竞态（data race）</td><td>≥2 个 goroutine 无同步地访问同一内存且至少一个是写，结果取决于交错顺序</td></tr>
+      <tr><td>临界区（critical section）</td><td>触碰共享数据、必须互斥执行的那几行代码</td></tr>
+      <tr><td>Mutex / RWMutex</td><td>互斥锁 / 读写锁（多读单写），Go 最常用两把锁</td></tr>
+      <tr><td>sync/atomic</td><td>CPU 级原子操作，适合单个整数/指针的无锁修改</td></tr>
+      <tr><td>-race</td><td>编译期插桩的竞态检测器，<code>go run -race</code> / <code>go test -race</code>，CI 标配</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w5d3c1">亲眼跑出过 <code>fatal error: concurrent map writes</code>，并能说出"内置 map 不是并发安全的"</label></li>
+      <li><label><input type="checkbox" data-key="w5d3c2">练习 1 完成：同一程序先 -race 抓到报告，修复后再 -race 全绿</label></li>
+      <li><label><input type="checkbox" data-key="w5d3c3">练习 2 完成：Counter 用指针接收者，并给同事讲清值接收者锁副本的荒谬</label></li>
+      <li><label><input type="checkbox" data-key="w5d3c4">能背出死锁四要素，并说出"固定加锁顺序"破的是哪一条</label></li>
+      <li><label><input type="checkbox" data-key="w5d3c5">能默写 atomic 计数器示例的 import 路径 <code>sync/atomic</code> 和函数名 <code>AddInt64/LoadInt64</code></label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day2.html"><span class="hint">上一天 · W5D2 ←</span>channel 与 select</a>
+    <a href="day4.html"><span class="hint">下一天 · W5D4 →</span>context 取消与超时</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W5D3 · 明天见 ⟩</footer>
+</body>
+</html>

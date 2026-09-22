@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W6D4 · 路由守卫与 axios 拦截器 | Go 全栈修炼手册</title>
+<meta name="description" content="Day 4：ProtectedRoute 路由守卫带 redirect 回跳；响应拦截器实现 401 → refresh token 静默换发并重试原请求，并发 401 只刷新一次，refresh 也失败才清 token 跳登录。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w6d4">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 6 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day4.html">第 6 周</a> / Day 4</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 6 · DAY 4</span>
+    <span class="chip alt">预计 3 小时</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>路由守卫与 axios 拦截器</h1>
+  <p>本周的<b>重头戏</b>。前三天的应用有个假象：好像永远登录着。今天补上两块真·工程能力——①<b>路由守卫</b>：没登录的人根本进不了 <code>/post/new</code>；②<b>401 静默续期</b>：accessToken（15 分钟）过期时，用户毫无感知地被 refresh token 换发新 token 并重试原请求，只有 refreshToken（7 天）也过期才跳登录。这正是第 4 周后端留的钩子，今天前端把它接完。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w6d4g1">写出 <code>ProtectedRoute</code>：未登录访问受保护页被重定向到 <code>/login?redirect=原路径</code></label></li>
+      <li><label><input type="checkbox" data-key="w6d4g2">登录成功后自动回跳原目标，而不是永远摔回首页</label></li>
+      <li><label><input type="checkbox" data-key="w6d4g3">响应拦截器完成 401 → 刷新 → 重试原请求全链路，且并发 401 只触发一次刷新</label></li>
+      <li><label><input type="checkbox" data-key="w6d4g4">refresh 也失效时清空 token 并跳登录，不死循环</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>课前须知：先把时序图刻进脑子</h2>
+    <div class="callout js"><p><b>1. 正常链路：</b>业务请求 → 拦截器带 accessToken → 后端 200 → 拆包返回。99% 的请求走这条路，静默刷新只在剩下 1% 出现。</p></div>
+    <div class="callout js"><p><b>2. 续期链路：</b>业务请求 → <b>401</b> → 拿 refreshToken 调 <code>POST /auth/refresh</code> → 成功：把新双 token 写回 localStorage → <b>用新 token 重试原请求</b> → 用户看到的仍是一个成功的 Promise，全程无感。</p></div>
+    <div class="callout js"><p><b>3. 兜底链路：</b>refresh 接口也失败（refreshToken 过期/被撤销）→ 清三个 localStorage 键 → 跳 <code>/login?redirect=当前页</code>。三张图对应拦截器的三个分支，今天的代码就是把它们写出来。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 为什么守卫要在「首次 render」就知道登录态</h3>
+    <p>SPA 刷新即失忆：内存里的 user 没了，只剩 localStorage。如果登录态靠 <code>useEffect</code> 异步恢复，守卫在恢复完成前会认为「未登录」，用户会看到<b>闪一下登录页再弹回来</b>。所以昨天的 useAuth 特意用了「useState 同步初始化」——今天兑现它的价值：守卫读的是同步就能拿到的 <code>localStorage.getItem('accessToken')</code>。</p>
+
+    <h3>2. ProtectedRoute 组件</h3>
+    <pre><span class="code-label">jsx</span><span class="c">// src/components/ProtectedRoute.jsx</span>
+<span class="k">import</span> { Navigate, useLocation } <span class="k">from</span> <span class="s">'react-router-dom'</span>
+
+<span class="k">export function</span> <span class="t">ProtectedRoute</span>({ children }) {
+  <span class="c">// 同步读，绝不用 useEffect 异步判断——那就会闪烁</span>
+  <span class="k">const</span> token = localStorage.<span class="t">getItem</span>(<span class="s">'accessToken'</span>)
+  <span class="k">const</span> location = <span class="t">useLocation</span>()
+
+  <span class="k">if</span> (!token) {
+    <span class="c">// 把被拦下的目标路径编码进 redirect 参数，登录成功后回跳</span>
+    <span class="k">const</span> redirect = encodeURIComponent(location.pathname + location.search)
+    <span class="k">return</span> &lt;<span class="t">Navigate</span> to={<span class="s">`/login?redirect=${redirect}`</span>} replace /&gt;
+  }
+  <span class="k">return</span> children
+}</pre>
+    <pre><span class="code-label">jsx</span><span class="c">// src/App.jsx —— 用守卫包住需要登录的路由</span>
+&lt;<span class="t">Route</span> path=<span class="s">"/post/new"</span>
+  element={&lt;<span class="t">ProtectedRoute</span>&gt;&lt;<span class="t">Editor</span> /&gt;&lt;/<span class="t">ProtectedRoute</span>&gt;} /&gt;
+&lt;<span class="t">Route</span> path=<span class="s">"/post/:id/edit"</span>
+  element={&lt;<span class="t">ProtectedRoute</span>&gt;&lt;<span class="t">Editor</span> /&gt;&lt;/<span class="t">ProtectedRoute</span>&gt;} /&gt;
+&lt;<span class="t">Route</span> path=<span class="s">"/me"</span>
+  element={&lt;<span class="t">ProtectedRoute</span>&gt;&lt;<span class="t">Profile</span> /&gt;&lt;/<span class="t">ProtectedRoute</span>&gt;} /&gt;
+<span class="c">// 列表 / 详情 / 登录 / 注册不包：游客可读</span></pre>
+    <div class="callout note"><p>另一种写法是 v6.4+ 的 <code>React.lazy + loader</code> 路由守卫或布局路由 <code>&lt;Route element={&lt;ProtectedLayout/&gt;}&gt;</code> 包一批子路由。本质相同（同步检查 + Navigate），先掌握上面这种，迁移到布局路由只是换个位置放组件。</p></div>
+
+    <h3>3. 登录成功后回跳原目标</h3>
+    <pre><span class="code-label">jsx</span><span class="c">// src/pages/Login.jsx —— 在昨天的基础上补 3 行</span>
+<span class="k">import</span> { useNavigate, useSearchParams } <span class="k">from</span> <span class="s">'react-router-dom'</span>
+
+<span class="k">const</span> [searchParams] = <span class="t">useSearchParams</span>()
+<span class="k">const</span> redirect = searchParams.<span class="t">get</span>(<span class="s">'redirect'</span>)
+
+<span class="c">// 登录 try 块里，替换原来的 navigate('/')：</span>
+<span class="k">const</span> target = redirect ? <span class="t">decodeURIComponent</span>(redirect) : <span class="s">'/'</span>
+<span class="t">navigate</span>(target, { replace: <span class="k">true</span> }) <span class="c">// replace：回跳后按返回键不应再回登录页</span></pre>
+    <div class="callout warn"><p>只回跳站内路径。若哪天做成开放跳转（<code>redirect=https://evil.com</code> 也照跳），就成了钓鱼跳板。学习项目最简单的防线：判断 <code>target.startsWith('/')</code> 才用，否则回首页。</p></div>
+
+    <h3>4. 响应拦截器完整代码：401 → 刷新 → 重试</h3>
+    <p>把 day1 的骨架升级成完整版。<b>先看不含并发控制的主干</b>，下一节再加锁：</p>
+    <pre><span class="code-label">js</span><span class="c">// src/api/http.js —— 用下面这份完整实现替换 day1 的骨架
+// （文件顶部 import 与 create 实例保持不变）</span></pre>
+    <pre><span class="code-label">js</span><span class="k">import</span> axios <span class="k">from</span> <span class="s">'axios'</span>
+
+<span class="k">export const</span> http = axios.<span class="t">create</span>({ baseURL: <span class="s">'/api/v1'</span>, timeout: <span class="n">10000</span> })
+
+http.interceptors.request.<span class="t">use</span>((config) =&gt; {
+  <span class="k">const</span> token = localStorage.<span class="t">getItem</span>(<span class="s">'accessToken'</span>)
+  <span class="k">if</span> (token) config.headers.Authorization = <span class="s">`Bearer ${token}`</span>
+  <span class="k">return</span> config
+})
+
+<span class="k">const</span> <span class="t">clearTokens</span> = () =&gt; {
+  <span class="s">'accessToken refreshToken user'</span>.<span class="t">split</span>(<span class="s">' '</span>).<span class="t">forEach</span>((k) =&gt; localStorage.<span class="t">removeItem</span>(k))
+}
+
+<span class="k">const</span> <span class="t">goLogin</span> = () =&gt; {
+  <span class="t">clearTokens</span>()
+  <span class="k">const</span> redirect = encodeURIComponent(
+    window.location.pathname + window.location.search
+  )
+  window.location.href = <span class="s">`/login?redirect=${redirect}`</span> <span class="c">// 为什么用 location？见第 6 节</span>
+}
+
+<span class="c">// 用裸 axios 调刷新接口：它绝不能走本实例的拦截器，
+// 否则 refresh 自己 401 会再触发 refresh —— 死循环</span>
+<span class="k">const</span> <span class="t">requestRefresh</span> = <span class="k">async</span> () =&gt; {
+  <span class="k">const</span> { data: body } = <span class="k">await</span> axios.<span class="t">post</span>(<span class="s">'/api/v1/auth/refresh'</span>, {
+    refreshToken: localStorage.<span class="t">getItem</span>(<span class="s">'refreshToken'</span>),
+  })
+  <span class="k">if</span> (body.code !== <span class="n">0</span>) <span class="k">throw new</span> <span class="t">Error</span>(body.message)
+  localStorage.<span class="t">setItem</span>(<span class="s">'accessToken'</span>, body.data.accessToken)
+  localStorage.<span class="t">setItem</span>(<span class="s">'refreshToken'</span>, body.data.refreshToken) <span class="c">// 滑动续期，双 token 都换</span>
+  <span class="k">return</span> body.data.accessToken
+}
+
+http.interceptors.response.<span class="t">use</span>(
+  (response) =&gt; {
+    <span class="k">const</span> body = response.data
+    <span class="k">if</span> (body.code !== <span class="n">0</span>) <span class="k">return</span> Promise.<span class="t">reject</span>(<span class="k">new</span> <span class="t">Error</span>(body.message || <span class="s">'请求失败'</span>))
+    <span class="k">return</span> body.data
+  },
+  <span class="k">async</span> (error) =&gt; {
+    <span class="k">const</span> original = error.config
+    <span class="k">const</span> status = error.response?.status
+
+    <span class="c">// —— 分支一：401 且有 refreshToken，且这个请求没重试过 ——</span>
+    <span class="k">if</span> (status === <span class="n">401</span> &amp;&amp; localStorage.<span class="t">getItem</span>(<span class="s">'refreshToken'</span>) &amp;&amp; !original?._retried) {
+      original._retried = <span class="k">true</span> <span class="c">// 每个请求只允许搭一次「刷新重试」的便车</span>
+      <span class="k">try</span> {
+        <span class="k">const</span> newToken = <span class="k">await</span> <span class="t">requestRefresh</span>()        <span class="c">// 主干版：每 401 各刷各的（下一节改进）</span>
+        original.headers.Authorization = <span class="s">`Bearer ${newToken}`</span>
+        <span class="k">return</span> http(original) <span class="c">// 关键：把重试的 Promise 交出去，调用方 await 到的就是最终结果</span>
+      } <span class="k">catch</span> (e) {
+        <span class="t">goLogin</span>() <span class="c">// —— 分支二：refresh 也失败 → 清 token 跳登录 ——</span>
+        <span class="k">return</span> Promise.<span class="t">reject</span>(<span class="k">new</span> <span class="t">Error</span>(<span class="s">'登录已过期，请重新登录'</span>))
+      }
+    }
+    <span class="c">// —— 分支三：其它错误（403/404/500 或重试后仍 401）照常抛 ——</span>
+    <span class="k">const</span> msg = error.response?.data?.message || error.message || <span class="s">'网络错误'</span>
+    <span class="k">return</span> Promise.<span class="t">reject</span>(<span class="k">new</span> <span class="t">Error</span>(msg))
+  }
+)</pre>
+    <div class="callout tip"><p>三个细节定生死：①<code>original._retried</code> 标志防「重试请求又 401 → 再刷」的无限循环；②refresh 用裸 axios 绕开本实例；③<code>return http(original)</code> 返回的是 Promise，页面里 <code>await listArticles()</code> 会一直等到重试结果——<b>这就是「用户无感知」的实现原理</b>。</p></div>
+
+    <h3>5. 并发 401 只刷新一次：pending Promise 单例</h3>
+    <p>真实场景：个人页同时发 <code>/users/me</code> 和评论数两个请求，accessToken 恰好过期，<b>两个 401 同时到达</b>。主干版会发两次 refresh——后端 refresh 若是一次性轮换（旧 refreshToken 用完即废），第二次刷新拿废弃 token 必挂，好好的会话被踢。两种解法：</p>
+    <table>
+      <tr><th>方案</th><th>思路</th><th>评价</th></tr>
+      <tr><td>等待队列</td><td>第一个 401 开始刷新，后续 401 把自己的「重试函数」push 进数组；刷新成功后遍历执行</td><td>经典教学模型，代码长、要自己管队列；理解概念够用</td></tr>
+      <tr><td><b>pending Promise 单例</b></td><td>全局存一个 <code>refreshPromise</code>：有在途刷新就 <code>await</code> 同一个 Promise，没有才发起</td><td><b>今天采用</b>：几行代码，语义等价「并发合流」</td></tr>
+    </table>
+    <pre><span class="code-label">js</span><span class="c">// 队列方案长这样（读懂即可，不必采用）——注意 refreshPromise 其实就是它的压缩版：</span>
+<span class="k">let</span> pendingQueue = []      <span class="c">// 等刷新的请求都把"重试函数"存这</span>
+<span class="k">let</span> refreshing = <span class="k">false</span>
+
+<span class="k">async function</span> <span class="t">on401</span>(retryFn) {
+  pendingQueue.<span class="t">push</span>(retryFn)
+  <span class="k">if</span> (refreshing) <span class="k">return</span>        <span class="c">// 已经有人在刷了，排队等叫号</span>
+  refreshing = <span class="k">true</span>
+  <span class="k">try</span> {
+    <span class="k">await</span> requestRefresh()
+    pendingQueue.<span class="t">forEach</span>((fn) =&gt; fn()) <span class="c">// 刷新成功，全体重试</span>
+  } <span class="k">finally</span> {
+    pendingQueue = []; refreshing = <span class="k">false</span>
+  }
+}
+<span class="c">// 对比可见：Promise 天生自带"等待队列"（then 链），手动数组+布尔锁是重复造轮子</span></pre>
+    <pre><span class="code-label">js</span><span class="c">// 在上一节代码基础上：把 requestRefresh 原样保留，改动两处 ——</span>
+
+<span class="k">let</span> refreshPromise = <span class="k">null</span> <span class="c">// 模块级单例：同一时刻最多一次刷新在途</span>
+
+<span class="k">const</span> <span class="t">refreshOnce</span> = () =&gt; {
+  <span class="k">if</span> (!refreshPromise) {
+    refreshPromise = <span class="t">requestRefresh</span>().<span class="t">finally</span>(() =&gt; {
+      refreshPromise = <span class="k">null</span> <span class="c">// 成败都要复位，否则下次过期永远 await 一个旧 Promise</span>
+    })
+  }
+  <span class="k">return</span> refreshPromise <span class="c">// 第 2、3、N 个 401 拿到的是同一个 Promise（合流点）</span>
+}
+
+<span class="c">// 拦截器分支一里只改一行：</span>
+<span class="k">const</span> newToken = <span class="k">await</span> <span class="t">refreshOnce</span>() <span class="c">// 原来是 requestRefresh()</span></pre>
+    <div class="callout js"><p>时间线：401-A 到达 → <code>refreshPromise</code> 为空 → 创建并发出 refresh；401-B 到达 → 不为空 → 直接 await 同一个 Promise；refresh 返回 → A、B 同时醒来各拿新 token 重试自己的请求 → <code>finally</code> 复位。<b>一次刷新，N 个请求复用的效果就这四行。</b></p></div>
+
+    <h3>6. refresh 失败跳登录：为什么用 window.location 而不是 navigate</h3>
+    <p>拦截器住在 <code>src/api/http.js</code>，是<b>模块顶层代码</b>，不在任何组件树里——拿不到 <code>useNavigate</code>。三种办法比较：</p>
+    <table>
+      <tr><th>做法</th><th>说明</th><th>结论</th></tr>
+      <tr><td><code>window.location.href = '/login?redirect=…'</code></td><td>整页刷新，浏览器级跳转，任何地方可用</td><td><b>今天采用</b>：简单可靠，还顺带清掉所有内存脏状态</td></tr>
+      <tr><td>把 navigate 实例注入模块</td><td>在组件里 <code>setNavigate(navigate)</code> 存到模块变量供拦截器用</td><td>能用但多一层全局状态，第 8 周再玩</td></tr>
+      <tr><td>自定义事件 + 顶层组件监听</td><td>拦截器 <code>dispatchEvent('auth-expired')</code>，App 监听后 navigate</td><td>解耦最漂亮，学习项目性价比低</td></tr>
+    </table>
+    <div class="callout warn"><p>跳登录前 <code>clearTokens()</code> 一定别忘：只跳转不清 token，守卫看到（废的）accessToken 又放行 → 接口又 401 → 又跳登录，无限来回闪。</p></div>
+
+    <h3>7. 总装：本周路由表终形与一次完整登录旅程</h3>
+    <pre><span class="code-label">jsx</span><span class="c">// src/App.jsx —— day3 的路由表 + 今天的守卫，全周最终形态</span>
+<span class="k">import</span> { <span class="t">Routes</span>, <span class="t">Route</span> } <span class="k">from</span> <span class="s">'react-router-dom'</span>
+<span class="k">import</span> { <span class="t">ProtectedRoute</span> } <span class="k">from</span> <span class="s">'./components/ProtectedRoute'</span>
+<span class="c">// …各页面 import 省略…</span>
+
+<span class="k">export default function</span> <span class="t">App</span>() {
+  <span class="k">return</span> (
+    &lt;&gt;
+      &lt;<span class="t">NavBar</span> /&gt;
+      &lt;<span class="t">Routes</span>&gt;
+        <span class="c">// —— 游客可进 ——</span>
+        &lt;<span class="t">Route</span> path=<span class="s">"/"</span> element={&lt;<span class="t">ArticleList</span> /&gt;} /&gt;
+        &lt;<span class="t">Route</span> path=<span class="s">"/post/:id"</span> element={&lt;<span class="t">ArticleDetail</span> /&gt;} /&gt;
+        &lt;<span class="t">Route</span> path=<span class="s">"/login"</span> element={&lt;<span class="t">Login</span> /&gt;} /&gt;
+        &lt;<span class="t">Route</span> path=<span class="s">"/register"</span> element={&lt;<span class="t">Register</span> /&gt;} /&gt;
+        <span class="c">// —— 需要登录：一律包 ProtectedRoute ——</span>
+        &lt;<span class="t">Route</span> path=<span class="s">"/post/new"</span> element={
+          &lt;<span class="t">ProtectedRoute</span>&gt;&lt;<span class="t">Editor</span> /&gt;&lt;/<span class="t">ProtectedRoute</span>&gt;} /&gt;
+        &lt;<span class="t">Route</span> path=<span class="s">"/post/:id/edit"</span> element={
+          &lt;<span class="t">ProtectedRoute</span>&gt;&lt;<span class="t">Editor</span> /&gt;&lt;/<span class="t">ProtectedRoute</span>&gt;} /&gt;
+        &lt;<span class="t">Route</span> path=<span class="s">"/me"</span> element={
+          &lt;<span class="t">ProtectedRoute</span>&gt;&lt;<span class="t">Profile</span> /&gt;&lt;/<span class="t">ProtectedRoute</span>&gt;} /&gt;
+        <span class="c">// —— 兜底 404 ——</span>
+        &lt;<span class="t">Route</span> path=<span class="s">"*"</span> element={&lt;<span class="t">p</span>&gt;页面不存在&lt;/<span class="t">p</span>&gt;} /&gt;
+      &lt;/<span class="t">Routes</span>&gt;
+    &lt;/&gt;
+  )
+}</pre>
+    <p>把这条完整旅程走一遍，每一站都对应本周某天的成果：游客打开 <code>/post/new</code>（D4 守卫）→ 登录（D1）→ 回跳编辑页（D4）→ 发布文章（D3）→ 列表看到新帖（D3 方案 B）→ 点进详情（D2）→ 放着半小时回来继续操作，accessToken 已过期——<b>页面毫无动静</b>（D4 静默刷新）→ 一周后 refreshToken 也过期，任一请求把你温柔地送回登录页（D4 兜底）。</p>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：守卫拦截 + redirect 回跳（30 分钟）</div>
+      <p>退出登录状态下地址栏敲 <code>localhost:5173/post/new</code>，应被弹到 <code>/login?redirect=%2Fpost%2Fnew</code>；登录后应<b>直接落在写文章页</b>而不是首页。再测：<code>/post/123/edit</code>、<code>/me</code> 同样被保护，而列表和详情游客可看。</p>
+      <pre><span class="code-label">js</span><span class="c">// 回跳逻辑的自测断言（登录 try 块里临时打印，确认万一是站内路径）：</span>
+<span class="k">const</span> raw = searchParams.<span class="t">get</span>(<span class="s">'redirect'</span>) || <span class="s">'/'</span>
+<span class="k">const</span> target = <span class="t">decodeURIComponent</span>(raw)
+console.<span class="t">assert</span>(target.<span class="t">startsWith</span>(<span class="s">'/'</span>), <span class="s">'拒绝站外跳转'</span>, target)
+<span class="t">navigate</span>(target, { replace: <span class="k">true</span> })</pre>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：手动废掉 accessToken，验证静默续期（40 分钟）</div>
+      <p>登录状态下打开 DevTools → Application → Local Storage，把 <code>accessToken</code> 的值改成 <code>abc</code>（模拟过期，refreshToken 不动）。然后点进个人页触发 <code>GET /users/me</code>。验收三点：①页面正常显示，没有弹到登录页；②Network 面板依次出现「me(401) → refresh(200) → me(200)」三条请求；③localStorage 里 accessToken 已变成一串<b>新</b>值。</p>
+      <pre><span class="code-label">js</span><span class="c">// 控制台一行搞定「作恶」，比手动编辑值快：</span>
+localStorage.<span class="t">setItem</span>(<span class="s">'accessToken'</span>, <span class="s">'abc'</span>)</pre>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：双请求并发 401，验证只刷一次（40 分钟）</div>
+      <p>在个人页同时发两个请求（<code>/users/me</code> 和任意另一枪，比如 <code>GET /articles?page=1</code>），把 accessToken 改废后刷新页面。Network 面板过滤 <code>refresh</code>：<b>只允许出现 1 条</b>。再把 <code>refreshOnce</code> 换回主干版（直接 requestRefresh）对比——会出现 2 条，如果你的后端做了 refreshToken 一次性轮换，第二条还会失败并把用户踢下线。亲手感受这个 bug 为什么真实项目必踩。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：refresh 也失效的兜底（30 分钟）</div>
+      <p>把 <code>accessToken</code> 和 <code>refreshToken</code> 同时改成废值，访问 <code>/me</code>。预期：refresh 发出 → 401 → 清空三个键 → 落到 <code>/login?redirect=%2Fme</code>；重新登录后回到 <code>/me</code>。全程不应出现页面反复横跳（死循环）。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>拦截器里异步不返回 Promise</td><td>刷新逻辑明明执行了，页面却拿到 undefined / 报错被吞</td><td>错误分支必须 <code>return Promise.reject(...)</code>；重试必须 <code>return http(original)</code>，让 Promise 链不断</td></tr>
+      <tr><td>refresh 走了 http 实例自己</td><td>refresh 401 → 触发刷新 → 又调 refresh…… Network 刷屏</td><td>refresh 用裸 <code>axios.post</code>，或给 config 打 <code>_skipAuthFlow</code> 标记跳过</td></tr>
+      <tr><td>没有 _retried 标志</td><td>重试请求再次 401 时又刷一次，无限循环</td><td>每个 original 请求只许搭一次便车：重试前置 <code>_retried = true</code>，条件里排除</td></tr>
+      <tr><td>守卫异步恢复登录态</td><td>刷新页面瞬间闪一下登录页/空数据</td><td>守卫同步读 localStorage；useAuth 初始值同步 parse（day1 埋的伏笔）</td></tr>
+      <tr><td>refreshPromise 忘了 finally 复位</td><td>第一次续期正常，第二次过期永远卡住不动</td><td><code>finally(() =&gt; refreshPromise = null)</code>，成败都要清</td></tr>
+      <tr><td>闭包拿到旧 state</td><td>拦截器里用 React state 判断登录，永远读到挂载时的旧值</td><td>拦截器与组件解耦：真相源只有一个——localStorage；React state 只是它的展示副本</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>路由守卫</td><td>渲染目标页前检查准入条件的组件/函数，不合格就 Navigate 改道</td></tr>
+      <tr><td>静默刷新（silent refresh）</td><td>用户无感知地用 refreshToken 换回新 accessToken 并重试原请求</td></tr>
+      <tr><td>重试（retry）</td><td>把失败请求的 config 原样再发一次，仅把 Authorization 换成新 token</td></tr>
+      <tr><td>并发合流</td><td>多个 401 共享同一个在途 refresh Promise，只发一次刷新；pending 单例是其最小实现</td></tr>
+      <tr><td>滑动续期</td><td>每次 refresh 同时发新 refreshToken，活跃用户 7 天期限不断向后滚</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w6d4c1">未登录访问 <code>/post/new</code> 被重定向，URL 里带 <code>redirect=%2Fpost%2Fnew</code></label></li>
+      <li><label><input type="checkbox" data-key="w6d4c2">登录成功后自动回跳原目标页，且浏览器「后退」不会再回到登录页（replace 生效）</label></li>
+      <li><label><input type="checkbox" data-key="w6d4c3">废 accessToken 实验：401 → refresh 200 → 重试 200，页面无任何报错提示</label></li>
+      <li><label><input type="checkbox" data-key="w6d4c4">双请求并发 401 实验：Network 里 refresh 请求恰好 1 条</label></li>
+      <li><label><input type="checkbox" data-key="w6d4c5">双 token 全废实验：跳到登录页、localStorage 被清空、重新登录能回原页，无死循环</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day3.html"><span class="hint">← 上一天 · W6D3</span>创建、编辑与删除</a>
+    <a href="day5.html"><span class="hint">下一天 · W6D5 →</span>CORS、代理与构建</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W6D4 · 明天见 ⟩</footer>
+</body>
+</html>

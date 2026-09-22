@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W5 总结 · 并发 + 测试 | Go 全栈修炼手册</title>
+<meta name="description" content="第 5 周总结：goroutine/WaitGroup、channel/select、Mutex 与 -race、context 超时取消、worker pool 与 errgroup 知识地图；并发 URL 聚合 API 验收清单（5 个 1s 端点并发≈1s/串行≈5s、超时返回部分结果、-race 零竞态）、go test -race 测试清单与卡点复盘。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body>
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="day1.html">第 5 周讲义</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 5 周</a> / 本周总结</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 5 · SUMMARY</span>
+    <span class="chip alt">并发 + 测试</span>
+    <span class="chip">复盘 + 验收 2–3 小时</span>
+  </div>
+  <h1>第 5 周总结：并发 + 测试</h1>
+  <p>恭喜，本手册最"烧脑"的一周通关了。这周你没有学任何新框架，学的是<b>思维方式</b>：从 JS 的"单线程 + 事件循环"切换到 Go 的"多核并行 + 显式协调"。周日（今天）的议程固定为三步：<b>①对照下面的验收清单把项目重新跑一遍并记录数字；②做一遍概念快问快答，答不出的当天回对应讲义补课；③填卡点复盘表、提交 Git、写 README。</b></p>
+
+  <section>
+    <h2>本周知识地图</h2>
+    <pre><span class="code-label">W5 并发 + 测试</span>
+goroutine（D1）
+ ├─ go f()：启动即返回，main 退出不等子协程
+ ├─ sync.WaitGroup：Add（go 之前）/ Done（defer）/ Wait
+ └─ GMP 调度：G 任务 · M 线程 · P 令牌，万级协程无压力
+channel 与 select（D2）
+ ├─ 无缓冲：同步握手，发送接收必须同时在场
+ ├─ 有缓冲：削峰填谷，满/空即阻——别拿大缓冲续命
+ ├─ close 三铁律：发送方关 · 关后不发 · 重复关 panic
+ ├─ select + default + time.After：多路复用与非阻塞超时
+ └─ pipeline：生产者 → 处理 → 汇总
+Mutex 与竞态（D3）
+ ├─ 内置 map 并发写 = fatal error；不崩溃的竞态更可怕
+ ├─ Mutex（Lock + defer Unlock）/ RWMutex（读多写少，先压测再换）
+ ├─ sync/atomic：单个数字的无锁增减
+ └─ go run -race / go test -race：CI 底线，看懂 WARNING 报告
+context（D4）
+ ├─ 取消信号 + 截止时间 + 请求级值，Done() 是被广播的 channel
+ ├─ WithCancel / WithTimeout / WithDeadline，defer cancel() 戒不掉
+ ├─ 传播树：父断子必断；协作式取消——你得自己 select 查岗
+ └─ 两端接入：入口 r.Context()，出口 NewRequestWithContext / db.WithContext
+并发模式（D5）
+ ├─ worker pool：固定工人 + 任务 channel，并发度是旋钮
+ └─ errgroup：Go / Wait / SetLimit / WithContext，首错取消 vs 部分结果的选型</pre>
+    <div class="callout tip"><p>一句话收束全周：<b>goroutine 负责"一起跑"，channel/锁负责"别打架"，context 负责"该停就停"，errgroup 负责"打包收工"。</b>四件套齐了，Go 并发日常就够用了。</p></div>
+  </section>
+
+  <section>
+    <h2>每日回顾（一分钟一格，回忆不起来就点回去）</h2>
+    <table>
+      <tr><th>天</th><th>主题</th><th>核心带走</th><th>自测一句话</th></tr>
+      <tr><td><a href="day1.html">D1</a></td><td>goroutine 与 WaitGroup</td><td>main 不等子协程；Add/Done/Wait 成套，Add 在 go 前</td><td>为什么 time.Sleep 等待是假朋友？</td></tr>
+      <tr><td><a href="day2.html">D2</a></td><td>channel 与 select</td><td>无缓冲=握手；close 三铁律；select+time.After 超时；pipeline</td><td>谁来 close？接收方能关吗？</td></tr>
+      <tr><td><a href="day3.html">D3</a></td><td>Mutex 与竞态检测</td><td>读写同锁、defer 解锁、atomic 计数、-race 报告认脸</td><td>死锁四要素各怎么破？</td></tr>
+      <tr><td><a href="day4.html">D4</a></td><td>context</td><td>取消/截止/值三件事；传播树；HTTP 两端接入</td><td>cancel 了代码没动，怪谁？（协作式）</td></tr>
+      <tr><td><a href="day5.html">D5</a></td><td>并发模式与项目</td><td>worker pool 限流；errgroup 语义选型；聚合 API 落地</td><td>聚合任务为何 return nil？</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>概念快问快答（合上讲义答，答不出的回炉）</h2>
+    <div class="task">
+      <div class="task-title">Q1 · 并发和并行的区别？</div>
+      <details><summary>答案</summary>
+        <p>并发是"同一时间段处理多条任务线"的<b>组织设计</b>，并行是"同一时刻真的做多件事"的<b>执行状态</b>。JS 事件循环是并发不并行；Go 默认多核真并行。</p>
+      </details>
+    </div>
+    <div class="task">
+      <div class="task-title">Q2 · 无缓冲 channel 什么时候发送方不阻塞？</div>
+      <details><summary>答案</summary>
+        <p>永远阻塞，直到有接收方就位——这就是"同步握手"。想不阻塞只有两条路：加缓冲（<code>make(chan T, n)</code>），或 select+default。</p>
+      </details>
+    </div>
+    <div class="task">
+      <div class="task-title">Q3 · 向已关闭 channel 发送 / 重复 close，各是什么后果？</div>
+      <details><summary>答案</summary>
+        <p>都是 <b>panic</b>：<code>send on closed channel</code> 与 <code>close of closed channel</code>，进程直接崩溃。所以 close 只能由发送方、且只关一次；多 worker 用 WaitGroup+看守 goroutine 统一关。</p>
+      </details>
+    </div>
+    <div class="task">
+      <div class="task-title">Q4 · 何时 channel、何时锁、何时 atomic？</div>
+      <details><summary>答案</summary>
+        <p>数据所有权要在 goroutine 间移交（任务进、结果出）→ channel；一份状态人人读写（缓存、账本）→ Mutex/RWMutex；只动一个数字 → atomic。复合判断（check-then-act）atomic 也救不了，得上锁或 CAS。</p>
+      </details>
+    </div>
+    <div class="task">
+      <div class="task-title">Q5 · <code>context.WithTimeout</code> 到点后，goroutine 一定停吗？</div>
+      <details><summary>答案</summary>
+        <p>不一定。Go 无法强杀 goroutine，context 是<b>协作式</b>取消：只有代码自己 select 了 <code>ctx.Done()</code>（或把 ctx 传给了支持它的 API）才会停。"ctx 不传到底，超时不生效"是本周验收头号杀手。</p>
+      </details>
+    </div>
+    <div class="task">
+      <div class="task-title">Q6 · errgroup 的 WithContext 在聚合场景为什么反而要"吞错误"？</div>
+      <details><summary>答案</summary>
+        <p>WithContext 派生的 ctx 在<b>首个任务 return error 时立即取消全组</b>——适合"一错全撤"的批处理。聚合 API 要"部分成功也算成功"，所以每个任务把错误写进自己的结果、永远 return nil，errgroup 只当带 SetLimit 的调度器用。</p>
+      </details>
+    </div>
+  </section>
+
+  <section>
+    <h2>项目冲刺指南：并发 URL 聚合 API</h2>
+    <p>周末 4–6 小时按这个节奏收尾（day5 已有完整参考实现，卡住先自己调，再对照）：</p>
+    <table>
+      <tr><th>步骤</th><th>时间</th><th>要做的事</th><th>完成的标志</th></tr>
+      <tr><td>1. 装配骨架</td><td>60 分钟</td><td><code>go mod init url-aggregator</code>，<code>go get golang.org/x/sync/errgroup</code>；实现 <code>/mock-slow?d=1s</code>（含 <code>r.Context().Done()</code> 监听）</td><td>curl /mock-slow?d=2s 两秒后返回 pong</td></tr>
+      <tr><td>2. 并发聚合</td><td>90 分钟</td><td>POST <code>/aggregate</code> 解析 urls 数组；errgroup+SetLimit(5)；<code>context.WithTimeout(r.Context(), 5s)</code> 贯穿每次 <code>http.NewRequestWithContext</code>；结果按下标预分配写入</td><td>5 个 d=1s 并发 total_ms ≈ 1000</td></tr>
+      <tr><td>3. 串行对照</td><td>30 分钟</td><td>加 <code>?mode=serial</code> 分支，同一请求体顺序抓取</td><td>同参数 total_ms ≈ 5000</td></tr>
+      <tr><td>4. 超时与部分结果</td><td>60 分钟</td><td>混入一个 <code>d=8s</code> 端点：确认约 5s 截停、<code>partial:true</code>、未完成项带 error 提示、服务端日志出现"mock-slow 被取消"</td><td>响应结构与 day5 示例一致</td></tr>
+      <tr><td>5. 测试与交付</td><td>60 分钟</td><td>给聚合核心补一个 <code>go test -race</code> 的并发测试（见下一节）；git init + commit；写 README（接口文档 + 三组耗时数字 + 一张 context 传播示意图）</td><td>本页验收清单全勾</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>并发怎么测：本周"测试"半张脸</h2>
+    <p>并发代码光靠 curl 手测是不够的——竞态平时不现身。Go 的答案：<b>把压测场景写成单元测试，用 <code>go test -race</code> 当探针</b>。给聚合器补一个针对 <code>fetchOne</code>+结果收集的最小并发测试：</p>
+    <pre><span class="code-label">aggregate_test.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">context</span>
+    <span class="t">net/http</span>
+    <span class="t">net/http/httptest</span>
+    <span class="t">sync</span>
+    <span class="t">testing</span>
+    <span class="t">time</span>
+)
+
+<span class="c">// httptest 起一个固定延迟的假上游，模拟 5 个 1s 端点并发抓取</span>
+<span class="k">func</span> TestFetchOneConcurrent(t *<span class="t">testing</span>.T) {
+    slow := httptest.NewServer(http.HandlerFunc(<span class="k">func</span>(w <span class="t">http</span>.ResponseWriter, r *<span class="t">http</span>.Request) {
+        <span class="k">select</span> {
+        <span class="k">case</span> &lt;-time.After(<span class="n">1</span> * time.Second): fmt.Fprint(w, <span class="s">"pong"</span>)
+        <span class="k">case</span> &lt;-r.Context().Done():
+        }
+    }))
+    <span class="k">defer</span> slow.Close()
+
+    ctx, cancel := context.WithTimeout(context.Background(), <span class="n">5</span>*time.Second)
+    <span class="k">defer</span> cancel()
+
+    <span class="k">const</span> n = <span class="n">5</span>
+    results := <span class="k">make</span>([]urlResult, n)
+    <span class="k">var</span> wg <span class="t">sync</span>.WaitGroup
+    start := time.Now()
+    <span class="k">for</span> i := <span class="n">0</span>; i &lt; n; i++ {
+        wg.Add(<span class="n">1</span>)
+        <span class="k">go</span> <span class="k">func</span>(idx <span class="t">int</span>) {
+            <span class="k">defer</span> wg.Done()
+            results[idx] = fetchOne(ctx, slow.URL+<span class="s">"?d=1s"</span>)
+        }(i)
+    }
+    wg.Wait()
+
+    <span class="k">if</span> cost := time.Since(start); cost &gt; <span class="n">2</span>*time.Second {
+        t.Fatalf(<span class="s">"并发 5 个 1s 请求耗时 %v，预期应 ≈1s"</span>, cost)
+    }
+    <span class="k">for</span> i, r := <span class="k">range</span> results {
+        <span class="k">if</span> r.Status != <span class="n">200</span> {
+            t.Errorf(<span class="s">"结果 %d 未成功: %+v"</span>, i, r)
+        }
+    }
+}</pre>
+    <pre><span class="code-label">shell</span>$ go test -race -v ./...
+=== RUN   TestFetchOneConcurrent
+--- PASS: TestFetchOneConcurrent (1.02s)
+PASS</pre>
+    <div class="callout tip"><p>三个要点：① 断言的是<b>耗时上界</b>（2 秒红线）——固定 sleep 让这条测试不会因网络波动误报；② <code>-race</code> 让每次 CI 都顺带扫一遍竞态；③ <code>httptest.Server</code> 是 Go 自带的轻量假服务，第 1 周至今所有接口测试都靠它，本周正式会师。</p></div>
+  </section>
+
+  <section>
+    <h2>验收实操：三组 curl 直接贴</h2>
+    <pre><span class="code-label">shell</span><span class="c"># 终端 1：带竞态检测启动（验收全程用它，窗口留意任何 WARNING）</span>
+$ go run -race .
+
+<span class="c"># 终端 2 —— 第 1 组：并发（期望 total_ms ≈ 1000~1200）</span>
+$ curl -s localhost:8080/aggregate -d '{"urls":[
+    "http://localhost:8080/mock-slow?d=1s",
+    "http://localhost:8080/mock-slow?d=1s",
+    "http://localhost:8080/mock-slow?d=1s",
+    "http://localhost:8080/mock-slow?d=1s",
+    "http://localhost:8080/mock-slow?d=1s"]}' | python3 -m json.tool
+
+<span class="c"># 第 2 组：同一请求体加 ?mode=serial（期望 total_ms ≈ 5000）</span>
+$ curl -s "localhost:8080/aggregate?mode=serial" -d '{ ...同上... }' | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['mode'], d['total_ms'], 'ms')"
+
+<span class="c"># 第 3 组：超时部分结果（把任意一个 d=1s 换成 d=8s）</span>
+# 期望：约 5s 返回，"partial": true，8s 项 status:0 + error 含 context deadline exceeded，
+#       其余 1s 项正常 200；终端 1 出现 "mock-slow 被取消: 8s"
+
+<span class="c"># 第 4 组：错误入参（期望 400，不是 panic）</span>
+$ curl -si localhost:8080/aggregate -d '{"urls":[]}' | head -1
+$ curl -si localhost:8080/aggregate -d 'not-json'     | head -1
+
+<span class="c"># 第 5 组：并发测试（良好线要求）</span>
+$ go test -race ./...</pre>
+    <div class="callout warn"><p>数字不达标先别改代码，按序排查三件事：① <code>g.Go</code> 传的是函数不是调用结果；② ctx 一路传进了 <code>http.NewRequestWithContext</code>；③ 起耗时的口径是 handler 里的 <code>time.Since(start)</code> 而不是 curl 的墙钟。90% 的"并发没变快"都栽在这三处。</p></div>
+  </section>
+
+  <section>
+    <h2>验收清单（全勾才算本周毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w5sum1">5 个固定 1 秒延迟的模拟端点：<b>并发 total ≈ 1s、串行 total ≈ 5s</b>（固定 sleep 验收，不受网络波动影响，数字稳定可复现）</label></li>
+      <li><label><input type="checkbox" data-key="w5sum2">混入超 5 秒的 URL（d=8s）：约 5 秒截停，返回<b>已完成的部分结果 + partial:true + 超时提示</b>，且 /mock-slow 侧日志可见取消</label></li>
+      <li><label><input type="checkbox" data-key="w5sum3"><code>go run -race .</code> 跑完全部三组场景零 WARNING，<code>go test -race ./...</code>（上一节的测试）PASS</label></li>
+      <li><label><input type="checkbox" data-key="w5sum4">非法请求（urls 为空/JSON 错误）返回 400 而不是 panic；curl 演示全部通过</label></li>
+      <li><label><input type="checkbox" data-key="w5sum5">Git 提交记录清晰，README 含接口说明、三组耗时数字与并发设计一句话</label></li>
+      <li><label><input type="checkbox" data-key="w5sum6">概念快问快答 6 题全部不看讲义答出（答不出的已回炉对应天讲义）</label></li>
+    </ul>
+    <div class="callout tip"><p><b>为什么验收坚持用固定 sleep 端点？</b>拿真实外网 URL 测"并发≈5 倍加速"，DNS、TLS、限流、网络抖动都会污染数字，今天在明天不过几乎必然发生。<code>/mock-slow?d=1s</code> 把变量锁死为"已知耗时"，1s/5s 就是硬指标——以后你给任何并发功能写验收，第一个念头都该是<b>把不确定性赶出测试</b>。</p></div>
+    <p>全部勾完，给自己放半天假。第 6 周开始，你写的 Go 服务将第一次真正被浏览器里的 React 页面调用——那才是"全栈"两个字落地的时刻。</p>
+  </section>
+
+  <section>
+    <h2>自评定级</h2>
+    <div class="grade">
+      <div><b>及格线</b>三组验收数字全部达标（≈1s / ≈5s / 5s 截停 partial）；-race 干净；能独立默写 WaitGroup 三件套与 errgroup 基本骨架。</div>
+      <div><b>良好线</b>及格之上：<code>go test -race</code> 的并发测试已进项目；能讲清"聚合要吞错误、批处理要抛错误"的语义差别；给项目加上 <code>atomic</code> 计数或 <code>/stats</code>。</div>
+      <div><b>优秀线</b>良好之上：把聚合器改用 Gin 重写并复用第 4 周工程结构（handler/service 分层）；思考题有答案——如果 1000 个 URL，怎么改造成"边抓边流式返回"（SSE）？</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>卡点复盘（把本周最痛的三次写下来）</h2>
+    <table>
+      <tr><th>高频卡点</th><th>根因</th><th>标准解法</th><th>我本周中过吗</th></tr>
+      <tr><td>"并发却没变快"，耗时仍 ≈ 串行</td><td>等待逻辑写在了 goroutine 外串行触发；或 <code>g.Go</code> 误写成带 <code>()</code> 的立即调用</td><td>确认每个任务真的 <code>go</code>/g.Go 出去了；用 total_ms 做回归</td><td>＿＿＿</td></tr>
+      <tr><td>程序偶发少结果 / 计数总不满</td><td>忘 <code>wg.Done</code>、Add 位置错、append 无锁——全是竞态</td><td>-race 定位到行，按 D3 三种武器选型修复</td><td>＿＿＿</td></tr>
+      <tr><td>超时了但下游还在跑</td><td>ctx 没传到底：裸 <code>http.Get</code>、GORM 没 WithContext、循环不查岗</td><td>全仓搜 <code>http.Get(</code>；长循环加 select-default 查岗模板</td><td>＿＿＿</td></tr>
+      <tr><td><code>for range ch</code> 永不退出 → 死锁 fatal</td><td>发送方忘 close；多发送方没人关闸</td><td>看守 goroutine（wg.Wait 后 close）统一关闸</td><td>＿＿＿</td></tr>
+      <tr><td>cancel 忘 defer 被 go vet 点名</td><td>context 泄漏：内部定时器与父子链不释放</td><td>WithTimeout/WithCancel 下一行永远 defer cancel()</td><td>＿＿＿</td></tr>
+    </table>
+    <div class="callout note"><p>复盘别停在这里：花 15 分钟在 README 或笔记里写满三句话——"本周我卡得最狠的一次是____，我最后靠____解决，下次遇到同类症状我会先检查____。"第 8 周复盘时你会感谢这份记录。</p></div>
+  </section>
+
+  <section>
+    <h2>本周名词速查</h2>
+    <table>
+      <tr><th>术语</th><th>一句话</th><th>首次出现</th></tr>
+      <tr><td>goroutine / GMP</td><td>Go 运行时调度的轻量任务；G 任务、M 线程、P 令牌三层调度</td><td>D1</td></tr>
+      <tr><td>竞态（data race）</td><td>≥2 个 goroutine 无同步访问同一内存且至少一个在写</td><td>D3</td></tr>
+      <tr><td>WaitGroup / errgroup</td><td>等一批任务收工的计数器 / 带错误聚合、取消与限流的加强版</td><td>D1 / D5</td></tr>
+      <tr><td>channel · 无缓冲握手</td><td>goroutine 间传送带；发送接收必须同时在场</td><td>D2</td></tr>
+      <tr><td>背压（backpressure）</td><td>下游消费不动，上游被 channel 阻塞自动减速</td><td>D2</td></tr>
+      <tr><td>select / time.After</td><td>多路复用等 channel；到点发值的临时 channel 用于超时</td><td>D2</td></tr>
+      <tr><td>Mutex / RWMutex / atomic</td><td>互斥锁 / 读写锁 / 单值原子操作</td><td>D3</td></tr>
+      <tr><td>context</td><td>取消信号+截止时间+请求级值，协作式停止下游</td><td>D4</td></tr>
+      <tr><td>worker pool</td><td>固定工人从任务 channel 领活，并发度可控</td><td>D5</td></tr>
+      <tr><td>失败快跑 / 部分结果</td><td>首错取消全组 / 超时时返回已完成部分+缺失说明</td><td>D5</td></tr>
+      <tr><td><code>-race</code></td><td>编译插桩的竞态检测器，测试与验收常开、生产必关</td><td>D3</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>下周预告：第 6 周 · 全栈联调</h2>
+    <div class="callout js"><p>从下周起，你熟悉的 React 回来了——但角色变了：不再是"页面里随便 fetch"，而是<b>拿着第 4 周的 JWT 双 token 规范、第 5 周的超时取消意识</b>，去对接一个真正的 Go 后端。五天走完：登录注册对接 → 文章列表/详情（分页搜索）→ 创建编辑删除的权限控制 → axios 拦截器静默刷新（401 时用 refresh token 换发重试）→ CORS/代理/构建。练手项目：<b>React + Go 博客前端</b>，验收要求浏览器里从注册到删帖全流程跑通、token 过期用户无感知。讲义照旧<b>全中文、全部可运行代码、不需要你额外搜索任何资料</b>。</p></div>
+    <p>本周项目留两个钩子下周继续用：① 聚合 API 保持可运行——第 6 周前端联调时它就是你的"第三方慢接口"练习对象；② 把 <code>go test -race</code> 写进你的肌肉记忆，第 8 周综合实战的 CI 里它还在等。</p>
+    <p>最后三条维护习惯，从这周带到第 8 周：</p>
+    <ul>
+      <li>任何碰共享状态的 PR/提交前，先跑一遍 <code>go vet ./... &amp;&amp; go test -race ./...</code>；</li>
+      <li>新写的对外调用函数，第一参数一律 <code>ctx context.Context</code>，没有例外；</li>
+      <li>并发方案拿不准时，回到选型三问：移交所有权？公共账本？单个数字？——分别对应 channel、Mutex、atomic。</li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day5.html"><span class="hint">上一站 · W5D5 ←</span>并发模式与本周项目</a>
+    <a href="../w6/day1.html"><span class="hint">下一周 · W6D1 →</span>登录注册对接</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W5 · 并发不是魔法，是纪律 ⟩</footer>
+</body>
+</html>

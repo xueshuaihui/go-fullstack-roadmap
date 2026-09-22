@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W2 · 本周总结与验收 | Go 全栈修炼手册</title>
+<meta name="description" content="第 2 周总结：Gin 路由/绑定验证/中间件/分层/接口测试知识地图，内存版用户+文章 REST API 完整骨架与 curl 验收命令，自评与下周预告。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body>
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 2 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 2 周</a> / 总结</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 2 · SUMMARY</span>
+    <span class="chip alt">项目验收日</span>
+    <span class="chip">Gin + REST API 基础</span>
+  </div>
+  <h1>第 2 周：Gin + REST API 基础 —— 总结与验收</h1>
+  <p>五天里你把一个 <code>main.go</code> 手工作坊，升级成了有目录规范、统一响应、中间件流水线和文档的<b>像样的后端项目</b>。今天做三件事：串知识地图、按参考骨架冲刺主线项目、逐条过验收标准。<b>验收不过周不算完。</b></p>
+
+  <section>
+    <h2>本周知识地图</h2>
+    <table>
+      <tr><th>Day</th><th>主题</th><th>核心产出</th><th>一句话复盘</th><th>自测动作</th></tr>
+      <tr><td>D1</td><td>Gin 路由</td><td><code>gin.New/Default</code>、<code>c.Param/c.Query</code>、<code>r.Group</code>、NoRoute</td><td>路由声明式匹配替代字符串比较，参数从 Context 取</td><td>盲写 <code>/users/:id</code> 路由 + curl 验证</td></tr>
+      <tr><td>D2</td><td>绑定与验证</td><td><code>ShouldBindJSON</code>、binding tag、<code>pkg/response.go</code></td><td>结构体即 schema：解析、校验、统一 {code,message,data} 一步到位</td><td>故意发非法 JSON，拿到 400+1004</td></tr>
+      <tr><td>D3</td><td>中间件</td><td>Logger/Recovery、Timer、手写 CORS、鉴权雏形</td><td>洋葱模型：<code>c.Next()</code> 分进出，<code>c.Abort()</code> 熔断内层</td><td>画出 A→B→handler→B→A 执行图</td></tr>
+      <tr><td>D4</td><td>项目分层</td><td>cmd/server + internal 三层 + map/RWMutex 仓库</td><td>依赖单向 handler→service→repo→model，下层不知上层</td><td>口述 import cycle 成因与解法</td></tr>
+      <tr><td>D5</td><td>接口测试</td><td>curl 五件套、Postman collection、README 文档</td><td>状态码 + 业务码双验收；错误路径（400/404/500）也是功能</td><td>Runner 一键全绿 + 陌生人照 README 跑通</td></tr>
+    </table>
+    <div class="callout note"><p>贯穿线：<b>「API 设计约定」（手册第十三节）本周落地</b>——统一响应 <code>{code,message,data}</code>、HTTP 状态码管大类 + 业务码 1001–1005 管细分、成功一律 200/201+code 0。下周接数据库时这套外壳不再改动。</p></div>
+  </section>
+
+  <section>
+    <h2>周末项目冲刺指南：内存版用户 + 文章 REST API</h2>
+    <p>数据全部存内存 map，不接数据库。先对目录，再对接口清单，最后跑 curl 验收。</p>
+
+    <h3>1. 完整目录结构</h3>
+    <pre><span class="code-label">tree</span>gin-api/
+├── go.mod                        <span class="c"># module gin-api</span>
+├── cmd/server/main.go            <span class="c"># 组装依赖 + 挂中间件 + 启动</span>
+├── internal/
+│   ├── model/user.go             <span class="c"># User、Article、CreateXxxDTO</span>
+│   ├── repository/
+│   │   ├── user_repo.go          <span class="c"># map+RWMutex，ErrUserNotFound 哨兵</span>
+│   │   └── article_repo.go
+│   ├── service/
+│   │   ├── user_service.go       <span class="c"># 重名检查、角色缺省</span>
+│   │   └── article_service.go    <span class="c"># 作者存在性校验（%w 包装错误）</span>
+│   ├── handler/
+│   │   ├── user_handler.go       <span class="c"># Register(r *gin.RouterGroup) 收敛路由</span>
+│   │   └── article_handler.go
+│   └── middleware/               <span class="c"># cors.go / timer.go / auth.go</span>
+├── pkg/response/response.go      <span class="c"># Body/OK/Created/Fail + 1001–1005</span>
+├── docs/postman_collection.json  <span class="c"># D5 导出</span>
+└── README.md                     <span class="c"># 接口表格 + 启动说明 + 验收命令</span></pre>
+
+    <h3>2. 接口清单</h3>
+    <table>
+      <tr><th>方法</th><th>路径</th><th>成功</th><th>失败示例</th></tr>
+      <tr><td>GET</td><td>/api/v1/users</td><td>200 code=0 data=[User]</td><td>size&gt;100 → 400 code=1004</td></tr>
+      <tr><td>POST</td><td>/api/v1/users</td><td>201 code=0 data=User</td><td>用户名 &lt;3 字 → 400 code=1004</td></tr>
+      <tr><td>GET</td><td>/api/v1/users/:id</td><td>200 code=0 data=User</td><td>不存在 → 404 code=1001</td></tr>
+      <tr><td>PUT</td><td>/api/v1/users/:id</td><td>200 code=0 data=User</td><td>不存在 → 404 code=1001</td></tr>
+      <tr><td>DELETE</td><td>/api/v1/users/:id</td><td>200 code=0 data=null</td><td>不存在 → 404 code=1001</td></tr>
+      <tr><td>GET</td><td>/api/v1/articles?page=&amp;size=</td><td>200 code=0 data=[Article]</td><td>page=abc → 400 code=1004</td></tr>
+      <tr><td>POST</td><td>/api/v1/articles</td><td>201 code=0 data=Article</td><td>作者不存在 → 404 code=1001</td></tr>
+      <tr><td colspan="4">全局：未注册路径 404 JSON；panic 被 Recovery 兜 500 进程不死；OPTIONS 预检 204 + Allow 头</td></tr>
+    </table>
+
+    <h3>3. 参考代码骨架</h3>
+    <pre><span class="code-label">pkg/response/response.go</span><span class="k">package</span> response
+
+<span class="k">import</span> (<span class="s">"net/http"</span>; <span class="s">"github.com/gin-gonic/gin"</span>)
+
+<span class="k">type</span> <span class="t">Body</span> <span class="k">struct</span> {
+    Code    <span class="t">int</span>    `<span class="t">json</span>:<span class="s">"code"</span>`
+    Message <span class="t">string</span> `<span class="t">json</span>:<span class="s">"message"</span>`
+    Data    <span class="t">any</span>    `<span class="t">json</span>:<span class="s">"data"</span>`
+}
+
+<span class="k">const</span> (
+    CodeOK = <span class="n">0</span>; CodeUserNotFound = <span class="n">1001</span>; CodeBadPassword = <span class="n">1002</span>
+    CodeForbidden = <span class="n">1003</span>; CodeInvalidParam = <span class="n">1004</span>; CodeTokenInvalid = <span class="n">1005</span>
+)
+
+<span class="k">func</span> OK(c *gin.Context, data <span class="t">any</span>)      { c.JSON(http.StatusOK, Body{CodeOK, <span class="s">"success"</span>, data}) }
+<span class="k">func</span> Created(c *gin.Context, data <span class="t">any</span>) { c.JSON(http.StatusCreated, Body{CodeOK, <span class="s">"success"</span>, data}) }
+<span class="k">func</span> Fail(c *gin.Context, st, code <span class="t">int</span>, msg <span class="t">string</span>) { c.JSON(st, Body{code, msg, <span class="k">nil</span>}) }</pre>
+    <pre><span class="code-label">internal/repository/user_repo.go（节选）</span><span class="k">var</span> ErrUserNotFound = errors.New(<span class="s">"用户不存在"</span>)
+
+<span class="k">type</span> <span class="t">UserRepo</span> <span class="k">struct</span> {
+    mu     sync.RWMutex
+    nextID <span class="t">int</span>
+    users  <span class="k">map</span>[<span class="t">int</span>]model.User
+}
+
+<span class="k">func</span> NewUserRepo() *UserRepo { <span class="k">return</span> &amp;UserRepo{nextID: <span class="n">1</span>, users: make(<span class="k">map</span>[<span class="t">int</span>]model.User)} }
+
+<span class="k">func</span> (r *UserRepo) Get(id <span class="t">int</span>) (model.User, <span class="t">error</span>) {
+    r.mu.RLock()
+    <span class="k">defer</span> r.mu.RUnlock()
+    u, ok := r.users[id]
+    <span class="k">if</span> !ok { <span class="k">return</span> model.User{}, ErrUserNotFound }
+    <span class="k">return</span> u, <span class="k">nil</span>
+}
+<span class="c">// Create/List/Update/Delete 同模式：写路径 Lock，读路径 RLock</span></pre>
+    <pre><span class="code-label">internal/service/user_service.go（节选）</span><span class="k">type</span> <span class="t">UserService</span> <span class="k">struct</span> { repo *repository.UserRepo }
+
+<span class="k">func</span> NewUserService(repo *repository.UserRepo) *UserService { <span class="k">return</span> &amp;UserService{repo: repo} }
+
+<span class="k">func</span> (s *UserService) Create(dto model.CreateUserDTO) (model.User, <span class="t">error</span>) {
+    <span class="k">for</span> _, u := <span class="k">range</span> s.repo.List() {
+        <span class="k">if</span> u.Username == dto.Username {
+            <span class="k">return</span> model.User{}, fmt.Errorf(<span class="s">"用户名 %q 已被占用"</span>, dto.Username)
+        }
+    }
+    role := dto.Role
+    <span class="k">if</span> role == <span class="s">""</span> { role = <span class="s">"user"</span> }
+    <span class="k">return</span> s.repo.Create(model.User{Username: dto.Username, Email: dto.Email,
+        Password: dto.Password, Role: role, CreatedAt: time.Now()}), <span class="k">nil</span>
+}
+
+<span class="k">func</span> (s *UserService) Get(id <span class="t">int</span>) (model.User, <span class="t">error</span>) { <span class="k">return</span> s.repo.Get(id) }
+<span class="k">func</span> IsNotFound(err <span class="t">error</span>) <span class="t">bool</span> { <span class="k">return</span> errors.Is(err, repository.ErrUserNotFound) }</pre>
+    <pre><span class="code-label">internal/handler/user_handler.go（节选）</span><span class="k">type</span> <span class="t">UserHandler</span> <span class="k">struct</span> { svc *service.UserService }
+
+<span class="k">func</span> (h *UserHandler) Register(r *gin.RouterGroup) {
+    r.GET(<span class="s">"/users"</span>, h.List)
+    r.POST(<span class="s">"/users"</span>, h.Create)          <span class="c">// ShouldBindJSON → svc.Create → Created</span>
+    r.GET(<span class="s">"/users/:id"</span>, h.Get)
+    r.PUT(<span class="s">"/users/:id"</span>, h.Update)
+    r.DELETE(<span class="s">"/users/:id"</span>, h.Delete)
+}
+
+<span class="k">func</span> (h *UserHandler) Get(c *gin.Context) {
+    id, err := strconv.Atoi(c.Param(<span class="s">"id"</span>))
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"id 必须是数字"</span>)
+        <span class="k">return</span>
+    }
+    u, err := h.svc.Get(id)
+    <span class="k">if</span> service.IsNotFound(err) {
+        response.Fail(c, http.StatusNotFound, response.CodeUserNotFound, <span class="s">"用户不存在"</span>)
+        <span class="k">return</span>
+    }
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusInternalServerError, <span class="n">5000</span>, <span class="s">"服务繁忙"</span>)
+        <span class="k">return</span>
+    }
+    response.OK(c, u)
+}
+<span class="c">// List/Create/Update/Delete 按 day4 讲义补全</span></pre>
+    <pre><span class="code-label">cmd/server/main.go</span><span class="k">func</span> main() {
+    userRepo := repository.NewUserRepo()
+    articleRepo := repository.NewArticleRepo()
+    userSvc := service.NewUserService(userRepo)
+    articleSvc := service.NewArticleService(articleRepo, userSvc)
+
+    r := gin.New()
+    r.Use(gin.Logger(), gin.Recovery(), middleware.CORS(), middleware.Timer())
+    r.NoRoute(<span class="k">func</span>(c *gin.Context) {
+        response.Fail(c, http.StatusNotFound, <span class="n">404</span>, <span class="s">"接口不存在: "</span>+c.Request.URL.Path)
+    })
+
+    api := r.Group(<span class="s">"/api/v1"</span>)
+    handler.NewUserHandler(userSvc).Register(api)
+    handler.NewArticleHandler(articleSvc).Register(api)
+
+    r.Run(<span class="s">":8080"</span>)
+}</pre>
+
+    <h3>4. curl 验收命令（逐条执行，状态码与 body 双确认）</h3>
+    <pre><span class="code-label">shell</span><span class="c"># —— 用户 CRUD 全链路 ——</span>
+$ curl -si -X POST localhost:8080/api/v1/users -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"ada","email":"ada@example.com","password":"passw0rd-123"}'</span>
+<span class="c"># 期望: HTTP 201 · {"code":0,"message":"success","data":{"id":1,...}}</span>
+
+$ curl -si localhost:8080/api/v1/users | head -n 1          <span class="c"># 期望 200</span>
+$ curl -si localhost:8080/api/v1/users/1 | head -n 1        <span class="c"># 期望 200</span>
+$ curl -si -X PUT localhost:8080/api/v1/users/1 -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"ada_lovelace","email":"ada@example.com","password":"passw0rd-123"}'</span>
+<span class="c"># 期望: 200 + code 0，username 已更新</span>
+$ curl -si -X DELETE localhost:8080/api/v1/users/1 | head -n 1   <span class="c"># 期望 200</span>
+$ curl -si localhost:8080/api/v1/users/1 | head -n 1             <span class="c"># 期望 404！再查即不存在</span>
+
+<span class="c"># —— 错误路径 ——</span>
+$ curl -si -X POST localhost:8080/api/v1/users -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"ab","email":"x","password":"1"}'</span>
+<span class="c"># 期望: 400 + {"code":1004,"message":"Username 长度不足 3；...","data":null}</span>
+
+<span class="c"># —— 文章 ——</span>
+$ curl -si -X POST localhost:8080/api/v1/articles -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"title":"Go 真香","content":"...","author_id":99}'</span>
+<span class="c"># 期望: 404 + code 1001（作者不存在）；author_id 换成真实 id 后期望 201</span>
+$ curl -s <span class="s">"localhost:8080/api/v1/articles?page=1&amp;size=10"</span>   <span class="c"># 期望 200 code 0</span>
+
+<span class="c"># —— CORS 预检 ——</span>
+$ curl -si -X OPTIONS localhost:8080/api/v1/users \
+  -H <span class="s">"Origin: http://localhost:5173"</span> -H <span class="s">"Access-Control-Request-Method: POST"</span>
+<span class="c"># 期望: 204 + Access-Control-Allow-Origin/Methods/Headers 三头齐全</span>
+
+<span class="c"># —— Recovery 兜底（保留 /debug/boom 或临时加一条）——</span>
+$ curl -si localhost:8080/debug/boom | head -n 1            <span class="c"># 期望 500</span>
+$ curl -s localhost:8080/api/v1/users -o /dev/null -w <span class="s">"%{http_code}\n"</span>  <span class="c"># 期望 200：服务没死</span></pre>
+  </section>
+
+  <section>
+    <h2>验收标准（全部通过才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w2sum1">Postman/Apifox 跑通完整 CRUD：用户 5 端点 + 文章 2 端点，Collection Runner 全绿且 id 靠变量链式传递</label></li>
+      <li><label><input type="checkbox" data-key="w2sum2">所有接口（含 404/500 兜底）统一返回 <code>{code, message, data}</code>，成功 HTTP 200/201 + code 0</label></li>
+      <li><label><input type="checkbox" data-key="w2sum3">CORS 可用 <code>curl -X OPTIONS</code> 预检验证：204 + 三个 Allow 响应头齐全</label></li>
+      <li><label><input type="checkbox" data-key="w2sum4">参数错误返回 400 + code 1004（中文消息），资源不存在返回 404 + code 1001</label></li>
+      <li><label><input type="checkbox" data-key="w2sum5">目录结构为 cmd/server + internal 三层 + pkg/response；README 含接口表格与验收命令，git 已提交（≥ 5 次带意义的 commit）</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>自评三卡</h2>
+    <div class="grade">
+      <div><b>代码量体检</b>三层每层都写过 ≥ 100 行？handler 里还残留业务 if 判断吗？service 里还能搜到 <code>gin.Context</code> 吗？——有则回 day4 返工。</div>
+      <div><b>卡点体检</b>本周最疼的坑是哪个：小写字段绑定失败？CORS 预检？import cycle？把「现象 → 原因 → 解法」三行写进 README 的 FAQ 小节。</div>
+      <div><b>速度体检</b>从现在起，从零搭出带统一响应 + 中间件的空项目骨架，能否在 30 分钟内完成？第 3 周要接 MySQL，手速不达标周末会被挤爆。</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见卡点（历届学员周报高频词）</h2>
+    <table>
+      <tr><th>卡点</th><th>典型症状</th><th>解法</th></tr>
+      <tr><td>三层拆完不会组装</td><td>main.go 里 new 顺序混乱、字段全 nil 的 panic</td><td>严格按 repo→service→handler 自底向上 new；每个 NewXxx 构造函数字段赋值齐全再返回</td></tr>
+      <tr><td>响应双写</td><td>日志 <code>superfluous WriteHeader</code>，body 出现两个 JSON 拼接</td><td>全局搜索 <code>response.Fail</code> 与 <code>c.JSON</code>，确认每分支后紧跟 <code>return</code></td></tr>
+      <tr><td>required 误伤 0/false</td><td><code>author_id:0</code> 或分页 size 为 0 被拒，行为诡异</td><td>允许零值的字段改 <code>omitempty,gte=0</code>，缺省逻辑放 service</td></tr>
+      <tr><td>JSON 输出 <code>{}</code></td><td>repository 明明存了数据，接口却空对象</td><td>检查字段是否大写开头、json tag 是否写、是否把未导出结构体直接扔进了 gin.H</td></tr>
+      <tr><td>并发下 map 崩</td><td>Runner 一跑并发就 <code>fatal error: concurrent map writes</code></td><td>锁必须覆盖读和写；读用 RLock；确认 <code>defer Unlock</code> 在 Lock 的同一函数内</td></tr>
+      <tr><td>OPTIONS 被鉴权拦死</td><td>预检返回 401，浏览器永远 CORS 失败</td><td>CORS 中间件注册在 Auth 之前，且对 OPTIONS <code>AbortWithStatus(204)</code>（见 day3）</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>周末时间分配（4–6 小时封顶，超时就是工作流问题）</h2>
+    <table>
+      <tr><th>时段</th><th>时长</th><th>做什么</th><th>完成信号</th></tr>
+      <tr><td>周六上午</td><td>90 分钟</td><td>对照第 1 节目录树检查项目结构，补齐缺失的包与文件</td><td><code>go build ./...</code> 通过</td></tr>
+      <tr><td>周六下午</td><td>120 分钟</td><td>按第 2 节接口清单逐个补齐接口，每个接口写完立刻跑对应 curl</td><td>7 个接口正常路径全通</td></tr>
+      <tr><td>周日上午</td><td>60 分钟</td><td>错误路径专项：400/404/405/500/预检，逐条对照第 4 节验收命令</td><td>异常用例也全通</td></tr>
+      <tr><td>周日下午</td><td>60 分钟</td><td>Postman collection 整理导出、README 终稿、git 提交、填自评三卡</td><td>验收标准 5 条全勾</td></tr>
+      <tr><td>周日晚</td><td>30 分钟</td><td>写周复盘三行 + 预习第 3 周 Docker 概念目录</td><td>笔记落盘</td></tr>
+    </table>
+    <div class="callout warn"><p><b>红线：</b>任何单个接口卡超过 40 分钟，先跳过做别的，回来再看——卡死一个接口耗掉整个周末，是 8 周计划最常见的翻车方式。周日晚仍缺接口：宁可少一个 DELETE，也要保证统一响应和文档完整，验收优先级写在上面了。</p></div>
+  </section>
+
+  <section>
+    <h2>下周预告：为什么要真数据库，Docker 登场</h2>
+    <p>内存 map 的三宗罪，本周你一定已经撞上：</p>
+    <ul>
+      <li><b>重启即灭</b>：Ctrl+C 再 <code>go run</code>，用户全没了——第 1 周「重启待办仍在」的验收标准本周被我们自己打破了，第 3 周用 MySQL 把它捡回来。</li>
+      <li><b>单进程独食</b>：内存数据没法多实例共享，也撑不了任何数据量，List 全表遍历纯属暴力。</li>
+      <li><b>没有查询语言</b>：day4 里手写 for 循环找重名用户，第 3 周变成一句 <code>WHERE username = ?</code>，外加索引提速。</li>
+    </ul>
+    <p>第 3 周（MySQL + GORM + Docker 入门）：用 <code>docker compose up</code> 三十秒起一个带数据卷的 MySQL，GORM <code>AutoMigrate</code> 建表，把<b>本周项目原样改造</b>——handler/service 几乎不动，只重写 repository 层。你会亲眼看到分层架构的回报。周末记得做一件事：把 <code>docker-compose.yml</code> 起 MySQL 的官方教程扫一眼目录，混个眼熟即可，周一开讲。</p>
+    <div class="callout tip"><p>复盘模板（写进笔记，每周日必填）：本周学到最值的一件事 / 卡最久的一件事 / 下周想调整的学习节奏。三行就够，贵在坚持 8 周。</p></div>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day5.html"><span class="hint">上一天 · W2D5 →</span>接口测试</a>
+    <a href="../w3/day1.html"><span class="hint">下一周 · W3D1 →</span>Docker Compose + MySQL + GORM</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W2 Summary · 第 2 周达成 ⟩</footer>
+</body>
+</html>

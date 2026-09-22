@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W6D3 · 创建、编辑与删除 | Go 全栈修炼手册</title>
+<meta name="description" content="Day 3：textarea+Markdown 原文编辑器、新建提交与编辑回填、删除二次确认、作者判断显示按钮、成功后 navigate 与列表刷新的方案取舍。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w6d3">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 6 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day3.html">第 6 周</a> / Day 3</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 6 · DAY 3</span>
+    <span class="chip alt">预计 2.5–3 小时</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>文章创建、编辑与删除</h1>
+  <p>读完了，开始写。今天把 <code>POST /articles</code>、<code>PUT /articles/:id</code>、<code>DELETE /articles/:id</code> 三个写接口接完，顺带解决三个真实的工程问题：<b>新建和编辑如何共用一个表单、删除怎么防误触、编辑/删除按钮给谁看</b>。做完今天，博客的增删改查在前端就齐了。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w6d3g1">一个 <code>Editor.jsx</code> 同时承担新建与编辑，靠路由参数区分模式</label></li>
+      <li><label><input type="checkbox" data-key="w6d3g2">编辑页能回填详情；提交分别走 POST / PUT，成功后有跳转</label></li>
+      <li><label><input type="checkbox" data-key="w6d3g3">删除有二次确认，取消不发请求</label></li>
+      <li><label><input type="checkbox" data-key="w6d3g4">非作者看不到编辑/删除按钮，且明白「前端隐藏不是安全」</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>课前须知：三个写接口的契约</h2>
+    <div class="callout js"><p><b>1. 全部需要登录。</b>请求头带 <code>Authorization: Bearer &lt;accessToken&gt;</code>（昨天的拦截器已自动做）。不带或过期返回 401——今天先手动保证 localStorage 里有有效 token，静默刷新明天补。</p></div>
+    <div class="callout js"><p><b>2. 创建与编辑的请求体一致。</b><code>{ title, summary, content, coverImage }</code>；<code>authorId</code> 由后端从 token 里取，前端不传也不能传——这是权限的第一道设计。</p></div>
+    <div class="callout js"><p><b>3. 权限后端说了算。</b>非作者 PUT/DELETE 会收到 <code>403 + code:1003（无权限）</code>。前端做作者判断只是「不让用户点了挨揍」，真正的守门员永远是后端。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 路由与共用编辑器：/post/new 与 /post/:id/edit</h3>
+    <pre><span class="code-label">jsx</span><span class="c">// src/App.jsx —— 本周路由表终形（守卫明天加）</span>
+&lt;<span class="t">Routes</span>&gt;
+  &lt;<span class="t">Route</span> path=<span class="s">"/"</span> element={&lt;<span class="t">ArticleList</span> /&gt;} /&gt;
+  &lt;<span class="t">Route</span> path=<span class="s">"/login"</span> element={&lt;<span class="t">Login</span> /&gt;} /&gt;
+  &lt;<span class="t">Route</span> path=<span class="s">"/register"</span> element={&lt;<span class="t">Register</span> /&gt;} /&gt;
+  &lt;<span class="t">Route</span> path=<span class="s">"/me"</span> element={&lt;<span class="t">Profile</span> /&gt;} /&gt;
+  &lt;<span class="t">Route</span> path=<span class="s">"/post/new"</span> element={&lt;<span class="t">Editor</span> /&gt;} /&gt;      <span class="c">// 新建</span>
+  &lt;<span class="t">Route</span> path=<span class="s">"/post/:id"</span> element={&lt;<span class="t">ArticleDetail</span> /&gt;} /&gt; <span class="c">// 详情</span>
+  &lt;<span class="t">Route</span> path=<span class="s">"/post/:id/edit"</span> element={&lt;<span class="t">Editor</span> /&gt;} /&gt;   <span class="c">// 编辑</span>
+&lt;/<span class="t">Routes</span>&gt;</pre>
+    <div class="callout warn"><p>路由顺序有讲究：<code>/post/new</code> 必须排在 <code>/post/:id</code> <b>前面</b>。否则 <code>/post/new</code> 会被 <code>:id</code> 匹配走，详情页拿着 id="new" 去请求。react-router v6 按「特异性」排序能兜底一部分，但请显式保持这个书写顺序，别赌。</p></div>
+
+    <h3>2. 编辑器：textarea + Markdown 原文，不引重库</h3>
+    <p>市面上 TipTap / Slate / wangEditor 都很好，但学习项目引它们等于给自己加两天的未知数。本周先「<b>textarea 写 Markdown 原文，详情页用 pre 展示原文</b>」，把精力留给联调本身；想要所见即所得，第 8 周再加。</p>
+    <pre><span class="code-label">js</span><span class="c">// src/api/article.js 追加三个写函数</span>
+<span class="k">export const</span> <span class="t">createArticle</span> = (data) =&gt; http.<span class="t">post</span>(<span class="s">'/articles'</span>, data)
+<span class="k">export const</span> <span class="t">updateArticle</span> = (id, data) =&gt; http.<span class="t">put</span>(<span class="s">`/articles/${id}`</span>, data)
+<span class="k">export const</span> <span class="t">deleteArticle</span> = (id) =&gt; http.<span class="t">delete</span>(<span class="s">`/articles/${id}`</span>)</pre>
+
+    <h3>3. Editor.jsx：模式判断 + 回填 + 提交（核心 90 行）</h3>
+    <pre><span class="code-label">jsx</span><span class="c">// src/pages/Editor.jsx</span>
+<span class="k">import</span> { useEffect, useRef, useState } <span class="k">from</span> <span class="s">'react'</span>
+<span class="k">import</span> { useNavigate, useParams } <span class="k">from</span> <span class="s">'react-router-dom'</span>
+<span class="k">import</span> { getArticle, createArticle, updateArticle } <span class="k">from</span> <span class="s">'../api/article'</span>
+
+<span class="k">const</span> EMPTY = { title: <span class="s">''</span>, summary: <span class="s">''</span>, content: <span class="s">''</span>, coverImage: <span class="s">''</span> }
+
+<span class="k">export default function</span> <span class="t">Editor</span>() {
+  <span class="k">const</span> { id } = useParams()          <span class="c">// /post/new 时 id 是 undefined</span>
+  <span class="k">const</span> isEdit = Boolean(id)
+  <span class="k">const</span> [form, setForm] = useState(EMPTY)
+  <span class="k">const</span> [loading, setLoading] = useState(isEdit)
+  <span class="k">const</span> [busy, setBusy] = useState(<span class="k">false</span>)
+  <span class="k">const</span> [err, setErr] = useState(<span class="s">''</span>)
+  <span class="k">const</span> navigate = useNavigate()
+  <span class="k">const</span> dirtyRef = useRef(<span class="k">false</span>)     <span class="c">// 用户开始打字后置 true，防回填覆盖（见坑表）</span>
+
+  <span class="c">// —— 编辑模式：拉详情回填表单 ——</span>
+  useEffect(() =&gt; {
+    <span class="k">if</span> (!isEdit) <span class="k">return</span>
+    <span class="k">let</span> ignore = <span class="k">false</span>
+    <span class="t">getArticle</span>(id)
+      .<span class="t">then</span>((a) =&gt; {
+        <span class="k">if</span> (ignore || dirtyRef.current) <span class="k">return</span> <span class="c">// 回填要认用户已输入的吗？不认，但 ignore 防卸载后 setState</span>
+        setForm({ title: a.title, summary: a.summary, content: a.content, coverImage: a.coverImage })
+        setLoading(<span class="k">false</span>)
+      })
+      .<span class="t">catch</span>((e) =&gt; { <span class="k">if</span> (!ignore) { setErr(e.message); setLoading(<span class="k">false</span>) } })
+    <span class="k">return</span> () =&gt; { ignore = <span class="k">true</span> }
+  }, [id, isEdit])
+
+  <span class="k">const</span> onChange = (e) =&gt; {
+    dirtyRef.current = <span class="k">true</span>
+    setForm({ ...form, [e.target.name]: e.target.value })
+  }
+
+  <span class="k">const</span> onSubmit = <span class="k">async</span> (e) =&gt; {
+    e.<span class="t">preventDefault</span>()
+    setErr(<span class="s">''</span>)
+    <span class="k">if</span> (!form.title.<span class="t">trim</span>() || !form.content.<span class="t">trim</span>()) <span class="k">return</span> setErr(<span class="s">'标题和内容不能为空'</span>)
+    setBusy(<span class="k">true</span>)
+    <span class="k">try</span> {
+      <span class="k">const</span> data = isEdit ? <span class="k">await</span> <span class="t">updateArticle</span>(id, form) : <span class="k">await</span> <span class="t">createArticle</span>(form)
+      <span class="t">navigate</span>(<span class="s">`/post/${data.id || id}`</span>) <span class="c">// 成功后跳详情，跳转策略见第 6 节</span>
+    } <span class="k">catch</span> (e2) {
+      setErr(e2.message) <span class="c">// 「标题长度超限」等后端校验原样展示</span>
+    } <span class="k">finally</span> {
+      setBusy(<span class="k">false</span>)
+    }
+  }
+
+  <span class="k">if</span> (loading) <span class="k">return</span> &lt;<span class="t">p</span>&gt;回填中…&lt;/<span class="t">p</span>&gt;
+
+  <span class="k">return</span> (
+    &lt;<span class="t">form</span> onSubmit={onSubmit} style={{ maxWidth: <span class="n">640</span>, margin: <span class="s">'24px auto'</span>, display: <span class="s">'grid'</span>, gap: <span class="n">10</span> }}&gt;
+      &lt;<span class="t">h2</span>&gt;{isEdit ? <span class="s">'编辑文章'</span> : <span class="s">'写新文章'</span>}&lt;/<span class="t">h2</span>&gt;
+      &lt;<span class="t">input</span> name=<span class="s">"title"</span> placeholder=<span class="s">"标题"</span> value={form.title} onChange={onChange} /&gt;
+      &lt;<span class="t">input</span> name=<span class="s">"summary"</span> placeholder=<span class="s">"一句话摘要"</span> value={form.summary} onChange={onChange} /&gt;
+      &lt;<span class="t">input</span> name=<span class="s">"coverImage"</span> placeholder=<span class="s">"封面图 URL（可空）"</span> value={form.coverImage} onChange={onChange} /&gt;
+      &lt;<span class="t">textarea</span> name=<span class="s">"content"</span> rows={<span class="n">15</span>} placeholder=<span class="s">"支持 Markdown 原文"</span> value={form.content} onChange={onChange} /&gt;
+      {err &amp;&amp; &lt;<span class="t">p</span> style={{ color: <span class="s">'#f87171'</span> }}&gt;{err}&lt;/<span class="t">p</span>&gt;}
+      &lt;<span class="t">button</span> disabled={busy}&gt;{busy ? <span class="s">'提交中…'</span> : isEdit ? <span class="s">'保存修改'</span> : <span class="s">'发布'</span>}&lt;/<span class="t">button</span>&gt;
+    &lt;/<span class="t">form</span>&gt;
+  )
+}</pre>
+    <div class="callout tip"><p>新建模式连请求都不用发，初始态就是 EMPTY；编辑模式多一个 loading 门闩，<b>回填没完成前渲染「回填中…」而不是空表单</b>——否则用户对着空表单先打了两字，回填一到又被覆盖，这就是本节最大的坑。</p></div>
+
+    <h3>4. 删除：二次确认从 window.confirm 起步</h3>
+    <pre><span class="code-label">jsx</span><span class="c">// src/pages/ArticleDetail.jsx 里加一个处理函数</span>
+<span class="k">const</span> onDelete = <span class="k">async</span> () =&gt; {
+  <span class="k">const</span> ok = window.<span class="t">confirm</span>(<span class="s">`确定删除《${article.title}》？此操作不可撤销`</span>)
+  <span class="k">if</span> (!ok) <span class="k">return</span>              <span class="c">// 取消：什么都不发生</span>
+  <span class="k">try</span> {
+    <span class="k">await</span> <span class="t">deleteArticle</span>(article.id)
+    <span class="t">navigate</span>(<span class="s">'/'</span>)             <span class="c">// 删除后详情页已不存在，回列表</span>
+  } <span class="k">catch</span> (e) {
+    <span class="t">alert</span>(<span class="s">'删除失败：'</span> + e.message) <span class="c">// 比如 token 过期、并发被作者本人先删了</span>
+  }
+}</pre>
+    <div class="callout note"><p><code>window.confirm</code> 丑但零成本，学习项目完全够用。想要样式可控、可测试，就自己写一个受控弹窗组件——下面第 4.5 节给你一个最小可用版，列进本周选做。</p></div>
+
+    <h3>4.5 选做：自研 ConfirmDialog（受控组件一次写对）</h3>
+    <pre><span class="code-label">jsx</span><span class="c">// src/components/ConfirmDialog.jsx —— 一个 state 控制显隐 + 两个回调</span>
+<span class="k">import</span> { useState } <span class="k">from</span> <span class="s">'react'</span>
+
+<span class="k">export function</span> <span class="t">ConfirmDialog</span>({ title, danger = <span class="k">true</span>, onOk }) {
+  <span class="k">const</span> [open, setOpen] = useState(<span class="k">false</span>)
+  <span class="k">const</span> run = <span class="k">async</span> () =&gt; {
+    setOpen(<span class="k">false</span>)
+    <span class="k">try</span> { <span class="k">await</span> onOk() } <span class="k">catch</span> (e) { <span class="t">alert</span>(e.message) }
+  }
+  <span class="k">return</span> (
+    &lt;&gt;
+      &lt;<span class="t">button</span> onClick={() =&gt; setOpen(<span class="k">true</span>)}
+        style={{ color: danger ? <span class="s">'#f87171'</span> : <span class="s">'inherit'</span> }}&gt;删除&lt;/<span class="t">button</span>&gt;
+      {open &amp;&amp; (
+        &lt;<span class="t">div</span> style={{ position: <span class="s">'fixed'</span>, inset: <span class="n">0</span>, background: <span class="s">'rgba(0,0,0,.5)'</span>,
+          display: <span class="s">'grid'</span>, placeItems: <span class="s">'center'</span> }}&gt;
+          &lt;<span class="t">div</span> style={{ background: <span class="s">'#fff'</span>, padding: <span class="n">24</span>, borderRadius: <span class="n">12</span>, maxWidth: <span class="n">360</span> }}&gt;
+            &lt;<span class="t">h3</span>&gt;{title}&lt;/<span class="t">h3</span>&gt;
+            &lt;<span class="t">button</span> onClick={() =&gt; setOpen(<span class="k">false</span>)}&gt;取消&lt;/<span class="t">button</span>&gt;
+            &lt;<span class="t">button</span> onClick={run} style={{ marginLeft: <span class="n">8</span>, color: <span class="s">'#fff'</span>, background: <span class="s">'#dc2626'</span> }}&gt;
+              确定删除
+            &lt;/<span class="t">button</span>&gt;
+          &lt;/<span class="t">div</span>&gt;
+        &lt;/<span class="t">div</span>&gt;
+      )}
+    &lt;/&gt;
+  )
+}
+<span class="c">// 用法：&lt;ConfirmDialog title={`确定删除《${article.title}》？`} onOk={() =&gt; deleteArticle(article.id)} /&gt;</span></pre>
+
+    <h3>5. 作者判断：按钮给谁看</h3>
+    <pre><span class="code-label">jsx</span><span class="c">// ArticleDetail.jsx 头部操作区
+// 注意：useParams 的 id 是字符串，后端 authorId 是数字，必须 Number() 对齐</span>
+<span class="k">const</span> { user } = <span class="t">useAuth</span>()
+<span class="k">const</span> isAuthor = user &amp;&amp; article.authorId === user.id
+
+<span class="k">return</span> (
+  ...
+  {isAuthor &amp;&amp; (
+    &lt;<span class="t">div</span> style={{ display: <span class="s">'flex'</span>, gap: <span class="n">8</span> }}&gt;
+      &lt;<span class="t">Link</span> to={<span class="s">`/post/${article.id}/edit`</span>}&gt;&lt;<span class="t">button</span>&gt;编辑&lt;/<span class="t">button</span>&gt;&lt;/<span class="t">Link</span>&gt;
+      &lt;<span class="t">button</span> onClick={onDelete} style={{ color: <span class="s">'#f87171'</span> }}&gt;删除&lt;/<span class="t">button</span>&gt;
+    &lt;/<span class="t">div</span>&gt;
+  )}
+)</pre>
+    <div class="callout warn"><p><b>前端隐藏 ≠ 权限控制。</b>懂 DevTools 的人手敲 <code>/post/123/edit</code> 照样能进编辑页、照样能发 PUT 请求——但后端会回 403。所以两层都要：前端判断给正常用户顺畅体验，后端判断给恶意请求兜底。今天的验收之一就是替别人验证他 403。</p></div>
+
+    <h3>6. 成功之后：跳转与「列表为什么要刷新」</h3>
+    <p>提交/删除成功后跳回哪里？跳回去列表还是旧数据怎么办？三个方案摆平了选：</p>
+    <table>
+      <tr><th>方案</th><th>写法</th><th>优点</th><th>代价 / 适用</th></tr>
+      <tr><td>A. 回上一页</td><td><code>navigate(-1)</code></td><td>一行代码，从哪来到哪去</td><td>用户直接打开编辑器 URL 时 <code>-1</code> 会退出网站；且回到列表后是<b>缓存前的旧数据</b>（组件没重新挂载，useEffect 不会再跑）</td></tr>
+      <tr><td>B. 跳固定路由 + 列表自己重新拉</td><td><code>navigate('/?t=' + Date.now())</code>，列表把 <code>searchParams</code> 里的 <code>t</code> 加进 useEffect 依赖</td><td>数据必新，URL 可分享</td><td>多一个时间戳参数，略脏；<b>本周推荐</b>，简单可靠</td></tr>
+      <tr><td>C. 状态提升 / 全局 store</td><td>列表数据提到 App 或引 Zustand / React Query，写操作直接改缓存（乐观更新）</td><td>体验最好，业界正解</td><td>学习成本最高；第 8 周或以后换 React Query 再做</td></tr>
+    </table>
+    <pre><span class="code-label">jsx</span><span class="c">// 方案 B 的列表端配套改动（ArticleList.jsx 加两行）</span>
+<span class="k">const</span> [searchParams] = <span class="t">useSearchParams</span>()
+<span class="k">const</span> stamp = searchParams.<span class="t">get</span>(<span class="s">'t'</span>) <span class="c">// 编辑器成功后 navigate('/?t=...') 带来的</span>
+
+<span class="t">useEffect</span>(() =&gt; { <span class="c">/* …原来的取数… */</span> }, [page, debouncedKeyword, stamp])
+<span class="c">// stamp 一变 = 强制重新拉取，新发的文章立刻出现在第一页</span></pre>
+    <pre><span class="code-label">jsx</span><span class="c">// 方案 A 现场复现「为什么不够用」（花 2 分钟体验一次胜过读十遍）：</span>
+<span class="c">// 1) 从列表第 2 页点进文章 → 编辑 → 保存 → navigate(-1) 回列表：</span>
+<span class="c">//    组件复用未重新挂载，useEffect 不跑，你改的标题在列表里还是旧的；</span>
+<span class="c">// 2) 直接从地址栏打开 /post/new → 提交后 navigate(-1)：</span>
+<span class="c">//    历史栈里你没有上一页，浏览器干脆退出了你的网站。</span></pre>
+    <div class="callout js"><p>结论：新建成功跳「该文章的详情页」（<code>navigate(`/post/${data.id}`)</code>，因为后端返回了创建好的 article，id 拿到即用）；删除成功跳列表并带 <code>?t=</code>；编辑成功跳详情页。别在 <code>navigate(-1)</code> 上省这一步，省了就会在「为什么我发的文章不在列表里」上花一小时。</p></div>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：完整走通 新建 → 编辑 → 删除（60 分钟）</div>
+      <p>登录 → 顶栏加「写文章」按钮（<code>Link to="/post/new"</code>）→ 发一篇 Markdown 文章 → 详情页看到原文 → 点编辑改标题保存 → 回详情确认新标题 → 点删除、在 confirm 里先点「取消」再点「确定」→ 列表不再出现该文章。每一步在 Network 面板确认请求方法与 URL 正确（POST / PUT / DELETE）。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：验证前端隐藏不是安全（30 分钟）</div>
+      <p>注册第二个账号 B。用 B 登录访问你（账号 A）的文章详情页，确认看不到编辑/删除按钮；然后<b>手动敲 URL</b> 进入 <code>/post/&lt;A的文章id&gt;/edit</code>，强行提交，观察后端返回。参考断言：</p>
+      <pre><span class="code-label">shell</span>$ curl -s -X PUT localhost:8080/api/v1/articles/1 \
+  -H <span class="s">"Authorization: Bearer &lt;B的accessToken&gt;"</span> -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"title":"劫持","summary":"x","content":"x","coverImage":""}'</span>
+{<span class="s">"code"</span>:<span class="n">1003</span>,<span class="s">"message"</span>:<span class="s">"无权限"</span>,<span class="s">"data"</span>:<span class="k">null</span>}   <span class="c"># HTTP 403</span></pre>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：给编辑器加一个「预览」双栏（30 分钟）</div>
+      <p>不引 Markdown 库的极简预览：textarea 右边放一个 <code>&lt;pre&gt;</code> 实时镜像 content，再加按钮切换 编辑/预览 两个视图。目标是理解「受控 textarea 的值同时驱动两个视图」，为第 8 周接真正的 markdown 渲染留感觉。</p>
+      <pre><span class="code-label">jsx</span><span class="c">// 双栏核心：同一个 form.content 驱动输入与展示</span>
+&lt;<span class="t">div</span> style={{ display: <span class="s">'grid'</span>, gridTemplateColumns: <span class="s">'1fr 1fr'</span>, gap: <span class="n">12</span> }}&gt;
+  &lt;<span class="t">textarea</span> value={form.content} onChange={onChange} rows={<span class="n">15</span>} /&gt;
+  {preview
+    ? &lt;<span class="t">pre</span> style={{ whiteSpace: <span class="s">'pre-wrap'</span>, background: <span class="s">'#f6f7f9'</span>, padding: <span class="n">12</span> }}&gt;
+        {form.content}
+      &lt;/<span class="t">pre</span>&gt;
+    : <span class="k">null</span>}
+&lt;/<span class="t">div</span>&gt;
+&lt;<span class="t">button</span> type=<span class="s">"button"</span> onClick={() =&gt; setPreview((p) =&gt; !p)}&gt;
+  {preview ? <span class="s">'返回编辑'</span> : <span class="s">'预览原文'</span>}
+&lt;/<span class="t">button</span>&gt;</pre>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：删前检查未保存修改（20 分钟）</div>
+      <p>利用第 3 节的 <code>dirtyRef</code>：在编辑页点浏览器返回或站内离开前，如果 <code>dirtyRef.current</code> 为 true 弹 <code>confirm('有未保存修改，确定离开？')</code>。做不动就先只在删除按钮旁加「重置草稿」二次确认，效果等价。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>回填竞态覆盖用户输入</td><td>编辑页打开瞬间开始打字，详情响应回来后打的字没了</td><td>回填完成前渲染「回填中…」不显示表单；或 dirtyRef 拦截晚到的回填</td></tr>
+      <tr><td>authorId 类型不对齐</td><td>自己是作者却看不到按钮</td><td>useParams/部分接口返回字符串，比较统一 <code>Number()</code>；或 <code>String(a) === String(b)</code></td></tr>
+      <tr><td>PUT 忘拼路径 id</td><td><code>http.put('/articles', ...)</code> → 404 或打到创建接口</td><td>update 必须 <code>put(`/articles/${id}`)</code>，Network 里先看 URL 再看 body</td></tr>
+      <tr><td>confirm 的返回值当布尔强校验</td><td><code>if (confirm(...) === true)</code> 在某些 polyfill 环境行为怪异</td><td>confirm 返回布尔，直接 <code>if (!ok) return</code> 即可</td></tr>
+      <tr><td>成功后 navigate(-1) 数据是旧的</td><td>回列表看不到刚发的文章，怀疑后端没存</td><td>列表挂载时 useEffect 才跑；用方案 B 的 <code>?t=</code> 强制刷新，或跳详情页</td></tr>
+      <tr><td>新建时把 user.id 塞进请求体</td><td>后端忽略还好，若后端「信任前端 authorId」就是越权漏洞</td><td>身份永远从 token 解，前端不传 authorId</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>回填（hydrate form）</td><td>编辑场景先把详情接口的数据灌进受控表单初始值</td></tr>
+      <tr><td>模式复用</td><td>同一组件按路由参数决定新建/编辑，差异只体现在标题、按钮文案和提交函数</td></tr>
+      <tr><td>二次确认</td><td>破坏性操作前拦一道（confirm 或自研弹窗），取消即完全不发请求</td></tr>
+      <tr><td>乐观更新</td><td>不等后端确认先改本地 UI，失败再回滚；需要全局状态管理配合，本周不做只了解</td></tr>
+      <tr><td>受控弹窗</td><td>显隐由组件 state 决定的自研确认框，替代 window.confirm，可样式化可测试</td></tr>
+      <tr><td>草稿保护（dirtyRef）</td><td>用 ref 记录「用户是否已输入」，晚到的回填/离开动作据此让路，防覆盖打字内容</td></tr>
+      <tr><td>越权（IDOR）</td><td>改别人的资源：前端藏按钮是体验，后端校验 token 身份才是安全</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w6d3c1">发布一篇带封面与 Markdown 原文的新文章，成功后自动跳到它的详情页</label></li>
+      <li><label><input type="checkbox" data-key="w6d3c2">编辑页打开即回填完整，改标题保存后详情页展示新值</label></li>
+      <li><label><input type="checkbox" data-key="w6d3c3">删除弹二次确认，取消后文章还在，确定后列表（带 <code>?t=</code>）不再显示</label></li>
+      <li><label><input type="checkbox" data-key="w6d3c4">作者视角看得到编辑/删除按钮；换账号 B 看不到，且 curl 强行 PUT 返回 403/1003</label></li>
+      <li><label><input type="checkbox" data-key="w6d3c5">口述三种「成功后跳转与刷新」方案的取舍，并说出你项目里选的是哪种、为什么</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day2.html"><span class="hint">← 上一天 · W6D2</span>文章列表与详情</a>
+    <a href="day4.html"><span class="hint">下一天 · W6D4 →</span>路由守卫与 axios 拦截器</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W6D3 · 明天见 ⟩</footer>
+</body>
+</html>

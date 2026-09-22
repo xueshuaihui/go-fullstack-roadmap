@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W1D3 · slice、map、defer、文件 I/O | Go 全栈修炼手册</title>
+<meta name="description" content="Day 3：slice 底层结构与 append 扩容机制、map 增删查、defer 执行顺序、os.ReadFile/WriteFile 与 encoding/json 读写待办数据，为周末 HTTP 项目铺路。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w1d3">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="../w1/summary.html">第 1 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 1 周</a> / Day 3</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 1 · DAY 3</span>
+    <span class="chip alt">预计 2.5–3 小时</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>slice、map、defer、文件 I/O</h1>
+  <p>今天四块知识拼起来就是<b>数据存取的最小闭环</b>：待办列表用 slice 存顺序，按 ID 查找用 map 建索引，资源用 defer 收尾，最后用 <code>os</code> + <code>encoding/json</code> 写进文件、下次启动读回来。<b>周末项目"重启不丢数据"这条验收，靠的正是讲义 6 的那两个函数。</b></p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w1d3g1">能说出 slice 的三元组（指针/len/cap），解释 append 什么时候会换底层数组</label></li>
+      <li><label><input type="checkbox" data-key="w1d3g2">会用 map 做增删查，理解 <code>, ok</code> 二返回值与 nil map 写入 panic</label></li>
+      <li><label><input type="checkbox" data-key="w1d3g3">能预测一段多 defer 代码的输出顺序，并解释"参数即时求值"</label></li>
+      <li><label><input type="checkbox" data-key="w1d3g4">独立写完 <code>LoadTodos(path)</code> / <code>SaveTodos(path, list)</code> 两个 JSON 文件函数</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. slice：带容量的动态数组</h3>
+    <p>Go 的数组 <code>[3]int</code> 把长度写死在类型里，几乎不用；日常说的"数组"是 <b>slice</b>——指向底层数组的视图，含<b>起始指针、len（当前长度）、cap（可增长上限）</b>三样东西。</p>
+    <pre><span class="code-label">slice.go</span><span class="k">package</span> main
+
+<span class="k">import</span> <span class="t">fmt</span>
+
+<span class="k">func</span> main() {
+    <span class="k">var</span> s []<span class="t">int</span>            <span class="c">// nil slice：len=0 cap=0，可以直接 append</span>
+    <span class="k">for</span> i := <span class="n">1</span>; i &lt;= <span class="n">5</span>; i++ {
+        s = <span class="t">append</span>(s, i*<span class="n">10</span>) <span class="c">// append 返回新 slice，必须接回变量</span>
+        fmt.Printf(<span class="s">"第 %d 次: %v len=%d cap=%d\n"</span>, i, s, <span class="t">len</span>(s), <span class="t">cap</span>(s))
+    }
+    <span class="c">// 输出（Go 1.22+ 的翻倍策略）：
+    // [10] len=1 cap=1 / [10 20] len=2 cap=2 / [10 20 30] len=3 cap=4 ← 扩容：换新数组并拷贝旧数据
+    // [10 20 30 40] len=4 cap=4 / [10 20 30 40 50] len=5 cap=8 ← 再扩容</span>
+
+    list := <span class="t">make</span>([]<span class="t">string</span>, <span class="n">0</span>, <span class="n">100</span>) <span class="c">// 已知数量就预分配容量，全程不再扩容</span>
+    list = <span class="t">append</span>(list, <span class="s">"学 Go"</span>)
+
+    nums := <span class="t">make</span>([]<span class="t">int</span>, <span class="n">3</span>)         <span class="c">// make([]T, n) 得到 n 个零值，可下标赋值</span>
+    nums[<span class="n">0</span>], nums[<span class="n">1</span>] = <span class="n">5</span>, <span class="n">6</span>
+    <span class="c">// nums[3] = 7 → panic: index out of range（Go 不会自动长大）</span>
+    fmt.Println(list, nums, <span class="t">cap</span>(nums))
+}</pre>
+    <div class="callout js"><p>JS 的 <code>arr.push(x)</code> 原地修改并返回新长度；Go 的 <code>append</code> <b>返回新 slice</b>（扩容后甚至指向另一个数组）。写成裸一行 <code>append(s, x)</code> 等于什么都没加——本周最高频 bug。</p></div>
+
+    <h3>2. slice 的三个坑：视图共享、copy、删除元素</h3>
+    <pre><span class="code-label">slice2.go</span><span class="k">package</span> main
+
+<span class="k">import</span> <span class="t">fmt</span>
+
+<span class="k">func</span> main() {
+    a := []<span class="t">int</span>{<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>, <span class="n">4</span>, <span class="n">5</span>}
+    b := a[<span class="n">1</span>:<span class="n">3</span>]  <span class="c">// [2 3]：不是拷贝！和 a 共用底层数组</span>
+    b[<span class="n">0</span>] = <span class="n">99</span>
+    fmt.Println(a)  <span class="c">// [1 99 3 4 5] ← a 被改了</span>
+
+    c := <span class="t">make</span>([]<span class="t">int</span>, <span class="t">len</span>(b))
+    <span class="t">copy</span>(c, b)     <span class="c">// 真拷贝，之后互不影响（也可用 slices.Clone）</span>
+    c[<span class="n">0</span>] = <span class="n">7</span>
+    fmt.Println(b, c) <span class="c">// [99 3] [7 3]</span>
+
+    <span class="c">// 更阴的坑：append 到"还有容量"的子切片，会踩掉后面的元素</span>
+    d := a[:<span class="n">2</span>]        <span class="c">// len=2 cap=5</span>
+    d = <span class="t">append</span>(d, <span class="n">100</span>) <span class="c">// 直接写进 a[2] 的位置</span>
+    fmt.Println(a, d)  <span class="c">// [1 99 100 4 5] [1 99 100]</span>
+
+    <span class="c">// 删除下标 i 的元素（Go 没有 splice，标准写法是两段拼接）</span>
+    items := []<span class="t">string</span>{<span class="s">"a"</span>, <span class="s">"b"</span>, <span class="s">"c"</span>, <span class="s">"d"</span>}
+    i := <span class="n">2</span>
+    items = <span class="t">append</span>(items[:i], items[i+<span class="n">1</span>:]...) <span class="c">// ... 展开可变参数；注意它复用底层数组</span>
+    fmt.Println(items) <span class="c">// [a b d]</span>
+}</pre>
+
+    <h3>3. map：键值存储</h3>
+    <pre><span class="code-label">map.go</span><span class="k">package</span> main
+
+<span class="k">import</span> <span class="t">fmt</span>
+
+<span class="k">type</span> <span class="t">Todo</span> <span class="k">struct</span> {
+    ID    <span class="t">int</span>
+    Title <span class="t">string</span>
+    Done  <span class="t">bool</span>
+}
+
+<span class="k">func</span> main() {
+    byID := <span class="t">make</span>(<span class="k">map</span>[<span class="t">int</span>]<span class="t">Todo</span>)                       <span class="c">// make 创建</span>
+    scores := <span class="k">map</span>[<span class="t">string</span>]<span class="t">int</span>{<span class="s">"语文"</span>: <span class="n">92</span>, <span class="s">"数学"</span>: <span class="n">85</span>} <span class="c">// 字面量创建</span>
+
+    byID[<span class="n">1</span>] = <span class="t">Todo</span>{ID: <span class="n">1</span>, Title: <span class="s">"买菜"</span>}   <span class="c">// 增 / 改是同一语法</span>
+    byID[<span class="n">2</span>] = <span class="t">Todo</span>{ID: <span class="n">2</span>, Title: <span class="s">"写 Go 作业"</span>}
+    delete(byID, <span class="n">1</span>)                          <span class="c">// 删：键不存在也不报错</span>
+
+    fmt.Println(<span class="s">"查不到的直接取值:"</span>, byID[<span class="n">1</span>]) <span class="c">// 返回零值 Todo，掩盖了"没查到"</span>
+
+    <span class="c">// 推荐：二返回值 ok 区分"零值"与"不存在"</span>
+    <span class="k">if</span> t, ok := byID[<span class="n">2</span>]; ok {
+        fmt.Println(<span class="s">"存在:"</span>, t.Title)
+    } <span class="k">else</span> {
+        fmt.Println(<span class="s">"不存在"</span>)
+    }
+
+    fmt.Println(<span class="s">"长度:"</span>, <span class="t">len</span>(byID))
+    <span class="k">for</span> k, n := <span class="k">range</span> scores { fmt.Println(k, n) } <span class="c">// 遍历顺序随机，别依赖</span>
+
+    <span class="c">// map 的 value 是 struct 时不能直接改字段（不可寻址）</span>
+    byID[<span class="n">3</span>] = <span class="t">Todo</span>{ID: <span class="n">3</span>, Title: <span class="s">"学 map"</span>}
+    <span class="c">// byID[3].Done = true   // 编译失败：cannot assign to struct field in map</span>
+    t := byID[<span class="n">3</span>]
+    t.Done = <span class="k">true</span>
+    byID[<span class="n">3</span>] = t                <span class="c">// 取出→改→塞回</span>
+    <span class="c">// 更省事：一开始就存指针 map[int]*Todo，直接 byID[3].Done = true</span>
+    fmt.Println(byID[<span class="n">3</span>])
+}</pre>
+    <div class="callout warn"><p>只声明不初始化的 <code>var m map[string]int</code> 是 nil map：<b>读</b>可以，<b>写</b>直接 panic <code>assignment to entry in nil map</code>。函数返回 map 时也别忘初始化。</p></div>
+    <div class="callout js"><p>JS 里 <code>obj[key] || 默认值</code> 满天飞；Go 读不到返回零值而不是 undefined。而且 <code>for k := range m</code> 顺序被运行时故意打乱——想"按创建顺序输出待办"，就用 slice 存顺序、map 只做 ID 索引。</p></div>
+
+    <h3>4. defer：把收尾工作交给语言</h3>
+    <p><code>defer</code> 把一次调用推迟到<b>当前函数返回时</b>执行；多个 defer 按<b>后进先出（LIFO）</b>运行，参数在 defer 语句那一刻就已求值。</p>
+    <pre><span class="code-label">defer.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">fmt</span>
+    <span class="t">os</span>
+)
+
+<span class="k">func</span> orderDemo() {
+    <span class="k">defer</span> fmt.Println(<span class="s">"3 最后执行"</span>)
+    <span class="k">defer</span> fmt.Println(<span class="s">"2 倒数第二"</span>)
+    x := <span class="n">10</span>
+    <span class="k">defer</span> fmt.Println(<span class="s">"1 参数即时求值:"</span>, x) <span class="c">// 打印 10，不是 11</span>
+    x++
+    fmt.Println(<span class="s">"0 主体"</span>)
+}
+<span class="c">// 输出：0 主体 / 1 参数即时求值: 10 / 2 倒数第二 / 3 最后执行</span>
+
+<span class="k">func</span> readFile(path <span class="t">string</span>) (<span class="t">string</span>, <span class="t">error</span>) {
+    f, err := <span class="t">os</span>.Open(path)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="s">""</span>, err <span class="c">// defer 还没注册，直接返回</span>
+    }
+    <span class="k">defer</span> f.Close() <span class="c">// ← 标准姿势：拿到资源，下一行就 defer 释放</span>
+
+    buf := <span class="t">make</span>([]<span class="t">byte</span>, <span class="n">128</span>)
+    n, err := f.Read(buf)
+    <span class="k">if</span> err != <span class="k">nil</span> &amp;&amp; n == <span class="n">0</span> {
+        <span class="k">return</span> <span class="s">""</span>, err <span class="c">// 这条 return 同样会执行 f.Close()</span>
+    }
+    <span class="k">return</span> <span class="t">string</span>(buf[:n]), <span class="k">nil</span>
+}
+
+<span class="k">func</span> main() {
+    orderDemo()
+    text, err := readFile(<span class="s">"todos.json"</span>) <span class="c">// 首次运行文件还不存在，会走 err 分支</span>
+    fmt.Println(text, err)
+}</pre>
+    <div class="callout tip"><p>规则一句话：<b>成对资源（open/close、加锁/解锁、开始/结束）在拿到的下一行就写 defer</b>。但 defer 是<b>函数级</b>的——循环里 defer 1000 次会攒 1000 个句柄到函数结束才释放，需要每轮释放就把逻辑抽成小函数。</p></div>
+
+    <h3>5. 文件读写：os.ReadFile / os.WriteFile</h3>
+    <pre><span class="code-label">file.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">fmt</span>
+    <span class="t">os</span>
+    <span class="t">strings</span>
+)
+
+<span class="k">func</span> main() {
+    <span class="c">// 写：0o644 = 属主可读写、其他人只读（Go 八进制字面量用 0o 前缀）</span>
+    <span class="k">if</span> err := <span class="t">os</span>.WriteFile(<span class="s">"note.txt"</span>, []<span class="t">byte</span>(<span class="s">"第一行\n第二行\n"</span>), <span class="n">0o644</span>); err != <span class="k">nil</span> {
+        fmt.Println(<span class="s">"写入失败:"</span>, err)
+        <span class="k">return</span>
+    }
+
+    <span class="c">// 读：一次拿到全部字节</span>
+    data, err := <span class="t">os</span>.ReadFile(<span class="s">"note.txt"</span>)
+    <span class="k">if</span> <span class="t">os</span>.IsNotExist(err) {
+        fmt.Println(<span class="s">"文件还不存在"</span>) <span class="c">// 首次启动是正常情况，不算错误</span>
+        <span class="k">return</span>
+    } <span class="k">if</span> err != <span class="k">nil</span> {
+        fmt.Println(<span class="s">"读取失败:"</span>, err)
+        <span class="k">return</span>
+    }
+    <span class="k">for</span> i, line := <span class="k">range</span> <span class="t">strings</span>.Split(<span class="t">strings</span>.TrimSpace(<span class="t">string</span>(data)), <span class="s">"\n"</span>) {
+        fmt.Printf(<span class="s">"%d: %s\n"</span>, i+<span class="n">1</span>, line)
+    }
+    fmt.Println(<span class="s">"共"</span>, <span class="t">len</span>(data), <span class="s">"字节"</span>)
+}</pre>
+    <div class="callout note"><p><code>os.WriteFile</code> 是<b>整体覆盖</b>而不是追加。待办数据量很小，每次全量覆盖一个 JSON 文件最简单可靠；第 3 周接上 MySQL 后就不自己管文件了。</p></div>
+    <div class="callout tip"><p>需要追加日志那样写时，用 <code>f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)</code> 拿到 <code>*os.File</code>，立刻 <code>defer f.Close()</code>，再 <code>fmt.Fprintln(f, "...")</code>——defer 和文件 I/O 两个知识点在这里合流。</p></div>
+
+    <h3>6. encoding/json + 落盘：周末项目的持久层原型</h3>
+    <p>Go 用字段名（或 struct tag）在 JSON 键与字段之间做映射，<code>Marshal</code> 序列化、<code>Unmarshal</code> 反序列化：</p>
+    <pre><span class="code-label">todo_store.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">encoding/json</span>
+    <span class="t">fmt</span>
+    <span class="t">os</span>
+)
+
+<span class="k">type</span> <span class="t">Todo</span> <span class="k">struct</span> {
+    ID        <span class="t">int</span>    <span class="s">`json:"id"`</span>
+    Title     <span class="t">string</span> <span class="s">`json:"title"`</span>
+    Done      <span class="t">bool</span>   <span class="s">`json:"done"`</span>
+    CreatedAt <span class="t">string</span> <span class="s">`json:"created_at,omitempty"`</span> <span class="c">// 零值时省略该键</span>
+}
+
+<span class="k">const</span> storeFile = <span class="s">"todos.json"</span>
+
+<span class="c">// LoadTodos：文件不存在 / 内容为空都返回空列表，只有真错误才报错</span>
+<span class="k">func</span> LoadTodos(path <span class="t">string</span>) ([]<span class="t">Todo</span>, <span class="t">error</span>) {
+    data, err := <span class="t">os</span>.ReadFile(path)
+    <span class="k">if</span> <span class="t">os</span>.IsNotExist(err) { <span class="k">return</span> []<span class="t">Todo</span>{}, <span class="k">nil</span> }
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="k">nil</span>, <span class="t">fmt</span>.Errorf(<span class="s">"读取 %s: %w"</span>, path, err) }
+    <span class="k">if</span> <span class="t">len</span>(data) == <span class="n">0</span> { <span class="k">return</span> []<span class="t">Todo</span>{}, <span class="k">nil</span> }
+
+    todos := []<span class="t">Todo</span>{}
+    <span class="k">if</span> err := <span class="t">json</span>.Unmarshal(data, &amp;todos); err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, <span class="t">fmt</span>.Errorf(<span class="s">"解析 JSON: %w"</span>, err) <span class="c">// %w 包装错误，Day 4 细讲</span>
+    }
+    <span class="k">return</span> todos, <span class="k">nil</span>
+}
+
+<span class="c">// SaveTodos：MarshalIndent 生成带缩进的可读 JSON</span>
+<span class="k">func</span> SaveTodos(path <span class="t">string</span>, todos []<span class="t">Todo</span>) <span class="t">error</span> {
+    data, err := <span class="t">json</span>.MarshalIndent(todos, <span class="s">""</span>, <span class="s">"  "</span>)
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="t">fmt</span>.Errorf(<span class="s">"序列化: %w"</span>, err) }
+    <span class="k">return</span> <span class="t">os</span>.WriteFile(path, data, <span class="n">0o644</span>)
+}
+
+<span class="k">func</span> NextID(todos []<span class="t">Todo</span>) <span class="t">int</span> {
+    max := <span class="n">0</span>
+    <span class="k">for</span> _, t := <span class="k">range</span> todos { <span class="k">if</span> t.ID &gt; max { max = t.ID } }
+    <span class="k">return</span> max + <span class="n">1</span>
+}
+
+<span class="k">func</span> main() {
+    todos, err := LoadTodos(storeFile)
+    <span class="k">if</span> err != <span class="k">nil</span> { fmt.Println(err); <span class="k">return</span> }
+    fmt.Printf(<span class="s">"启动时读到 %d 条待办\n"</span>, <span class="t">len</span>(todos))
+
+    <span class="c">// 反序列化一个对象：对应 Day 5 里解析 POST 请求体</span>
+    <span class="k">var</span> in <span class="t">Todo</span>
+    err = <span class="t">json</span>.Unmarshal([]<span class="t">byte</span>(<span class="s">`{"id":7,"title":"从请求体来"}`</span>), &amp;in)
+    <span class="k">if</span> err != <span class="k">nil</span> { fmt.Println(<span class="s">"请求体非法 JSON:"</span>, err) } <span class="c">// Day 5 映射为 400</span>
+    fmt.Printf(<span class="s">"解析结果: %+v\n"</span>, in) <span class="c">// %+v 连字段名一起打印</span>
+
+    todos = <span class="t">append</span>(todos, <span class="t">Todo</span>{ID: NextID(todos), Title: <span class="s">"学习 JSON 持久化"</span>, CreatedAt: <span class="s">"2026-09-23"</span>})
+    <span class="k">if</span> err := SaveTodos(storeFile, todos); err != <span class="k">nil</span> {
+        fmt.Println(<span class="s">"保存失败:"</span>, err)
+        <span class="k">return</span>
+    }
+    fmt.Println(<span class="s">"已写入"</span>, storeFile, <span class="s">"共"</span>, <span class="t">len</span>(todos), <span class="s">"条"</span>)
+}</pre>
+    <div class="callout js"><p>对照 JS：① 字段<b>必须大写开头</b>才会被导出，忘写 tag 就得到 <code>{"ID":1}</code> 而不是 <code>{"id":1}</code>；② <code>Unmarshal</code> 要传<b>指针</b> <code>&amp;todos</code>（它要往调用方的变量里写数据）；③ JSON 中多余的键被忽略、缺失的键保持零值，不像 <code>JSON.parse</code> 那样全量还原。</p></div>
+    <div class="callout warn"><p>三个边界：<code>nil</code> slice 序列化成 <code>null</code> 而非 <code>[]</code>（前端直接 <code>.map</code> 会炸，所以初始化写 <code>[]T{}</code>）；JSON 数字默认转 <code>float64</code>，超大 ID 需 <code>json.Number</code>；map 的键只能是字符串类类型。</p></div>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：观测 append 扩容（20 分钟）</div>
+      <p>循环 append 20 个元素，每次打印 len/cap，记录扩容发生在第几次；再用 <code>make([]int, 0, 20)</code> 重写一遍确认全程不扩容。<b>把结论写进笔记：</b>为什么"已知数量就预分配"能省内存拷贝。</p>
+      <pre><span class="code-label">answer.go</span><span class="k">func</span> growLab() {
+    <span class="k">var</span> s []<span class="t">int</span>
+    <span class="k">for</span> i := <span class="n">1</span>; i &lt;= <span class="n">20</span>; i++ {
+        old := <span class="t">cap</span>(s)
+        s = <span class="t">append</span>(s, i)
+        <span class="k">if</span> <span class="t">cap</span>(s) != old {
+            fmt.Printf(<span class="s">"第 %2d 次 append 触发扩容: cap %d -&gt; %d\n"</span>, i, old, <span class="t">cap</span>(s))
+        }
+    }
+    <span class="c">// 典型输出：cap 1 -&gt; 2 -&gt; 4 -&gt; 8 -&gt; 16 -&gt; 32</span>
+    pre := <span class="t">make</span>([]<span class="t">int</span>, <span class="n">0</span>, <span class="n">20</span>)
+    <span class="k">for</span> i := <span class="n">1</span>; i &lt;= <span class="n">20</span>; i++ { pre = <span class="t">append</span>(pre, i) }
+    fmt.Println(<span class="s">"预分配 cap="</span>, <span class="t">cap</span>(pre), <span class="s">"len="</span>, <span class="t">len</span>(pre)) <span class="c">// 20 20，零次扩容</span>
+}</pre>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：词频统计 + 有序输出（30 分钟）</div>
+      <p>统计一段英文里每个词的出现次数（map），再按"次数从多到少"打印。因为 map 遍历无序，必须先把键取进 slice 再排序。提示：<code>strings.Fields</code> + <code>sort.Slice</code>。</p>
+      <pre><span class="code-label">answer.go</span><span class="k">func</span> wordFreq() {
+    text := <span class="s">"go is fast and go is simple and i love go"</span>
+    counts := <span class="k">map</span>[<span class="t">string</span>]<span class="t">int</span>{}
+    <span class="k">for</span> _, w := <span class="k">range</span> <span class="t">strings</span>.Fields(text) {
+        counts[w]++ <span class="c">// 键不存在时零值 0 直接 +1，不需要先判断</span>
+    }
+    words := <span class="t">make</span>([]<span class="t">string</span>, <span class="n">0</span>, <span class="t">len</span>(counts))
+    <span class="k">for</span> w := <span class="k">range</span> counts { words = <span class="t">append</span>(words, w) }
+    <span class="t">sort</span>.Slice(words, <span class="k">func</span>(i, j <span class="t">int</span>) <span class="t">bool</span> {
+        <span class="k">if</span> counts[words[i]] != counts[words[j]] { <span class="k">return</span> counts[words[i]] &gt; counts[words[j]] } <span class="c">// 次数降序</span>
+        <span class="k">return</span> words[i] &lt; words[j] <span class="c">// 次数相同按字典序，结果才稳定</span>
+    })
+    <span class="k">for</span> _, w := <span class="k">range</span> words { fmt.Printf(<span class="s">"%-6s %d\n"</span>, w, counts[w]) }
+}</pre>
+      <p>需要 <code>import ("fmt"; "sort"; "strings")</code>。多跑几次确认输出顺序一致，然后删掉排序那段再看它变乱——这个对比能帮你彻底记住 map 无序。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：给待办存储加查找，验证"重启不丢数据"（35 分钟）</div>
+      <p>手敲跑通讲义 6 的 <code>todo_store.go</code>，再补一个 <code>FindByID</code>。步骤：连续 <code>go run .</code> 三次 → 看条数 1→2→3 → <code>cat todos.json</code> 肉眼看 JSON → 把文件内容改成非法 JSON 再跑一次，读一读 <code>LoadTodos</code> 的报错文本。</p>
+      <pre><span class="code-label">answer.go</span><span class="k">func</span> FindByID(todos []<span class="t">Todo</span>, id <span class="t">int</span>) (<span class="t">Todo</span>, <span class="t">bool</span>) {
+    <span class="k">for</span> _, t := <span class="k">range</span> todos { <span class="k">if</span> t.ID == id { <span class="k">return</span> t, <span class="k">true</span> } }
+    <span class="k">return</span> <span class="t">Todo</span>{}, <span class="k">false</span> <span class="c">// 零值 + false；Day 5 里这个 false 就是 404</span>
+}</pre>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：每日 CLI 待办 add / list / done（40 分钟）</div>
+      <p>用 <code>os.Args</code> 读参数，复用练习 3 的存储函数做小 CLI（规划里说明它只是每日练习，不是周末项目）：<code>go run . add 学习Go</code> / <code>go run . list</code> / <code>go run . done 2</code>。<code>done</code> 找不到 ID 时打印 <code>未找到待办 #N</code> 并用 <code>os.Exit(1)</code> 结束。<b>注意</b>：改元素要用 <code>todos[i].Done = true</code>（<code>for _, t := range</code> 里的 t 是拷贝）。<b>这题的 list/add/done 逻辑，就是 Day 5 三个 handler 的前身。</b></p>
+      <pre><span class="code-label">answer.go</span><span class="k">func</span> main() {
+    args := <span class="t">os</span>.Args[<span class="n">1</span>:] <span class="c">// os.Args[0] 是程序名，参数从 1 开始</span>
+    todos, err := LoadTodos(storeFile)
+    <span class="k">if</span> err != <span class="k">nil</span> { fmt.Println(err); <span class="t">os</span>.Exit(<span class="n">1</span>) }
+
+    <span class="k">switch</span> { <span class="c">// 无标签 switch：case 从上往下第一个为真者执行，故 len==0 先兜底</span>
+    <span class="k">case</span> <span class="t">len</span>(args) == <span class="n">0</span>:
+        fmt.Println(<span class="s">"用法: todo add &lt;标题&gt; | list | done &lt;id&gt;"</span>)
+    <span class="k">case</span> args[<span class="n">0</span>] == <span class="s">"list"</span>:
+        <span class="k">for</span> _, t := <span class="k">range</span> todos {
+            box := <span class="s">" "</span>
+            <span class="k">if</span> t.Done { box = <span class="s">"x"</span> }
+            fmt.Printf(<span class="s">"  [%s] #%d %s\n"</span>, box, t.ID, t.Title)
+        }
+    <span class="k">case</span> args[<span class="n">0</span>] == <span class="s">"add"</span> &amp;&amp; <span class="t">len</span>(args) &gt; <span class="n">1</span>:
+        todos = <span class="t">append</span>(todos, <span class="t">Todo</span>{ID: NextID(todos), Title: args[<span class="n">1</span>]})
+        fmt.Printf(<span class="s">"已新增 #%d %s\n"</span>, todos[<span class="t">len</span>(todos)<span class="n">-1</span>].ID, args[<span class="n">1</span>])
+        err = SaveTodos(storeFile, todos)
+    <span class="k">case</span> args[<span class="n">0</span>] == <span class="s">"done"</span> &amp;&amp; <span class="t">len</span>(args) &gt; <span class="n">1</span>:
+        id, e := <span class="t">strconv</span>.Atoi(args[<span class="n">1</span>]) <span class="c">// 字符串转 int，自带解析错误</span>
+        <span class="k">if</span> e != <span class="k">nil</span> { fmt.Println(<span class="s">"id 必须是数字"</span>); <span class="t">os</span>.Exit(<span class="n">1</span>) }
+        found := <span class="k">false</span>
+        <span class="k">for</span> i := <span class="k">range</span> todos { <span class="c">// 用下标改元素本体；for _, t 里的 t 是拷贝</span>
+            <span class="k">if</span> todos[i].ID == id { todos[i].Done = <span class="k">true</span>; found = <span class="k">true</span>; <span class="k">break</span> }
+        }
+        <span class="k">if</span> !found { fmt.Printf(<span class="s">"未找到待办 #%d\n"</span>, id); <span class="t">os</span>.Exit(<span class="n">1</span>) }
+        fmt.Printf(<span class="s">"已完成 #%d\n"</span>, id)
+        err = SaveTodos(storeFile, todos)
+    }
+    <span class="k">if</span> err != <span class="k">nil</span> { fmt.Println(<span class="s">"保存失败:"</span>, err); <span class="t">os</span>.Exit(<span class="n">1</span>) }
+}</pre>
+      <p>需要 <code>import ("fmt"; "os"; "strconv")</code>，并把讲义 6 的 <code>Todo / LoadTodos / SaveTodos / NextID / storeFile</code> 放在同一个包里。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>忘了接回 append</td><td><code>append(s, x)</code> 单写一行，数据没进去</td><td>永远 <code>s = append(s, x)</code></td></tr>
+      <tr><td>子切片当拷贝用</td><td>改 b 把 a 也改了，或 append 踩掉邻居元素</td><td>要独立数据就 <code>copy</code> / <code>slices.Clone</code></td></tr>
+      <tr><td>nil map 写入</td><td>panic: assignment to entry in nil map</td><td>先 <code>make(map[K]V)</code> 或用字面量初始化</td></tr>
+      <tr><td>依赖 map 遍历顺序</td><td>本地对、线上顺序乱，测试偶发失败</td><td>取出键 <code>sort.Strings(keys)</code> 后再遍历</td></tr>
+      <tr><td>字段小写导致 JSON 为空</td><td>输出 <code>{}</code>，前端拿到空对象</td><td>字段大写开头 + 写 <code>json:"xxx"</code> tag</td></tr>
+      <tr><td>Unmarshal 忘传指针</td><td>json: Unmarshal(non-pointer main.Todo)</td><td>写 <code>json.Unmarshal(b, &amp;x)</code></td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>slice / cap（容量）</td><td>slice 是指向底层数组的视图，含指针/len/cap；append 超过 cap 就换数组并拷贝旧数据</td></tr>
+      <tr><td>nil slice / nil map</td><td>nil slice 可读可 append；nil map 可读但写入 panic，必须先 make</td></tr>
+      <tr><td>, ok 二返回值</td><td>map 查找、类型断言、通道接收共用的"是否命中"表达法</td></tr>
+      <tr><td>defer / LIFO</td><td>延迟到函数返回时执行；多个 defer 倒序运行，参数在 defer 那一刻求值</td></tr>
+      <tr><td>Marshal / Unmarshal</td><td>Go 的序列化术语：值→字节 / 字节→值，对应 JS 的 stringify / parse</td></tr>
+      <tr><td>0o644 权限位</td><td>WriteFile 的文件权限：属主读写、其他人只读；目录常用 0o755</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w1d3c1">练习 1 的扩容点已记录，并能解释"为什么 append 后必须接回变量"</label></li>
+      <li><label><input type="checkbox" data-key="w1d3c2">练习 2 输出稳定有序，笔记里写明"map 遍历顺序随机"这一事实</label></li>
+      <li><label><input type="checkbox" data-key="w1d3c3"><code>todos.json</code> 已生成，连续 <code>go run .</code> 三次后条数为 3（数据真的落盘）</label></li>
+      <li><label><input type="checkbox" data-key="w1d3c4">练习 4 的 add / list / done 三条命令都能用，done 不存在的 ID 退出码为 1</label></li>
+      <li><label><input type="checkbox" data-key="w1d3c5">能默写 <code>LoadTodos</code> 骨架：读文件 → 判 IsNotExist → Unmarshal 到指针 → 返回</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>扩展阅读（补充，不影响今日完成度）</h2>
+    <ul>
+      <li><a href="https://go.dev/blog/slices-intro" target="_blank">Go Blog · Go Slices: Usage and Internal</a>：官方对 len/cap 与底层数组的图解</li>
+      <li><a href="https://go.dev/blog/json" target="_blank">Go Blog · JSON Handbook</a>：encoding/json 的完整细节（嵌套、任意类型、流式编解码），也覆盖 map/slice 与 defer 的交互式练习（A Tour of Go）</li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day2.html"><span class="hint">← 上一天 · W1D2</span>结构体与方法</a>
+    <a href="day4.html"><span class="hint">下一天 · W1D4 →</span>接口、错误处理、包管理</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W1D3 · 明天见 ⟩</footer>
+</body>
+</html>

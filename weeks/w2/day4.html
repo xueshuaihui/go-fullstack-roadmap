@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W2D4 · 项目分层 | Go 全栈修炼手册</title>
+<meta name="description" content="Day 4：handler/service/repository 三层职责、cmd/server 与 internal 目录组织、map+RWMutex 内存仓库、统一响应与错误码 1001 接入、避免 import cycle。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w2d4">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 2 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 2 周</a> / Day 4</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 2 · DAY 4</span>
+    <span class="chip alt">预计 2.5–3 小时</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>项目分层</h1>
+  <p>前三天的代码全堆在 <code>main.go</code> 里，500 行时就会变成意大利面。今天把主线项目重构进 <b>handler → service → repository</b> 三层结构——这是 Go 后端团队的通用布局，第 3 周接数据库时只需要换掉 repository 一层，其余代码原封不动。<b>这就是分层的复利。</b></p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w2d4g1">能一句话讲出三层各自职责与「数据在层间的旅行路线」</label></li>
+      <li><label><input type="checkbox" data-key="w2d4g2">搭出 <code>cmd/server</code> + <code>internal/{model,repository,service,handler,middleware}</code> + <code>pkg/response</code> 目录</label></li>
+      <li><label><input type="checkbox" data-key="w2d4g3">用 <code>map + sync.RWMutex</code> 实现线程安全的内存 repository（为并发周埋伏笔）</label></li>
+      <li><label><input type="checkbox" data-key="w2d4g4">service 返回哨兵错误，handler 翻译成「HTTP 404 + code 1001」双层响应</label></li>
+      <li><label><input type="checkbox" data-key="w2d4g5">能说出 import cycle 是怎么产生的、层间单向依赖如何避免它</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这五条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>课前须知：你为什么已经会分层了</h2>
+    <div class="callout js"><p><b>把 React 项目倒过来看。</b>页面组件（收 props、渲染）≈ handler；自定义 hooks / store 里的业务动作（校验、组合调用）≈ service；<code>src/api/request.js</code> 封装（只管发请求、拿数据）≈ repository。你写过的「组件不直接 fetch，走 api 层」的直觉，在这里 1:1 平移：<b>handler 不碰数据存取，repository 不认识 HTTP。</b></p></div>
+    <div class="callout note"><p>Go 编译器强制包之间<b>不允许循环依赖</b>——A 引 B、B 又引 A 直接编译失败。所以今天不是「学习最佳实践」，是「不了解规则就写不编译」。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 三层各干什么</h3>
+    <table>
+      <tr><th>层</th><th>职责</th><th>绝对不做</th><th>前端类比</th></tr>
+      <tr><td>handler</td><td>解析参数/DTO 绑定、调 service、把结果/错误写成统一响应</td><td>不写业务规则、不碰存储</td><td>路由级页面组件：收参、渲染</td></tr>
+      <tr><td>service</td><td>业务规则：重名检查、默认值、跨仓库编排、返回 error</td><td>不 import gin（没有 *gin.Context！）</td><td>hooks / store action：纯业务</td></tr>
+      <tr><td>repository</td><td>数据的增删改查（今天是 map，第 3 周换 GORM）</td><td>不判断 HTTP 状态码、不打印响应</td><td>src/api 请求封装层</td></tr>
+      <tr><td>model</td><td>数据结构定义，被所有层引用</td><td>不 import 任何其他内部包</td><td>types/ + zod schema</td></tr>
+    </table>
+    <p>数据旅行路线（一次请求来回）：</p>
+    <pre><span class="code-label">text</span>HTTP 请求
+  → handler   <span class="c">ShouldBindJSON 得到 DTO</span>
+  → service   <span class="c">业务检查，DTO 转 model</span>
+  → repository<span class="c">map 存取，返回 model 或 error</span>
+  ← service   <span class="c">原样上抛 error（或包装）</span>
+  ← handler   <span class="c">error → HTTP 状态码 + 业务 code；model → response.OK</span>
+HTTP 响应 {code, message, data}</pre>
+
+    <h3>2. 目录结构与依赖方向</h3>
+    <pre><span class="code-label">tree</span>gin-api/
+├── go.mod                       <span class="c"># module gin-api</span>
+├── cmd/server/main.go           <span class="c"># 唯一入口：组装依赖 + 启动（cmd/xxx = 可执行程序的惯例位置）</span>
+├── internal/                    <span class="c"># 私有代码：别的模块 import 不到，Go 编译器强制</span>
+│   ├── model/                   <span class="c"># User、Article、DTO</span>
+│   ├── repository/              <span class="c"># 内存仓库（map + RWMutex）</span>
+│   ├── service/                 <span class="c"># 业务规则</span>
+│   ├── handler/                 <span class="c"># gin handler + 路由注册</span>
+│   └── middleware/              <span class="c"># 昨天的 CORS/Timer/Auth 搬进来</span>
+└── pkg/response/                <span class="c"># 与前两天一致的统一响应</span></pre>
+    <div class="callout note"><p><b>依赖只能从上往下单向指：</b>handler → service → repository → model。箭头反了（比如 repository 想调 service）就是 import cycle。记住口诀：<b>下层不知道上层存在</b>——repository 根本不知道谁在用它，所以它才能同时被 HTTP、CLI、定时任务复用。</p></div>
+
+    <h3>3. model 层</h3>
+    <pre><span class="code-label">internal/model/user.go</span><span class="k">package</span> model
+
+<span class="k">import</span> <span class="t">"time"</span>
+
+<span class="c">// User 是领域模型：对外输出时 Password 因 `json:"-"` 永远不会泄漏</span>
+<span class="k">type</span> <span class="t">User</span> <span class="k">struct</span> {
+    ID        <span class="t">int</span>      `<span class="t">json</span>:<span class="s">"id"</span>`
+    Username  <span class="t">string</span>   `<span class="t">json</span>:<span class="s">"username"</span>`
+    Email     <span class="t">string</span>   `<span class="t">json</span>:<span class="s">"email"</span>`
+    Password  <span class="t">string</span>   `<span class="t">json</span>:<span class="s">"-"</span>` <span class="c">// 第 4 周换成 bcrypt 哈希后依然不输出</span>
+    Role      <span class="t">string</span>   `<span class="t">json</span>:<span class="s">"role"</span>`
+    CreatedAt time.Time `<span class="t">json</span>:<span class="s">"created_at"</span>`
+}
+
+<span class="c">// CreateUserDTO 入参形状与存储形状分离——两者不必互相迁就</span>
+<span class="k">type</span> <span class="t">CreateUserDTO</span> <span class="k">struct</span> {
+    Username <span class="t">string</span> `<span class="t">json</span>:<span class="s">"username"</span> binding:<span class="s">"required,min=3,max=20"</span>`
+    Email    <span class="t">string</span> `<span class="t">json</span>:<span class="s">"email"</span> <span class="t">binding</span>:<span class="s">"required,email"</span>`
+    Password <span class="t">string</span> `<span class="t">json</span>:<span class="s">"password"</span> binding:<span class="s">"required,min=8"</span>`
+    Role     <span class="t">string</span> `<span class="t">json</span>:<span class="s">"role"</span> <span class="t">binding</span>:<span class="s">"omitempty,oneof=user admin"</span>`
+}</pre>
+
+    <h3>4. repository 层：map + RWMutex</h3>
+    <p>Gin 每个请求跑在独立 goroutine 里，<b>map 并发读写会直接让进程崩溃</b>（fatal error: concurrent map writes，连 Recovery 都拦不住）。必须加锁；读多写少用 <code>RWMutex</code>（读读并行，写独占）：</p>
+    <pre><span class="code-label">internal/repository/user_repo.go</span><span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="t">"errors"</span>
+    <span class="t">"sync"</span>
+
+    <span class="s">"gin-api/internal/model"</span>
+)
+
+<span class="c">// ErrUserNotFound 哨兵错误：service/handler 用 errors.Is 识别，第 3 周换成 GORM 后语义不变</span>
+<span class="k">var</span> ErrUserNotFound = errors.New(<span class="s">"用户不存在"</span>)
+
+<span class="k">type</span> <span class="t">UserRepo</span> <span class="k">struct</span> {
+    mu     sync.RWMutex
+    nextID <span class="t">int</span>
+    users  <span class="k">map</span>[<span class="t">int</span>]model.User
+}
+
+<span class="k">func</span> NewUserRepo() *UserRepo {
+    <span class="k">return</span> &amp;UserRepo{nextID: <span class="n">1</span>, users: make(<span class="k">map</span>[<span class="t">int</span>]model.User)}
+}
+
+<span class="k">func</span> (r *UserRepo) Create(u model.User) model.User {
+    r.mu.Lock()
+    <span class="k">defer</span> r.mu.Unlock() <span class="c">// defer 保证任何 return 路径都解锁，比 JS 的 try/finally 更顺手</span>
+    u.ID = r.nextID
+    r.nextID++
+    r.users[u.ID] = u
+    <span class="k">return</span> u
+}
+
+<span class="k">func</span> (r *UserRepo) List() []model.User {
+    r.mu.RLock()
+    <span class="k">defer</span> r.mu.RUnlock()
+    out := make([]model.User, <span class="n">0</span>, len(r.users))
+    <span class="k">for</span> _, u := <span class="k">range</span> r.users { <span class="c">// map 遍历无序，第 3 周 ORDER BY id 解决</span>
+        out = append(out, u)
+    }
+    <span class="k">return</span> out
+}
+
+<span class="k">func</span> (r *UserRepo) Get(id <span class="t">int</span>) (model.User, <span class="t">error</span>) {
+    r.mu.RLock()
+    <span class="k">defer</span> r.mu.RUnlock()
+    u, ok := r.users[id]
+    <span class="k">if</span> !ok {
+        <span class="k">return</span> model.User{}, ErrUserNotFound
+    }
+    <span class="k">return</span> u, <span class="k">nil</span>
+}
+
+<span class="k">func</span> (r *UserRepo) Update(u model.User) <span class="t">error</span> {
+    r.mu.Lock()
+    <span class="k">defer</span> r.mu.Unlock()
+    <span class="k">if</span> _, ok := r.users[u.ID]; !ok {
+        <span class="k">return</span> ErrUserNotFound
+    }
+    r.users[u.ID] = u
+    <span class="k">return</span> <span class="k">nil</span>
+}
+
+<span class="k">func</span> (r *UserRepo) Delete(id <span class="t">int</span>) <span class="t">error</span> {
+    r.mu.Lock()
+    <span class="k">defer</span> r.mu.Unlock()
+    <span class="k">if</span> _, ok := r.users[id]; !ok {
+        <span class="k">return</span> ErrUserNotFound
+    }
+    <span class="k">delete</span>(r.users, id)
+    <span class="k">return</span> <span class="k">nil</span>
+}</pre>
+    <div class="callout tip"><p>哨兵错误定义在 repository 包里、由上层 import 使用，方向仍是上层 → 下层，不产生循环。若哪天 service 想「不认识 repository」，就把错误再下沉到 model 包——依赖永远指向稳定的底层。</p></div>
+
+    <h3>5. service 层：业务规则的家</h3>
+    <pre><span class="code-label">internal/service/user_service.go</span><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="t">"errors"</span>
+    <span class="t">"fmt"</span>
+    <span class="t">"time"</span>
+
+    <span class="s">"gin-api/internal/model"</span>
+    <span class="s">"gin-api/internal/repository"</span>
+)
+
+<span class="k">type</span> <span class="t">UserService</span> <span class="k">struct</span> {
+    repo *repository.UserRepo
+}
+
+<span class="k">func</span> NewUserService(repo *repository.UserRepo) *UserService {
+    <span class="k">return</span> &amp;UserService{repo: repo}
+}
+
+<span class="k">func</span> (s *UserService) Create(dto model.CreateUserDTO) (model.User, <span class="t">error</span>) {
+    <span class="k">for</span> _, u := <span class="k">range</span> s.repo.List() { <span class="c">// 业务规则 1：用户名不许重复</span>
+        <span class="k">if</span> u.Username == dto.Username {
+            <span class="k">return</span> model.User{}, fmt.Errorf(<span class="s">"用户名 %q 已被占用"</span>, dto.Username)
+        }
+    }
+    role := dto.Role          <span class="c">// 业务规则 2：角色缺省为 user</span>
+    <span class="k">if</span> role == <span class="s">""</span> { role = <span class="s">"user"</span> }
+    <span class="k">return</span> s.repo.Create(model.User{
+        Username: dto.Username, Email: dto.Email,
+        Password: dto.Password, Role: role, CreatedAt: time.Now(),
+    }), <span class="k">nil</span>
+}
+
+<span class="k">func</span> (s *UserService) Get(id <span class="t">int</span>) (model.User, <span class="t">error</span>)   { <span class="k">return</span> s.repo.Get(id) }
+<span class="k">func</span> (s *UserService) List() []model.User                 { <span class="k">return</span> s.repo.List() }
+<span class="k">func</span> (s *UserService) Update(u model.User) <span class="t">error</span>          { <span class="k">return</span> s.repo.Update(u) }
+<span class="k">func</span> (s *UserService) Delete(id <span class="t">int</span>) <span class="t">error</span>                { <span class="k">return</span> s.repo.Delete(id) }
+
+<span class="c">// IsNotFound 给 handler 用的判断助手，handler 不必直接依赖 repository</span>
+<span class="k">func</span> IsNotFound(err <span class="t">error</span>) <span class="t">bool</span> { <span class="k">return</span> errors.Is(err, repository.ErrUserNotFound) }</pre>
+
+    <h3>6. handler 层与 main.go 组装</h3>
+    <pre><span class="code-label">internal/handler/user_handler.go</span><span class="k">package</span> handler
+
+<span class="k">import</span> (
+    <span class="t">"net/http"</span>
+    <span class="t">"strconv"</span>
+
+    <span class="t">"github.com/gin-gonic/gin"</span>
+
+    <span class="s">"gin-api/internal/model"</span>
+    <span class="s">"gin-api/internal/service"</span>
+    <span class="s">"gin-api/pkg/response"</span>
+)
+
+<span class="k">type</span> <span class="t">UserHandler</span> <span class="k">struct</span> { svc *service.UserService }
+
+<span class="k">func</span> NewUserHandler(svc *service.UserService) *UserHandler { <span class="k">return</span> &amp;UserHandler{svc: svc} }
+
+<span class="c">// Register 把该资源的全部路由收在 handler 自己身上，main.go 只调一行</span>
+<span class="k">func</span> (h *UserHandler) Register(r *gin.RouterGroup) {
+    r.GET(<span class="s">"/users"</span>, h.List)
+    r.POST(<span class="s">"/users"</span>, h.Create)
+    r.GET(<span class="s">"/users/:id"</span>, h.Get)
+    r.PUT(<span class="s">"/users/:id"</span>, h.Update)
+    r.DELETE(<span class="s">"/users/:id"</span>, h.Delete)
+}
+
+<span class="k">func</span> (h *UserHandler) List(c *gin.Context) { response.OK(c, h.svc.List()) }
+
+<span class="k">func</span> (h *UserHandler) Create(c *gin.Context) {
+    <span class="k">var</span> dto model.CreateUserDTO
+    <span class="k">if</span> err := c.ShouldBindJSON(&amp;dto); err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"参数不合法: "</span>+err.Error())
+        <span class="k">return</span>
+    }
+    u, err := h.svc.Create(dto)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, err.Error())
+        <span class="k">return</span>
+    }
+    response.Created(c, u)
+}
+
+<span class="k">func</span> (h *UserHandler) Get(c *gin.Context) {
+    id, err := strconv.Atoi(c.Param(<span class="s">"id"</span>))
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"id 必须是数字"</span>)
+        <span class="k">return</span>
+    }
+    u, err := h.svc.Get(id)
+    <span class="k">if</span> service.IsNotFound(err) { <span class="c">// ← 错误码 1001 接入点：HTTP 404 + 业务 1001 双层</span>
+        response.Fail(c, http.StatusNotFound, response.CodeUserNotFound, <span class="s">"用户不存在"</span>)
+        <span class="k">return</span>
+    }
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusInternalServerError, <span class="n">5000</span>, <span class="s">"服务繁忙"</span>)
+        <span class="k">return</span>
+    }
+    response.OK(c, u)
+}</pre>
+    <pre><span class="code-label">cmd/server/main.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">"github.com/gin-gonic/gin"</span>
+
+    <span class="s">"gin-api/internal/handler"</span>
+    <span class="s">"gin-api/internal/repository"</span>
+    <span class="s">"gin-api/internal/service"</span>
+)
+
+<span class="k">func</span> main() {
+    <span class="c">// 组装依赖：repo → service → handler，从下往上 new（手工依赖注入，Go 圈主流做法）</span>
+    userRepo := repository.NewUserRepo()
+    userSvc := service.NewUserService(userRepo)
+    userH := handler.NewUserHandler(userSvc)
+
+    r := gin.New()
+    r.Use(gin.Logger(), gin.Recovery()) <span class="c">// 昨天的 CORS/Timer 也挂这里</span>
+    api := r.Group(<span class="s">"/api/v1"</span>)
+    userH.Register(api)
+
+    r.Run(<span class="s">":8080"</span>)
+}</pre>
+    <div class="callout warn"><p>注意 main.go 在 <code>cmd/server/</code> 下，启动命令变成 <code>go run ./cmd/server</code>（或编译 <code>go build ./cmd/server</code>）。忘了路径前缀报 <code>no Go files</code> 或在错误目录执行都算新手礼。</p></div>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：把 day1–3 的代码重构进分层结构（90 分钟，今天的主菜）</div>
+      <p><b>要求：</b>按讲义目录建包，迁移全部用户接口；middleware（昨天的 CORS/Timer/Auth）与 <code>pkg/response</code> 原样搬入；<code>go run ./cmd/server</code> 起来后昨天的 curl 全部照样能通。</p>
+      <p><b>步骤：</b>① <code>mkdir -p cmd/server internal/{model,repository,service,handler,middleware}</code>；② 按讲义 3→4→5→6 的顺序自底向上写（先 model 再 repo 最后 handler，编译错误一层层消）；③ main.go 组装；④ 旧 main.go 删除。</p>
+      <p><b>参考答案：</b>讲义第 3–6 节代码拼装即是完整答案；每写完一个包先 <code>go build ./...</code> 确认无编译错误再写上层。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：GET /users/:id 与 PUT/DELETE 全链路错误码（40 分钟）</div>
+      <p><b>要求：</b>访问不存在的 id 返回 <code>HTTP 404 + {"code":1001,"message":"用户不存在","data":null}</code>；PUT 不存在的 id 同样 1001；DELETE 成功返回 <code>{"code":0,...}</code> 且再 GET 变 404。</p>
+      <p><b>参考答案：</b>Get 见讲义第 6 节；Update/Delete 照抄其 err 分支模式——<code>if service.IsNotFound(err) { response.Fail(c, http.StatusNotFound, response.CodeUserNotFound, "用户不存在"); return }</code>。体会一下：三个接口共享同一套「错误 → 双层响应」翻译规则，这就是分层的收敛效果。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：ArticleRepo + ArticleService + ArticleHandler（45 分钟）</div>
+      <p><b>要求：</b>为 <code>GET /articles</code>、<code>POST /articles</code>（title 必填 1–50 字、content 必填、author_id 必填且必须真实存在，否则 1001）复制今天的三层模式。</p>
+      <p><b>参考答案要点：</b><code>Article{ID int; Title, Content string; AuthorID int; CreatedAt time.Time}</code>；ArticleService 注入 <code>*ArticleRepo</code> 和 <code>*UserService</code>（跨资源校验靠依赖上层的 service，注意 service → service 单向，不许反向 import）；不存在用户时返回包了 <code>repository.ErrUserNotFound</code> 的错误：<code>fmt.Errorf("作者不存在: %w", err)</code>，handler 里 <code>errors.Is</code> 依旧命中 1001。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：并发压一压锁（15 分钟）</div>
+      <p><b>要求：</b>注释掉 RWMutex 的 Lock/Unlock，用 <code>for i in $(seq 1 50); do curl -s localhost:8080/api/v1/users -o /dev/null &amp; done; wait</code> 并发 GET + 循环 POST，观察 <code>fatal error: concurrent map read and map write</code>；把锁加回来确认消失。这就是第 5 周并发周的预告片。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>import cycle</td><td><code>import cycle not allowed</code> 编译失败</td><td>检查依赖方向：repository 里绝不允许 import service/handler；共享的东西（model、错误）下沉</td></tr>
+      <tr><td>service 里塞 *gin.Context</td><td>编译能过，但 service 永远绑死 HTTP，测试没法直接调</td><td>service 只收普通参数、只回 (结果, error)</td></tr>
+      <tr><td>map 不加锁</td><td><code>fatal error: concurrent map writes</code>，进程整个死掉且 Recovery 拦不住（fatal ≠ panic）</td><td>所有 map 读写路径都在 Lock/RLock + defer Unlock 内</td></tr>
+      <tr><td>字段导不出</td><td>repository 返回的 User JSON 是 <code>{}</code></td><td>model 字段大写开头 + json tag（day2 铁律在跨包传值时再验一遍）</td></tr>
+      <tr><td>internal 放错层</td><td>把 response 也塞进 internal，第 7 周想给别的项目复用发现 import 不到</td><td>约定：业务私有进 internal，通用工具进 pkg</td></tr>
+      <tr><td>包名单复数混用</td><td><code>handlers</code>/<code>handler</code> 两套引用满天飞</td><td>今天定死用单数，后续各周沿用</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>分层架构</td><td>按职责切垂直切片：接入（handler）、业务（service）、存储（repository）</td></tr>
+      <tr><td>哨兵错误</td><td>包级 <code>var ErrXxx = errors.New(...)</code>，上层用 <code>errors.Is</code> 识别的「信物」错误</td></tr>
+      <tr><td>sync.RWMutex</td><td>读写锁：RLock 允许多读并发，Lock 写时独占</td></tr>
+      <tr><td>import cycle</td><td>包 A↔B 互相 import，Go 编译器直接拒绝</td></tr>
+      <tr><td>依赖注入</td><td>下层实例从外部 new 好传进来（今天的 NewXxx 链），而非包内部私造</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w2d4c1"><code>go build ./...</code> 零错误零警告，目录结构与讲义第 2 节完全一致</label></li>
+      <li><label><input type="checkbox" data-key="w2d4c2">练习 1：users 五个端点迁移完毕，旧 main.go 已删除</label></li>
+      <li><label><input type="checkbox" data-key="w2d4c3">练习 2：<code>curl -i .../users/999</code> 输出 <code>HTTP 404</code> 且 body 为 <code>{"code":1001,...}</code></label></li>
+      <li><label><input type="checkbox" data-key="w2d4c4">练习 3：articles 两端点可用，作者不存在时返回 1001</label></li>
+      <li><label><input type="checkbox" data-key="w2d4c5">练习 4 的 fatal error 复现并解决，能口述 fatal 与 panic 的区别</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day3.html"><span class="hint">上一天 · W2D3 →</span>中间件</a>
+    <a href="day5.html"><span class="hint">下一天 · W2D5 →</span>接口测试</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W2D4 · 明天见 ⟩</footer>
+</body>
+</html>

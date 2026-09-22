@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W7 总结 · 容器化 + 部署 | Go 全栈修炼手册</title>
+<meta name="description" content="第 7 周总结：全栈容器化与云服务器上线的验收清单、知识地图、三档自评、四大卡点复盘（localhost DNS / 镜像没重建 / 安全组 / 时区）与第 8 周预告。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body>
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="day1.html">第 7 周每日</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 7 周</a> / 总结</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 7 · SUMMARY</span>
+    <span class="chip alt">复盘 + 验收 · 2 小时</span>
+    <span class="chip">容器化 + 部署</span>
+  </div>
+  <h1>第 7 周收官：从 docker build 到公网小绿锁</h1>
+  <p>这一周你没有写多少业务代码，但完成了本项目<b>性质上最大的一跃</b>：从"我电脑上能跑"到"任何人任何设备都能访问"。五天的链路是：<b>D1 后端镜像 → D2 前端镜像 + Nginx → D3 Compose 编排 → D4 数据库迁移 → D5 云服务器 + HTTPS</b>。今天先验收，再复盘，最后清点你手里多了什么。</p>
+
+  <section>
+    <h2>本周旅程回顾</h2>
+    <table>
+      <tr><th>天</th><th>主题</th><th>你交出的东西</th><th>核心一句话</th></tr>
+      <tr><td>D1</td><td>Go 多阶段 Dockerfile</td><td><code>backend/Dockerfile</code> + <code>.dockerignore</code>，≤60MB 镜像</td><td>厨房和餐桌分开：工具链留在 builder，只有二进制进最终镜像</td></tr>
+      <tr><td>D2</td><td>前端构建 + Nginx</td><td><code>frontend/Dockerfile</code> + <code>nginx.conf</code></td><td>SPA 的路由活在 JS 里，服务器要用 try_files 兜底 index.html</td></tr>
+      <tr><td>D3</td><td>完整 Compose 编排</td><td><code>docker-compose.yml</code> 三服务 + override + .env</td><td>容器里的 localhost 是它自己；服务名才是彼此的门牌号</td></tr>
+      <tr><td>D4</td><td>数据库迁移</td><td><code>migrations/</code> 若干对 up/down + profile migrate 服务</td><td>表结构和代码一样要版本化：可审查、可回滚、可回答"现在是第几号"</td></tr>
+      <tr><td>D5</td><td>云服务器部署</td><td>公网可访问的 https://你的域名 + 发布/备份流程</td><td>能回滚才叫上线，有异地副本才叫备份</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>验收清单（本周的"毕业考试"）</h2>
+    <p>逐条实测，不许凭印象打勾——每一条都是规划里写死的第 7 周验收标准的展开。</p>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w7sum1"><b>一键起全栈</b>：清空容器后 <code>docker compose up -d --build</code>（配合 migrate 三步曲），三服务全部 (healthy)</label></li>
+      <li><label><input type="checkbox" data-key="w7sum2"><b>本地全流程</b>：<code>http://localhost</code> 完成注册 → 登录 → 发帖 → 编辑 → 删除；子路由直接刷新不 404</label></li>
+      <li><label><input type="checkbox" data-key="w7sum3"><b>云服务器公网可访</b>：手机 4G 打开 <code>https://你的域名</code> 走通同一业务流程</label></li>
+      <li><label><input type="checkbox" data-key="w7sum4"><b>HTTPS 小绿锁</b>：证书有效、HTTP 自动 308 跳 HTTPS、<code>docker compose ps</code> 里只有 80/443 对外</label></li>
+      <li><label><input type="checkbox" data-key="w7sum5"><b>数据不丢</b>：<code>docker compose restart</code> 甚至 <code>down</code>（不带 -v！）再 up 后，账号文章原样都在；手里有一份当天导出的 mysqldump</label></li>
+      <li><label><input type="checkbox" data-key="w7sum6"><b>发布可复现</b>：独立完成过一次"git pull → up -d --build → 验证 → prune"，并演练过一次回滚</label></li>
+    </ul>
+    <div class="callout tip"><p>六条全勾，第 7 周正式毕业。有一两条翻车的，先去下面的卡点复盘对号入座——本周的坑高度集中，八成能在四个经典案例里找到自己的症状。</p></div>
+  </section>
+
+  <section>
+    <h2>知识地图：这七天往你脑子里装了什么</h2>
+    <table>
+      <tr><th>板块</th><th>概念</th><th>你已经会了吗（自测问句）</th></tr>
+      <tr><td rowspan="3">镜像</td><td>多阶段构建 / builder 阶段</td><td>为什么最终镜像里没有 Go？AS 和 --from 各干什么？</td></tr>
+      <tr><td>层缓存 / .dockerignore</td><td>为什么 COPY go.mod 要抢在 COPY . 前面？上下文里混进 .env 会怎样？</td></tr>
+      <tr><td>静态编译 / alpine 运行基座</td><td>CGO_ENABLED=0、-ldflags="-s -w"、ca-certificates、tzdata 分别防什么事故？</td></tr>
+      <tr><td rowspan="2">Nginx</td><td>try_files 与 history 路由</td><td>pushState 发了请求吗？那为什么刷新会 404？</td></tr>
+      <tr><td>proxy_pass / GZIP / 缓存头</td><td>结尾斜杠怎么改变转发路径？/assets 和 index.html 谁该 no-cache？</td></tr>
+      <tr><td rowspan="3">Compose</td><td>服务网络与 DNS</td><td>backend 连 MySQL 的 DSN 主机名是什么？为什么不是 localhost？</td></tr>
+      <tr><td>healthcheck / depends_on 条件</td><td>容器"起了"和"能用了"差在哪？start_period 救谁的命？</td></tr>
+      <tr><td>named volume / env 注入 / profiles</td><td>down 之后什么留下了？一次性 migrate 服务怎么被点名？</td></tr>
+      <tr><td rowspan="2">迁移</td><td>golang-migrate / up·down 成对</td><td>AutoMigrate 的五种生产事故说得出几种？</td></tr>
+      <tr><td>schema_migrations / dirty / force</td><td>dirty=1 时 migrate 为什么拒绝一切操作？force 改的是什么？</td></tr>
+      <tr><td rowspan="2">上线</td><td>安全组 / swap / A 记录</td><td>timeout 和 refused 分别该查哪一层？</td></tr>
+      <tr><td>Caddy 自动 HTTPS / down 与 down -v</td><td>证书申请成功依赖哪三件事？-v 删掉的为什么救不回来？</td></tr>
+    </table>
+
+    <h3>本周产物清点（作品集素材，第 8 周直接复用）</h3>
+    <pre><span class="code-label">仓库新增文件</span>goblog/
+├── backend/Dockerfile + .dockerignore
+├── frontend/Dockerfile + nginx.conf + .dockerignore
+├── docker-compose.yml
+├── docker-compose.override.yml + docker-compose.prod.yml
+├── .env.example                         <span class="c"># 只有键名没有真值的模板，进 Git</span>
+├── migrations/00000*_*.up.sql/.down.sql <span class="c"># 成对的版本化迁移</span>
+├── scripts/hashpw/main.go               <span class="c"># bcrypt 哈希小工具</span>
+├── Caddyfile
+└── 上线截图 × 3（首页 / 发帖 / 小绿锁）</pre>
+  </section>
+
+  <section>
+    <h2>自评三档（诚实打分，决定周末剩余时间去哪）</h2>
+    <div class="grade">
+      <div><b>A · 基础达标</b>验收清单勾满 4 条以上；compose 能起、域名能开。→ 本周目标已兑现，周末把「卡点复盘」四案例读一遍，防止带病进第 8 周。</div>
+      <div><b>B · 扎实掌握</b>六条全勾 + 能向别人讲清 DNS 互访和 try_files 两个原理。→ 加餐：给 compose 加 redis 服务做缓存、把发布流程写成 deploy.sh 脚本。</div>
+      <div><b>C · 表面跑通</b>能访问，但一半配置是"抄作业抄对了不知道为什么"。→ 不丢人。从 D1 的练习 3（缓存实验）和 D3 的练习 3（故意制造 localhost 故障）重做一遍，这两次"亲手搞坏再修好"最涨功力。</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>卡点复盘：本周四大经典事故</h2>
+
+    <h3>卡点一：backend 连不上 MySQL——localhost 之祸（发生率第一）</h3>
+    <table>
+      <tr><th>症状</th><td>backend 状态 Restarting，日志 <code>dial tcp 127.0.0.1:3306: connect: connection refused</code></td></tr>
+      <tr><th>病因</th><td>把宿主机视角写进了容器视角：容器里的 localhost 是它<b>自己</b>的网络命名空间，那里没有 mysqld</td></tr>
+      <tr><th>药方</th><td>DSN 写 <code>tcp(mysql:3306)</code>（compose 网络内服务名）；宿主机工具连库才是 <code>127.0.0.1:3306</code> 且需 override 映射。判据永远是"我此刻在哪个命名空间"</td></tr>
+      <tr><th>验证</th><td><code>docker compose exec backend sh -c "getent hosts mysql"</code> 能解析出 IP 即网络层通</td></tr>
+    </table>
+
+    <h3>卡点二：明明"部署了"，跑的还是旧代码——镜像没重建</h3>
+    <table>
+      <tr><th>症状</th><td>改了代码、compose up 也执行了，页面纹丝不动；或浏览器强刷才生效</td></tr>
+      <tr><th>病因</th><td><code>up -d</code> 只保证"镜像存在且有容器"，<b>不会重新 build</b>；Vite 变量是构建期烧录的，改 env 不重 build 等于没改</td></tr>
+      <tr><th>药方</th><td>发布肌肉记忆 <code>up -d --build</code>（层缓存让它并不慢）；验证看前端 assets 文件名 hash 是否变化、build 日志有没有重跑目标层</td></tr>
+      <tr><th>连带坑</th><td>浏览器缓存了旧 index.html → 永远在引用旧 JS。D2 的 <code>index.html no-cache</code> 配置就是为消灭这一层</td></tr>
+    </table>
+
+    <h3>卡点三：网站打不开，转圈到超时——安全组没放行</h3>
+    <table>
+      <tr><th>症状</th><td>服务器上 <code>docker compose ps</code> 一切正常、本机 <code>curl 127.0.0.1</code> 通，外就是不访问；浏览器 timeout</td></tr>
+      <tr><th>病因</th><td>云厂商控制台的安全组（机器外面的防火墙）没开 80/443——它和机内 ufw 是<b>两层</b>，任何一层都拦</td></tr>
+      <tr><th>药方</th><td>定位口诀：<b>refused 查服务有没有监听，timeout 查防火墙/安全组</b>；云控制台补放行后手机 4G 复测</td></tr>
+      <tr><th>举一反三</th><td>同法可查 22 被封锁（换网/控制台 VNC 应急）、443 通了但证书没签（回看 DNS 生效与备案）</td></tr>
+    </table>
+
+    <h3>卡点四：时间全差 8 小时——时区三连</h3>
+    <table>
+      <tr><th>症状</th><td>评论/文章时间比现实早或晚 8 小时，或日志时间戳对不上</td></tr>
+      <tr><th>病因</th><td>三处各管一段：① 容器默认 UTC（缺 tzdata 时连 LoadLocation 都报错）；② MySQL 服务端时区；③ GORM DSN 的 loc 参数</td></tr>
+      <tr><th>药方</th><td>本周文件里已全部配齐：D1 镜像 <code>apk add tzdata + ENV TZ</code>；D3 mysql 环境 <code>TZ=Asia/Shanghai</code>；DSN <code>parseTime=True&amp;loc=Local</code>；服务器层 <code>timedatectl set-timezone Asia/Shanghai</code></td></tr>
+      <tr><th>验证</th><td>发一条帖，页面时间、backend 日志时间、<code>SELECT created_at</code> 三者一致且等于手表时间</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>你的部署架构图（README 直接照这个画）</h2>
+    <pre><span class="code-label">text（W7 终态）</span>                         浏览器（手机 4G / 任意设备）
+                                  │  https://blog.example.com
+                                  ▼
+                    ┌───────────────────────────┐
+   公网 80/443 ───▶ │  caddy 容器（TLS 终结）     │  证书自动签发续期
+                    └─────────────┬─────────────┘
+                                  │ reverse_proxy frontend:80
+                                  ▼   （goblog_default 内网）
+                    ┌───────────────────────────┐
+                    │  frontend 容器（nginx）    │  静态 dist + try_files 兜底
+                    └─────────────┬─────────────┘
+                                  │ proxy_pass /api/ → backend:8080
+                                  ▼
+                    ┌───────────────────────────┐        ┌──────────────────┐
+                    │  backend 容器（Gin+GORM）  │ ─────▶ │  mysql 容器       │
+                    │  静态编译二进制, :8080      │  DSN   │  卷 mysql-data    │
+                    └───────────────────────────┘ tcp(   └──────────────────┘
+                                          mysql:3306)      ▲
+                    一次性: migrate 服务（profiles: tools）──┘ 结构版本 = schema_migrations
+   ※ 公网只开 22/80/443；8080/3306 永不对世界暴露；密钥全部来自 .env</pre>
+  </section>
+
+  <section>
+    <h2>面试模拟：这十个问题现在都答得上来</h2>
+    <table>
+      <tr><th>问题</th><th>答题要点（本周都讲过）</th></tr>
+      <tr><td>为什么 Dockerfile 要分两个 FROM？</td><td>工具链与运行时分离；最终镜像只含二进制+最小基座，体积/攻击面/速度三赢</td></tr>
+      <tr><td>改一行代码重建，为什么依赖没重新下载？</td><td>层缓存按内容哈希判定；清单先 COPY 使 go mod download 层保持 CACHED</td></tr>
+      <tr><td>CGO_ENABLED=0 和 -s -w 各干什么？</td><td>前者静态链接保证 alpine/scratch 可跑；后者去符号表与调试信息再瘦身</td></tr>
+      <tr><td>SPA 刷新 404 的根因与解法？</td><td>pushState 不发请求，服务器不认识前端路由；try_files 兜底 index.html</td></tr>
+      <tr><td>proxy_pass 结尾带斜杠有何区别？</td><td>带则剥掉 location 前缀转发，不带则原样透传——路径不匹配即 404</td></tr>
+      <tr><td>backend 怎么连上 mysql 的？</td><td>同 compose 网络内置 DNS，服务名即主机名；localhost 指向容器自身</td></tr>
+      <tr><td>depends_on 能解决"库还没就绪"吗？</td><td>裸 depends_on 只管启动顺序；要配 healthcheck + condition: service_healthy</td></tr>
+      <tr><td>生产为什么禁用 AutoMigrate？</td><td>不删列/改名留残列/类型变更锁表/无版本不可回滚/多副本竞改</td></tr>
+      <tr><td>schema_migrations dirty=1 怎么办？</td><td>手工善后半途 SQL → force 目标版本清标记 → 继续 up</td></tr>
+      <tr><td>down 和 down -v 的区别？</td><td>前者留 named volume；后者删卷＝删库，不可恢复</td></tr>
+    </table>
+    <div class="callout tip"><p>能把这十题连珠炮般答完，你的"会部署"就已经超过了多数只会照抄 YAML 的候选人——第 8 周简历项目栏可以放心写"Docker Compose 全栈编排 + 云服务器自动化上线"。</p></div>
+  </section>
+
+  <section>
+    <h2>周末收尾清单（合计约 2 小时）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w7sum7">把上面架构图誊画进 <code>README.md</code>，附手机截图与小绿锁截图</label></li>
+      <li><label><input type="checkbox" data-key="w7sum8">Git 提交本周全部产物；确认 <code>git log -p | grep -i password</code> 无真实密钥泄露</label></li>
+      <li><label><input type="checkbox" data-key="w7sum9">口头自测十题一遍，卡壳的题回对应 Day 页重读并做笔记</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>交给第 8 周的仓库基线（缺一样就先补）</h2>
+    <table>
+      <tr><th>资产</th><th>验收状态</th><th>下周谁还会用到它</th></tr>
+      <tr><td>两个可构建的镜像（backend / frontend）</td><td>build 无报错，体积有数字</td><td>文件上传后给 uploads 目录加卷，只动 compose 一处</td></tr>
+      <tr><td>三服务 + caddy + migrate 的 compose 家族</td><td>一键起、healthy</td><td>RBAC 加环境变量、上传加挂载卷，全在 yml 里改</td></tr>
+      <tr><td>migrations/ 版本化表结构</td><td>version 最新且 dirty: false</td><td>D1 的"用户表加 role"你其实已经提前写好（000002）</td></tr>
+      <tr><td>.env 生产密钥组</td><td>600 权限、从未进 Git</td><td>上线新流程直接复用</td></tr>
+      <tr><td>公网地址 + 小绿锁</td><td>手机 4G 可访问</td><td>README 顶部链接、演示视频录制场地</td></tr>
+    </table>
+    <div class="callout note"><p>给本周项目单独打一个 git tag：<code>git tag -a w7-deploy -m "dockerized & deployed" && git push origin w7-deploy</code>。第 8 周玩崩了随时 <code>git checkout w7-deploy</code> 回到"已上线"的确定状态——把安全感版本化。</p></div>
+  </section>
+
+  <section>
+    <h2>写进笔记的本周十条军规</h2>
+    <ol>
+      <li>清单先 COPY，源码后 COPY——层缓存是构建速度的全部秘密。</li>
+      <li>CGO_ENABLED=0 + ca-certificates + tzdata，Go 容器三件套。</li>
+      <li>.env 永不进 Git，密钥只在 .env.example 里留键名。</li>
+      <li>容器互访用服务名；判断网络问题先问"我在哪个命名空间"。</li>
+      <li>depends_on 要配 healthcheck，"起了"≠"能用"。</li>
+      <li>只有需要被外部访问的服务才映射端口，80/443 之外都是内网。</li>
+      <li>迁移文件合入后永不修改，错误用新迁移纠正。</li>
+      <li>生产不用 AutoMigrate；上线前先在预发库跑一遍 up。</li>
+      <li>down 不带 -v；备份必须有异地副本。</li>
+      <li>发布 = pull → --build → 验证 → prune；回滚演练过才敢按按钮。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>排障速查卡：出事先跑这八行</h2>
+    <pre><span class="code-label">shell（服务器 / 本机通用，从上到下逐层定位）</span>$ docker compose ps                          <span class="c"># 谁不正常：missing / Restarting / unhealthy？</span>
+$ docker compose logs <span class="k">&lt;</span>问题服务<span class="k">&gt;</span> --tail <span class="n">30</span>    <span class="c"># 它的报错原文（先读三遍再搜索）</span>
+$ docker compose exec backend sh -c <span class="s">"getent hosts mysql"</span>   <span class="c"># 网络层：服务名解析通吗</span>
+$ docker compose exec backend sh -c <span class="s">"wget -qO- :8080/health"</span>  <span class="c"># 容器内自测服务本身活着吗</span>
+$ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localhost/  <span class="c"># 宿主机层：对外入口通吗</span>
+$ docker volume ls                           <span class="c"># 数据卷在不在（怀疑数据问题第一步）</span>
+$ df -h / <span class="k">&amp;&amp;</span> free -h                          <span class="c"># 机器层：磁盘满 / 内存OOM 是两大隐形杀手</span>
+$ docker compose <span class="c">-f</span> docker-compose.yml <span class="c">-f</span> docker-compose.prod.yml <span class="c">--env-file</span> .env config   <span class="c"># 配置层：渲染后的最终 YAML，键值一目了然</span></pre>
+    <table>
+      <tr><th>卡在哪一步</th><th>最可能原因（对号入座四大卡点）</th></tr>
+      <tr><td>ps 显示 backend Restarting</td><td>卡点一 localhost 之祸 / 迁移没跑导致表不存在</td></tr>
+      <tr><td>ps 全 healthy 但页面是旧的</td><td>卡点二 镜像没重建（+ 浏览器缓存）</td></tr>
+      <tr><td>本机 curl 通、外网 timeout</td><td>卡点三 安全组/双层防火墙</td></tr>
+      <tr><td>都通了但时间不对</td><td>卡点四 时区三连，逐处核对 TZ/loc</td></tr>
+    </table>
+    <div class="callout warn"><p>顺序有讲究：从 <code>ps</code> 到 <code>logs</code> 是"哪一层坏了"，从 <code>exec 自测</code> 到 <code>宿主机 curl</code> 是"坏在容器内还是链路外"。养成按卡排查的肌肉记忆，比任何一次灵光乍现都可靠。</p></div>
+  </section>
+
+  <section>
+    <h2>下周预告：第 8 周 · 综合项目实战（收官）</h2>
+    <p>最后一周不再学"部署"，而是回到功能：在第 6/7 周这个<b>已经上线的博客</b>上，现学两个新模块并完整收尾——</p>
+    <ul>
+      <li><b>RBAC 角色权限（D1）</b>：users 表加 role 字段——正好用你今天写好的 <code>000002_add_role_to_users</code> 迁移练真实场景；权限中间件按角色放行，admin 管理全站文章与用户；</li>
+      <li><b>文件上传（D2）</b>：Gin <code>SaveUploadedFile</code>、类型/大小校验、本地磁盘存储 + 静态回显，头像与文章封面——并给上传目录挂上 named volume 持久化（这周的知识立刻还债）；</li>
+      <li><b>前端权限与收尾（D3）</b>、<b>联调测试修 bug（D4）</b>、<b>部署 + README + API 文档（D5）</b>：把首页链接、截图、架构图、启动说明整理成能放进简历的作品集页面。</li>
+    </ul>
+    <div class="callout note"><p>带着三个问题进入下周，你的 D1 会顺畅十倍：① 权限中间件该注册在路由组的哪一层？② 上传的封面文件落在容器里，compose 重建后去哪找？③ README 里的架构图敢不敢直接用本周的 docker-compose.yml 画？</p></div>
+  </section>
+
+  <section>
+    <h2>本周名词速查卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话</th></tr>
+      <tr><td>multi-stage build</td><td>多 FROM 一文件，交付只取最后阶段</td></tr>
+      <tr><td>layer cache / CACHED</td><td>指令级缓存，输入哈希不变即复用</td></tr>
+      <tr><td>bridge 网络 + 内置 DNS</td><td>同 compose 项目服务名即主机名</td></tr>
+      <tr><td>service_healthy</td><td>依赖方等被依赖方探针通过才启动</td></tr>
+      <tr><td>named volume</td><td>Docker 托管的持久卷，down 不删、down -v 删</td></tr>
+      <tr><td>try_files 兜底</td><td>SPA 刷新 404 的唯一正解</td></tr>
+      <tr><td>schema_migrations</td><td>库结构的"git 版本号"，version + dirty 一行定生死</td></tr>
+      <tr><td>ACME / Let's Encrypt</td><td>自动签发续期免费证书的协议与机构</td></tr>
+      <tr><td>安全组</td><td>云厂商包在虚拟机外的第一层防火墙</td></tr>
+      <tr><td>up -d --build</td><td>本周敲得最多的一条命令：重建变化的镜像并拉起编排</td></tr>
+      <tr><td>deploy.sh（练习）</td><td>把 pull → migrate → build → up → prune 串成一条命令的自制发布脚本</td></tr>
+    </table>
+    <p style="color:var(--text-dim);font-size:13px">建议把本表与「十条军规」一起誊到笔记置顶处：第 8 周冲刺与未来找工作复盘，都会回来翻它。</p>
+  </section>
+
+  <section>
+    <h2>快速回跳</h2>
+    <p>
+      <a href="day1.html">D1 · Go 多阶段 Dockerfile</a> ｜
+      <a href="day2.html">D2 · 前端构建 + Nginx</a> ｜
+      <a href="day3.html">D3 · 完整 Compose 编排</a> ｜
+      <a href="day4.html">D4 · 数据库迁移</a> ｜
+      <a href="day5.html">D5 · 部署到云服务器</a>
+    </p>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day5.html"><span class="hint">← 上一天 · W7D5</span>部署到云服务器</a>
+    <a href="../w8/day1.html"><span class="hint">下一周 · W8D1 →</span>RBAC 角色权限</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W7 完结 · 你的博客已经活在公网上 · 下周收官 ⟩</footer>
+</body>
+</html>

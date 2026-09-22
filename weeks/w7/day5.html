@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W7D5 · 部署到云服务器 | Go 全栈修炼手册</title>
+<meta name="description" content="Day 5：1h2G 云服务器选购与安全组、SSH 与 Docker 安装、生产 .env 必改清单、git pull + compose 发布流程、域名 A 记录、Caddy 自动 HTTPS 完整 Caddyfile、上线验证清单与 down -v 数据删除警告。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w7d5">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 7 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 7 周</a> / Day 5</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 7 · DAY 5</span>
+    <span class="chip alt">预计 3 小时</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>部署到云服务器</h1>
+  <p>今天是本周的<b>交付日</b>：把前四天的成果推上一台真正的公网服务器，配上域名和小绿锁。完成后你将拥有人生第一个可访问链接的全栈作品——这会写进第 8 周的作品集 README，也是简历上最有说服力的一行。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w7d5g1">选好一台 1h2G 云服务器，安全组放行 22/80/443，SSH 免密登录</label></li>
+      <li><label><input type="checkbox" data-key="w7d5g2">官方脚本装好 Docker + Compose 插件，git clone 代码并用生产 .env 拉起全栈</label></li>
+      <li><label><input type="checkbox" data-key="w7d5g3">掌握日常运维：logs / ps / exec / 更新发布四板斧，并备份一次数据库</label></li>
+      <li><label><input type="checkbox" data-key="w7d5g4">域名 A 记录 + Caddy 自动 HTTPS 生效，走完上线验证清单（含 down -v 危险认知）</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 云服务器选购与开工准备</h3>
+    <table>
+      <tr><th>维度</th><th>口径</th><th>为什么</th></tr>
+      <tr><td>配置</td><td><b>1 核 2G 起步够用</b>，系统盘 ≥ 40GB，Debian 12 或 Ubuntu 22.04/24.04 镜像</td><td>内存大头是 MySQL（约 500MB），backend 才 20–50MB，nginx/caddy 几十 MB</td></tr>
+      <tr><td>带宽</td><td>按固定带宽 3–5Mbps 或按量计费均可</td><td>本项目静态资源才 2MB，流量极小</td></tr>
+      <tr><td>地域</td><td>就近选；<b>一句话差异：中国大陆地域绑定域名对外提供 Web 服务需先完成 ICP 备案，海外/港澳台地域免备案但延迟略高</b></td><td>未备案域名解析到大陆机器，80/443 会被运营商拦截</td></tr>
+      <tr><td>安全组</td><td>放行 <b>22（SSH）、80、443</b> 三个入方向端口即可；<b>3306、8080 不放行</b></td><td>数据库和后端由 Nginx/Caddy 统一从 80/443 转发，直接暴露 = 被全网爆破</td></tr>
+    </table>
+    <div class="callout warn"><p><b>1G/2G 内存必做：加 swap。</b>MySQL 冷启动和 <code>docker build</code> 编译 Go 都可能在瞬时打满内存，OOM 会直接杀掉 mysqld（表现：容器离奇 Restarting）。登录后先执行：</p></div>
+    <pre><span class="code-label">shell（root 执行，一次性）</span>$ fallocate -l <span class="n">2</span>G /swapfile &amp;&amp; chmod <span class="n">600</span> /swapfile &amp;&amp; mkswap /swapfile &amp;&amp; swapon /swapfile
+$ echo <span class="s">'/swapfile none swap sw 0 0'</span> &gt;&gt; /etc/fstab     <span class="c"># 开机自动启用</span>
+$ free -h                                               <span class="c"># 确认 Swap 行出现 2.0Gi</span></pre>
+    <p>SSH 免密（macOS/Linux 本机执行；Windows 用 PowerShell 或后续全走网页终端）：</p>
+    <pre><span class="code-label">shell</span>$ ssh-copy-id root@<span class="s">&lt;你的服务器IP&gt;</span>     <span class="c"># 输一次密码，以后直接 ssh root@&lt;IP&gt;</span>
+$ ssh root@<span class="s">&lt;你的服务器IP&gt;</span> <span class="s">'hostname &amp;&amp; date'</span>   <span class="c"># 连通性验证</span></pre>
+    <div class="callout warn"><p><b>SSH 本身也是公网端口：</b>买机时若选了"密码登录"，尽快改为本机公钥 + 关闭密码认证（<code>/etc/ssh/sshd_config</code> 里 <code>PasswordAuthentication no</code> 后 <code>systemctl restart sshd</code>）；22 端口同样有全网爆破。更稳妥的发行版自带的 <code>fail2ban</code> 或云控制台"仅允许我的 IP 段访问 22"都可以，学生项目至少做到<b>密钥登录</b>。</p></div>
+
+    <h3>2. 安装 Docker 与 Compose 插件</h3>
+    <p>官方一键脚本自动识别发行版、配好 apt 源与 systemd 服务（比"文档十一步"省事且不易错）：</p>
+    <pre><span class="code-label">shell（服务器上执行）</span>$ curl -fsSL https://get.docker.com | sh
+$ systemctl enable --now docker
+$ docker --version          <span class="c"># Docker version 27.x</span>
+$ docker compose version    <span class="c"># Docker Compose version v2.x —— 官方脚本自带 compose 插件，注意是 docker compose 两个词，带空格</span>
+
+<span class="c"># 非 root 用户免 sudo（可选；用 root 部署可跳过）</span>
+$ usermod -aG docker <span class="t">$USER</span>   <span class="c"># 重新登录生效</span></pre>
+    <div class="callout js"><p>和第 3 周本机的区别：服务器上的 <code>docker compose</code> 是 v2 插件形态，命令与你熟悉的完全一致。<b>旧文档里的 <code>docker-compose</code>（带横杠的 v1，Python 写的）已停止维护，见到就换掉。</b></p></div>
+
+    <h3>3. 拉代码 + 生产 .env：弱口令是重灾区</h3>
+    <pre><span class="code-label">shell</span>$ mkdir -p /opt &amp;&amp; cd /opt
+$ git clone git@github.com:<span class="s">&lt;你的用户名&gt;</span>/goblog.git   <span class="c"># HTTPS 仓库则用 https:// 地址 + Personal Access Token</span>
+$ cd goblog
+$ cp .env.example .env &amp;&amp; chmod <span class="n">600</span> .env              <span class="c"># .env 权限收紧到只有 root 可读</span>
+$ openssl rand -base64 <span class="n">32</span>                             <span class="c"># 现生成一个强随机串，下面多处要用</span></pre>
+    <table>
+      <tr><th>.env 项</th><th>必改动作</th><th>不改的下场</th></tr>
+      <tr><td><code>MYSQL_ROOT_PASSWORD</code> / <code>MYSQL_PASSWORD</code></td><td>换成 <code>openssl rand -hex 24</code> 级别的随机串（纯十六进制，避开 YAML 特殊字符）</td><td>公网 MySQL 弱口令<b>几分钟内</b>就会被扫描器爆破，轻则肉鸡、重则删库勒索——这不是吓唬，是全网常态</td></tr>
+      <tr><td><code>JWT_SECRET</code> / <code>JWT_REFRESH_SECRET</code></td><td>各自 <code>openssl rand -base64 32</code> 现生成，两值必须不同</td><td>沿用示例值 = 任何人可伪造任意用户的 token 直接登录</td></tr>
+      <tr><td><code>GIN_MODE</code></td><td><code>release</code></td><td>debug 模式泄露堆栈路由信息、性能差</td></tr>
+      <tr><td><code>AUTO_MIGRATE</code></td><td>删除或置 <code>false</code>（昨天加的开关）</td><td>生产结构被代码"顺手"改动</td></tr>
+      <tr><td><code>DOMAIN</code>（第 5 节 Caddyfile 会引用思想）</td><td>你的真实域名</td><td>HTTPS 签发对象错误</td></tr>
+    </table>
+    <div class="callout tip"><p>验证密钥没进 Git 的土办法但有效：<code>git log -p | grep -i password</code> 应该无输出（前提是你从第 4 周起就没提交过 .env；提交过的话历史里就有，需要换密钥而不仅是删文件）。</p></div>
+
+    <h3>4. 首次上线与日常运维</h3>
+    <pre><span class="code-label">shell（在 /opt/goblog）</span><span class="c"># 首次部署：按昨天的三步曲（migrate 建表），再全量起</span>
+$ docker compose --env-file .env up -d mysql
+$ docker compose --env-file .env --profile tools run --rm migrate up
+$ docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+$ docker compose ps                                  <span class="c"># 三服务 + healthy</span>
+$ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://<span class="s">&lt;服务器IP&gt;</span>/   <span class="c"># 先确认 200（还没有 HTTPS）</span>
+
+<span class="c"># ———— 日常四板斧 ————</span>
+$ docker compose logs -f backend --tail=<span class="n">50</span>          <span class="c"># 追日志（Ctrl+C 退出，不影响容器）</span>
+$ docker compose ps                                  <span class="c"># 看状态：Up / Restarting / unhealthy</span>
+$ docker compose exec backend sh                     <span class="c"># 进容器：alpine 有 sh，scratch 进不去</span>
+$ docker compose restart backend                     <span class="c"># 只重启某个服务</span>
+
+<span class="c"># ———— 更新发布流程（以后每次改代码上线就这五行）————</span>
+$ cd /opt/goblog
+$ git pull
+$ docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d --build
+<span class="c"># ↑ 只重建 Dockerfile 上下文有变化的镜像（层缓存也在），mysql 完全不动</span>
+$ docker compose logs backend --tail <span class="n">20</span>              <span class="c"># 确认新进程正常</span>
+$ docker image prune -f                              <span class="c"># 清掉被替换下来的旧镜像，防磁盘堆积</span></pre>
+    <div class="callout note"><p>发布前记得跑数据库迁移（如果这次更新带了新迁移文件）：<code>docker compose --profile tools run --rm migrate up</code>，在 <code>up -d --build</code> <b>之前</b>执行。</p></div>
+
+    <h3>5. 域名解析 + Caddy 自动 HTTPS</h3>
+    <p><b>① 域名 A 记录：</b>在域名控制台加一条解析——主机记录 <code>blog</code>（或 <code>@</code>），记录类型 <b>A</b>，记录值 = 服务器公网 IP。大陆地域须先完成备案。验证：</p>
+    <pre><span class="code-label">shell（本机执行）</span>$ dig +short blog.example.com
+<span class="n">47</span>.<span class="n">98</span>.xx.xx                 <span class="c"># 返回你的服务器 IP 即生效（DNS 全球生效一般几分钟到半小时）</span></pre>
+    <p><b>② Caddy 是什么、为什么是它：</b>Caddy 是自带 HTTPS 的 Web 服务器：你只需写一行"域名 → 反代到哪个上游"，它<b>自动</b>向 Let's Encrypt 申请证书、验证、90 天自动续期、HTTP 自动 308 跳 HTTPS。Nginx + certbot 也能做到，但要多维护一个续期定时器。作为代价，前面加一层 Caddy 后，frontend 的 <code>80:80</code> 映射要<b>取消</b>（否则 Let's Encrypt 校验会被 nginx 抢答，而且对外多了明文入口）——这正是第 3 天 override 思路的实战：</p>
+    <pre><span class="code-label">docker-compose.prod.yml（增补 caddy 服务）</span>services:
+  frontend:
+    ports: []                      <span class="c"># 抹掉 base 里的 80:80，只让 Caddy 对外</span>
+  caddy:
+    image: caddy:<span class="n">2</span>-alpine
+    restart: unless-stopped
+    ports:
+      - <span class="s">"80:80"</span>
+      - <span class="s">"443:443"</span>
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data           <span class="c"># 证书与 ACME 账户存这里，named volume 重启不丢</span>
+      - caddy-config:/config
+    depends_on:
+      - frontend
+
+volumes:
+  caddy-data:
+  caddy-config:</pre>
+    <pre><span class="code-label">Caddyfile（项目根目录，完整可用）</span><span class="c"># 全局块：可留空；blog.example.com 换成你的域名（A 记录已指向本机）</span>
+blog.example.com {
+    <span class="c"># 自动申请/续期 Let's Encrypt 证书，自动 http→https，无需任何额外配置</span>
+    encode gzip zstd
+
+    <span class="c"># 全站反代到前端容器：静态文件与 /api 转发由容器里的 nginx 完成（W7D2 配置）</span>
+    reverse_proxy frontend:<span class="n">80</span>
+}</pre>
+    <pre><span class="code-label">shell</span>$ docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d
+$ curl -s -o /dev/null -w <span class="s">"%{http_code} %{redirect_url}\n"</span> http://blog.example.com/
+<span class="n">308</span> https://blog.example.com/          <span class="c"># ← HTTP 自动跳转生效</span></pre>
+    <div class="callout warn"><p><b>签发失败三查：</b>① 安全组 443/80 是否放行；② <code>dig +short 域名</code> 是否已指向本机 IP（没生效就等会再 <code>docker compose restart caddy</code> 重试）；③ 大陆服务器域名未备案（80/443 被拦，永远签不下来）。证书申请有频率限制，调试期反复失败可临时加全局 <code>email you@example.com</code> + 本地测试用 <code>tls internal</code>（自签，浏览器告警但流程通）。<b>macOS 本地想演练 Caddy</b>：直接跑 <code>docker run -p 8080:80 caddy:2-alpine caddy reverse-proxy --from localhost:8080 --to goblog-frontend:80</code> 之类不如明天上线时一次配好，本地阶段用 http 即可。</p></div>
+
+    <h3>6. macOS 本地预演路线（服务器没买/备案没下来的间隙别闲着）</h3>
+    <p>整条流水线除"公网 HTTPS 签发"外都能在 Mac 本地 1:1 走通（Docker Desktop 或 OrbStack 任一，装好后 <code>docker compose version</code> 可用即可）：</p>
+    <pre><span class="code-label">shell（macOS 本地，在项目根目录）</span><span class="c"># ① 与服务器同样的三步曲</span>
+$ docker compose --env-file .env up -d mysql
+$ docker compose --env-file .env --profile tools run --rm migrate up
+$ docker compose --env-file .env up -d --build
+
+<span class="c"># ② 本地演练 Caddy：把 Caddyfile 的站点地址临时改成 http://blog.localhost
+#    （localhost 结尾的地址 Caddy 不申请公网证书，直接服务 HTTP，反代链路一模一样）</span>
+$ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d caddy
+$ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://blog.localhost/    <span class="c"># 200</span>
+
+<span class="c"># ③ 本地 hosts 指个假域名，体验"改代码→重建→强刷"的完整发布循环</span>
+$ echo <span class="s">"127.0.0.1 blog.localhost"</span> | sudo tee -a /etc/hosts</pre>
+    <p>只有两件事必须等真服务器：<b>公网可达</b>（拿手机 4G 验证）与 <b>真证书</b>（Let's Encrypt 不会给 localhost/内网 IP 签发）。预演把其余 90% 的坑都提前踩掉，上线当天只做"搬运工"。</p>
+    <div class="callout tip"><p>备案是"并行任务"：域名下单、备案材料提交和今天的本地预演<b>同一周做</b>，等备案短信到来时你早已万事俱备。海外机器则跳过备案直接解析上线。</p></div>
+
+    <h3>7. 交付方式选型：拉代码 vs 推镜像</h3>
+    <table>
+      <tr><th>方式</th><th>流程</th><th>优点</th><th>代价</th></tr>
+      <tr><td><b>git pull + 服务器现构</b>（本篇）</td><td>服务器装 Docker + git，<code>up -d --build</code> 一条龙</td><td>零镜像仓库账号；构建上下文在服务器本地，无 arm/x86 平台坑；上手最快</td><td>编译吃服务器 CPU/内存（1h2G 靠 swap 顶住）；git 凭证要放服务器</td></tr>
+      <tr><td>推镜像（GHCR/Docker Hub/阿里云 ACR）</td><td>CI 或本地 <code>buildx --platform linux/amd64 push</code>，服务器只 <code>pull + up</code></td><td>服务器超轻；发布可秒级回滚（退一个 tag）；第 8 周之后值得升级</td><td>要配仓库凭证与 CI；M 芯片 Mac 忘记 <code>--platform</code> 就 <code>exec format error</code></td></tr>
+    </table>
+    <p>本周用左列，把心智留给部署本身；两条路线的 compose 文件与环境变量完全一致，将来切镜像制只换"获取制品"一步。</p>
+
+    <h3>8. 上线验证清单 + down 与 down -v 的天壤之别</h3>
+    <table>
+      <tr><th>验证项</th><th>动作</th><th>预期</th></tr>
+      <tr><td>浏览器域名访问</td><td>开 <code>https://blog.example.com</code></td><td>首页秒开、小绿锁、无证书告警</td></tr>
+      <tr><td>子路由直访</td><td>地址栏直接敲 <code>https://域名/articles/1</code> 回车</td><td>200（D2 的 try_files 经受住了公网考验）</td></tr>
+      <tr><td>完整业务</td><td>注册新号 → 发帖 → 编辑 → 退出重登</td><td>全通；DevTools Network 里 /api 全走同域 https，无 CORS 报错</td></tr>
+      <tr><td>数据韧性</td><td><code>docker compose restart</code> 后再登录刚注册的账号</td><td>登录成功 = named volume 在守护数据</td></tr>
+      <tr><td>备份习惯</td><td><code>docker compose exec -T mysql mysqldump -ugoblog -p"$MYSQL_PASSWORD" --single-transaction goblog &gt; backup_$(date +%F).sql</code></td><td>拿到 SQL 文件，今天顺手下载回本机存一份</td></tr>
+    </table>
+    <pre><span class="code-label">shell（两个命令，一个可悔一个不可悔）</span>$ docker compose down        <span class="c"># 停并删【容器+网络】；named volume 原地不动 → 再 up 数据全在</span>
+$ docker compose down -v     <span class="c"># 连 named volume 一起删 —— MySQL 数据文件当场火化，不可恢复！</span></pre>
+    <div class="callout warn"><p><b>本周最重的一条警告：</b><code>down -v</code> 里的 <code>-v</code> 删卷不可撤销，没有回收站。生产机器上请形成肌肉记忆：<b>先 <code>down</code>，确认不需要了再考虑一切带 <code>-v</code> 的命令</b>；做实验删卷前看一眼卷名（<code>docker volume ls</code>）是不是练手项目。总结页的卡点复盘还会考这个。</p></div>
+
+    <h3>9. 每日巡检：一次 SSH 会话的健康检查卡（30 秒跑完）</h3>
+    <pre><span class="code-label">shell（存成 /opt/goblog/healthcheck.sh，养成习惯）</span><span class="k">#!/bin/sh</span>
+cd /opt/goblog
+docker compose ps                                   <span class="c"># 全部 Up (healthy)？有无 Restarting？</span>
+df -h /                                             <span class="c"># 磁盘 &gt;85% 就要 image prune + 清日志</span>
+free -h                                             <span class="c"># available 低于 100Mi？查谁在吃内存</span>
+docker compose exec -T mysql mysqladmin ping -h<span class="n">127.0.0.1</span> -uroot -p<span class="s">"$MYSQL_ROOT_PASSWORD"</span> --silent
+<span class="c"># mysqld is alive ← 数据库活着</span>
+curl -s -o /dev/null -w <span class="s">"https status: %{http_code}\n"</span> https://blog.example.com/health</pre>
+    <p>再配一条每周动作：备份定时化（crontab 每周日凌晨跑一次，保留 4 份滚动）：</p>
+    <pre><span class="code-label">shell（crontab -e 追加一行，路径按你机器改）</span><span class="n">0</span> <span class="n">4</span> * * <span class="n">0</span> cd /opt/goblog <span class="k">&amp;&amp;</span> docker compose exec -T mysql mysqldump -ugoblog -p<span class="s">"$MYSQL_PASSWORD"</span> --single-transaction goblog | gzip &gt; /root/backup_$(date +\%F).sql.gz <span class="k">&amp;&amp;</span> find /root -name <span class="s">'backup_*.sql.gz'</span> -mtime +<span class="n">28</span> -delete
+<span class="c"># 每周日 04:00 备份并 gzip，超过 4 周的自动清理；记得每月 scp 回本机一份——异地副本才算备份</span></pre>
+    <p>小站没有监控告警，<b>纪律就是监控</b>。</p>
+
+    <h3>10. 上线后 24 小时内值得做的三件小事</h3>
+    <ol>
+      <li><b>把首页链接发给三个朋友</b>用手机网络打开——不同运营商、不同设备，是最便宜的兼容性测试；</li>
+      <li><b>看一次真实访问日志</b>：<code>docker compose logs caddy --tail 30</code>，确认有真实访客的 GET、状态码正常，顺便感受"自己的服务在公网被访问"的奇妙；</li>
+      <li><b>演练一次完整回滚</b>：<code>git checkout HEAD~1</code> → 重新发布 → 确认旧版本可用 → <code>git checkout main</code> 再发布回来。敢回滚的人才敢上线，这话什么时候都对。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：完整上线（必做，90 分钟）</div>
+      <p>按讲义 1→5 节顺序执行：买机/加 swap/安全组 → 装 Docker → clone + .env 五件套 → 三步曲部署 → Caddy 上 HTTPS。<b>验收：手机用 4G 网络（排除本机缓存干扰）打开 <code>https://你的域名</code>，完成一次注册 + 发帖。</b>截图存档——第 8 周 README 直接用。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：超时 vs 拒绝，学会定位卡在哪一层（15 分钟）</div>
+      <p>把服务器上的 caddy 停掉 <code>docker compose stop caddy</code>，curl 观察 <code>Connection refused</code>（端口没监听）；恢复后在云控制台临时移除安全组 80 放行，从手机 4G 访问感受<b>一直转圈直到 timeout</b>（包被防火墙丢弃）。记住这个判据：<b>refused 查服务，timeout 查防火墙/安全组</b>。练完把安全组恢复。</p>
+      <p><b>补充：</b>Linux 服务器内部若还开着 ufw/firewalld，也要同步放行（<code>ufw allow 80,443/tcp</code>），两层防火墙任何一层没开都是 timeout。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：演练一次更新发布（20 分钟）</div>
+      <p>在本地把前端首页标题改成"<b>Hello from Production</b>"，commit + push → 服务器第 4 节的五行发布流程 → <code>curl -s https://域名/ | grep -o "Hello from Production"</code> 确认新产物。顺手观察：<code>docker compose build</code> 输出里 nginx 镜像那些 <code>CACHED</code> 层——D1 缓存课的知识在服务器上回来找你。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：备份与恢复推演（20 分钟，纸上 + 实操各一遍）</div>
+      <p>执行第 8 节的 mysqldump 备份；然后在<b>预发库</b>（新建一个一次性 mysql 容器，绝不碰生产卷！）restore 验证文件可用：<code>docker exec -i restore-mysql mysql -uroot -p"$P" goblog &lt; backup.sql</code>。最后回答一题并写进笔记：<code>docker compose down -v</code> 之后，你刚才那份 backup 能救回什么、救不回什么？（答：数据全可回灌；但没备份过的那一刻起的新写入没了——所以备份要成例行。）</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>证书签发了但页面混杂 HTTP 资源</td><td>浏览器仍提示"不安全"或样式裂</td><td>页面里写死的 <code>http://</code> 图片/接口地址全部改为相对路径或 https（本项目产物本就同源，出现此坑多半是你外链了图）</td></tr>
+      <tr><td>安全组只开了 22</td><td>ssh 正常、浏览器打不开，curl 超时</td><td>放行 80/443；记住 refused 与 timeout 的定位口诀</td></tr>
+      <tr><td>Mac（M 芯片）本地构建镜像传服务器</td><td>容器起不来，日志 <code>exec format error</code></td><td>arm64 产物跑不了 x86——本手册流程<b>在服务器上 --build 现构</b>天然无此坑；若将来 push 镜像仓库，构建时加 <code>--platform linux/amd64</code></td></tr>
+      <tr><td>.env 没随代码到服务器</td><td>up 报 <code>MYSQL_ROOT_PASSWORD is required</code> 或服务起了但连不上库</td><td>.env 永不进 Git（这是纪律），每台机器单独配，权限 600</td></tr>
+      <tr><td>1G 内存没加 swap</td><td>mysql 容器无故 Restarting，<code>docker inspect --format '{{.State.OOMKilled}}' goblog-mysql</code> 返回 true</td><td>swap 安排；仍紧张就在 mysql 的 command 里加 <code>--innodb-buffer-pool-size=128M</code></td></tr>
+      <tr><td>DNS 没生效就试 HTTPS</td><td>Caddy 日志 <code>could not obtain certificate ... NXDOMAIN/dial timeout</code></td><td>先 dig 验证 IP 正确，再 restart caddy 重试</td></tr>
+      <tr><td>时区三连（服务器/容器/DB 各一套）</td><td>评论时间差 8 小时——D1 讲过容器层，服务器层 <code>timedatectl set-timezone Asia/Shanghai</code>，DSN 层 <code>loc=Local</code></td><td>三处都在今天的文件里配好了，验收时发帖看时间戳核对一遍</td></tr>
+      <tr><td>服务器上忘了 git pull 就 up</td><td>构建"成功"但跑的还是旧代码（层全 CACHED 就是信号）</td><td>发布肌肉记忆：pull → build → up 顺序不可拆；核对前端产物 hash 是否变化</td></tr>
+      <tr><td>误敲 down -v</td><td>数据没了，且往往当天没备份</td><td>第 8 节的警告刻进DNA；例行化 mysqldump 到本机或对象存储</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>安全组</td><td>云厂商控制台上的虚拟防火墙，包在服务器外面，优先级高于机内 iptables</td></tr>
+      <tr><td>A 记录</td><td>把域名指向一个 IPv4 地址的 DNS 记录，一条即可</td></tr>
+      <tr><td>ACME / Let's Encrypt</td><td>自动签发免费证书的协议与机构；Caddy 是它的最省心客户端</td></tr>
+      <tr><td>swap</td><td>磁盘划出的虚拟内存，小内存服务器的 OOM 安全带</td></tr>
+      <tr><td>mysqldump --single-transaction</td><td>不锁表的一致性备份方式，InnoDB 专用</td></tr>
+      <tr><td>ICP 备案</td><td>大陆服务器对域名对外 Web 服务的登记流程，约 1–2 周，与买机并行办理</td></tr>
+      <tr><td>发布回滚</td><td>git 路线回滚 = <code>git revert + 重新 up -d --build</code>；镜像路线 = 退一个 tag，先知道概念</td></tr>
+      <tr><td>访问日志</td><td>Caddy/nginx 记录每一次 GET，上线后最好的"活体探针"</td></tr>
+      <tr><td>异地副本</td><td>备份文件至少存两个物理位置（服务器 + 你自己电脑），才算真备份</td></tr>
+      <tr><td>回滚演练</td><td>上线前在真环境走一遍"退旧版本再退回来"，比任何祈祷都管用</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w7d5c1">手机 4G 访问 <code>https://你的域名</code> 完成注册 + 发帖，截图已存</label></li>
+      <li><label><input type="checkbox" data-key="w7d5c2">生产 .env 五件套全部换新值，<code>chmod 600</code>，且确认从未进过 Git</label></li>
+      <li><label><input type="checkbox" data-key="w7d5c3">独立走完一次"git pull → up -d --build → logs 验证 → image prune"发布流程</label></li>
+      <li><label><input type="checkbox" data-key="w7d5c4"><code>docker compose restart</code> 后数据仍在；能一字不差说出 down 与 down -v 的区别</label></li>
+      <li><label><input type="checkbox" data-key="w7d5c5">完成一次 mysqldump 备份并在一次性容器里恢复验证过</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day4.html"><span class="hint">← 上一天 · W7D4</span>数据库迁移</a>
+    <a href="summary.html"><span class="hint">本周收官 · W7 总结 →</span>容器化 + 部署 验收</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W7D5 · 明天见 ⟩</footer>
+</body>
+</html>

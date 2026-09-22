@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W7D2 · 前端构建 + Nginx | Go 全栈修炼手册</title>
+<meta name="description" content="Day 2：Vite dist 产物结构、nginx:alpine 托管静态文件、try_files 根治 SPA history 路由 404、proxy_pass 反代 /api、GZIP 配置，产出前端多阶段 Dockerfile 完整文件。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w7d2">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 7 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 7 周</a> / Day 2</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 7 · DAY 2</span>
+    <span class="chip alt">预计 2.5–3 小时</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>前端构建 + Nginx</h1>
+  <p>昨天后端有了自己的镜像，今天轮到 React 前端。核心认知只有一句话：<b>React 生产部署 = 一堆静态文件 + 一个会转发请求的 Nginx</b>。第 6 周靠 <code>vite dev --proxy</code> 糊过去的跨域和路由问题，今天用 Nginx 一次性还债——尤其是那个所有人都见过的「刷新页面 404」。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w7d2g1">看懂 Vite <code>npm run build</code> 后的 dist 结构，能解释文件名 hash 的作用</label></li>
+      <li><label><input type="checkbox" data-key="w7d2g2">能讲清 SPA history 路由为什么"点进去正常、刷新就 404"，并用 <code>try_files</code> 一行修复</label></li>
+      <li><label><input type="checkbox" data-key="w7d2g3">会写 <code>proxy_pass /api → backend</code>，知道带不带结尾斜杠的区别</label></li>
+      <li><label><input type="checkbox" data-key="w7d2g4">产出前端多阶段 Dockerfile（node 构建 + nginx 运行），一个容器内前端 + 代理全通</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>课前须知</h2>
+    <div class="callout note"><p>今天在 <code>frontend/</code>（第 6 周的 React + Vite 项目）下工作。约定沿用第 2 周起的口径：<b>后端业务路由都挂在 <code>/api</code> 前缀下</b>（<code>/api/articles</code>、<code>/api/auth/login</code>），健康检查在 <code>/health</code>；前端 axios 的请求基址是相对路径 <code>/api</code>（第 6 周 Day 5 的 <code>VITE_API_BASE=/api</code>）。这个约定是今天 proxy 配置成立的前提。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 先看产物：Vite build 之后的 dist 长什么样</h3>
+    <pre><span class="code-label">shell（在 frontend/ 目录）</span>$ npm run build
+
+$ du -sh node_modules dist        <span class="c"># 感受一下"源码态 vs 产物态"的差距</span>
+<span class="n">412</span>MB    node_modules
+<span class="n">1.9</span>MB    dist
+
+$ find dist -type f
+dist/index.html
+dist/favicon.svg
+dist/assets/index-4f2a9c1e.js     <span class="c"># JS 全部打包 + 压缩，文件名带内容 hash</span>
+dist/assets/index-7b3d81fa.css
+dist/assets/vendor-a10c8f22.js</pre>
+    <p>三个观察：</p>
+    <ul>
+      <li><b>dist 只有 2MB 左右</b>，而 node_modules 四百多 MB——部署只需要前者。昨天的道理在这里重演：构建环境（node_modules + 源码）不该进最终镜像。</li>
+      <li><b>文件名带 hash</b>（<code>index-4f2a9c1e.js</code>）：内容变、名字变；内容不变、名字不变。所以这些文件可以理直气壮地让浏览器缓存一年（immutable），发版用户自动拿新文件，这就是第 5 节缓存指令的依据。</li>
+      <li><code>index.html</code> 的名字<b>不带</b> hash，它是每次访问都要拿最新的"入口清单"。</li>
+    </ul>
+
+    <h3>2. 最小 nginx 容器：托管静态文件</h3>
+    <p>Nginx 官方镜像开箱即用，把 dist 塞进它的默认根目录 <code>/usr/share/nginx/html</code> 就能当一个静态服务器：</p>
+    <pre><span class="code-label">shell</span>$ docker run -d --name web -p <span class="n">3000</span>:<span class="n">80</span> \
+    -v <span class="s">"$(pwd)"</span>/dist:/usr/share/nginx/html:ro \
+    nginx:<span class="n">1.27</span>-alpine
+
+$ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localhost:<span class="n">3000</span>/
+<span class="n">200</span>                                            <span class="c"># 首页正常</span>
+$ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localhost:<span class="n">3000</span>/articles/<span class="n">1</span>
+<span class="n">404</span>                                            <span class="c"># ← 灾难现场：刷新文章详情页 404 了</span></pre>
+    <p>先别修，把这个 404 记住——下一节解释原理，然后一行配置根治它。</p>
+
+    <h3>3. 重点：SPA history 路由为什么刷新 404，try_files 怎么救</h3>
+    <div class="callout js"><p><b>history 模式原理（React Router 7 / history router）：</b>你在站内从首页点进文章详情页时，Router 调用浏览器原生的 <code>history.pushState()</code>——它<b>只改写地址栏</b>并压入一条历史栈，<b>不发任何网络请求</b>，然后 React 在内存里换掉渲染的组件。所以"点进去"永远正常。<br><br>但当你<b>刷新页面</b>（或直接粘贴 URL 访问、别人转发给你的 <code>/articles/1</code> 链接被点开）时，浏览器就真的向服务器发出 <code>GET /articles/1</code>。Nginx 在 dist 目录里找一个叫 <code>articles/1</code> 的文件——不存在，404。<b>"路由"这个概念只活在 JS 里，服务器根本不知道。</b></p></div>
+    <p>解法：<code>try_files</code>——按顺序找文件，全都找不到就把 <code>index.html</code> 兜底返回。HTML 一加载，React Router 接管，根据地址栏 URL 渲染对应页面：</p>
+    <pre><span class="code-label">nginx.conf 节选</span><span class="k">location</span> / {
+    <span class="c"># $uri 原始路径 → $uri/ 目录 → 都没有就内部改写为 /index.html（返回 200）</span>
+    try_files <span class="n">$uri</span> <span class="n">$uri/</span> /index.html;
+}</pre>
+    <div class="callout warn"><p><b>副作用要知道：</b>配了兜底之后，访问一个<b>真不存在</b>的静态资源（如 <code>/logo-typo.png</code>）也会返回 index.html + 200，排查图片 404 时容易被骗。所以上面把 <code>/assets/</code>（带 hash 的产物）单独设了 location（见第 5 节），真实生产还会再为图片等加精确匹配。</p></div>
+    <div class="callout note"><p>hash 路由模式 <code>#/articles/1</code> 不会有这个问题——# 后面的内容从不发给服务器。但 URL 丑、分享性差，本项目坚持 history 模式 + try_files 是标准答案。</p></div>
+
+    <h3>4. proxy_pass：把 /api 转给 Go 后端</h3>
+    <p>同源部署后 CORS 都不需要了——浏览器眼里所有请求都来自同一个域名，Nginx 在内网替你转发：</p>
+    <pre><span class="code-label">nginx.conf 节选</span><span class="k">location</span> /api/ {
+    <span class="c"># backend 是容器/服务名，在共享网络里由 Docker DNS 解析（明天 compose 正式用）</span>
+    proxy_pass http://backend:<span class="n">8080</span>;
+
+    <span class="c"># 三个标准透传头，否则后端日志里全是一个 IP、Host 也失真</span>
+    proxy_set_header Host <span class="n">$host</span>;
+    proxy_set_header X-Real-IP <span class="n">$remote_addr</span>;
+    proxy_set_header X-Forwarded-For <span class="n">$proxy_add_x_forwarded_for</span>;
+}</pre>
+    <table>
+      <tr><th>写法</th><th>行为</th><th>本项目</th></tr>
+      <tr><td><code>proxy_pass http://backend:8080;</code>（<b>不带</b>结尾斜杠/路径）</td><td>请求路径<b>原样</b>转发：<code>/api/articles</code> → 后端收到 <code>/api/articles</code></td><td>✔ 用这个（后端路由本身带 /api 前缀）</td></tr>
+      <tr><td><code>proxy_pass http://backend:8080/;</code>（带结尾斜杠）</td><td>把 <code>location</code> 前缀剥掉：<code>/api/articles</code> → 后端收到 <code>/articles</code> → 404</td><td>✘ 经典"莫名其妙 404"来源</td></tr>
+    </table>
+    <div class="callout warn"><p><b>容器里的 localhost 陷阱（今天预习、明天主考）：</b>在 nginx 容器内，<code>proxy_pass http://localhost:8080</code> 指向的是 <b>nginx 容器自己</b>，不是你的宿主机，更不是后端容器。本地想用 docker run 临时联调可以写 <code>host.docker.internal:8080</code>（宿主机地址），而正式方案永远是明天的容器网络服务名 <code>backend</code>。</p></div>
+
+    <h3>5. GZIP 与缓存策略</h3>
+    <pre><span class="code-label">nginx.conf 节选</span>server {
+    listen <span class="n">80</span>;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    <span class="c"># GZIP：JS/CSS 文本压缩率极高，1.9MB 产物传输时通常只剩 40–60%</span>
+    gzip on;
+    gzip_comp_level <span class="n">5</span>;
+    gzip_min_length <span class="n">1024</span>;          <span class="c"># 小于 1KB 压缩反而更亏（首部开销）</span>
+    gzip_types text/css application/javascript application/json image/svg+xml;
+
+    <span class="c"># 带 hash 的构建产物：缓存一年没问题，内容变了名字自然变（见第 1 节）</span>
+    <span class="k">location</span> /assets/ {
+        expires <span class="n">1</span>y;
+        add_header Cache-Control <span class="s">"public, immutable"</span>;
+    }
+
+    <span class="c"># 入口 HTML 绝不缓存，否则发版后用户拿旧清单找不到新 JS</span>
+    <span class="k">location</span> = /index.html {
+        add_header Cache-Control <span class="s">"no-cache"</span>;
+    }
+}</pre>
+    <div class="callout tip"><p>验证 GZIP 生效：响应头要有 <code>Content-Encoding: gzip</code>。curl 默认不发 <code>Accept-Encoding</code>，要加 <code>--compressed</code>：<code>curl -s -H "Accept-Encoding: gzip" -o /dev/null -w "%{size_download}\n" --compressed http://localhost:3000/assets/index-4f2a9c1e.js</code>，对比文件原始大小。</p></div>
+
+    <h3>6. 完整文件：前端多阶段 Dockerfile + nginx.conf</h3>
+    <p>结构照抄第 6 周前端项目根目录，新增两个文件即可。</p>
+    <pre><span class="code-label">frontend/Dockerfile</span><span class="c"># ---------- 阶段一：构建（需要完整 node_modules，这层大但不要了）----------</span>
+<span class="k">FROM</span> node:<span class="n">22</span>-alpine <span class="k">AS</span> build
+
+<span class="k">WORKDIR</span> /app
+
+<span class="c"># 与 go mod download 同理：清单不变则 npm 安装层命中缓存</span>
+<span class="k">COPY</span> package.json package-lock.json ./
+<span class="k">RUN</span> npm ci                       <span class="c"># ci 严格按 lock 安装、更快更可复现，CI/镜像首选</span>
+
+<span class="k">COPY</span> . .
+<span class="c"># 生产环境变量在构建时烧进产物（Vite 是构建期替换，不是运行期读取！）</span>
+<span class="k">ENV</span> VITE_API_BASE=/api
+<span class="k">RUN</span> npm run build
+
+<span class="c"># ---------- 阶段二：运行（只有 nginx + 2MB 静态文件）----------</span>
+<span class="k">FROM</span> nginx:<span class="n">1.27</span>-alpine
+
+<span class="k">COPY</span> --from=build /app/dist /usr/share/nginx/html
+<span class="k">COPY</span> nginx.conf /etc/nginx/conf.d/default.conf   <span class="c"># 覆盖默认站点配置</span>
+
+<span class="k">EXPOSE</span> <span class="n">80</span>
+<span class="c"># nginx 镜像自带 CMD ["nginx","-g","daemon off;"]，无需再写；写 ENTRYPOINT 反而多此一举</span></pre>
+    <pre><span class="code-label">frontend/nginx.conf（完整可抄）</span>server {
+    listen <span class="n">80</span>;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    gzip on;
+    gzip_comp_level <span class="n">5</span>;
+    gzip_min_length <span class="n">1024</span>;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+
+    <span class="k">location</span> /api/ {
+        proxy_pass http://backend:<span class="n">8080</span>;
+        proxy_set_header Host <span class="n">$host</span>;
+        proxy_set_header X-Real-IP <span class="n">$remote_addr</span>;
+        proxy_set_header X-Forwarded-For <span class="n">$proxy_add_x_forwarded_for</span>;
+    }
+
+    <span class="k">location</span> /assets/ {
+        expires <span class="n">1</span>y;
+        add_header Cache-Control <span class="s">"public, immutable"</span>;
+    }
+
+    <span class="k">location</span> = /index.html {
+        add_header Cache-Control <span class="s">"no-cache"</span>;
+    }
+
+    <span class="k">location</span> / {
+        try_files <span class="n">$uri</span> <span class="n">$uri/</span> /index.html;
+    }
+}</pre>
+    <pre><span class="code-label">frontend/.dockerignore</span>node_modules
+dist
+.git
+.env
+.env.*
+.vscode
+*.md</pre>
+    <p>构建并快速自检（先不测 /api，那是练习 4 的事）：</p>
+    <pre><span class="code-label">shell</span>$ docker build -t goblog-web:<span class="n">0.1</span> frontend/    <span class="c"># 在项目根目录执行</span>
+$ docker images goblog-web                     <span class="c"># 预期 ≈ 53MB（nginx 基座 50MB + 2MB 产物）</span>
+$ docker run --rm -d --name web -p <span class="n">3000</span>:<span class="n">80</span> goblog-web:<span class="n">0.1</span>
+$ curl -s http://localhost:<span class="n">3000</span>/articles/<span class="n">1</span> | head -<span class="n">3</span>   <span class="c"># 返回 &lt;!doctype html&gt;… 即 try_files 生效</span></pre>
+    <div class="callout note"><p>注意此时 <code>/api/*</code> 会返回 502（nginx 里 <code>backend</code> 这个名字解析不到），<b>属于预期</b>——服务名互访要等共享网络，练习 4 手动组网先体验一遍，明天 compose 让它成为日常。另外 Vite 的环境变量是<b>构建期</b>替换进 JS 常量的，改 <code>VITE_API_BASE</code> 必须重新 build 镜像，这点和第 4 周后端"运行期读 .env"完全不同。</p></div>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：产物观察（15 分钟）</div>
+      <p>本地 <code>npm run build</code>，执行 <code>du -sh node_modules dist</code> 与 <code>find dist -type f</code>；打开 <code>dist/index.html</code> 看它如何引用 assets 的 hash 文件名。<b>把两个 du 数字记进笔记</b>（这是"为什么镜像只要 50MB"的第一手证据）。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：亲手复现并修复刷新 404（25 分钟）</div>
+      <p>用第 2 节的 <code>docker run -v .../dist nginx:alpine</code> 挂载法：① 裸配置下 <code>curl /articles/1</code> 确认 404；② 在本地写一份只加 <code>try_files</code> 的最小 conf，追加挂载 <code>-v $(pwd)/nginx.conf:/etc/nginx/conf.d/default.conf:ro</code> 重启容器，再 curl 确认 200 且返回 index.html 内容。</p>
+      <p><b>要点：</b>挂载配置文件改完后不用重建镜像，<code>docker exec web nginx -s reload</code> 或重跑容器即可——先习惯"配置即文件，文件可挂载"。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：产出前端镜像（必做，30 分钟）</div>
+      <p>抄录第 6 节三个文件（<code>frontend/Dockerfile</code>、<code>frontend/nginx.conf</code>、<code>frontend/.dockerignore</code>），构建 <code>goblog-web:0.1</code>。验收：<code>docker images</code> ≤ 60MB；<code>curl /</code> 与 <code>curl /articles/1</code> 均 200；<code>curl -H "Accept-Encoding: gzip" --compressed -sI</code> 大 JS 文件响应头含 <code>Content-Encoding: gzip</code>。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：一个容器内前端 + 代理全通（40 分钟）</div>
+      <p>不写 compose，用 <code>docker network</code> 手工把昨天的后端、一个 MySQL、今天的前端连成网，端到端打通 <code>浏览器 → nginx → /api → Gin → MySQL</code>：</p>
+      <pre><span class="code-label">shell</span>$ docker network create goblog
+$ docker run -d --name mysql --network goblog <span class="c">\</span>
+    -e MYSQL_ROOT_PASSWORD=<span class="s">"&lt;强占位符&gt;"</span> -e MYSQL_DATABASE=goblog <span class="c">\</span>
+    -e MYSQL_USER=goblog -e MYSQL_PASSWORD=<span class="s">"&lt;强占位符&gt;"</span> <span class="c">\</span>
+    -v mysql-demo:/var/lib/mysql mysql:<span class="n">8.0</span> --default-time-zone=<span class="s">"+08:00"</span>
+$ docker run -d --name backend --network goblog -p <span class="n">8080</span>:<span class="n">8080</span> <span class="c">\</span>
+    -e MYSQL_DSN=<span class="s">"goblog:&lt;强占位符&gt;@tcp(mysql:3306)/goblog?charset=utf8mb4&amp;parseTime=True&amp;loc=Local"</span> <span class="c">\</span>
+    -e JWT_SECRET=<span class="s">"$(openssl rand -base64 32)"</span> -e GIN_MODE=release goblog-api:<span class="n">0.1</span>
+$ docker run -d --name frontend --network goblog -p <span class="n">3000</span>:<span class="n">80</span> goblog-web:<span class="n">0.1</span>
+
+<span class="c"># MySQL 首次初始化约 30 秒，等 backend 的 healthcheck 变 healthy 再测</span>
+$ curl -s http://localhost:<span class="n">3000</span>/api/articles?page=<span class="n">1</span>
+{<span class="s">"code"</span>:<span class="n">0</span>,<span class="s">"message"</span>:<span class="s">"success"</span>,<span class="s">"data"</span>:{...}}   <span class="c"># ← 经 nginx 代理的完整链路！</span></pre>
+      <p><b>参考答案排错：</b>502 看 <code>docker logs frontend</code>——<code>backend could not be resolved</code> 说明两容器不在同一网络（<code>docker network inspect goblog</code> 检查 Containers）；500/连接库失败看 <code>docker logs backend</code>——DSN 主机必须是 <code>mysql</code> 而非 localhost（本练习已按此配好）。玩完 <code>docker rm -f mysql backend frontend; docker network rm goblog</code> 清理，明天交给 compose。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>没配 try_files</td><td>站内点击一切正常，任何子路由刷新即 404</td><td><code>try_files $uri $uri/ /index.html;</code></td></tr>
+      <tr><td>proxy_pass 多写结尾斜杠</td><td>后端日志显示请求路径丢了 <code>/api</code> 前缀，全线 404</td><td>后端路由带 /api 时，proxy_pass 不带 URI 部分</td></tr>
+      <tr><td>proxy_pass 写 localhost</td><td>502，且后端容器日志里毫无请求痕迹</td><td>容器里的 localhost 是 nginx 自己；同网络用服务名，宿主机用 host.docker.internal</td></tr>
+      <tr><td>改了 VITE_API_BASE 没重新 build</td><td>镜像"更新了"但前端还在请求旧地址</td><td>Vite 环境变量烧录在产物 JS 里，必须重新构建镜像</td></tr>
+      <tr><td>gzip 没效果</td><td>响应头没有 Content-Encoding</td><td>检查 gzip_types 是否包含该 MIME、文件是否达到 gzip_min_length</td></tr>
+      <tr><td>没有 package-lock.json 就 <code>npm ci</code></td><td>构建报 <code>npm ci can only install with an existing package-lock.json</code></td><td>lock 文件必须提交进 Git；或临时退用 <code>npm install</code>（不推荐）</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>反向代理</td><td>Nginx 代收浏览器请求、转发给内网服务再把响应原路送回，对外只暴露一个端口</td></tr>
+      <tr><td>history 模式</td><td>用 pushState 改写地址栏的前端路由方案，URL 干净但要求服务器兜底返回 index.html</td></tr>
+      <tr><td>try_files</td><td>nginx 按序探测文件是否存在，最后一项通常写成内部跳转 /index.html</td></tr>
+      <tr><td>immutable 缓存</td><td>配合内容 hash 文件名，让 /assets/ 下的产物被浏览器缓存一年</td></tr>
+      <tr><td>npm ci</td><td>严格按 lock 文件安装、跳过交互式解析的干净安装命令，构建环境专用</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w7d2c1">dist 与 node_modules 的 du 对比数字（约 2MB vs 400MB+）已记入笔记</label></li>
+      <li><label><input type="checkbox" data-key="w7d2c2">练习 2 完成：亲眼见过 404 → 挂上 try_files 后变 200</label></li>
+      <li><label><input type="checkbox" data-key="w7d2c3"><code>goblog-web:0.1</code> 镜像 ≤ 60MB，/ 与 /articles/1 均返回 200</label></li>
+      <li><label><input type="checkbox" data-key="w7d2c4">练习 4 三容器组网：<code>curl :3000/api/articles</code> 拿到后端 JSON，能说出 DNS 解析靠的是什么</label></li>
+      <li><label><input type="checkbox" data-key="w7d2c5">能口述 proxy_pass 结尾斜杠差异 + Vite 构建期环境变量这两个坑的机理</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day1.html"><span class="hint">← 上一天 · W7D1</span>Go 多阶段 Dockerfile</a>
+    <a href="day3.html"><span class="hint">下一天 · W7D3 →</span>完整 Compose 编排</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W7D2 · 明天见 ⟩</footer>
+</body>
+</html>

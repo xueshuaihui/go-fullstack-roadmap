@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W2D2 · 请求绑定与验证 | Go 全栈修炼手册</title>
+<meta name="description" content="Day 2：ShouldBindJSON、binding 校验 tag、自定义错误消息、DTO 结构体，落地 pkg/response.go 统一响应 {code,message,data} 与错误码 1001–1005。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w2d2">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 2 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 2 周</a> / Day 2</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 2 · DAY 2</span>
+    <span class="chip alt">预计 2.5–3 小时</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>请求绑定与验证</h1>
+  <p>昨天用 <code>GetRawData()</code> 拿到的是裸字节，没法用。今天学 Gin 的杀手锏：<b>一次声明结构体，自动完成「解析 JSON → 校验规则 → 填充字段」三步</b>，并把校验失败翻译成人类可读的 400。同时落地手册「API 设计约定」的 <code>{code, message, data}</code> 统一响应——从今天起，你写的每个接口都长一个样。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w2d2g1">用 <code>ShouldBindJSON</code> 把请求体解析进 DTO 结构体，说清字段为什么必须大写开头</label></li>
+      <li><label><input type="checkbox" data-key="w2d2g2">会用 <code>binding:"required,min=3,email,oneof"</code> 等 tag 声明校验规则</label></li>
+      <li><label><input type="checkbox" data-key="w2d2g3">把 <code>validator.ValidationErrors</code> 转成中文化的自定义错误消息</label></li>
+      <li><label><input type="checkbox" data-key="w2d2g4">建好 <code>pkg/response.go</code>：成功/fail 封装 + 错误码 1001–1005 常量</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>课前须知：从 fetch 到 Bind</h2>
+    <div class="callout js"><p><b>前端是怎么处理用户输入的？</b><code>const body = await res.json()</code> 之后要么手写一堆 <code>if (!body.name)</code>，要么上 zod/yup 定义 schema。Gin 的绑定 = 这两件事合体：<b>结构体本身就是 schema</b>，tag 就是校验规则，一次 <code>ShouldBindJSON(&amp;dto)</code> 全做完。</p></div>
+    <div class="callout note"><p><b>反射的代价。</b>绑定靠 Go 反射逐字段赋值，所以有两条铁律：① 字段必须<b>导出</b>（大写字母开头）；② 想匹配 JSON 里的 <code>user_name</code> 这种蛇形键，必须写 <code>json:"user_name"</code> tag。违反任何一条，绑定结果就是零值且不报错——今天最大的坑。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. ShouldBindJSON 与 DTO 结构体</h3>
+    <p>DTO（Data Transfer Object）= 专门描述「这个接口接收什么」的结构体，只出现在入参/出参上，不和数据库模型混用：</p>
+    <pre><span class="code-label">main.go</span><span class="c">// CreateUserDTO 描述 POST /users 的请求体</span>
+<span class="k">type</span> <span class="t">CreateUserDTO</span> <span class="k">struct</span> {
+    Username <span class="t">string</span> `<span class="t">json</span>:<span class="s">"username"</span> binding:<span class="s">"required,min=3,max=20"</span>`
+    Email    <span class="t">string</span> `<span class="t">json</span>:<span class="s">"email"</span> <span class="t">binding</span>:<span class="s">"required,email"</span>`
+    Password <span class="t">string</span> `<span class="t">json</span>:<span class="s">"password"</span> binding:<span class="s">"required,min=8"</span>`
+    Role     <span class="t">string</span> `<span class="t">json</span>:<span class="s">"role"</span> <span class="t">binding</span>:<span class="s">"omitempty,oneof=user admin"</span>` <span class="c">// 可省略，省略则默认 user</span>
+}
+
+<span class="k">func</span> createUser(c *gin.Context) {
+    <span class="k">var</span> dto CreateUserDTO
+    <span class="k">if</span> err := c.ShouldBindJSON(&amp;dto); err != <span class="k">nil</span> {
+        <span class="c">// 解析失败或校验失败都走这里，第 3 节把它变成人话</span>
+        c.JSON(http.StatusBadRequest, gin.H{<span class="s">"detail"</span>: err.Error()})
+        <span class="k">return</span>
+    }
+    <span class="c">// 走到这里 dto 每个字段都合法，放心使用</span>
+    c.JSON(http.StatusOK, gin.H{<span class="s">"dto"</span>: dto})
+}</pre>
+    <table>
+      <tr><th>绑定方法</th><th>数据来源</th><th>典型场景</th></tr>
+      <tr><td><code>ShouldBindJSON</code></td><td>请求体（要求 <code>Content-Type: application/json</code>）</td><td>POST/PUT 传 JSON</td></tr>
+      <tr><td><code>ShouldBindQuery</code></td><td>URL 查询参数</td><td>分页 <code>?page=1&amp;size=10</code></td></tr>
+      <tr><td><code>ShouldBindUri</code></td><td>路径参数</td><td><code>/users/:id</code> 的 id 转 int</td></tr>
+      <tr><td><code>ShouldBind</code></td><td>按 Content-Type 自动选</td><td>同一 handler 兼容 JSON/表单</td></tr>
+    </table>
+    <div class="callout warn"><p>前缀 <b>Should</b> 的含义：解析失败只 <code>return err</code> 给你处理；不带 Should 的 <code>c.BindJSON</code> 失败时会直接写 400 响应并 <code>Abort</code>，你连错误消息格式都控制不了。<b>团队项目一律用 Should 系列。</b></p></div>
+
+    <h3>2. binding 校验 tag 速查</h3>
+    <p>tag 由 <code>go-playground/validator</code> 提供，Gin 内置调用。多个规则用逗号串联，从上到下依次校验：</p>
+    <table>
+      <tr><th>规则</th><th>含义</th><th>备注</th></tr>
+      <tr><td><code>required</code></td><td>不能是零值</td><td><b>陷阱：</b>数字 0、bool false、字符串 "" 都算零值，"年龄必填且允许为 0" 不能用它</td></tr>
+      <tr><td><code>min=3</code> / <code>max=20</code></td><td>string 按长度、数字按数值、slice 按元素数</td><td>密码 <code>min=8</code>、昵称 <code>max=20</code></td></tr>
+      <tr><td><code>email</code></td><td>基本邮箱格式</td><td>只查格式，不代表邮箱真实存在</td></tr>
+      <tr><td><code>oneof=user admin</code></td><td>值必须是列举之一</td><td>空格分隔，等价前端的枚举白名单</td></tr>
+      <tr><td><code>omitempty</code></td><td>字段缺省时跳过后续规则</td><td>配合 oneof 实现「可选枚举」</td></tr>
+      <tr><td><code>gte=1</code> / <code>lte=150</code></td><td>大于等于 / 小于等于</td><td>年龄用 <code>gte=0,lte=150</code> 替代 required</td></tr>
+    </table>
+    <pre><span class="code-label">main.go</span><span class="k">type</span> <span class="t">ListQuery</span> <span class="k">struct</span> {
+    Page <span class="t">int</span> `<span class="t">json</span>:<span class="s">"page"</span> <span class="t">form</span>:<span class="s">"page"</span> <span class="t">binding</span>:<span class="s">"omitempty,gte=1"</span>`
+    Size <span class="t">int</span> `<span class="t">json</span>:<span class="s">"size"</span> <span class="t">form</span>:<span class="s">"size"</span> <span class="t">binding</span>:<span class="s">"omitempty,gte=1,lte=100"</span>`
+}
+<span class="c">// 用法：c.ShouldBindQuery(&amp;q)，URL 传 ?page=2&size=20 即自动转成 int</span></pre>
+    <div class="callout tip"><p>查询参数的 tag 是 <code>form:"page"</code>（表单/查询键名），JSON body 才是 <code>json:"page"</code>。两个都写上，同一个结构体就能同时服务 query 与 body。</p></div>
+
+    <h3>3. 自定义错误消息：把 validator 报错翻译成人话</h3>
+    <p><code>err.Error()</code> 的默认输出是 <code>Key: 'CreateUserDTO.Email' Error:Field validation for 'Email' failed on the 'email' tag</code>——机器看得懂，用户看不懂。用 <code>errors.As</code> 拿到结构化错误逐条翻译：</p>
+    <pre><span class="code-label">main.go</span><span class="k">import</span> (
+    <span class="t">"errors"</span>
+    <span class="t">"strings"</span>
+
+    <span class="t">"github.com/go-playground/validator/v10"</span>
+)
+
+<span class="c">// bindErrMsg 把校验错误转成一句中文提示</span>
+<span class="k">func</span> bindErrMsg(err <span class="t">error</span>) <span class="t">string</span> {
+    <span class="k">var</span> ves validator.ValidationErrors
+    <span class="k">if</span> errors.As(err, &amp;ves) {
+        msgs := make([]<span class="t">string</span>, <span class="n">0</span>, len(ves))
+        <span class="k">for</span> _, ve := <span class="k">range</span> ves {
+            <span class="k">switch</span> ve.Tag() {
+            <span class="k">case</span> <span class="s">"required"</span>: msgs = append(msgs, ve.Field()+" 不能为空")
+            <span class="k">case</span> <span class="s">"min"</span>:      msgs = append(msgs, ve.Field()+" 长度不足 "+ve.Param())
+            <span class="k">case</span> <span class="s">"max"</span>:      msgs = append(msgs, ve.Field()+" 长度超限 "+ve.Param())
+            <span class="k">case</span> <span class="s">"email"</span>:    msgs = append(msgs, ve.Field()+" 不是合法邮箱")
+            <span class="k">case</span> <span class="s">"oneof"</span>:    msgs = append(msgs, ve.Field()+" 只能是: "+ve.Param())
+            <span class="k">default</span>:          msgs = append(msgs, ve.Field()+" 校验失败("+ve.Tag()+")")
+            }
+        }
+        <span class="k">return</span> strings.Join(msgs, <span class="s">"；"</span>)
+    }
+    <span class="k">return</span> <span class="s">"请求体不是合法 JSON"</span> <span class="c">// 非校验类错误（格式/Content-Type）</span>
+}</pre>
+    <div class="callout js"><p>对比 JS：validator 之于 Go，≈ zod 的 <code>safeParse</code>：<code>result.error.issues</code> 是一条条结构化错误，你决定怎么展示。<code>errors.As</code> 则是 Go 版的 <code>err instanceof ValidationError</code>——上周学的 error 接口今天正式上岗。</p></div>
+
+    <h3>4. 统一响应 pkg/response.go：本周约定落地</h3>
+    <p>新建 <code>pkg/response/response.go</code>（目录 <code>pkg/response</code>，包名 <code>response</code>），这是手册「十三、API 设计约定」的代码化：</p>
+    <pre><span class="code-label">pkg/response/response.go</span><span class="k">package</span> response
+
+<span class="k">import</span> (
+    <span class="t">net/http</span>
+
+    <span class="t">"github.com/gin-gonic/gin"</span>
+)
+
+<span class="c">// Body 是全部接口的统一响应结构：{code, message, data}</span>
+<span class="k">type</span> <span class="t">Body</span> <span class="k">struct</span> {
+    Code    <span class="t">int</span>  `<span class="t">json</span>:<span class="s">"code"</span>`
+    Message <span class="t">string</span> `<span class="t">json</span>:<span class="s">"message"</span>`
+    Data    <span class="t">any</span>  `<span class="t">json</span>:<span class="s">"data"</span>`
+}
+
+<span class="c">// 业务错误码常量：与 HTTP 状态码分两层（见手册第十三节）</span>
+<span class="k">const</span> (
+    CodeOK           = <span class="n">0</span>    <span class="c">// 成功</span>
+    CodeUserNotFound = <span class="n">1001</span> <span class="c">// 用户不存在</span>
+    CodeBadPassword  = <span class="n">1002</span> <span class="c">// 密码错误</span>
+    CodeForbidden    = <span class="n">1003</span> <span class="c">// 无权限</span>
+    CodeInvalidParam = <span class="n">1004</span> <span class="c">// 参数错误</span>
+    CodeTokenInvalid = <span class="n">1005</span> <span class="c">// token 无效或过期</span>
+)
+
+<span class="c">// OK 成功：HTTP 200 + code 0</span>
+<span class="k">func</span> OK(c *gin.Context, data <span class="t">any</span>) {
+    c.JSON(http.StatusOK, Body{Code: CodeOK, Message: <span class="s">"success"</span>, Data: data})
+}
+
+<span class="c">// Created 创建成功：HTTP 201 + code 0</span>
+<span class="k">func</span> Created(c *gin.Context, data <span class="t">any</span>) {
+    c.JSON(http.StatusCreated, Body{Code: CodeOK, Message: <span class="s">"success"</span>, Data: data})
+}
+
+<span class="c">// Fail 失败：HTTP 状态码反映请求处理结果，code 反映业务错误细分</span>
+<span class="k">func</span> Fail(c *gin.Context, httpStatus, code <span class="t">int</span>, message <span class="t">string</span>) {
+    c.JSON(httpStatus, Body{Code: code, Message: message, Data: <span class="k">nil</span>})
+}</pre>
+    <div class="callout note"><p><b>双层规则背下来：</b>HTTP 状态码管「大类」——参数错 400、未认证 401、无权限 403、不存在 404、服务器错误 500；body 的 <code>code</code> 管「细分」——同样是 401 里，token 过期是 1005，未携带是 1005 但 message 不同；同样是 400 里能区分 1004 参数错。<b>成功一律 200/201 + code 0</b>。第 6 周前端拦截器就靠这套规则写。</p></div>
+
+    <h3>5. 合体：POST /users 完整校验接口</h3>
+    <pre><span class="code-label">main.go</span><span class="k">import</span> <span class="s">"gin-api/pkg/response"</span> <span class="c">// 模块名 go mod init 时定的 gin-api</span>
+
+<span class="k">func</span> createUser(c *gin.Context) {
+    <span class="k">var</span> dto CreateUserDTO
+    <span class="k">if</span> err := c.ShouldBindJSON(&amp;dto); err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, bindErrMsg(err))
+        <span class="k">return</span> <span class="c">// ← 写完错误响应必须 return，否则继续往下执行双写响应</span>
+    }
+    <span class="k">if</span> dto.Role == <span class="s">""</span> {
+        dto.Role = <span class="s">"user"</span> <span class="c">// required 管不了缺省值，业务默认值在代码里补</span>
+    }
+    response.Created(c, gin.H{<span class="s">"id"</span>: <span class="n">1</span>, <span class="s">"username"</span>: dto.Username, <span class="s">"role"</span>: dto.Role})
+}</pre>
+    <pre><span class="code-label">shell</span>$ curl -i localhost:8080/users -X POST -H <span class="s">"Content-Type: application/json"</span> -d <span class="s">'{"username":"ab","email":"x","password":"123"}'</span>
+HTTP/1.1 400 Bad Request
+{<span class="s">"code"</span>:1004,<span class="s">"message"</span>:<span class="s">"Username 长度不足 3；Email 不是合法邮箱；Password 长度不足 8"</span>,<span class="s">"data"</span>:null}</pre>
+  </section>
+
+  <section>
+    <h2>加餐：一个 handler 同时绑三种来源</h2>
+    <p>PUT /users/:id?page=2 这类「URI + Query + Body 混着要」的场景很常见，每个来源各绑各的结构体，互不干扰：</p>
+    <pre><span class="code-label">main.go</span><span class="k">type</span> <span class="t">IDUri</span> <span class="k">struct</span> {
+    ID <span class="t">int</span> `<span class="t">uri</span>:<span class="s">"id"</span> binding:<span class="s">"required,gt=0"</span>`
+}
+<span class="k">type</span> <span class="t">PageQuery</span> <span class="k">struct</span> {
+    Page <span class="t">int</span> `<span class="t">form</span>:<span class="s">"page"</span> binding:<span class="s">"omitempty,gte=1"</span>`
+}
+
+<span class="k">func</span> updateUser(c *gin.Context) {
+    <span class="k">var</span> uri IDUri
+    <span class="k">if</span> err := c.ShouldBindUri(&amp;uri); err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"id 必须是正整数"</span>)
+        <span class="k">return</span>
+    }
+    <span class="k">var</span> q PageQuery
+    <span class="k">if</span> err := c.ShouldBindQuery(&amp;q); err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"page 必须是 ≥1 的整数"</span>)
+        <span class="k">return</span>
+    }
+    <span class="k">var</span> dto UpdateUserDTO <span class="c">// 与 CreateUserDTO 类似，字段全部 omitempty + 各自规则（更新允许只传部分字段）</span>
+    <span class="k">if</span> err := c.ShouldBindJSON(&amp;dto); err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, bindErrMsg(err))
+        <span class="k">return</span>
+    }
+    response.OK(c, gin.H{<span class="s">"id"</span>: uri.ID, <span class="s">"page"</span>: q.Page, <span class="s">"updated"</span>: dto.Username})
+}</pre>
+    <pre><span class="code-label">shell</span>$ curl -s -X PUT <span class="s">"localhost:8080/users/5?page=2"</span> -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"ada","email":"ada@example.com","password":"passw0rd-123"}'</span>
+{<span class="s">"code"</span>:0,<span class="s">"message"</span>:<span class="s">"success"</span>,<span class="s">"data"</span>:{<span class="s">"id"</span>:5,<span class="s">"page"</span>:2,<span class="s">"updated"</span>:<span class="s">"ada"</span>}}</pre>
+    <div class="callout warn"><p><b>绑定顺序有讲究：</b><code>ShouldBindJSON</code> 会读取并消耗请求体流——先绑 URI/Query（它们不碰 body），最后再绑 JSON，且同一请求里别第二次读 body。今天先记结论，第 8 周文件上传会正面撞上这个问题。</p></div>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：POST /users 校验用户名密码（45 分钟）</div>
+      <p><b>要求：</b>用户名 3–20 位必填、密码至少 8 位必填、role 可选但只能是 user/admin；校验失败返回 400 + code 1004 + 中文消息；成功返回 201 + code 0 + 创建结果。</p>
+      <p><b>步骤：</b>① 建 <code>pkg/response/response.go</code>（抄讲义第 4 节）；② 写 <code>CreateUserDTO</code> + <code>bindErrMsg</code>；③ 在 main 里注册 <code>r.POST("/users", createUser)</code>；④ 用讲义第 5 节的 curl 验证 400 与 201 两条路径。</p>
+      <p><b>参考答案：</b>三段代码分别见讲义 1/3/4/5 节，拼装即可。自测清单：空 body、非法 JSON、<code>username:"ab"</code>、<code>role:"superuser"</code> 四种输入都要拿到 400 且 message 各不相同；合法输入拿到 <code>{"code":0,...}</code>。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：分页参数 ShouldBindQuery（30 分钟）</div>
+      <p><b>要求：</b>GET /users 绑定 <code>ListQuery{Page,Size}</code>，size 上限 100，非法时同样返回统一 400；合法时回显解析后的 int 值。</p>
+      <p><b>参考答案：</b></p>
+      <pre><span class="code-label">main.go</span><span class="k">func</span> listUsers(c *gin.Context) {
+    <span class="k">var</span> q ListQuery
+    <span class="k">if</span> err := c.ShouldBindQuery(&amp;q); err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, bindErrMsg(err))
+        <span class="k">return</span>
+    }
+    <span class="k">if</span> q.Page == <span class="n">0</span> { q.Page = <span class="n">1</span> }  <span class="c">// required 不能用于允许 0 的场景，缺省值代码补</span>
+    <span class="k">if</span> q.Size == <span class="n">0</span> { q.Size = <span class="n">10</span> }
+    response.OK(c, gin.H{<span class="s">"page"</span>: q.Page, <span class="s">"size"</span>: q.Size})
+}</pre>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：ShouldBindUri 处理路径参数（20 分钟）</div>
+      <p><b>要求：</b>GET /users/:id 用结构体绑定 id 为 int，<code>/users/abc</code> 返回统一 400。</p>
+      <p><b>参考答案：</b><code>type IDUri struct { ID int `uri:"id" binding:"required,gt=0"` }</code>，handler 里 <code>c.ShouldBindUri(&amp;uri)</code> 失败即 <code>response.Fail(c, 400, response.CodeInvalidParam, "id 必须是正整数")</code>。注意：<code>required</code> 对 int 意味着不能为 0，所以配 <code>gt=0</code>。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：Content-Type 事故复现（15 分钟）</div>
+      <p><b>要求：</b>发送正确的 JSON 但不带 <code>-H "Content-Type: application/json"</code>，记录报错（提示：<code>unsupported media type</code> / <code>json: cannot unmarshal</code> 类）。再故意发一个残缺 JSON <code>{"username":</code> 观察错误类型差别——前者走不进校验，后者是语法错误，两者都归 400 + 1004。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>字段小写开头</td><td>绑定不报错，但字段永远是零值（反射看不见未导出字段）</td><td>参与 JSON 的字段一律大写字母开头 + <code>json:"xxx"</code> tag</td></tr>
+      <tr><td>Content-Type 不对</td><td><code>ShouldBindJSON</code> 直接报 unsupported media type</td><td>调用方带 <code>application/json</code>；Postman 选 raw + JSON</td></tr>
+      <tr><td>required 杀零值</td><td>年龄 0、bool false、分页 page=0 全被拒</td><td>用 <code>omitempty,gte=0</code> 组合，缺省值在代码里补</td></tr>
+      <tr><td>Fail 后忘 return</td><td>继续执行到 response.OK，响应体双写、日志报 superfluous write</td><td>每个 <code>response.Fail</code> 紧跟 <code>return</code>，形成肌肉记忆</td></tr>
+      <tr><td>tag 拼写错误</td><td><code>bding:"required"</code> 静默失效，校验没跑</td><td>校验规则改完必测一条非法输入，确认 400 真的来了</td></tr>
+      <tr><td>min/max 语义混淆</td><td>以为 <code>min=8</code> 对 int 字段也是「值≥8」？其实数字按数值、字符串按字节长度</td><td>数字字段更推荐 <code>gte/lte</code>，语义无歧义</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>DTO</td><td>描述接口入参/出参形状的结构体，tag 即文档即校验规则</td></tr>
+      <tr><td>绑定 Binding</td><td>Gin 把请求里的 JSON/query/表单/URI 灌进结构体的过程，底层是反射</td></tr>
+      <tr><td>validator</td><td>Go 生态标准校验库，binding tag 的执行者，报错类型 <code>validator.ValidationErrors</code></td></tr>
+      <tr><td>统一响应</td><td>所有接口共用 <code>{code,message,data}</code> 外壳，前端只需认一种格式</td></tr>
+      <tr><td>双层错误码</td><td>HTTP 状态码管大类（400/401/403/404/500），业务 code 管细分（1001–1005）</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w2d2c1"><code>pkg/response/response.go</code> 建立，含 Body/OK/Created/Fail 与 1001–1005 常量</label></li>
+      <li><label><input type="checkbox" data-key="w2d2c2">练习 1：四种非法输入各返回 400 + code 1004 + 不同的中文消息</label></li>
+      <li><label><input type="checkbox" data-key="w2d2c3">练习 2：<code>?size=999</code> 被 lte=100 拦下，<code>?page=2&amp;size=20</code> 正常回显 int</label></li>
+      <li><label><input type="checkbox" data-key="w2d2c4">练习 3：<code>/users/abc</code> 返回统一 400，<code>/users/5</code> 拿到 int 5</label></li>
+      <li><label><input type="checkbox" data-key="w2d2c5">能向别人口述：为什么 required 不能用在允许为 0 的数字字段上</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day1.html"><span class="hint">上一天 · W2D1 →</span>Gin 路由</a>
+    <a href="day3.html"><span class="hint">下一天 · W2D3 →</span>中间件</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W2D2 · 明天见 ⟩</footer>
+</body>
+</html>

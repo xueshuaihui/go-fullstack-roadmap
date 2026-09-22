@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W8 · 毕业总结：8 周毕业总检查 | Go 全栈修炼手册</title>
+<meta name="description" content="第 8 周总结与全站毕业页：本周 RBAC + 文件上传 + 收官上线验收清单、规划第十七节 11 条最终能力逐项自测、三档毕业自评、结营寄语与下一步路线（微服务 / Redis 缓存 / 开源贡献）。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body>
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 8 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / 第 8 周 / 总结 · 毕业</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 8 · SUMMARY</span>
+    <span class="chip alt">预计 1–2 小时</span>
+    <span class="chip">难度 🎓</span>
+  </div>
+  <h1>毕业总结：从 Hello World 到上线作品</h1>
+  <p>八周前你还在纠结 <code>:=</code> 和 <code>var</code> 的区别；今天你的博客跑在公网 HTTPS 之后，带角色权限、带图片上传、带测试和文档。这一页不是新知识，是<b>一场自己主持的毕业答辩</b>：先验收第 8 周，再逐条过完规划的 11 条最终能力清单，最后诚实给自己定档。</p>
+
+  <section>
+    <h2>本周足迹</h2>
+    <table>
+      <tr><th>日</th><th>主题</th><th>交付物</th></tr>
+      <tr><td><a href="day1.html">D1</a></td><td>角色与权限 RBAC</td><td>role 字段 + iota 常量 + 迁移回填 + RequireRole 中间件 + /api/v1/admin 三接口，curl 双验收 403/200</td></tr>
+      <tr><td><a href="day2.html">D2</a></td><td>文件上传</td><td>校验三件套 + 随机名防穿越 + 头像/封面接口 + 静态路由/Nginx 双暴露 + uploads 卷持久化</td></tr>
+      <tr><td><a href="day3.html">D3</a></td><td>前端权限与收尾</td><td>role 进 store、ProtectedRoute 加 role 参数、菜单显隐、管理后台页、评论前后端闭环</td></tr>
+      <tr><td><a href="day4.html">D4</a></td><td>联调测试修 bug</td><td>六大类测试清单、RBAC/上传/httptest 三块新测试、-race 体检、BUGLOG ≥3 条</td></tr>
+      <tr><td><a href="day5.html">D5</a></td><td>部署 README API 文档</td><td>发布六步流水线、README 成稿、api.md + Swagger 双轨文档、公网验收 + 真实反馈</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>本周知识构成：两分新学，八分收官</h2>
+    <p>第 8 周刻意没有起新项目——两个新知识点都长在你跑了六周的项目上，这才是真实世界的迭代方式：</p>
+    <table>
+      <tr><th>类型</th><th>内容</th><th>来源</th></tr>
+      <tr><td>现学</td><td>RBAC：role 设计、RequireRole、admin 接口组、JWT 快照与库内真值的一致性</td><td>本周 D1</td></tr>
+      <tr><td>现学</td><td>文件上传：multipart、魔数校验、路径穿越防护、静态回显、卷持久化</td><td>本周 D2</td></tr>
+      <tr><td>闭环</td><td><code>iota</code> 枚举——第 1 周练习题里的 RoleUser/RoleAdmin 今天进了生产代码</td><td>W1 → W8</td></tr>
+      <tr><td>复用</td><td>迁移加列与回滚成对（第 7 周）、软删除可恢复（第 3 周）、错误码 1003/1004（第 2 周）、表驱动测试与 httptest（第 4 周）、-race（第 5 周）、路由守卫与拦截器（第 6 周）</td><td>W2–W7</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>本周新增接口速查（毕业时的 API 增量全景）</h2>
+    <p>八周攒下来的接口里，本周净增 8 个——记住这张表，你就掌握了整个项目的权限面与文件面：</p>
+    <table>
+      <tr><th>方法</th><th>路径</th><th>鉴权</th><th>诞生于</th></tr>
+      <tr><td>POST</td><td>/api/v1/admin/（组前缀）</td><td>登录 + RequireRole(admin)</td><td>D1 路由组骨架</td></tr>
+      <tr><td>GET</td><td>/api/v1/admin/users</td><td>管理员</td><td>D1 用户分页列表（size≤50 兜底）</td></tr>
+      <tr><td>DELETE</td><td>/api/v1/admin/articles/:id</td><td>管理员</td><td>D1 强制下架（软删除可恢复）</td></tr>
+      <tr><td>GET</td><td>/api/v1/admin/stats</td><td>管理员</td><td>D1 用户/文章/评论计数</td></tr>
+      <tr><td>POST</td><td>/api/v1/uploads/avatar</td><td>登录</td><td>D2 头像上传（multipart 字段 file）</td></tr>
+      <tr><td>POST</td><td>/api/v1/uploads/cover</td><td>登录</td><td>D2 文章封面上传</td></tr>
+      <tr><td>GET/POST</td><td>/api/v1/articles/:id/comments</td><td>公开 / 登录</td><td>D3 评论列表与发表</td></tr>
+      <tr><td>DELETE</td><td>/api/v1/comments/:id</td><td>作者本人或管理员</td><td>D3 RBAC 与所有权首次同框</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>第 8 周验收清单（对照规划第十节）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w8sum1">完整业务流程可跑通：注册 → 登录 → 传头像 → 发封面文章 → 评论 → 管理员处置，
+        全程在<b>公网域名</b>上完成，不是在 localhost</label></li>
+      <li><label><input type="checkbox" data-key="w8sum2">非管理员访问 admin 接口：浏览器手敲 /admin 见 403 页，
+        curl 直连返回 <code>403 + code:1003</code>——「前端藏入口、后端守真门」两层都能现场演示</label></li>
+      <li><label><input type="checkbox" data-key="w8sum3">部署上线且 HTTPS 公网可访问；
+        <code>docker compose restart backend</code> 后登录态、文章、图片无损（迁移与数据卷经受住了重启考验）</label></li>
+      <li><label><input type="checkbox" data-key="w8sum4">README 含架构图（mermaid 或 ASCII）、功能清单、三步本地启动（在全新 clone 里验证过）、
+        环境变量表；API 文档有手写速查表 + 可交互 Swagger 两份</label></li>
+      <li><label><input type="checkbox" data-key="w8sum5">Git 提交记录清晰：语义化 commit、无 .env/uploads 泄密文件、
+        BUGLOG 与真实用户反馈已入档</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>8 周毕业总检查（规划第十七节 · 11 条逐项自测）</h2>
+    <p>每条后面是一个<b>不查资料的自测动作</b>——做得出来就勾，做不出来点进对应周复训。禁止「感觉会了就勾」：这一页的诚实决定下一步的方向。</p>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w8sum6"><b>独立设计 RESTful API</b> —— 自测：不看笔记，在纸上为「收藏夹」设计 5 个端点
+        （方法+路径+状态码），能讲清为什么集合用复数、动作为什么不进路径（第 2 周）</label></li>
+      <li><label><input type="checkbox" data-key="w8sum7"><b>用 Gin 写路由、中间件、参数校验</b> —— 自测：15 分钟内徒手写出带
+        <code>ShouldBindJSON</code> 校验和自定义日志中间件的最小 Gin 服务并跑通（第 2 周）</label></li>
+      <li><label><input type="checkbox" data-key="w8sum8"><b>用 GORM 设计模型、迁移、关联、分页、搜索</b> —— 自测：说清
+        <code>Preload</code> 与 <code>Joins</code> 的取舍、软删除原理，并解释你博客里 LIKE 搜索为什么要转义 <code>%</code>（第 3、7 周）</label></li>
+      <li><label><input type="checkbox" data-key="w8sum9"><b>实现注册、登录、JWT 双 token、RBAC 权限控制</b> —— 自测：白板画出
+        access 过期 → axios 拦截器静默 refresh → 重放请求的完整时序，并说出 role 进 Claims 的利弊（第 4、6、8 周）</label></li>
+      <li><label><input type="checkbox" data-key="w8sum10"><b>实现文件上传与静态回显</b> —— 自测：口述 multipart 请求体的结构；
+        写出防路径穿越的两条铁律；解释 uploads 为什么必须挂卷（第 8 周 D2）</label></li>
+      <li><label><input type="checkbox" data-key="w8sum11"><b>理解 goroutine、channel、context</b> —— 自测：不运行，先口答第 5 周聚合 API
+        的 errgroup + WithTimeout 版本行为，再跑 <code>-race</code> 验证（第 5 周）</label></li>
+      <li><label><input type="checkbox" data-key="w8sum12"><b>写单元测试和接口测试</b> —— 自测：给任意一个新函数，5 分钟写出表驱动测试；
+        说清 httptest 为什么不需要真的监听端口（第 4、8 周）</label></li>
+      <li><label><input type="checkbox" data-key="w8sum13"><b>用 React 与 Go 后端联调</b> —— 自测：从浏览器发出一次登录请求开始，逐跳讲清
+        Vite 代理/CORS → Nginx → Gin → MySQL 的完整链路，指出每跳的故障与排查命令（第 6 周）</label></li>
+      <li><label><input type="checkbox" data-key="w8sum14"><b>用 Docker Compose 编排全栈项目</b> —— 自测：默写 backend 依赖 mysql
+        健康启动的 <code>depends_on: condition: service_healthy</code> 写法，并解释多阶段构建为什么能瘦身（第 3、7 周）</label></li>
+      <li><label><input type="checkbox" data-key="w8sum15"><b>部署到云服务器</b> —— 自测：不看 D5 页面，复述发布六步
+        （备份 → migrate → build → up → 健康检查 → 回滚预案），并说出每步防的是什么事故（第 7、8 周）</label></li>
+      <li><label><input type="checkbox" data-key="w8sum16"><b>完成一个可展示的全栈作品</b> —— 自测：把公网链接发给一位不懂技术的朋友，
+        对方能顺利完成「注册 → 看文章 → 评论」；README 首屏让你自己愿意转发（第 8 周）</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>毕业自评：诚实定档</h2>
+    <p>数一数上面 16 个勾（本周 5 + 总检查 11），对号入座：</p>
+    <div class="grade">
+      <div><b>🎓 顺利毕业（14–16 勾）</b>项目已上线、清单基本全勾、卡住的地方能自己定位到具体层（前端/路由/SQL/容器）。
+        下一步不是补课，是放大作品：挑一个真实用户用起来，或按下方路线图开新副本。</div>
+      <div><b>🔧 还需一周（8–13 勾）</b>主干能跑，但某些格子心虚：多半集中在 RBAC 原理、测试、部署流程三处。别慌——
+        把没勾条目对应的 day 页再执行一遍<b>练习</b>（不是重读讲义），每天补 2–3 格，一周内回到答辩桌。</div>
+      <div><b>🔁 建议重做（≤7 勾）</b>说明「看过 ≠ 写过」的债在堆积。按诊断回炉：接口层不熟回第 2 周、数据库不熟回第 3 周、
+        认证不熟回第 4 周、前端对接不熟回第 6 周、容器部署不熟回第 7 周——每周只重做项目验收标准那一段即可，不必重读全部讲义。</div>
+    </div>
+    <div class="callout note"><p>定档没有羞辱分。第 5 周（并发）和第 4 周（工程化）是历届学习者最容易半懂的地方，回炉这两周的人恰恰是最想把地基打牢的人。</p></div>
+  </section>
+
+  <section>
+    <h2>毕业常见疑问（FAQ）</h2>
+    <div class="callout js"><p><b>Q：要不要现在就学 Kubernetes？</b>A：不要。你的 compose 单机编排正在服务真实流量之前都够用；先把「一个服务的迭代闭环」（改代码 → 迁移 → 发布 → 观测 → 回滚）跑熟，K8s 解决的是十几个服务的问题，早学等于空转。</p></div>
+    <div class="callout js"><p><b>Q：简历上这个项目会不会太「教程感」？</b>A：项目本身确实常见，不常见的是你带上了它：BUGLOG 的根因分析、上传的路径穿越防护、role 进 JWT 的一致性取舍、真实用户反馈记录——面试讲这些细节，就不像教程，像工程。</p></div>
+    <div class="callout js"><p><b>Q：接下来投什么岗位？</b>A：Go 后端 / 全栈向的初级岗与「前端转后端」是你的差异化叙事：简历用 D5 那句作品集描述，面试主动把「你懂前端」转成「你能独立交付端到端功能」——这是八周训练的真正产出。</p></div>
+    <div class="callout tip"><p><b>Q：项目还要继续加功能吗？</b>A：优先做「减法收尾」：删掉没验证的 README 句子、补齐空状态与错误提示、把 CI 里 <code>go test -race</code> 跑绿。功能膨胀不如工程质量闭环，一个没维护的巨型项目不如一个精悍可跑的。</p></div>
+  </section>
+
+  <section>
+    <h2>毕业时的项目形态（目录树定妆照）</h2>
+    <pre><span class="code-label">goblog/</span>goblog/
+├── backend/
+│   ├── cmd/server/main.go            <span class="c"># 路由装配：/api/v1、/uploads 静态、/healthz、/swagger</span>
+│   ├── internal/
+│   │   ├── model/                    <span class="c"># user.go(role+iota) article.go comment.go</span>
+│   │   ├── middleware/               <span class="c"># auth.go rbac.go audit.go</span>
+│   │   ├── handler/                  <span class="c"># auth/article/comment/upload/admin + admin_test.go</span>
+│   │   ├── service/                  <span class="c"># CanModerate 纯函数 + rbac_test.go</span>
+│   │   └── pkg/                      <span class="c"># jwtutil / response / upload(validate+save) / config</span>
+│   ├── migrations/                   <span class="c"># 000001..000004 成对 up/down</span>
+│   ├── docs/swagger/                 <span class="c"># swag init 生成物，随代码提交</span>
+│   ├── uploads/                      <span class="c"># 运行时数据：git/dockerignore 双排除，compose 挂卷</span>
+│   ├── Dockerfile                    <span class="c"># 多阶段：builder → alpine</span>
+│   └── .env.example
+├── frontend/
+│   └── src/
+│       ├── auth/                     <span class="c"># useAuth.jsx(role) / ProtectedRoute.jsx(role 参数)</span>
+│       ├── components/               <span class="c"># Navbar / ImageUpload / Comments</span>
+│       └── pages/                    <span class="c"># 列表/详情/编辑器 + AdminPanel.jsx</span>
+├── nginx/conf.d/blog.conf            <span class="c"># /api 反代 + /uploads alias + /swagger + SPA 回退</span>
+├── docker-compose.yml                <span class="c"># backend / frontend(nginx) / mysql / migrate + 健康检查</span>
+├── docs/                             <span class="c"># api.md 速查表 / BUGLOG.md / TESTING.md</span>
+└── README.md                         <span class="c"># 架构图 + 三步启动 + 环境变量表 + 截图 + 公网链接</span></pre>
+    <div class="callout note"><p>对照第 1 周：从单文件 <code>main.go</code> 到这张树，每一层都是在「出错疼过之后」加上的——这就是工程结构生长的真实方式，背下来不如经历过。</p></div>
+  </section>
+
+  <section>
+    <h2>毕业交付物清单（打包交给下一阶段的自己）</h2>
+    <ul>
+      <li><b>一个公网地址</b>：HTTPS + 移动端可访问，README 首屏第一条链接就是它</li>
+      <li><b>一个 GitHub 仓库</b>：语义化 commit、干净 README、生成物与 .env.example 齐备，About 栏挂着公网链接</li>
+      <li><b>两份 API 文档</b>：手写 docs/api.md 速查表 + swaggo 生成的可交互 Swagger</li>
+      <li><b>两份过程档案</b>：TESTING.md 六大类回归清单、BUGLOG.md 带根因与 commit 的修复记录</li>
+      <li><b>一条真实反馈</b>：朋友试用后写进 README 的 Known issues / Feedback</li>
+      <li><b>一段简历描述</b>：D5 那句「双 token + RBAC + 防穿越上传 + 多阶段 Docker 部署」的作品集一句话</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>八周全景回顾（三秒钟回到第一天）</h2>
+    <table>
+      <tr><th>周</th><th>主题</th><th>当时的验收标准，如今在哪</th></tr>
+      <tr><td>W1</td><td>Go 基础 + net/http</td><td>标准库待办 API——你写的 iota 枚举在 W8D1 进了生产 model</td></tr>
+      <tr><td>W2</td><td>Gin + REST</td><td>内存 CRUD 与 <code>{code,message,data}</code>——错误码 1003 本周仍在守门</td></tr>
+      <tr><td>W3</td><td>MySQL + GORM + Compose</td><td>数据重启不丢——软删除让管理员「强制下架」可恢复</td></tr>
+      <tr><td>W4</td><td>JWT + 工程化</td><td>双 token 与 author-only——本周在其上加了 role 与 RequireRole</td></tr>
+      <tr><td>W5</td><td>并发 + 测试</td><td>串行 5s → 并发 1s——-race 成为本周发布前体检项目</td></tr>
+      <tr><td>W6</td><td>React 全栈联调</td><td>浏览器走通注册发文——博客本体，本周所有改动的宿主</td></tr>
+      <tr><td>W7</td><td>容器化 + 部署</td><td>云服务器可访问——本周升级成带迁移与健康检查的六步流水线</td></tr>
+      <tr><td>W8</td><td>RBAC + 上传 + 收官</td><td>本页：可展示、可交付、可答辩的作品</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>三道面试题预演（全部来自你这八周的代码）</h2>
+    <p>答辩最后一步：把三句话改成你自己的话，录音听一遍。能讲顺，这个八周就真赚到了。</p>
+    <div class="task">
+      <div class="task-title">题 1：「你的 JWT 里放了什么？被删号/提权了怎么办？」</div>
+      <p>要点：Claims 放 uid+role（D1）；access 15 分钟把风险窗口封顶；高危的 admin 接口再按 uid 查库复核 role 真值（方案 C）；封号则 Auth 中间件查 users 不存在/已软删直接 401。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">题 2：「文件上传你们怎么防攻击？」</div>
+      <p>要点：三件套（扩展名白名单 + <code>http.DetectContentType</code> 魔数嗅探 + 大小与 0 字节限制）；服务端随机文件名，原始名只借 <code>filepath.Ext</code> 的扩展名，杜绝 <code>../</code> 穿越；落盘目录挂在数据卷上且对 Nginx 只读；.dockerignore 防用户数据进镜像。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">题 3：「给一个已有线上库的表加字段，流程是什么？」</div>
+      <p>要点：改 model → 写成对迁移（加列带 <code>NOT NULL DEFAULT</code> 不锁读写心智、建索引、回填 UPDATE）→ 测试库 up/down 各跑一遍 → 发布六步中 migrate 先于新版本启动 → 备份在前、健康检查在后（D1 + D5）。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>上线后的运维最小日常</h2>
+    <p>作品上线不是终点，是「有人替你值班」的起点。每周花 10 分钟过一遍这四条命令，项目就不会烂掉：</p>
+    <pre><span class="code-label">shell（每周一巡）</span>$ ssh your-server
+$ docker compose ps                      <span class="c"># 1) 四个容器都是 Up (healthy)？</span>
+$ docker compose logs backend --since 24h | grep -E <span class="s">'"level":"ERROR"|DATA RACE'</span>
+                                         <span class="c"># 2) 24 小时内的错误与竞态，有则记 BUGLOG</span>
+$ df -h /var/lib/docker | tail -1        <span class="c"># 3) 磁盘：uploads 和镜像会慢慢吃满 40G 小机器</span>
+$ du -sh /opt/blog/uploads               <span class="c"># 4) 上传目录体积，配 cron 定时 mysqldump + rsync 备份</span>
+
+<span class="c"># 发新版本永远走 D5 六步；巡完发现的小问题，当场修掉最好不超过 20 分钟。</span></pre>
+    <table>
+      <tr><th>症状</th><th>大概率原因（本周坑表返场）</th><th>一句话处置</th></tr>
+      <tr><td>图片忽新忽旧、重建后老图复活</td><td>uploads 没挂卷或被镜像里旧内容盖回</td><td>查 compose volumes 与 .dockerignore 是否都有 uploads</td></tr>
+      <tr><td>管理员功能时灵时不灵</td><td>旧 token 的 role 快照没过期</td><td>重新登录；或 admin 接口改查库复核（方案 C）</td></tr>
+      <tr><td>admin/users 偶发 500</td><td>page/size 非法值未兜底</td><td>回到 D1 handler 补边界，加 httptest 用例锁死</td></tr>
+      <tr><td>上传大图报 413</td><td>Nginx client_max_body_size 默认 1m</td><td>改 8m 后 reload，见 D5 最终版 conf</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>回炉处方：哪条没勾，就吃哪副药</h2>
+    <table>
+      <tr><th>总检查没勾的条目</th><th>回炉页面</th><th>复训完成的标志</th></tr>
+      <tr><td>API 设计（sum6）</td><td>W2D1 路由 / W2D5 接口文档</td><td>重新设计「收藏夹」5 端点并让另一个人看得懂</td></tr>
+      <tr><td>Gin 三件套（sum7）</td><td>W2D2 绑定验证 / W2D3 中间件</td><td>15 分钟徒手最小服务一次编译通过</td></tr>
+      <tr><td>GORM（sum8）</td><td>W3D3 关联 / W3D4 分页搜索</td><td>给博客补一个「标签多对多」并 Preload 返回</td></tr>
+      <tr><td>JWT/RBAC（sum9）</td><td>W4D2 双 token / W8D1</td><td>白板时序图讲清 refresh 全链路且无卡壳</td></tr>
+      <tr><td>上传（sum10）</td><td>W8D2</td><td>不看页面重写校验三件套并过单测</td></tr>
+      <tr><td>并发（sum11）</td><td>W5D1–D5 全周</td><td>重跑聚合 API：串行 5s 并发 1s 且 -race 干净</td></tr>
+      <tr><td>测试（sum12）</td><td>W4D5 / W8D4</td><td>TESTING.md 六大类清单每格有对应测试或 curl</td></tr>
+      <tr><td>联调/部署（sum13–15）</td><td>W6D4 / W7D3 / W8D5</td><td>全新 clone 一键启动到公网可访问全程无人指导</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>结营寄语</h2>
+    <p>八周前你的目标是「能独立上手项目开发」；现在你手里有一个带认证、带权限、带上传、带测试、带文档、跑在公网上的作品，以及一条从浏览器到数据库再到容器的完整排查链路经验。更重要的是，你已经验证了自己能从「写 JS 的人」切换成「写 Go 后端的人」——这个切换能力比任何单个框架都值钱。</p>
+    <p>接下来最危险的事是停下来收藏教程。后端是手艺活，保住手感的方式在下三条路线里：<b>要么把现在的系统接到真实流量下迭代，要么把它拆硬一点，要么把它交出去让别人 review</b>。</p>
+
+    <h3>下一步路线（每条一句话，选一条走一个月）</h3>
+    <ul>
+      <li><b>微服务初探</b>：把博客的「上传」拆成独立服务，用 gRPC 或内部 HTTP 打通，体会服务发现、配置中心与分布式 tracing 为什么会存在——先读一两个「单体拆到位」的实践，而不是上来就装 K8s。</li>
+      <li><b>Redis 缓存与高性能</b>：给文章列表和统计接口加 Redis 缓存 + 过期策略，用 <code>ab</code> 或 vegeta 压出前后 QPS 对比，顺手理解缓存穿透/击穿的防御——这是简历上最有说服力的一行数字。</li>
+      <li><b>开源贡献</b>：给你项目用到的任意库（Gin / GORM / swaggo）提第一个 PR——从文档拼写错误修起，走完 issue → PR → review → merge 全流程，学会在公共代码库里协作。</li>
+    </ul>
+    <div class="callout tip"><p>三条全部做完的形态，恰好对应中后端岗位 JD 上最常见的三句话：能拆服务、能扛性能、能协作。从哪条开始都行，别从「再学一门语言」开始。</p></div>
+    <pre><span class="code-label">毕业证书（ASCII 版，自取）</span>+------------------------------------------------------------+
+|                 G O F u l l S t a c k   R o a d m a p      |
+|                                                            |
+|   兹证明 ______ 同学 于 8 周内完成：                        |
+|   Go 基础 → Gin/REST → GORM/MySQL → JWT 工程化 → 并发测试   |
+|   → React 联调 → Docker 部署 → RBAC + 文件上传 + 上线收官   |
+|                                                            |
+|   并已独立交付一个跑在公网 HTTPS 之后的全栈作品。           |
+|                                                            |
+|   "先跑通，再优化；先完成，再完美。"                        |
++------------------------------------------------------------+</pre>
+  </section>
+
+  <section>
+    <h2>毕业检查（全部勾掉，合上这本书）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w8sum17">第 8 周五条验收全部勾完，公网链接在手机浏览器里打开过一次</label></li>
+      <li><label><input type="checkbox" data-key="w8sum18">11 条最终能力逐项自测完毕，诚实记录了没勾的那几条</label></li>
+      <li><label><input type="checkbox" data-key="w8sum19">给自己定了档（顺利毕业 / 还需一周 / 建议重做），并写下具体回炉周次或下一步路线三选一</label></li>
+      <li><label><input type="checkbox" data-key="w8sum20">README 首屏截图 + 公网链接 + 简历项目栏一句话已更新到求职材料里</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day5.html"><span class="hint">← 回到 · W8D5</span>部署、README 与 API 文档</a>
+    <a href="../../index.html"><span class="hint">出发 →</span>8 周路线总览</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W8 SUMMARY · 毕业快乐，后会有期 ⟩</footer>
+</body>
+</html>

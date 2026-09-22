@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Go 全栈修炼手册 · 前端转 Go 后端 8 周路线图</title>
+<meta name="description" content="面向前端开发者的 Go 全栈 8 周学习路线：每天具体知识点、可运行代码与练手任务，每周总结验收，从 net/http 到 Docker 部署上线。">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/app.js"></script>
+</head>
+<body>
+<header class="site-header">
+  <a class="logo" href="index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav>
+    <a href="#weeks" class="active">8 周路线</a>
+    <a href="#how">使用方法</a>
+    <a href="#goal">终点能力</a>
+  </nav>
+</header>
+
+<main class="page">
+  <section class="hero">
+    <div class="kicker">// FRONTEND → GO FULLSTACK</div>
+    <h1>8 周，从前端到 Go 全栈</h1>
+    <p>不需要先学 Express/Koa。每天一个页面：知识点讲义 + 可运行代码 + 练手任务 + 自测清单。<br>照着学、照着练，8 周后独立开发并部署一个全栈项目。</p>
+    <div class="stack">
+      <span class="chip">Go 1.24+</span><span class="chip">Gin</span><span class="chip alt">GORM</span><span class="chip alt">MySQL 8</span><span class="chip">JWT 双 token</span><span class="chip">React</span><span class="chip alt">Docker Compose</span><span class="chip alt">Nginx</span>
+    </div>
+    <div class="progress-panel">
+      <div class="row"><span>总体进度（勾选每日检查清单自动累计）</span><b>0%</b></div>
+      <div class="bar"><div class="fill"></div></div>
+    </div>
+  </section>
+
+  <section id="how">
+    <h2>怎么用这套手册</h2>
+    <table>
+      <tr><th>步骤</th><th>做什么</th><th>耗时</th></tr>
+      <tr><td>1. 学习</td><td>通读当天页面的「知识讲义」，所有代码示例逐行手敲并运行，<b>不需要再查任何外部资料</b></td><td>约 90 分钟</td></tr>
+      <tr><td>2. 练习</td><td>完成「今日练习」任务卡，做完对照「完成检查」逐项打勾</td><td>约 60 分钟</td></tr>
+      <tr><td>3. 复盘</td><td>第二天先花 30 分钟复习前一天的检查清单，全部记得住再往前推</td><td>约 30 分钟</td></tr>
+      <tr><td>4. 周验收</td><td>周末打开「本周总结」页，跑通周项目、对照验收标准自评打分</td><td>4–6 小时</td></tr>
+    </table>
+    <div class="callout note"><p>勾选状态保存在你自己的浏览器里（localStorage），换设备会清零，属正常现象。建议每天固定用同一台电脑学习。</p></div>
+  </section>
+
+  <section id="weeks">
+    <h2>8 周路线图</h2>
+    <div class="weeks">
+
+      <div class="week-card">
+        <h3>第 1 周 · Go 基础 + HTTP 后端入门</h3>
+        <div class="theme">PROJECT: 标准库 HTTP 待办服务</div>
+        <ol>
+          <li><a href="weeks/w1/day1.html">环境与基础语法</a></li>
+          <li><a href="weeks/w1/day2.html">结构体与方法</a></li>
+          <li><a href="weeks/w1/day3.html">slice、map、defer、文件 I/O</a></li>
+          <li><a href="weeks/w1/day4.html">接口、错误处理、包管理</a></li>
+          <li><a href="weeks/w1/day5.html">HTTP 基础 + net/http</a></li>
+        </ol>
+        <div class="foot"><a href="weeks/w1/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
+        <div class="week-mini" data-week="1"><div class="fill"></div></div>
+      </div>
+
+      <div class="week-card">
+        <h3>第 2 周 · Gin + REST API 基础</h3>
+        <div class="theme">PROJECT: 内存版用户/文章 CRUD API</div>
+        <ol>
+          <li><a href="weeks/w2/day1.html">Gin 路由</a></li>
+          <li><a href="weeks/w2/day2.html">请求绑定与验证</a></li>
+          <li><a href="weeks/w2/day3.html">中间件</a></li>
+          <li><a href="weeks/w2/day4.html">项目分层</a></li>
+          <li><a href="weeks/w2/day5.html">接口测试与错误处理</a></li>
+        </ol>
+        <div class="foot"><a href="weeks/w2/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
+        <div class="week-mini" data-week="2"><div class="fill"></div></div>
+      </div>
+
+      <div class="week-card">
+        <h3>第 3 周 · MySQL + GORM + Docker 入门</h3>
+        <div class="theme">PROJECT: 数据库版用户/文章/标签 API</div>
+        <ol>
+          <li><a href="weeks/w3/day1.html">Docker Compose + MySQL + GORM 入门</a></li>
+          <li><a href="weeks/w3/day2.html">模型与 CRUD</a></li>
+          <li><a href="weeks/w3/day3.html">关联查询（一对多 / 多对多）</a></li>
+          <li><a href="weeks/w3/day4.html">分页、搜索、排序</a></li>
+          <li><a href="weeks/w3/day5.html">事务、连接池、软删除</a></li>
+        </ol>
+        <div class="foot"><a href="weeks/w3/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
+        <div class="week-mini" data-week="3"><div class="fill"></div></div>
+      </div>
+
+      <div class="week-card">
+        <h3>第 4 周 · JWT + 工程化</h3>
+        <div class="theme">PROJECT: JWT 认证博客 API（双 token）</div>
+        <ol>
+          <li><a href="weeks/w4/day1.html">密码哈希与注册登录</a></li>
+          <li><a href="weeks/w4/day2.html">JWT 鉴权（access + refresh）</a></li>
+          <li><a href="weeks/w4/day3.html">配置管理</a></li>
+          <li><a href="weeks/w4/day4.html">日志、请求 ID、优雅关闭</a></li>
+          <li><a href="weeks/w4/day5.html">单元测试与接口测试</a></li>
+        </ol>
+        <div class="foot"><a href="weeks/w4/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
+        <div class="week-mini" data-week="4"><div class="fill"></div></div>
+      </div>
+
+      <div class="week-card">
+        <h3>第 5 周 · 并发 + 测试</h3>
+        <div class="theme">PROJECT: 并发 URL 聚合 API</div>
+        <ol>
+          <li><a href="weeks/w5/day1.html">goroutine 与 WaitGroup</a></li>
+          <li><a href="weeks/w5/day2.html">channel 与 select</a></li>
+          <li><a href="weeks/w5/day3.html">Mutex 与竞态检测</a></li>
+          <li><a href="weeks/w5/day4.html">context 超时与取消</a></li>
+          <li><a href="weeks/w5/day5.html">并发模式：worker pool 与 errgroup</a></li>
+        </ol>
+        <div class="foot"><a href="weeks/w5/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
+        <div class="week-mini" data-week="5"><div class="fill"></div></div>
+      </div>
+
+      <div class="week-card">
+        <h3>第 6 周 · 全栈联调</h3>
+        <div class="theme">PROJECT: React + Go 博客前端</div>
+        <ol>
+          <li><a href="weeks/w6/day1.html">登录注册对接</a></li>
+          <li><a href="weeks/w6/day2.html">文章列表与详情</a></li>
+          <li><a href="weeks/w6/day3.html">文章创建、编辑、删除</a></li>
+          <li><a href="weeks/w6/day4.html">路由守卫与 axios 拦截器</a></li>
+          <li><a href="weeks/w6/day5.html">CORS、代理、构建</a></li>
+        </ol>
+        <div class="foot"><a href="weeks/w6/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
+        <div class="week-mini" data-week="6"><div class="fill"></div></div>
+      </div>
+
+      <div class="week-card">
+        <h3>第 7 周 · 容器化 + 部署</h3>
+        <div class="theme">PROJECT: 全栈博客 Docker 化上线</div>
+        <ol>
+          <li><a href="weeks/w7/day1.html">Go 多阶段 Dockerfile</a></li>
+          <li><a href="weeks/w7/day2.html">前端构建 + Nginx</a></li>
+          <li><a href="weeks/w7/day3.html">完整 Compose 编排</a></li>
+          <li><a href="weeks/w7/day4.html">数据库迁移</a></li>
+          <li><a href="weeks/w7/day5.html">部署到云服务器 + HTTPS</a></li>
+        </ol>
+        <div class="foot"><a href="weeks/w7/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
+        <div class="week-mini" data-week="7"><div class="fill"></div></div>
+      </div>
+
+      <div class="week-card">
+        <h3>第 8 周 · 综合项目实战</h3>
+        <div class="theme">PROJECT: 博客扩展 RBAC + 文件上传并上线</div>
+        <ol>
+          <li><a href="weeks/w8/day1.html">角色与权限（RBAC）后端扩展</a></li>
+          <li><a href="weeks/w8/day2.html">文件上传</a></li>
+          <li><a href="weeks/w8/day3.html">前端权限与功能收尾</a></li>
+          <li><a href="weeks/w8/day4.html">联调、测试、修 bug</a></li>
+          <li><a href="weeks/w8/day5.html">部署、README、API 文档</a></li>
+        </ol>
+        <div class="foot"><a href="weeks/w8/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
+        <div class="week-mini" data-week="8"><div class="fill"></div></div>
+      </div>
+
+    </div>
+  </section>
+
+  <section id="goal">
+    <h2>毕业时的你</h2>
+    <div class="grade">
+      <div><b>API 设计</b>独立设计 RESTful API，统一响应结构与错误码</div>
+      <div><b>Go 后端</b>Gin 路由/中间件/校验，GORM 关联/分页/事务</div>
+      <div><b>认证鉴权</b>bcrypt + JWT 双 token + RBAC 权限</div>
+      <div><b>并发编程</b>goroutine / channel / context / errgroup</div>
+      <div><b>测试</b>单元测试 + httptest 接口测试 + -race</div>
+      <div><b>交付上线</b>Docker Compose 编排，云服务器 + HTTPS 可访问</div>
+    </div>
+    <div class="callout tip"><p>时间预算：每天 2–3 小时（工作日）+ 周末 4–6 小时，合计每周 15–20 小时。坚持 8 周，这个仓库的 commit 记录就是你最好的简历。</p></div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  Go FullStack Roadmap · 基于 <a href="docs/index.md">docs/index.md 学习规划</a> 生成 · 内容仅供学习使用
+</footer>
+</body>
+</html>

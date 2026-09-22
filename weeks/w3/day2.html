@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W3D2 · 模型与 CRUD | Go 全栈修炼手册</title>
+<meta name="description" content="Day 2：GORM 模型定义与字段 tag、Create/First/Find/Take/Last、Where 三种写法、Save 与 Updates 的区别、Delete 与 RowsAffected、ErrRecordNotFound 判断，并把第 2 周内存 repository 换成 GORM 实现。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w3d2">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 3 周总结</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 3 周</a> / Day 2</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 3 · DAY 2</span>
+    <span class="chip alt">预计 2.5–3 小时</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>模型与 CRUD</h1>
+  <p>昨天数据库只是个能连上的空壳。今天要把它变成<b>你项目的数据层</b>：定义 <code>User</code> / <code>Article</code> / <code>Tag</code> 三个模型，掌握增删改查四件套的每个细节，最后做一个关键改造——<b>把第 2 周的内存 repository 换成 GORM 实现，handler 和 service 一行都不改。</b></p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w3d2g1">能写出带 <code>column/type/size/not null/uniqueIndex/default</code> tag 的模型，并解释 <code>gorm.Model</code> 塞进来了哪 4 个字段</label></li>
+      <li><label><input type="checkbox" data-key="w3d2g2">说清 <code>Create</code> / <code>Save</code> / <code>Updates</code> 三者的差别，以及 <code>Updates</code> 传 struct 时零值为什么被忽略</label></li>
+      <li><label><input type="checkbox" data-key="w3d2g3">会用 <code>First/Take/Last/Find</code> + 三种 <code>Where</code> 写法查询，并用 <code>errors.Is(err, gorm.ErrRecordNotFound)</code> 区分「没有」和「出错」</label></li>
+      <li><label><input type="checkbox" data-key="w3d2g4">完成主线改造：<code>repository.UserRepo</code> 接口不变，实现从 map 换成 GORM，接口测试全绿</label></li>
+    </ul>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>课前须知：本周项目结构定型</h2>
+    <pre><span class="code-label">tree</span>goblog/
+├── docker-compose.yml
+├── go.mod
+├── cmd/server/main.go            <span class="c"># 装配：连库 → 迁移 → newRepo → newService → newHandler → 路由</span>
+└── internal/
+    ├── model/user.go  article.go  tag.go
+    ├── repository/user.go         <span class="c"># 接口定义 + GORM 实现（今天要改的地方）</span>
+    ├── service/user.go            <span class="c"># 业务规则：邮箱重复、文章必须属于某个用户</span>
+    └── handler/user.go            <span class="c"># Gin 层：绑参、调 service、统一 {code,message,data}</span></pre>
+    <div class="callout js"><p>第 2 周你已经写过 <code>repository</code> 层（内存 map 版）。今天要真正体会它为什么值得单独一层：数据库换了，业务代码不跟着重写。这就是<b>依赖倒置</b>——高层（service）依赖抽象（interface），低层（GORM）去实现抽象，而不是反过来。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 模型定义：gorm.Model 与字段 tag</h3>
+    <p><code>gorm.Model</code> 是一个官方内嵌结构体，塞进来就有 <code>ID / CreatedAt / UpdatedAt / DeletedAt</code> 四个字段（含软删除）：</p>
+    <pre><span class="code-label">gorm.Model 展开</span><span class="k">type</span> Model <span class="k">struct</span> {
+    ID        <span class="t">uint</span>           <span class="s">`gorm:"primaryKey"`</span>
+    CreatedAt <span class="t">time.Time</span>
+    UpdatedAt <span class="t">time.Time</span>
+    DeletedAt <span class="t">gorm.DeletedAt</span>  <span class="s">`gorm:"index"`</span>  <span class="c">// ← 有这个字段就自动软删除，Day 5 细讲</span>
+}</pre>
+    <p>本周主线模型的完整定义（三个文件一起给出，后三天直接复用）：</p>
+    <pre><span class="code-label">internal/model/user.go</span><span class="k">package</span> model
+
+<span class="k">import</span> <span class="t">gorm.io/gorm</span>
+
+<span class="k">type</span> User <span class="k">struct</span> {
+    gorm.Model
+
+    <span class="c">// column: 列名 | type: 建表类型 | size: 长度 | not null: 非空 | uniqueIndex: 唯一索引</span>
+    Name     <span class="t">string</span> <span class="s">`gorm:"column:name;type:varchar(64);size:64;not null" json:"name"`</span>
+    Email    <span class="t">string</span> <span class="s">`gorm:"type:varchar(128);size:128;not null;uniqueIndex" json:"email"`</span>
+    Password <span class="t">string</span> <span class="s">`gorm:"type:varchar(255);not null" json:"-"`</span> <span class="c">// json:"-" 永不输出到响应</span>
+
+    Articles []Article <span class="s">`gorm:"foreignKey:UserID" json:"articles,omitempty"`</span> <span class="c">// Day 3 用</span>
+}</pre>
+    <pre><span class="code-label">internal/model/article.go</span><span class="k">package</span> model
+
+<span class="k">import</span> <span class="t">gorm.io/gorm</span>
+
+<span class="k">type</span> Article <span class="k">struct</span> {
+    gorm.Model
+
+    Title   <span class="t">string</span> <span class="s">`gorm:"type:varchar(128);size:128;not null;index" json:"title"`</span>
+    Content <span class="t">string</span> <span class="s">`gorm:"type:text" json:"content"`</span>
+    Views   <span class="t">int</span>    <span class="s">`gorm:"not null;default:0" json:"views"`</span>
+
+    UserID <span class="t">uint</span>  <span class="s">`gorm:"type:bigint unsigned;not null;index" json:"user_id"`</span> <span class="c">// 一对多外键</span>
+    User   User  <span class="s">`json:"user,omitempty"`</span>                                    <span class="c">// belongs to</span>
+    Tags   []Tag <span class="s">`gorm:"many2many:article_tags;" json:"tags,omitempty"`</span>       <span class="c">// 多对多中间表</span>
+}</pre>
+    <pre><span class="code-label">internal/model/tag.go</span><span class="k">package</span> model
+
+<span class="k">import</span> (
+    <span class="t">time</span>
+
+    <span class="t">gorm.io/gorm</span>
+)
+
+<span class="k">type</span> Tag <span class="k">struct</span> {
+    ID        <span class="t">uint</span>      <span class="s">`gorm:"primaryKey" json:"id"`</span>       <span class="c">// 自定义：不用 gorm.Model</span>
+    Name      <span class="t">string</span>    <span class="s">`gorm:"type:varchar(32);size:32;not null;uniqueIndex" json:"name"`</span>
+    CreatedAt <span class="t">time.Time</span> <span class="s">`json:"created_at"`</span>                 <span class="c">// 只要创建时间，无更新/软删</span>
+}
+
+<span class="c">// 表名单数化：GORM 默认把结构体名转 snake_case + 复数（Tag → tags 已经对了）</span>
+<span class="k">func</span> (Tag) TableName() <span class="t">string</span> { <span class="k">return</span> <span class="s">"tags"</span> }</pre>
+    <table>
+      <tr><th>tag</th><th>作用</th><th>备注</th></tr>
+      <tr><td><code>primaryKey</code></td><td>指定主键</td><td>字段名 <code>ID</code> 或 <code>XxxID</code> 会被自动认成主键/外键，所以自定义主键要显式写</td></tr>
+      <tr><td><code>column:"x"</code></td><td>指定列名</td><td>不写则用 <code>snake_case</code>（<code>UserID → user_id</code>）</td></tr>
+      <tr><td><code>type:"varchar(64)"</code></td><td>建表用的数据库类型</td><td>只在 AutoMigrate 建表/首次加列时生效</td></tr>
+      <tr><td><code>size:64</code></td><td>GORM 自己的长度声明（<code>varchar(64)</code>）</td><td>和 <code>type</code> 二选一即可，别写矛盾的两个值</td></tr>
+      <tr><td><code>not null</code> / <code>default:0</code></td><td>非空 / 默认值</td><td>字符串默认值要转义双引号：<code>default:''</code> 或直接 <code>default:"x"</code></td></tr>
+      <tr><td><code>index</code> / <code>uniqueIndex</code></td><td>普通/唯一索引</td><td>可带名字与组合：<code>uniqueIndex:idx_user_name</code> 出现在多个字段上即联合索引</td></tr>
+      <tr><td><code>autoIncrement:false</code></td><td>自定义主键（如 UUID / slug）</td><td>本周不用，知道即可</td></tr>
+      <tr><td><code>json:"-"</code> / <code>json:"omitempty"</code></td><td>不是 GORM 的，是 <code>encoding/json</code> 的</td><td>密码永不回前端；关联字段不请求就不返回</td></tr>
+    </table>
+    <div class="callout warn"><p>命名规则默认值：结构体 <code>ArticleTag</code> → 表 <code>article_tags</code>；字段 <code>UserID</code> → 列 <code>user_id</code>。全项目要么遵守默认，要么统一用 <code>TableName()</code>，别混着来。</p></div>
+
+    <h3>2. Create：插入并回填自增主键</h3>
+    <pre><span class="code-label">repository/crud_demo.go</span><span class="k">func</span> demo(db <span class="t">*gorm.DB</span>) {
+    u := model.User{Name: <span class="s">"小明"</span>, Email: <span class="s">"xm@example.com"</span>, Password: <span class="s">"hashed"</span>}
+    <span class="k">if</span> err := db.Create(&amp;u).Error; err != <span class="k">nil</span> { <span class="c">/* 唯一索引冲突等 */</span> }
+    fmt.Println(u.ID)        <span class="c">// ← 1：插入后 ID / CreatedAt 自动回填到 struct，这是 Create 的关键福利</span>
+
+    <span class="c">// 批量插入：一次 INSERT 多行（传 slice 的地址）</span>
+    tags := []model.Tag{{Name: <span class="s">"go"</span>}, {Name: <span class="s">"mysql"</span>}, {Name: <span class="s">"gorm"</span>}}
+    db.Create(&amp;tags)
+
+    <span class="c">// 只关心错误时可以简写：db.Create(...) 返回 *gorm.DB，.Error 即结果</span>
+    <span class="k">if</span> err := db.Create(&amp;model.User{Name: <span class="s">"阿花"</span>, Email: <span class="s">"ah@example.com"</span>, Password: <span class="s">"h"</span>}).Error; err != <span class="k">nil</span> {
+        log.Println(err)
+    }
+}</pre>
+    <div class="callout note"><p>唯一索引冲突在 MySQL 驱动下会返回 <code>Error 1062 (23000): Duplicate entry 'xm@example.com' for key 'users.email'</code>。<b>注册接口要靠它兜底</b>（先查再插存在并发窗口，Day 4/第 4 周会强调），今天先认识这个错误串。</p></div>
+
+    <h3>3. 查询四件套：First / Take / Last / Find</h3>
+    <table>
+      <tr><th>方法</th><th>生成的 SQL 关键部分</th><th>找不到时</th><th>用途</th></tr>
+      <tr><td><code>db.First(&amp;u, 1)</code></td><td><code>ORDER BY id LIMIT 1</code></td><td><code>ErrRecordNotFound</code></td><td>按主键/条件取「最早的一条」，最常用</td></tr>
+      <tr><td><code>db.Take(&amp;u, 1)</code></td><td><code>LIMIT 1</code>（无排序）</td><td><code>ErrRecordNotFound</code></td><td>不关心顺序、想让 MySQL 自己挑最优时</td></tr>
+      <tr><td><code>db.Last(&amp;u)</code></td><td><code>ORDER BY id DESC LIMIT 1</code></td><td><code>ErrRecordNotFound</code></td><td>取最新一条</td></tr>
+      <tr><td><code>db.Find(&amp;users)</code></td><td><code>SELECT * FROM users</code>（无 LIMIT）</td><td>无错（得到空 slice）</td><td>取多条，列表接口用它</td></tr>
+      <tr><td><code>db.Find(&amp;users, 1)</code></td><td><code>WHERE id = 1</code> 仍返回 slice</td><td>无错（空 slice）</td><td>按主键批量</td></tr>
+    </table>
+    <pre><span class="code-label">查询写法</span><span class="c">// ① 传结构体做条件：非零字段才进 WHERE（零值 0 / "" / nil 被忽略！）</span>
+cond := model.User{Name: <span class="s">"小明"</span>}          <span class="c">// Email 是 "" → 不参与条件</span>
+db.Where(&amp;cond).Find(&amp;users)              <span class="c">// WHERE name = '小明'</span>
+
+<span class="c">// ② 传 map：键是列名，零值也算条件（这是查「Views = 0」的唯一稳妥方式）</span>
+db.Where(<span class="t">map</span>[<span class="t">string</span>]<span class="t">any</span>{<span class="s">"name"</span>: <span class="s">"小明"</span>, <span class="s">"views"</span>: <span class="n">0</span>}).Find(&amp;articles)
+
+<span class="c">// ③ 链式 + 占位符（最常用，占位符 ? 由驱动转义，天然防注入）</span>
+db.Where(<span class="s">"name = ? AND email LIKE ?"</span>, <span class="s">"小明"</span>, <span class="s">"%example%"</span>).
+   Order(<span class="s">"id desc"</span>).
+   Limit(<span class="n">5</span>).
+   Find(&amp;users)
+
+<span class="c">// 取部分列 / 标量</span>
+db.Select(<span class="s">"id"</span>, <span class="s">"name"</span>).Find(&amp;users)
+<span class="k">var</span> emails []<span class="t">string</span>
+db.Model(&amp;model.User{}).Where(<span class="s">"id &lt; ?"</span>, <span class="n">10</span>).Pluck(<span class="s">"email"</span>, &amp;emails)</pre>
+
+    <h3>4. 更新：Save vs Updates，以及零值陷阱</h3>
+    <pre><span class="code-label">更新对比</span><span class="c">// Save：主键非零 → UPDATE 全部列（等于把整个 struct 覆盖过去）</span>
+<span class="k">var</span> u model.User
+db.First(&amp;u, <span class="n">1</span>)
+u.Name = <span class="s">"小明改名"</span>
+db.Save(&amp;u)      <span class="c">// UPDATE users SET name=...,email=...,password=...,created_at=... WHERE id=1</span>
+                 <span class="c">// 主键为 0 时 Save 会退化成 INSERT —— 新人最常见的意外</span>
+
+<span class="c">// Updates + struct：只更新非零字段（Views=0 会被悄悄跳过！）</span>
+db.Model(&amp;model.User{}).Where(<span class="s">"id = ?"</span>, <span class="n">1</span>).Updates(model.User{Name: <span class="s">"批量改"</span>, Email: <span class="s">"b@x.com"</span>})
+
+<span class="c">// Updates + map：零值照常写入 —— 归零/清空必须用它</span>
+db.Model(&amp;a).Updates(<span class="t">map</span>[<span class="t">string</span>]<span class="t">any</span>{<span class="s">"views"</span>: <span class="n">0</span>, <span class="s">"content"</span>: <span class="s">""</span>})
+
+<span class="c">// 单列 / 表达式自增（DB 端计算，避免读改写并发丢失）</span>
+db.Model(&amp;model.Article{}).Where(<span class="s">"id = ?"</span>, <span class="n">1</span>).Update(<span class="s">"title"</span>, <span class="s">"新标题"</span>)
+db.Model(&amp;model.Article{}).Where(<span class="s">"id = ?"</span>, <span class="n">1</span>).UpdateColumn(<span class="s">"views"</span>, gorm.Expr(<span class="s">"views + ?"</span>, <span class="n">1</span>))
+
+<span class="c">// 影响行数：更新 0 行不是错误，RowsAffected 才是唯一线索</span>
+res := db.Model(&amp;model.User{}).Where(<span class="s">"id = ?"</span>, <span class="n">99999</span>).Update(<span class="s">"name"</span>, <span class="s">"x"</span>)
+<span class="k">if</span> res.Error != <span class="k">nil</span> { <span class="k">return</span> res.Error }
+<span class="k">if</span> res.RowsAffected == <span class="n">0</span> { <span class="k">return</span> errNoUser }   <span class="c">// 否则你会以为改成功了</span></pre>
+    <div class="callout js"><p>对比 JS：<code>Object.assign(user, patch)</code> 里 <code>undefined</code> 不覆盖、<code>null</code> 覆盖。GORM 的 struct 版 <code>Updates</code> 是「非零值才覆盖」——Go 没有 <code>undefined</code>，只有零值，所以想表达「把它置空」必须换 map（或用 <code>*int</code> 这类指针字段，第 4 周讲）。</p></div>
+
+    <h3>5. 删除与「防止一句删全表」</h3>
+    <pre><span class="code-label">删除</span>db.Delete(&amp;model.User{}, <span class="n">1</span>)                       <span class="c">// 有 DeletedAt → UPDATE deleted_at；无 → DELETE</span>
+db.Delete(&amp;model.Article{}, []<span class="t">uint</span>{<span class="n">1</span>, <span class="n">2</span>, <span class="n">3</span>})      <span class="c">// 批量按主键</span>
+db.Where(<span class="s">"user_id = ?"</span>, <span class="n">1</span>).Delete(&amp;model.Article{}) <span class="c">// 条件删除</span>
+res := db.Where(<span class="s">"id = ?"</span>, <span class="n">99</span>).Delete(&amp;model.User{})
+fmt.Println(res.RowsAffected)                       <span class="c">// 0 表示其实没删到（软删除也一样）</span></pre>
+    <div class="callout warn"><p>GORM 有个隐藏保险：全局配置开 <code>BlockGlobalUpdate: true</code> 后，<b>不带 Where 的 Update/Delete 会直接报 <code>ErrMissingWhereClause</code></b>，避免你把全表改了。项目里推荐打开：</p>
+    <pre style="margin:8px 0 0"><span class="k">db</span>, err := gorm.Open(mysql.Open(dsn), &amp;gorm.Config{
+    SkipDefaultTransaction: <span class="k">false</span>,
+    BlockGlobalUpdate:      <span class="k">true</span>,   <span class="c">// ← 没有 WHERE 的 UPDATE/DELETE 直接报错</span>
+})</pre></div>
+
+    <h3>6. ErrRecordNotFound：出错还是没数据？</h3>
+    <pre><span class="code-label">repository/user.go</span><span class="k">import</span> (
+    <span class="t">errors</span>
+
+    <span class="t">gorm.io/gorm</span>
+)
+
+<span class="k">var</span> ErrUserNotFound = errors.New(<span class="s">"用户不存在"</span>)
+
+<span class="k">func</span> (r *gormUserRepo) ByID(id <span class="t">uint</span>) (*model.User, <span class="t">error</span>) {
+    <span class="k">var</span> u model.User
+    err := r.db.First(&amp;u, id).Error
+    <span class="k">switch</span> {
+    <span class="k">case</span> errors.Is(err, gorm.ErrRecordNotFound):
+        <span class="k">return</span> <span class="k">nil</span>, ErrUserNotFound      <span class="c">// → handler 返回 404 + code 1001</span>
+    <span class="k">case</span> err != <span class="k">nil</span>:
+        <span class="k">return</span> <span class="k">nil</span>, err                  <span class="c">// → 500，数据库真出问题了，别混成 404</span>
+    <span class="k">default</span>:
+        <span class="k">return</span> &amp;u, <span class="k">nil</span>
+    }
+}</pre>
+    <div class="callout js"><p>如果你写过 Sequelize，它的 <code>findByPk</code> 找不到时默认 <code>throw</code>；GORM 不 panic 也不 throw，而是把 <code>ErrRecordNotFound</code> 放在 <code>db.Error</code> 里。<b>必须用 <code>errors.Is</code> 而不是 <code>==</code></b>——将来错误被 <code>fmt.Errorf("%w", ...)</code> 包装过，<code>==</code> 就比不上了。</p></div>
+  </section>
+
+  <section>
+    <h2>今日练习</h2>
+    <div class="task">
+      <div class="task-title">练习 1：CRUD 走查脚本（40 分钟）</div>
+      <p>在 <code>cmd/demo/main.go</code> 写一个顺序执行的小程序：建 1 个用户 → 建 3 篇文章属于他 → <code>First</code> 读回 → <code>Save</code> 改标题 → <code>Updates(map)</code> 把 <code>views</code> 归零并证明 <code>Updates(struct)</code> 做不到 → 按 <code>user_id</code> 条件删除 1 篇 → <code>Println(RowsAffected)</code> → <code>First(&amp;a, 99999)</code> 并 <code>errors.Is</code> 判断。每一步 <code>db.Logger</code> 打的 SQL 抄进笔记。</p>
+      <p><b>参考答案要点</b>：<code>Updates(model.Article{Views: 0})</code> 生成的 UPDATE 语句里<b>没有</b> <code>views</code> 列（零值被跳过）；<code>RowsAffected</code> 在删除不存在的行时是 <code>0</code> 而 <code>Error</code> 仍是 <code>nil</code>；<code>First(&amp;a, 99999)</code> 的 <code>Error</code> 是 <code>record not found</code>。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：把内存 repository 换成 GORM（主线，90 分钟）</div>
+      <p>保持第 2 周定义好的接口不动，新增 GORM 实现并在 <code>main.go</code> 换装配。要求 <code>POST /users</code>、<code>GET /users</code>、<code>GET /users/:id</code>、<code>PUT /users/:id</code>、<code>DELETE /users/:id</code> 全部行为与上周一致，只是数据落在 MySQL。</p>
+      <pre><span class="code-label">internal/repository/user.go</span><span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="t">errors</span>
+
+    <span class="s">"goblog/internal/model"</span>
+    <span class="t">gorm.io/gorm</span>
+)
+
+<span class="c">// 接口：第 2 周就是它，今天一个字都不改</span>
+<span class="k">type</span> UserRepo <span class="k">interface</span> {
+    Create(u *model.User) <span class="t">error</span>
+    ByID(id <span class="t">uint</span>) (*model.User, <span class="t">error</span>)
+    ByEmail(email <span class="t">string</span>) (*model.User, <span class="t">error</span>)
+    All() ([]model.User, <span class="t">error</span>)
+    Update(u *model.User) <span class="t">error</span>
+    Delete(id <span class="t">uint</span>) <span class="t">error</span>
+}
+
+<span class="k">type</span> gormUserRepo <span class="k">struct</span> { db *gorm.DB }
+
+<span class="k">func</span> NewGormUserRepo(db *gorm.DB) UserRepo { <span class="k">return</span> &amp;gormUserRepo{db: db} }
+
+<span class="k">func</span> (r *gormUserRepo) Create(u *model.User) <span class="t">error</span> { <span class="k">return</span> r.db.Create(u).Error }
+
+<span class="k">func</span> (r *gormUserRepo) ByID(id <span class="t">uint</span>) (*model.User, <span class="t">error</span>) {
+    <span class="k">var</span> u model.User
+    <span class="k">if</span> err := r.db.First(&amp;u, id).Error; err != <span class="k">nil</span> {
+        <span class="k">if</span> errors.Is(err, gorm.ErrRecordNotFound) { <span class="k">return</span> <span class="k">nil</span>, ErrUserNotFound }
+        <span class="k">return</span> <span class="k">nil</span>, err
+    }
+    <span class="k">return</span> &amp;u, <span class="k">nil</span>
+}
+
+<span class="k">func</span> (r *gormUserRepo) ByEmail(email <span class="t">string</span>) (*model.User, <span class="t">error</span>) {
+    <span class="k">var</span> u model.User
+    err := r.db.Where(<span class="s">"email = ?"</span>, email).Take(&amp;u).Error
+    <span class="k">if</span> errors.Is(err, gorm.ErrRecordNotFound) { <span class="k">return</span> <span class="k">nil</span>, <span class="k">nil</span> } <span class="c">// 「没查到」是正常的 nil</span>
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="k">nil</span>, err }
+    <span class="k">return</span> &amp;u, <span class="k">nil</span>
+}
+
+<span class="k">func</span> (r *gormUserRepo) All() ([]model.User, <span class="t">error</span>) {
+    users := []model.User{}                       <span class="c">// 预置空 slice，保证 JSON 输出 [] 而不是 null</span>
+    <span class="k">err</span> := r.db.Order(<span class="s">"id asc"</span>).Find(&amp;users).Error
+    <span class="k">return</span> users, err
+}
+
+<span class="k">func</span> (r *gormUserRepo) Update(u *model.User) <span class="t">error</span> { <span class="k">return</span> r.db.Save(u).Error }
+
+<span class="k">func</span> (r *gormUserRepo) Delete(id <span class="t">uint</span>) <span class="t">error</span> {
+    res := r.db.Delete(&amp;model.User{}, id)
+    <span class="k">if</span> res.Error != <span class="k">nil</span> { <span class="k">return</span> res.Error }
+    <span class="k">if</span> res.RowsAffected == <span class="n">0</span> { <span class="k">return</span> ErrUserNotFound }
+    <span class="k">return</span> <span class="k">nil</span>
+}
+
+<span class="k">var</span> ErrUserNotFound = errors.New(<span class="s">"用户不存在"</span>)</pre>
+      <pre><span class="code-label">cmd/server/main.go（装配处唯一的改动）</span>db := mustConnect(dsn)                              <span class="c">// gorm.Open + AutoMigrate</span>
+<span class="c">// userRepo := repository.NewMemUserRepo()           // ← 上周的实现，删掉这一行</span>
+userRepo := repository.NewGormUserRepo(db)          <span class="c">// ← 今天的新实现：构造返回的仍是 UserRepo 接口</span>
+userSvc := service.NewUserService(userRepo)         <span class="c">// service 完全不知道底下是 map 还是 MySQL</span>
+userHandler := handler.NewUserHandler(userSvc)
+
+router := gin.Default()
+router.GET(<span class="s">"/users"</span>, userHandler.List)
+router.POST(<span class="s">"/users"</span>, userHandler.Create)
+router.GET(<span class="s">"/users/:id"</span>, userHandler.Detail)
+router.PUT(<span class="s">"/users/:id"</span>, userHandler.Update)
+router.DELETE(<span class="s">"/users/:id"</span>, userHandler.Delete)
+_ = router.Run(<span class="s">":8080"</span>)</pre>
+      <p><b>验收</b>：<code>curl -s localhost:8080/users | head</code> 出数据；<code>kill</code> 掉 Go 进程重启，数据还在；<code>service</code>、<code>handler</code> 两个目录 <code>git diff</code> 为空——这就是依赖倒置的红利。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 3：ID 参数解析与 404（25 分钟）</div>
+      <p>在 handler 里把 <code>:id</code> 转成 <code>uint</code> 交给 repository，非法 id 返回 400，找不到返回 404 + <code>code:1001</code>。</p>
+      <pre><span class="code-label">internal/handler/user.go</span>id, err := strconv.ParseUint(c.Param(<span class="s">"id"</span>), <span class="n">10</span>, <span class="n">64</span>)
+<span class="k">if</span> err != <span class="k">nil</span> || id == <span class="n">0</span> {
+    c.JSON(<span class="n">400</span>, gin.H{<span class="s">"code"</span>: <span class="n">1004</span>, <span class="s">"message"</span>: <span class="s">"id 必须是正整数"</span>, <span class="s">"data"</span>: <span class="k">nil</span>})
+    <span class="k">return</span>
+}
+u, err := h.svc.Get(<span class="t">uint</span>(id))
+<span class="k">if</span> errors.Is(err, repository.ErrUserNotFound) {
+    c.JSON(<span class="n">404</span>, gin.H{<span class="s">"code"</span>: <span class="n">1001</span>, <span class="s">"message"</span>: <span class="s">"用户不存在"</span>, <span class="s">"data"</span>: <span class="k">nil</span>})
+    <span class="k">return</span>
+}</pre>
+      <p><b>参考答案</b>：注意 <code>strconv.Atoi</code> 返回 <code>int</code>，而 GORM 主键是 <code>uint</code>，负数会在 Go 里绕成一个巨大的正数（<code>uint(-1)</code>），所以必须先判 <code>id == 0</code> 与负号再转换。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：口述题（写在笔记里，15 分钟）</div>
+      <p>不查资料回答：① <code>db.Save(&amp;x)</code> 什么时候变成 INSERT？② 为什么 <code>Updates(struct)</code> 无法把列改成 0？③ <code>Find</code> 和 <code>First</code> 在「查不到」时的差别？<b>参考答案</b>见第 3、4、6 节表格。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>把 <code>db</code> 当一次性对象</td><td>上一条链式的 Where 神秘地影响了下一条查询</td><td>每次查询从 <code>r.db</code> 起链；若复用需 <code>db.Session(&amp;gorm.Session{})</code></td></tr>
+      <tr><td><code>Updates</code> 传 struct 想归零</td><td>SQL 里根本没有该列，值没变</td><td>用 <code>map[string]any{...}</code>，或指针字段</td></tr>
+      <tr><td><code>Save</code> 传了零 ID</td><td>本意更新，结果插了一条新行</td><td>先 <code>First</code> 拿到带 ID 的对象再 <code>Save</code>，或用 <code>Updates</code></td></tr>
+      <tr><td>不判 <code>RowsAffected</code></td><td>更新/删除了不存在的记录却返回 200 success</td><td><code>RowsAffected == 0</code> → 404</td></tr>
+      <tr><td>用 <code>err == gorm.ErrRecordNotFound</code></td><td>错误被包装后判断失效，500 满天飞</td><td><code>errors.Is(err, gorm.ErrRecordNotFound)</code></td></tr>
+      <tr><td>忘写 <code>json</code> tag</td><td>响应里出现 <code>DeletedAt</code>、<code>Password</code>、字段名变 PascalCase</td><td>模型上写清 <code>json:"xxx"</code>，密码用 <code>json:"-"</code></td></tr>
+      <tr><td>Where 传结构体用了零值</td><td>想查 <code>views=0</code> 却查出全部</td><td>零值条件用 map 或字符串占位</td></tr>
+      <tr><td>AutoMigrate 后改类型</td><td>tag 改了 <code>varchar(64)→255</code>，库里没变</td><td>手工 <code>ALTER TABLE</code>，或第 7 周版本化迁移</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>gorm.Model</td><td>内嵌即得 ID/CreatedAt/UpdatedAt/DeletedAt 四字段，含软删除</td></tr>
+      <tr><td>field tag</td><td>struct 字段后的反引号元数据，GORM 据此建表与生成条件</td></tr>
+      <tr><td>链式调用 / method chain</td><td><code>db.Where().Order().Limit().Find()</code>，最后一个是「执行方法」，之前全在攒条件</td></tr>
+      <tr><td><code>*gorm.DB</code></td><td>既是连接也是「一次调用的结果」，带 <code>.Error</code>、<code>.RowsAffected</code></td></tr>
+      <tr><td>RowsAffected</td><td>本次写操作影响了几行，0 不代表失败，要自己判</td></tr>
+      <tr><td>ErrRecordNotFound</td><td>GORM 哨兵错误：查询语句执行成功但没有行</td></tr>
+      <tr><td>依赖倒置（DIP）</td><td>service 依赖 <code>UserRepo</code> 接口，具体实现（内存/GORM/sqlite 测试桩）由装配层注入</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w3d2c1"><code>internal/model</code> 三个模型写完，<code>AutoMigrate</code> 后 <code>DESCRIBE users / articles / tags</code> 的列和 tag 声明一致</label></li>
+      <li><label><input type="checkbox" data-key="w3d2c2">练习 1 脚本跑通，能贴出 <code>Updates(struct)</code> 与 <code>Updates(map)</code> 生成的两条不同 SQL</label></li>
+      <li><label><input type="checkbox" data-key="w3d2c3">练习 2 改造完成：<code>handler</code>/<code>service</code> 目录零改动，五个用户接口行为与第 2 周一致</label></li>
+      <li><label><input type="checkbox" data-key="w3d2c4"><code>GET /users/99999</code> 返回 <code>404 + code:1001</code>，<code>GET /users/abc</code> 返回 <code>400 + code:1004</code>，都不是 500</label></li>
+      <li><label><input type="checkbox" data-key="w3d2c5">能口述 <code>First/Take/Last/Find</code> 与 <code>Create/Save/Updates</code> 六者的区别</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../index.html"><span class="hint">← 回到</span>8 周路线总览</a>
+    <a href="day3.html"><span class="hint">下一天 · W3D3 →</span>关联查询</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W3D2 · 明天见 ⟩</footer>
+</body>
+</html>

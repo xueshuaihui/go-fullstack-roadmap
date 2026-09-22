@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W6 总结 · React + Go 博客前端 | Go 全栈修炼手册</title>
+<meta name="description" content="第 6 周总结：React + Go 博客前端功能清单与文件树、浏览器全流程验收清单、自评打分、四大卡点复盘（token 存哪/闭包旧 state/跨域/StrictMode 双请求），预告第 7 周 Docker 化上线。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body>
+<header class="site-header">
+  <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
+  <nav><a href="../../index.html">8 周路线</a><a href="day1.html">回到 Day 1</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 6 周</a> / 总结与验收</div>
+  <h1>第 6 周总结：全栈联调（React + Go）</h1>
+  <p>恭喜——这是你第一次<b>一个人吃下一整个全栈项目</b>：后端是前 5 周自己写的 Gin 博客 API，前端是这 5 天亲手接起来的 React 应用。从今天起你不再「只会前端」或「只会 Go」，你是能把两头拧在一起的人。本页做三件事：盘点交付物、硬性验收、复盘卡点。</p>
+
+  <section>
+    <h2>本周全景图：一个请求的完整一生</h2>
+    <pre><span class="code-label">text</span>你在页面点了「保存文章」
+   │
+   ▼
+Editor.jsx ── updateArticle(id, form) ──▶ src/api/article.js
+   │                                          │
+   │                                          ▼
+   │                              http.js 请求拦截器：贴上 Bearer accessToken
+   │                                          │
+   │                        （同源相对路径 /api/v1 → Vite proxy → Go :8080）
+   │                                          ▼
+   │                              Gin 鉴权中间件验 token
+   │                    ┌─────────────────────┼──────────────────────┐
+   │                    ▼ 有效且是作者          ▼ 过期 401             ▼ 是别人 403
+   │              service 更新 → 200      响应拦截器分支一：        分支三：抛 message
+   │                    │               refreshOnce()（合流）→      → 表单红字提示
+   │                    │               成功则 http(original) 重试
+   │                    ▼
+   └── navigate(`/post/${id}`) 跳详情，列表端靠 ?t= 时间戳保证回来是新鲜数据</pre>
+    <p>这张图里没有哪个环节是 React 或 Go 单独的学问——它就是「全栈联调」四个字本身。哪一格看不懂，回对应的那天补。</p>
+  </section>
+
+  <section>
+    <h2>每日回顾速查（哪天学的什么，一秒想起）</h2>
+    <table>
+      <tr><th>天</th><th>主题</th><th>一句话成果</th><th>当天的「啊哈时刻」</th></tr>
+      <tr><td><a href="day1.html">D1</a></td><td>登录注册对接</td><td>Vite 起项目、axios 实例、双 token 落地、useAuth</td><td>拦截器拆包后，api 函数干净得像本地函数</td></tr>
+      <tr><td><a href="day2.html">D2</a></td><td>列表与详情</td><td>useEffect+async 取数、防抖、分页、三态渲染</td><td>删掉 ignore 守卫亲手制造一次竞态</td></tr>
+      <tr><td><a href="day3.html">D3</a></td><td>创建编辑删除</td><td>Editor 双模式、回填、二次确认、作者判断</td><td>用 B 账号 curl 打到 403 的那一刻</td></tr>
+      <tr><td><a href="day4.html">D4</a></td><td>守卫与拦截器</td><td>ProtectedRoute、401 静默续期、并发只刷一次</td><td>废掉 accessToken 页面却毫无波澜</td></tr>
+      <tr><td><a href="day5.html">D5</a></td><td>CORS 代理构建</td><td>报错三连、proxy 原理、build/env、排错清单</td><td>拆掉 proxy 让 CORS 炸响再修好</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>本周项目：React + Go 博客前端 · 功能清单</h2>
+    <table>
+      <tr><th>模块</th><th>功能</th><th>落在哪天</th><th>关键实现</th></tr>
+      <tr><td>认证</td><td>注册 / 登录 / 退出 / 登录态恢复</td><td>D1</td><td>useAuth 同步初始化 + localStorage 三键（accessToken / refreshToken / user）</td></tr>
+      <tr><td>请求层</td><td>axios 实例、自动带 token、统一拆 <code>{code,message,data}</code></td><td>D1</td><td><code>src/api/http.js</code>，页面永不直接 import axios</td></tr>
+      <tr><td>浏览</td><td>文章列表（分页 + 关键词搜索防抖 300ms）、详情页</td><td>D2</td><td>useEffect + async 取数、ignore 竞态守卫、三态渲染、封面兜底</td></tr>
+      <tr><td>管理</td><td>新建 / 编辑回填 / 删除二次确认 / 作者判断</td><td>D3</td><td>Editor.jsx 一套组件双模式，<code>authorId === user.id</code> 控制按钮显隐</td></tr>
+      <tr><td>安全体验</td><td>路由守卫 + redirect 回跳、401 静默续期重试、refresh 失效才跳登录</td><td>D4</td><td>ProtectedRoute；pending Promise 单例保证并发 401 只刷一次</td></tr>
+      <tr><td>工程</td><td>Vite proxy、CORS 认知、生产构建、VITE_API_BASE</td><td>D5</td><td>开发走 proxy，生产走 Nginx 同源（第 7 周落地）</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>接口契约速查卡（第 7、8 周还要用，存进笔记）</h2>
+    <pre><span class="code-label">text</span>Base:            http://localhost:8080/api/v1        开发期经 Vite proxy，前端写 /api/v1
+统一响应:        { "code": 0, "message": "success", "data": ... }   成功恒 200/201 + code 0
+错误码:          1001 用户不存在 · 1002 密码错误 · 1003 无权限(403)
+                 1004 参数错误(400) · 1005 token 无效或过期(401)
+
+POST /auth/register   {email, password, nickname}          → data { user }
+POST /auth/login      {email, password}                    → data { user, accessToken, refreshToken }
+POST /auth/refresh    {refreshToken}                       → data { accessToken, refreshToken }  ←滑动续期
+GET  /users/me        (Bearer)                             → data { user }
+
+GET  /articles?page=1&size=10&keyword=go                   → data { list: [article], total, page, size }
+GET  /articles/:id                                         → data { article }        不存在时 404/1001 思路
+POST /articles        (Bearer) {title,summary,content,coverImage} → data { article } 含新 id
+PUT  /articles/:id    (Bearer, 仅作者) 同上请求体           → data { article }；非作者 403/1003
+DELETE /articles/:id  (Bearer, 仅作者)                     → data null；非作者 403/1003
+
+article 字段: { id, title, summary, content, coverImage,
+               authorId, author: { id, nickname }, createdAt, updatedAt }   —— 全小驼峰，Go 侧带 json tag
+localStorage 三键: accessToken · refreshToken · user(JSON 字符串)
+路由表:  / (列表)  /post/:id (详情)  /post/new ★  /post/:id/edit ★  /me ★  /login  /register   ★=ProtectedRoute</pre>
+  </section>
+
+  <section>
+    <h2>交付物文件树（对照自查，缺哪个补哪个）</h2>
+    <pre><span class="code-label">text</span>blog-web/
+├── .env.development          <span class="c"># VITE_API_BASE=/api/v1（D5）</span>
+├── .env.local                <span class="c"># 只放本机覆写，已在 .gitignore（D5）</span>
+├── vite.config.js            <span class="c"># server.proxy: '/api' → http://localhost:8080（D5）</span>
+├── index.html
+└── src/
+    ├── main.jsx              <span class="c"># BrowserRouter 包裹 App</span>
+    ├── App.jsx               <span class="c"># 路由表终形（D3 铺路、D4 加守卫）</span>
+    ├── api/
+    │   ├── http.js           <span class="c"># ★ 实例 + 双拦截器 + refreshOnce 单例（D1 骨架 → D4 完全体）</span>
+    │   ├── auth.js           <span class="c"># register / login / refreshToken / fetchMe</span>
+    │   └── article.js        <span class="c"># listArticles / getArticle / create / update / remove</span>
+    ├── hooks/
+    │   ├── useAuth.js        <span class="c"># 登录态读写与同步恢复（D1）</span>
+    │   └── useDebounce.js    <span class="c"># 300ms 搜索防抖（D2）</span>
+    ├── components/
+    │   ├── ProtectedRoute.jsx<span class="c"># 路由守卫，redirect 参数（D4）</span>
+    │   ├── NavBar.jsx        <span class="c"># 登录态展示 / 退出 / 写文章入口</span>
+    │   ├── Pagination.jsx    <span class="c"># 页码控件（D2）</span>
+    │   └── ArticleCard.jsx   <span class="c"># 列表卡片 + 封面兜底（D2）</span>
+    └── pages/
+        ├── Login.jsx         <span class="c"># 受控表单 + 回跳 redirect（D1/D4）</span>
+        ├── Register.jsx      <span class="c"># 复用表单结构，错误文案直出后端 message（D1）</span>
+        ├── ArticleList.jsx   <span class="c"># 分页 + 防抖搜索 + ?t= 强制刷新（D2/D3）</span>
+        ├── ArticleDetail.jsx <span class="c"># 三态渲染 + 作者按钮 + 删除确认（D2/D3）</span>
+        ├── Editor.jsx        <span class="c"># 新建/编辑双模式 + 回填 + dirtyRef（D3）</span>
+        └── Profile.jsx       <span class="c"># /users/me 三态版（D1/D2）</span></pre>
+  </section>
+
+  <section>
+    <h2>验收清单（浏览器里真刀真枪跑，不许用 curl 代替）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w6sum1">完整走通：注册新号 → 登录 → 发一篇 Markdown 文章 → 编辑保存 → 删除（含二次确认），列表全程数据正确</label></li>
+      <li><label><input type="checkbox" data-key="w6sum2">退出登录（或换无痕窗口）直接访问 <code>/post/new</code>，被拦到 <code>/login?redirect=%2Fpost%2Fnew</code>；登录后自动回跳到写文章页</label></li>
+      <li><label><input type="checkbox" data-key="w6sum3">把 localStorage 的 accessToken 改成废值：任意操作<b>无感知续期</b>（Network 可见 401 → refresh 200 → 重试 200，页面不弹错）</label></li>
+      <li><label><input type="checkbox" data-key="w6sum4">把 refreshToken 也改成废值：清 token 跳登录页，重新登录可回原页，全程无死循环</label></li>
+      <li><label><input type="checkbox" data-key="w6sum5">换第二个账号：看不到别人文章的编辑/删除按钮；curl 强行 PUT 得到 403 + code 1003</label></li>
+      <li><label><input type="checkbox" data-key="w6sum6">前后端字段对齐：列表/详情/编辑页 console 无 undefined 字段告警；curl 响应键名与前端取值逐一对上</label></li>
+      <li><label><input type="checkbox" data-key="w6sum7"><code>npm run build</code> 通过，preview 里重走一遍 1–4；搜索防抖、翻页竞态守卫均有效</label></li>
+    </ul>
+    <div class="callout warn"><p>验收的态度问题：每条都要<b>亲眼看 Network 面板</b>确认请求形状，而不是「页面看起来正常」就勾掉。「看起来正常」的前端里藏着没触发的兜底分支和没接上的错误提示，这周你已经见过它们线上爆炸的样子了。</p></div>
+    <table>
+      <tr><th>投入盘点（诚实填数字）</th><th>参考基线</th><th>你的实际</th></tr>
+      <tr><td>知识讲义 + 手敲示例代码</td><td>每天约 90 分钟</td><td>＿＿ 小时</td></tr>
+      <tr><td>每日练习 + 完成检查</td><td>每天约 60–90 分钟</td><td>＿＿ 小时</td></tr>
+      <tr><td>超出预期的排错时间（记一条最长的）</td><td>正常现象，别自责</td><td>＿＿ 分钟，卡在＿＿＿</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>默写自测（周日晚上 20 分钟，写不出来的周一晚回炉）</h2>
+    <p>新建一个 <code>scratch.js</code>，不看讲义凭记忆完成以下三题。对照点各 4 条，达到 3 条算过：</p>
+    <div class="task">
+      <div class="task-title">默写 1：401 静默续期拦截器（对应 D4）</div>
+      <ul>
+        <li>401 触发条件写了三个前置：status===401、有 refreshToken、<code>!original._retried</code></li>
+        <li>refresh 用裸 axios（或跳过拦截器），成功后双 token 写回 localStorage</li>
+        <li>重试是 <code>return http(original)</code>，且先替换 Authorization</li>
+        <li>并发合流：pending Promise 单例 + <code>finally</code> 复位（或队列方案，能说清等价）</li>
+      </ul>
+    </div>
+    <div class="task">
+      <div class="task-title">默写 2：带竞态守卫的列表取数（对应 D2）</div>
+      <ul>
+        <li>useEffect 内部声明 async 函数再调用，回调保持同步</li>
+        <li>依赖数组是 <code>[page, debouncedKeyword, stamp]</code>，防抖值而非原始输入</li>
+        <li>清理函数里置 <code>ignore = true</code>，晚到响应一律作废</li>
+        <li>loading / error / empty / 成功四分支齐全</li>
+      </ul>
+    </div>
+    <div class="task">
+      <div class="task-title">默写 3：ProtectedRoute + redirect 回跳（对应 D4）</div>
+      <ul>
+        <li>守卫<b>同步</b>读 localStorage.accessToken，不用 useEffect</li>
+        <li>未登录 <code>Navigate</code> 到 <code>/login?redirect=编码后的 pathname+search</code>，带 replace</li>
+        <li>登录成功后 <code>decodeURIComponent</code> 回跳，且校验 <code>startsWith('/')</code> 防站外跳转</li>
+        <li>能口述「为什么刷新瞬间会闪烁」的原因与解法</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>自评打分（诚实填，空话没有意义）</h2>
+    <div class="grade">
+      <div><b>基础达成度</b>验收 7 条过了几条？□ 7 条全过　□ 5–6 条　□ ≤4 条。未过的每条写一句话「卡在哪」，这就是周日补漏清单。</div>
+      <div><b>核心技能自测</b>不看讲义默写：①带并发合流的 401 拦截器；②useDebounce。两块各自能独立写出的记 1 分，2 分满分。哪块写不出，周一晚回炉哪天。</div>
+      <div><b>Git 与展示</b>本周 blog-web 是否有 ≥5 个语义化 commit（feat/fix 分天提交）、README 是否写清启动方式与接口约定。作品集意识从这周开始，不是第 8 周才想起来。</div>
+    </div>
+    <table>
+      <tr><th>复盘问卷（写进笔记，各一两句话即可）</th><th>为什么要问</th></tr>
+      <tr><td>这周哪一天卡得最久？卡在哪一步？</td><td>卡点=知识缺口，第 7 周前定点补</td></tr>
+      <tr><td>哪个 bug 你最后是用 Network 面板而不是 console.log 定位的？</td><td>强化「先看请求形状」的联调第一反应</td></tr>
+      <tr><td>如果只能保留本周学的三样东西，你留哪三样？</td><td>逼出优先级：多数人应留 拦截器/守卫/排错表</td></tr>
+      <tr><td>前后端契约里哪个约定救过你？哪个坑过你？</td><td>契约意识是全栈联调的根</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡点复盘：这周最容易翻车的四件事</h2>
+    <h3>1. token 到底存哪：localStorage vs cookie 的权衡</h3>
+    <p>本周选择 localStorage：简单、天然免 CORS 携带问题、与「Authorization 头」的后端契约一致。代价是<b> XSS（页面注入脚本）可以直接读走它</b>；cookie + HttpOnly 能防这一手，但要配 CSRF 防御、且和纯 JSON API 的气质不合。学习项目用 localStorage 是合理妥协，但要能说出这笔账：任何面试问「为什么不用 HttpOnly cookie」，答案就是这两段的对照。<b>无论存哪，代码里真相源只能有一个</b>——本项目是 localStorage，React state 只是它的展示副本。</p>
+    <h3>2. 闭包陷阱：拦截器与 useEffect 拿到旧 state</h3>
+    <p>两个案发现场：①有人把「当前是否登录」写成拦截器里引用的 React state——模块顶层代码永远读到挂载那一刻的旧值；②useEffect 里 <code>setPage(1)</code> 后又用闭包里的旧 page 发请求。共同解法：<b>需要「最新值」的逻辑要么走同步真相源（localStorage / ref），要么把它放进依赖数组让 effect 重建</b>。day4 拦截器只用 localStorage、day2 列表把防抖值进依赖，都是在还这笔债。</p>
+    <h3>3. 跨域：报错三连各查各的</h3>
+    <p>复盘口径（day5 排查表的浓缩）：缺 <code>Access-Control-Allow-Origin</code> → 后端中间件没挂或 origin 白名单不匹配；红色 OPTIONS → 预检没被应答，检查 Allow-Methods/Allow-Headers 是否含 Authorization；credentials 与 <code>*</code> 冲突 → 要么关 withCredentials（我们用 Bearer 头本来就不需要），要么精确写 origin 并加 Allow-Credentials。开发期终极答案永远是「走 proxy 让它不跨域」，生产期答案永远是「Nginx 同源」。</p>
+    <h3>4. StrictMode 双请求：先辨真假再动手</h3>
+    <p>React 18 开发模式下 StrictMode 故意挂载→卸载→再挂载，用来暴露不可清理的副作用，副作用就是<b>每个 useEffect 请求在 Network 里出现两次</b>。判别：只在 5173/开发模式出现、build 后消失 → 是 StrictMode，不用管；两种模式下都翻倍 → 是你的依赖数组或事件绑定真漏了。最忌讳的应对是给取数 hook 加全局防重锁——把体检仪的 beep 声当成火灾警报处理。</p>
+  </section>
+
+  <section>
+    <h2>本周沉淀的三条工程直觉</h2>
+    <div class="callout tip"><p><b>1. 契约先行。</b>一切联调问题的尽头都是「{code,message,data}、错误码、camelCase 字段、双 token」这份契约。先 curl 后前端，先对齐再 debug。</p></div>
+    <div class="callout tip"><p><b>2. 异步三件套常挂嘴边：竞态、三态、重试。</b>ignore 守卫、loading/error/empty、401 静默刷新——这三样写熟了，你的前端才算「接得住真实网络」。</p></div>
+    <div class="callout tip"><p><b>3. 前端做的权限都是体验，后端做的才是安全。</b>守卫、按钮隐藏、redirect 校验，每一样都以「后端还会再拦一次」为前提。这句话带到第 8 周做 RBAC 依然成立。</p></div>
+  </section>
+
+  <section>
+    <h2>Git 收尾与仓库整理（本周日必做，30 分钟）</h2>
+    <pre><span class="code-label">shell</span>$ cd blog-web
+$ git init &amp;&amp; git add . &amp;&amp; git commit -m <span class="s">"chore: init vite + react blog web"</span>
+<span class="c"># 若你按天提交（推荐），历史应类似——第 8 周写简历时全靠它讲故事：</span>
+$ git log --oneline
+a1b2c3d feat(auth): login/register with dual token and useAuth      <span class="c"># D1</span>
+b2c3d4e feat(article): list pagination, debounced search, detail    <span class="c"># D2</span>
+c3d4e5f feat(editor): create/edit/delete with author guard          <span class="c"># D3</span>
+d4e5f60 feat(auth-flow): route guard + silent refresh with dedupe   <span class="c"># D4</span>
+e5f6a7b chore(build): vite proxy, env, production build ok          <span class="c"># D5</span></pre>
+    <ul>
+      <li>README 补三件事：启动方式（后端 + 前端两条命令）、接口契约速查卡（本页那份直接粘）、功能截图 1–2 张</li>
+      <li>确认 <code>node_modules/</code>、<code>dist/</code>、<code>.env.local</code> 都没进 git（<code>git status</code> 一眼活）</li>
+      <li>前端仓库与第 4 周后端仓库的分合先想好：第 7 周 Compose 编排需要<b>一个仓库装下两个服务</b>（monorepo），今天就决定目录方案</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>选做挑战（不影响验收，精力有余再碰）</h2>
+    <ul>
+      <li><b>时间旅行调试：</b>在拦截器 <code>return http(original)</code> 前后打断点，单步走完 401→refresh→重试全程，看清 Promise 链的每一跳</li>
+      <li><b>真·过期复现：</b>把后端 access 过期时长临时调成 60 秒，正常操作一小时，等一次自然发生的静默续期（而不是手动改废值）</li>
+      <li><b>ConfirmDialog 上位：</b>用 D3 第 4.5 节的自研弹窗全面替换 window.confirm，顺手给错误提示换成 3 秒自动消失的 toast</li>
+      <li><b>路由体检：</b>把散落的 <code>&lt;ProtectedRoute&gt;</code> 重构成布局路由 <code>&lt;Route element={&lt;ProtectedLayout/&gt;}&gt;</code> 包子路由，行为不许变</li>
+      <li><b>加载骨架：</b>列表 loading 态从「加载中…」文字升级为骨架屏（纯 CSS 动画即可），体感专业度 +1</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>本周名词留存卡（三个月后回来看，每个都要还能秒答）</h2>
+    <table>
+      <tr><th>术语</th><th>30 秒版答案</th></tr>
+      <tr><td>双 token / 滑动续期</td><td>短期 access 干活、长期 refresh 换发；每次续期连 refresh 一起换新，活跃会话向后滚</td></tr>
+      <tr><td>静默刷新</td><td>401 → refresh → 用新 token 重试原请求并把 Promise 交出去，调用方 await 到的是最终结果</td></tr>
+      <tr><td>并发合流</td><td>多个 401 共享同一个在途 refresh Promise；pending 单例 + finally 复位</td></tr>
+      <tr><td>路由守卫</td><td>同步检查准入条件的组件，不合格 Navigate 改道并带 redirect，登录后回跳原目标</td></tr>
+      <tr><td>防抖 vs 节流</td><td>停手 N 毫秒后执行一次 vs N 毫秒内最多一次；搜索防抖、滚动节流</td></tr>
+      <tr><td>竞态守卫</td><td>useEffect 清理函数置 ignore，晚到的旧响应作废，防错页数据</td></tr>
+      <tr><td>预检 OPTIONS</td><td>非简单请求前浏览器自动探路；后端须应答 Allow-Methods/Headers 并 204</td></tr>
+      <tr><td>反向代理绕 CORS</td><td>Node/Nginx 不是浏览器，转发不受同源限制；开发 proxy、生产 Nginx 同源</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>下周一开机前的衔接清单（10 分钟，别让周日的心血断档）</h2>
+    <ul>
+      <li>后端仓库与 blog-web 前端仓库归置到一起（建议 <code>blog-fullstack/backend</code> + <code>blog-fullstack/web</code>），第 7 周 Compose 要一锅端</li>
+      <li>把「接口契约速查卡」贴进两个仓库的 README 或 <code>docs/api.md</code>，第 7 周写 Nginx 反代规则直接照抄路径</li>
+      <li>确认本机 Docker 能跑（第 3 周的 MySQL 容器 <code>docker compose up -d</code> 还活着），第 7 周第一天就要写 Dockerfile</li>
+      <li>记录本周遗留 bug（哪怕一句「编辑页偶发回填慢」），带病进第 7 周的 bug 都会在部署后放大</li>
+      <li>给项目起个正式名字并建远端仓库——第 7 周结束你要能把它发给任何人访问</li>
+    </ul>
+    <div class="callout note"><p>验收 7 条没过全也别慌：本周的验收标准是「<b>能定位差在哪</b>」而不是「一次全绿」。对着速查卡和排错清单把缺口收窄到具体某天某节，就是胜利。</p></div>
+  </section>
+
+  <section>
+    <h2>下周预告：第 7 周 · 容器化 + 部署</h2>
+    <p>这个项目现在只能活在你电脑的 5173 和 8080 端口里。下周三天之内让它上云：Go 多阶段 Dockerfile 压出几十 MB 的镜像、前端 dist 交给 Nginx 托管并把 <code>/api</code> 反代给 Go（今天那张「同源部署」ASCII 图变成真配置）、三服务 Compose 编排（backend + nginx + mysql）、最后域名 + HTTPS，把链接发到朋友手机上也能注册发文。<b>周日晚请给 blog-web 补一个最小 README（启动方式 + 接口表），第 7 周直接拿它写 Dockerfile 说明。</b></p>
+  </section>
+
+  <nav class="day-nav">
+    <a href="day5.html"><span class="hint">← 上一天 · W6D5</span>CORS、代理与构建</a>
+    <a href="../w7/day1.html"><span class="hint">下一周 · W7D1 →</span>Go 多阶段 Dockerfile</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">Go FullStack Roadmap · W6 总结 · 下周把它部署到全世界 ⟩</footer>
+</body>
+</html>
