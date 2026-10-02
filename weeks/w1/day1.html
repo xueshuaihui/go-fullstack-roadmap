@@ -64,7 +64,7 @@ $ go mod init hello <span class="c"># 生成 go.mod 文件，相当于 package.j
     <p>创建 <code>main.go</code>（文件名随意，但包为 <code>main</code> 时入口函数必须叫 <code>main</code>）：</p>
     <pre><span class="code-label">main.go</span><span class="k">package</span> main
 
-<span class="k">import</span> <span class="t">fmt</span>
+<span class="k">import</span> <span class="s">"fmt"</span>
 
 <span class="k">func</span> main() {
     fmt.Println(<span class="s">"Hello, Go!"</span>)
@@ -84,7 +84,7 @@ Hello, Go!</pre>
     <h3>3. 变量、常量</h3>
     <pre><span class="code-label">main.go</span><span class="k">package</span> main
 
-<span class="k">import</span> <span class="t">fmt</span>
+<span class="k">import</span> <span class="s">"fmt"</span>
 
 <span class="k">func</span> main() {
     <span class="c">// 写法一：完整声明（函数外只能用这种）</span>
@@ -101,7 +101,9 @@ Hello, Go!</pre>
 
     fmt.Println(name, age, city)
 }</pre>
-    <p>常量用 <code>const</code>；配合 <code>iota</code> 可以生成一组自增枚举（Go 没有 enum 关键字）：</p>
+    <pre><span class="code-label">shell</span>$ go run .
+learner 25 Hangzhou</pre>
+    <p>常量用 <code>const</code>；配合 <code>iota</code> 可以生成一组自增枚举（Go 没有 enum 关键字）。下面这段写在 <code>func main</code> 的<b>外面</b>（函数上方），再在 main 里 <code>fmt.Println(StatusDraft, StatusPublished)</code> 验证：</p>
     <pre><span class="code-label">main.go</span><span class="k">const</span> (
     StatusDraft <span class="t">int</span> = <span class="k">iota</span> <span class="c">// 0，iota 在 const 块内逐行 +1</span>
     StatusPublished          <span class="c">// 1（自动继承上一行的表达式）</span>
@@ -120,37 +122,90 @@ Hello, Go!</pre>
       <tr><td>布尔</td><td><code>bool</code></td><td>只有 <code>true/false</code>，<b>不能</b>用 <code>if 1 {}</code> 或 <code>if "" {}</code> 做真值判断</td></tr>
       <tr><td>零值</td><td>—</td><td>声明未赋值的变量必有默认值：数字 0、字符串 ""、bool false。没有 undefined/null 这两个坑</td></tr>
     </table>
-    <pre><span class="code-label">main.go</span><span class="c">// 类型转换必须显式，Go 不做隐式转换</span>
-<span class="k">var</span> i <span class="t">int</span> = <span class="n">10</span>
-<span class="k">var</span> f <span class="t">float64</span> = <span class="t">float64</span>(i) / <span class="t">float64</span>(<span class="n">3</span>) <span class="c">// 3.3333...</span>
-fmt.Println(f)
+    <p>下面这份是<b>完整可运行</b>的 <code>main.go</code>。今天起每个示例都按同一个方式跑：<b>覆盖 <code>main.go</code> → <code>go run .</code></b>（一个 <code>package main</code> 里只能有一个 <code>func main</code>，所以别把两节的代码叠在同一个文件里）。</p>
+    <pre><span class="code-label">main.go</span><span class="k">package</span> main
 
-<span class="c">// 字符串 ≠ 数字，"5" + 5 直接编译失败</span>
-s := <span class="t">fmt.Sprint</span>(<span class="n">5</span>) + <span class="s">"abc"</span> <span class="c">// "5abc"，需要转字符串用 fmt.Sprint</span></pre>
+<span class="k">import</span> <span class="s">"fmt"</span>
+
+<span class="k">func</span> main() {
+    <span class="c">// 类型转换必须显式，Go 不做隐式转换</span>
+    <span class="k">var</span> i <span class="t">int</span> = <span class="n">10</span>
+    <span class="k">var</span> f <span class="t">float64</span> = <span class="t">float64</span>(i) / <span class="t">float64</span>(<span class="n">3</span>)
+    fmt.Println(f) <span class="c">// 3.3333333333333335（写成 i/3 得 3，整数除法会截断）</span>
+
+    <span class="c">// 字符串 ≠ 数字，"5" + 5 直接编译失败</span>
+    s := <span class="t">fmt.Sprint</span>(<span class="n">5</span>) + <span class="s">"abc"</span>
+    fmt.Println(s) <span class="c">// 5abc，需要转字符串用 fmt.Sprint</span>
+}</pre>
+    <pre><span class="code-label">shell</span>$ go run .
+3.3333333333333335
+5abc</pre>
 
     <h3>5. 控制流：if / for / switch</h3>
-    <pre><span class="code-label">main.go</span><span class="c">// if 的条件不需要括号，但必须是大括号块</span>
-<span class="k">if</span> score := <span class="n">85</span>; score &gt;= <span class="n">90</span> {
-    fmt.Println(<span class="s">"A"</span>)
-} <span class="k">else if</span> score &gt;= <span class="n">60</span> {
-    fmt.Println(<span class="s">"B"</span>) <span class="c">// ← 命中这里；score 只在 if/else 作用内存活</span>
-} <span class="k">else</span> {
-    fmt.Println(<span class="s">"C"</span>)
-}
+    <pre><span class="code-label">main.go（完整可跑，覆盖上一节）</span><span class="k">package</span> main
 
-<span class="c">// for 是 Go 唯一的循环关键字：</span>
-<span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="n">3</span>; i++ { fmt.Println(i) } <span class="c">// 经典三段式</span>
-n := <span class="n">0</span>
-<span class="k">for</span> n &lt; <span class="n">5</span> { n++ }                          <span class="c">// 相当于 while</span>
-<span class="k">for</span> { <span class="c">/* 死循环，用 break 退出 */</span> }        <span class="c">// 相当于 while(true)</span>
+<span class="k">import</span> <span class="s">"fmt"</span>
 
-<span class="c">// switch 默认自带 break（不会穿透），且 case 可以是任意表达式</span>
-<span class="k">switch</span> day {
-<span class="k">case</span> <span class="s">"Saturday"</span>, <span class="s">"Sunday"</span>:
-    fmt.Println(<span class="s">"周末写项目"</span>)
-<span class="k">default</span>:
-    fmt.Println(<span class="s">"工作日学习"</span>)
+<span class="k">func</span> main() {
+    <span class="c">// if 的条件不需要括号，但必须是大括号块</span>
+    <span class="k">if</span> score := <span class="n">85</span>; score &gt;= <span class="n">90</span> {
+        fmt.Println(<span class="s">"A"</span>)
+    } <span class="k">else if</span> score &gt;= <span class="n">60</span> {
+        fmt.Println(<span class="s">"B"</span>) <span class="c">// ← 命中这里；score 只在 if/else 作用内存活</span>
+    } <span class="k">else</span> {
+        fmt.Println(<span class="s">"C"</span>)
+    }
+
+    <span class="c">// for 是 Go 唯一的循环关键字：</span>
+    <span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="n">3</span>; i++ { fmt.Println(i) } <span class="c">// 经典三段式 → 0 1 2</span>
+    n := <span class="n">0</span>
+    <span class="k">for</span> n &lt; <span class="n">5</span> { n++ }                          <span class="c">// 相当于 while，结束后 n=5</span>
+    <span class="k">for</span> { <span class="k">break</span> }                               <span class="c">// 相当于 while(true)，用 break 退出</span>
+
+    <span class="c">// switch 默认自带 break（不会穿透），且 case 可以是任意表达式</span>
+    day := <span class="s">"Saturday"</span> <span class="c">// 先声明再 switch；day 必须是 string，否则 case 匹配不上</span>
+    <span class="k">switch</span> day {
+    <span class="k">case</span> <span class="s">"Saturday"</span>, <span class="s">"Sunday"</span>:
+        fmt.Println(<span class="s">"周末写项目"</span>) <span class="c">// ← 命中这里</span>
+    <span class="k">default</span>:
+        fmt.Println(<span class="s">"工作日学习"</span>)
+    }
 }</pre>
+    <pre><span class="code-label">shell</span>$ go run .
+B
+0
+1
+2
+周末写项目</pre>
+    <p><b>range 初识（明天开始天天用，今天先会这三种写法）</b>：遍历 slice / map / 字符串用 <code>for 下标, 值 := range 集合</code>，两个变量按位置分别是<b>下标</b>和<b>元素</b>；不要哪个就写 <code>_</code> 丢掉：</p>
+    <pre><span class="code-label">main.go（继续覆盖）</span><span class="k">package</span> main
+
+<span class="k">import</span> <span class="s">"fmt"</span>
+
+<span class="k">func</span> main() {
+    scores := []<span class="t">int</span>{<span class="n">90</span>, <span class="n">85</span>, <span class="n">77</span>} <span class="c">// 这是一个 int 切片（Day 3 细讲）</span>
+
+    <span class="k">for</span> i, v := <span class="k">range</span> scores {  <span class="c">// 下标 + 值都要</span>
+        fmt.Printf(<span class="s">"第 %d 个是 %d\n"</span>, i, v)
+    }
+
+    <span class="k">for</span> _, v := <span class="k">range</span> scores {  <span class="c">// 只要值：下标用 _ 丢弃</span>
+        fmt.Println(v * <span class="n">2</span>)
+    }
+
+    <span class="k">for</span> i := <span class="k">range</span> scores {     <span class="c">// 只要下标（Day 3 改元素本体就靠它）</span>
+        fmt.Print(i, <span class="s">" "</span>)
+    }
+    fmt.Println()
+}</pre>
+    <pre><span class="code-label">shell</span>$ go run .
+第 0 个是 90
+第 1 个是 85
+第 2 个是 77
+180
+170
+154
+0 1 2</pre>
     <div class="callout warn"><p>三个高频编译错误先打预防针：① <code>if x = 1 {}</code>（写错赋值符号）；② 条件写成 <code>if 1 {}</code>（非 bool）；③ 行尾大括号换行——Go 要求 <code>}</code> 或 <code>else</code> 不能独占一行开头，格式化工具 <code>gofmt</code> 会自动修正，保存时让编辑器格式化即可。</p></div>
 
     <h3>6. 多返回值与 error：Go 的灵魂</h3>
@@ -158,8 +213,8 @@ n := <span class="n">0</span>
     <pre><span class="code-label">main.go</span><span class="k">package</span> main
 
 <span class="k">import</span> (
-    <span class="t">errors</span>
-    <span class="t">fmt</span>
+    <span class="s">"errors"</span>
+    <span class="s">"fmt"</span>
 )
 
 <span class="c">// 返回值签名 (int, error)：要么给结果，要么给错误</span>
@@ -178,6 +233,9 @@ n := <span class="n">0</span>
     }
     fmt.Println(<span class="s">"结果:"</span>, result)
 }</pre>
+    <pre><span class="code-label">shell</span>$ go run .
+计算失败: 除数不能为 0</pre>
+    <div class="callout note"><p><b>上面注释里有两个词现在只需要最小定义</b>：<b>指针</b>≈JS 里对象的"引用"——它存的是变量的地址，<code>&amp;x</code> 取地址、<code>*T</code> 声明"这是个指向 T 的指针"，顺着地址改就等于改原对象（本周 Day 2 正式讲）；<b>接口</b>=一组方法名的约定，<code>error</code> 就只约定了 <code>Error() string</code> 一个方法，谁的类型有这个方法谁就算实现了它（本周 Day 4 正式讲）。</p></div>
     <div class="callout js"><p>习惯它。以后写 Web 后端，"参数错了返回 400、数据库挂了返回 500"全部建立在 <code>if err != nil</code> 这个模式上。<b>错误就是值（errors are values）</b>，可以传参、可以包装、可以单元测试。</p></div>
   </section>
 
@@ -185,11 +243,11 @@ n := <span class="n">0</span>
     <h2>今日练习</h2>
     <div class="task">
       <div class="task-title">练习 1：BMI 计算器（30 分钟）</div>
-      <p>在 <code>hello-go</code> 项目里新建 <code>bmi.go</code>（和 main.go 同目录，同一个 package main 里只能有一个 main 函数，所以先把 main.go 改名或删掉，只保留一个入口）。要求：</p>
+      <p>在 <code>hello-go</code> 目录里新建 <code>bmi.go</code>（第一行仍写 <code>package main</code>）。因为<b>一个 <code>package main</code> 里只能有一个 <code>func main</code></b>，先二选一处理掉旧入口：<b>①</b> 把讲义的 <code>main.go</code> 改名成 <code>main.go.txt</code>（Go 只编译 <code>.go</code> 后缀，改名即彻底移出编译范围，随时能改回来）；<b>②</b> 不新建文件，直接把 <code>main.go</code> 整个内容覆盖成 BMI 版本。之后统一用 <code>go run .</code> 运行。要求：</p>
       <ul>
         <li>写函数 <code>bmi(weight, height float64) (float64, error)</code>：身高/体重 ≤ 0 时返回 error</li>
         <li>main 里调用两次：正常数据 + 身高为 0，打印各自的返回值</li>
-        <li>用 <code>switch</code>（对 BMI 结果分段）打印 "偏瘦 / 正常 / 偏胖"</li>
+        <li>用 <code>switch</code>（对 BMI 结果分段，写"无变量"形式 <code>switch { case v &lt; 18.5: … }</code>）打印 "偏瘦 / 正常 / 偏胖"</li>
       </ul>
       <p>参考输出：<code>BMI=24.00，正常</code>、<code>计算失败: 身高必须大于 0</code></p>
     </div>
@@ -214,7 +272,7 @@ n := <span class="n">0</span>
       <tr><td>声明不用</td><td><code>declared and not used</code> 编译失败</td><td>删掉或改成 <code>_ = x</code> 明确弃用</td></tr>
       <tr><td>整数除法</td><td><code>1/2</code> 得 0</td><td>转 <code>float64</code> 再除</td></tr>
       <tr><td>err 不看</td><td>程序带病运行，越跑越远</td><td>每个 err 当行处理，处理不了就 <code>return err</code> 上抛</td></tr>
-      <tr><td>字符串拼接</td><td>循环里 <code>s += x</code> 性能差</td><td>今天先知道，第 3 周会讲 <code>strings.Builder</code></td></tr>
+      <tr><td>字符串拼接</td><td>循环里 <code>s += x</code> 性能差</td><td>今天数据量小无所谓，先知道有这回事；<b>第 3 周 day4「字符串拼接与 strings.Builder」小节</b>会正式讲 <code>strings.Builder</code> 的写法</td></tr>
       <tr><td>大括号位置</td><td><code>return</code> 后换行写 <code>{}</code> 报错</td><td>让编辑器开"保存自动 gofmt"</td></tr>
     </table>
   </section>
@@ -226,9 +284,20 @@ n := <span class="n">0</span>
       <tr><td>Go Modules</td><td>官方依赖管理方案，<code>go.mod</code> 声明依赖，等效 package.json</td></tr>
       <tr><td>零值（zero value）</td><td>变量声明后的默认值：0 / "" / false / nil，不存在 undefined</td></tr>
       <tr><td>iota</td><td>const 块里的自增计数器，用来手写枚举</td></tr>
+      <tr><td>指针（pointer）</td><td>存地址的变量：<code>&amp;x</code> 取地址、<code>*T</code> 是类型；顺着指针改字段等于改原对象，Day 2 详讲</td></tr>
+      <tr><td>接口（interface）</td><td>一组方法名的约定，方法齐了就算实现（无需声明），Day 4 详讲</td></tr>
       <tr><td>error 接口</td><td>内置接口 <code>type error interface { Error() string }</code>，函数用它返回失败原因</td></tr>
       <tr><td>gofmt</td><td>官方格式化器，团队代码风格 100% 一致，没有 prettier vs  eslint 之争</td></tr>
     </table>
+  </section>
+
+  <section>
+    <h2>扩展阅读（补充，不影响今日完成度）</h2>
+    <ul>
+      <li><a href="https://go.dev/tour" target="_blank">A Tour of Go</a>：练习 3 要做的官方交互教程（右上角可切中文），今天学的变量/控制流/多返回值对应它的 Basics 一节</li>
+      <li><a href="https://go.dev/doc/code" target="_blank">Go 官方 · How to Write Go Code</a>：讲清 workspace、module、package 三者关系的原文，读完就明白 <code>go.mod</code> 为什么等价于 <code>package.json</code></li>
+      <li><a href="https://go.dev/blog/errors-are-values" target="_blank">Go Blog · Errors are values</a>：官方为 "没有 try/catch" 辩护的那篇文章，讲义 6 结尾那句口号就出自它</li>
+    </ul>
   </section>
 
   <section>

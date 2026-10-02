@@ -25,13 +25,21 @@
   <h1>接口、错误处理、包管理</h1>
   <p>今天是本周最难也最"后端"的一天。<b>接口</b>决定你能不能把存储从内存换成 JSON 文件、再换成 MySQL 而不动业务代码（第 3 周 GORM 就靠这个思路）；<b>错误处理</b>决定你的 API 能不能准确返回 400/404/500；<b>包管理</b>决定你的项目是不是只剩一个巨大的 <code>main.go</code>。讲义 6 的仓储接口，明天会被 HTTP handler 直接拿去用。</p>
 
+  <div class="callout note"><p><b>今天的文件怎么放（两种目录，别混）</b></p>
+    <ul>
+      <li><b>小实验</b>：继续用 Day 2/3 那个 <code>proj/</code> 模块，一节一个子目录 —— <code>d4s1/</code>（§1）、<code>d4s2/</code>（§2）、<code>d4s3/</code>（§3）、<code>d4s4/</code>（§4）。§2–§4 给的是<b>片段</b>（只有类型和函数），要么自己套上 <code>package main</code> + import + <code>func main</code>，要么直接抄 §4 末尾那份合并完整版 <code>d4all/main.go</code>（§2+§3+§4 一起跑，带输出）。</li>
+      <li><b>正式项目</b>：从 §5 起新建 <code>todo-api/</code>，<code>go mod init github.com/你的用户名/todo-api</code>。本周剩下的所有代码<b>都放这一个目录、全部 <code>package main</code></b>，一条 <code>go run .</code> 启动；<code>cmd/server</code> 和 <code>internal/</code> 那种拆包写法<b>第 2 周才正式用</b>，今天只在 §5 末尾看懂规则、练习 2 里顺手撞一次 unexported 报错（练习 2 那个 <code>internal/version</code> 是本页唯一的小例外，别把它当分层架构的开始）。</li>
+    </ul>
+    <p>老规矩：同一目录只能有一个 <code>func main()</code>，多个示例文件请改名 <code>.go.txt</code> 或分子目录，否则 <code>main redeclared in this block</code>。</p>
+  </div>
+
   <section class="goals">
     <h2>今日目标</h2>
     <ul class="check">
       <li><label><input type="checkbox" data-key="w1d4g1">能解释 Go 的隐式实现（不用 <code>implements</code>），并写出一个接口两个实现</label></li>
       <li><label><input type="checkbox" data-key="w1d4g2">会用类型断言与 <code>switch v := x.(type)</code>，知道 nil 指针为什么会让 <code>err != nil</code> 永远成立</label></li>
       <li><label><input type="checkbox" data-key="w1d4g3">能用 <code>fmt.Errorf("%w")</code> 逐层包装错误，并用 <code>errors.Is</code> / <code>errors.As</code> 判断</label></li>
-      <li><label><input type="checkbox" data-key="w1d4g4">能把 Day 3 的存储代码拆进 <code>internal/todo</code> 包，跑通 <code>go mod init/tidy</code></label></li>
+      <li><label><input type="checkbox" data-key="w1d4g4">会用 <code>go mod init/tidy</code> 建 <code>todo-api</code> 模块，并把 Day 3 的存储函数作为<b>同包文件</b>搬进来</label></li>
       <li><label><input type="checkbox" data-key="w1d4g5">写完 <code>TodoRepository</code> 接口 + <code>MemRepo</code> 内存实现，并正确处理 <code>ErrNotFound</code></label></li>
     </ul>
     <p style="color:var(--text-dim);font-size:13px">↑ 这五条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
@@ -44,7 +52,7 @@
     <p>接口只声明"有哪些方法"，谁实现了它<b>不需要任何声明</b>——方法齐了就自动满足，这叫隐式实现。</p>
     <pre><span class="code-label">iface.go</span><span class="k">package</span> main
 
-<span class="k">import</span> <span class="t">fmt</span>
+<span class="k">import</span> <span class="s">"fmt"</span>
 
 <span class="c">// 接口：只约定能力，不关心谁具备</span>
 <span class="k">type</span> <span class="t">Shape</span> <span class="k">interface</span> {
@@ -70,6 +78,10 @@
     fmt.Printf(<span class="s">"接口里的具体类型: %T\n"</span>, s) <span class="c">// 接口值同时存着 (动态类型, 值)</span>
     <span class="c">// 删掉 Rect 的 Area → 编译期报错：Rect does not implement Shape (missing method Area)</span>
 }</pre>
+    <pre><span class="code-label">shell</span>$ mkdir -p d4s1 &amp;&amp; cp iface.go d4s1/main.go &amp;&amp; cd d4s1 &amp;&amp; go run .
+main.Rect 面积=12.00 周长=14.00
+main.Circle 面积=12.57 周长=12.57
+接口里的具体类型: main.Rect</pre>
     <div class="callout js"><p>JS 是"跑起来才发现 <code>obj.quack is not a function</code>"；TypeScript 是<b>结构化类型</b>（形状对就算实现，但仍要标注/断言）；Go 是<b>隐式实现 + 编译期检查</b>。所以 Go 的接口通常由<b>使用方</b>定义（"我需要能 Area 的东西"），而不是实现方宣布"我实现了 Shape"。惯例：<b>单方法接口最有用</b>（<code>io.Reader</code>、<code>fmt.Stringer</code>、明天的 <code>http.Handler</code>），别给每个 struct 都配一个接口。</p></div>
 
     <h3>2. 类型断言、type switch 与空接口</h3>
@@ -87,16 +99,22 @@
     }
     <span class="c">// 空接口 any（= interface{}）：什么都能装，但也丢失全部信息</span>
     bag := <span class="t">map</span>[<span class="t">string</span>]<span class="t">any</span>{<span class="s">"n"</span>: <span class="n">1</span>, <span class="s">"s"</span>: <span class="s">"go"</span>, <span class="s">"b"</span>: <span class="k">true</span>}
-    <span class="k">for</span> k, val := <span class="k">range</span> bag { fmt.Printf(<span class="s">"%s -> %T\n"</span>, k, val) }
+    <span class="k">for</span> k, val := <span class="k">range</span> bag { fmt.Printf(<span class="s">"%s -&gt; %T\n"</span>, k, val) }
 }</pre>
-    <div class="callout warn"><p>两个坑：① 本周规划「常见坑」里的<b>过度使用 <code>interface{}</code></b>——参数能用具体类型就用，只有真的"什么都能装"（未知 JSON 结构、通用容器）才用 <code>any</code>；② 把"类型为 <code>*T</code>、值为 nil"的指针赋给 <code>error</code> 接口，<b>接口本身不是 nil</b>，于是 <code>if err != nil</code> 永远成立。无错时老老实实 <code>return nil</code>。</p></div>
+    <div class="callout warn"><p>两个坑：① 本页底部「常见坑」表里 <b>「到处用 <code>any</code>」</b>那一行说的就是这里——参数能用具体类型就用，只有真的"什么都能装"（未知 JSON 结构、通用容器）才用 <code>any</code>；② 把"类型为 <code>*T</code>、值为 nil"的指针赋给 <code>error</code> 接口，<b>接口本身不是 nil</b>，于是 <code>if err != nil</code> 永远成立。无错时老老实实 <code>return nil</code>。</p></div>
 
     <h3>3. error 接口、哨兵错误与自定义错误类型</h3>
-    <p><code>error</code> 只是内置接口 <code>type error interface { Error() string }</code>，任何实现 <code>Error() string</code> 的类型都能当错误返回——这就是"错误就是值"。§2–§4 都是接在 §1 之后的片段：把 <code>errors</code>、<code>strings</code> 补进 import，再带上你昨天的 <code>Todo{ID, Title, Done}</code>，就能跑。</p>
-    <pre><span class="code-label">err.go（片段）</span><span class="c">// ① 哨兵错误：包级变量，调用方用 errors.Is 比对</span>
+    <p><code>error</code> 只是内置接口 <code>type error interface { Error() string }</code>，任何实现 <code>Error() string</code> 的类型都能当错误返回——这就是"错误就是值"。<b>§2–§4 都是片段</b>（只给类型和函数，没有 package/import/main），两种跑法任选：① 每段自己套上 Day 2 那个起手模板（<code>package main</code> + <code>import ("errors"; "fmt"; "strings")</code> + <code>func main(){ assertDemo() }</code>），并把 §1 的 <code>Shape / Rect / Circle</code> 和下面这三行的 <code>Todo</code> 复制进去；② 直接抄 §4 末尾那份合并完整版，一次跑完 §2+§3+§4。</p>
+    <pre><span class="code-label">片段要用到的 Todo（和 Day 3 §6 那份一致，讲义 6 里会正式落成 model.go）</span><span class="k">type</span> <span class="t">Todo</span> <span class="k">struct</span> {
+    ID        <span class="t">int</span>    <span class="s">`json:"id"`</span>
+    Title     <span class="t">string</span> <span class="s">`json:"title"`</span>
+    Done      <span class="t">bool</span>   <span class="s">`json:"done"`</span>
+    CreatedAt <span class="t">string</span> <span class="s">`json:"created_at,omitempty"`</span>
+}</pre>
+    <pre><span class="code-label">err.go（片段：需要 errors / fmt / strings 三个 import 和上面的 Todo）</span><span class="c">// ① 哨兵错误：包级变量，调用方用 errors.Is 比对</span>
 <span class="k">var</span> (
     ErrNotFound   = errors.New(<span class="s">"todo not found"</span>)
-    ErrTitleEmpty = errors.New(<span class="s">"title is required"</span>)
+    ErrEmptyTitle = errors.New(<span class="s">"title is required"</span>)
 )
 
 <span class="c">// ② 自定义错误类型：需要携带上下文（哪个字段、收到什么值）时用它</span>
@@ -117,20 +135,21 @@
     fmt.Println(<span class="s">"错误文本:"</span>, err) <span class="c">// create: field title invalid, got ""</span>
     <span class="k">var</span> ve *<span class="t">ValidationError</span>
     fmt.Println(<span class="s">"As 取回类型:"</span>, errors.As(err, &amp;ve), <span class="s">"字段:"</span>, ve.Field) <span class="c">// true title</span>
-    fmt.Println(<span class="s">"Is 匹配哨兵:"</span>, errors.Is(err, ErrTitleEmpty)) <span class="c">// false：链上挂的不是它</span>
+    fmt.Println(<span class="s">"Is 匹配哨兵:"</span>, errors.Is(err, ErrEmptyTitle)) <span class="c">// false：链上挂的不是它</span>
 }</pre>
     <div class="callout js"><p>Go 里 <code>err.Error()</code> 才是"报错文本"，对应 JS 的 <code>e.message</code>；Go 没有 <code>throw</code>/<code>try</code>/<code>catch</code>，也没有"未捕获异常一路冒泡"。要么当场处理，要么 <code>return err</code> 上抛，编译器还盯着你别把 <code>err</code> 接了不用。</p></div>
+    <div class="callout note"><p><b>顺手记两个动词</b>：① <code>%q</code> = 把字符串<b>带双引号</b>打印（<code>fmt.Sprintf("got %q", "")</code> 得到 <code>got ""</code>），空串、含空格、含换行的值一眼就能看出边界；相关的 <code>%+v</code> 是"连字段名一起打印"（Day 3 §6 用过），<code>%T</code> 是打印类型。② 上面这段里 <code>errors.As(err, &amp;ve)</code> 的意思是"顺着错误链<b>找某个类型</b>"，找到了就把值写进 <code>ve</code> 并返回 true —— 和 <code>errors.Is</code> 找"同一个变量"是一对。</p></div>
 
     <h3>4. 错误包装：%w、errors.Is、errors.As</h3>
     <p>后端调用是分层的（handler → service → repository）。底层只知道"没找到"，上层需要给用户一句人话。Go 的做法是<b>逐层包装</b>，用 <code>%w</code> 把原错误挂在链上。</p>
-    <pre><span class="code-label">wrap.go（片段：三层调用）</span><span class="k">func</span> readFromDisk(path <span class="t">string</span>) ([]<span class="t">byte</span>, <span class="t">error</span>) {
+    <pre><span class="code-label">wrap.go（片段：三层调用，需要 §3 的 ErrNotFound / ErrEmptyTitle 在同一目录）</span><span class="k">func</span> readFromDisk(path <span class="t">string</span>) ([]<span class="t">byte</span>, <span class="t">error</span>) {
     <span class="k">if</span> path == <span class="s">""</span> { <span class="k">return</span> nil, fmt.Errorf(<span class="s">"open %q: %w"</span>, path, ErrNotFound) }
     <span class="k">return</span> []<span class="t">byte</span>(<span class="s">"[]"</span>), <span class="k">nil</span>
 }
 <span class="k">func</span> loadTodos(path <span class="t">string</span>) (<span class="t">string</span>, <span class="t">error</span>) {
     data, err := readFromDisk(path)
     <span class="c">// 再包一层上下文：%w 保留链条（可判断），%v 只是拼文本（会断链）</span>
-    <span class="k">if</span> err != nil { <span class="k">return</span> <span class="s">""</span>, fmt.Errorf(<span class="s">"load todos: %w"</span>, err) }
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="s">""</span>, fmt.Errorf(<span class="s">"load todos: %w"</span>, err) }
     <span class="k">return</span> <span class="t">string</span>(data), <span class="k">nil</span>
 }
 <span class="k">func</span> handlerDemo() {
@@ -138,23 +157,123 @@
     fmt.Println(<span class="s">"完整错误链:"</span>, err) <span class="c">// load todos: open "": todo not found</span>
     <span class="c">// Is 沿链判断"到底是哪个哨兵"——明天的 HTTP 状态码就靠这段决定</span>
     <span class="k">switch</span> {
-    <span class="k">case</span> errors.Is(err, ErrNotFound):   fmt.Println(<span class="s">"--> 404 Not Found"</span>)
-    <span class="k">case</span> errors.Is(err, ErrTitleEmpty): fmt.Println(<span class="s">"--> 400 Bad Request"</span>)
-    <span class="k">default</span>:                            fmt.Println(<span class="s">"--> 500 Internal Server Error"</span>)
+    <span class="k">case</span> errors.Is(err, ErrNotFound):   fmt.Println(<span class="s">"--&gt; 404 Not Found"</span>)
+    <span class="k">case</span> errors.Is(err, ErrEmptyTitle): fmt.Println(<span class="s">"--&gt; 400 Bad Request"</span>)
+    <span class="k">default</span>:                            fmt.Println(<span class="s">"--&gt; 500 Internal Server Error"</span>)
     }
     fmt.Println(<span class="s">"== 比较:"</span>, err == ErrNotFound) <span class="c">// false ← 用 == 判断错误是错误写法</span>
 }</pre>
     <div class="callout note"><p>三条纪律：① 只在<b>真正能处理</b>的地方处理，否则 <code>return fmt.Errorf("上下文: %w", err)</code> 上抛；② 包装文本用小写、无标点，最外层再拼成给用户的话；③ 判断一律 <code>errors.Is</code>（哨兵）/<code>errors.As</code>（类型），绝不比较 <code>err.Error() == "…"</code>（改文案就全崩）。</p></div>
 
+    <h4>§2+§3+§4 合并完整版（想一次跑完就抄这份，30 行）</h4>
+    <p>下面把三段片段拼成一个真的能跑的 <code>main.go</code>：<code>package main</code>、import 齐、只有一个 <code>func main()</code>，把三个 demo 依次调一遍。放 <code>d4all/main.go</code>（<code>proj/</code> 里的新子目录），别和 §1 的 <code>d4s1/</code> 混在同一目录，否则 <code>Shape</code>、<code>Todo</code> 会重复声明。它也<b>绝不能抄进 <code>todo-api/</code></b>：这份里的 <code>Todo</code> / <code>ErrNotFound</code> / <code>ErrEmptyTitle</code> 和 §6 <code>model.go</code> 那三个同名，靠"不同目录 = 不同包"才没打架，放进同一个目录立刻 <code>redeclared in this block</code>。</p>
+    <pre><span class="code-label">d4all/main.go（完整可跑）</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"errors"</span>
+    <span class="s">"fmt"</span>
+    <span class="s">"strings"</span>
+)
+
+<span class="k">type</span> <span class="t">Todo</span> <span class="k">struct</span> {
+    ID        <span class="t">int</span>    <span class="s">`json:"id"`</span>
+    Title     <span class="t">string</span> <span class="s">`json:"title"`</span>
+    Done      <span class="t">bool</span>   <span class="s">`json:"done"`</span>
+    CreatedAt <span class="t">string</span> <span class="s">`json:"created_at,omitempty"`</span>
+}
+
+<span class="k">var</span> (
+    ErrNotFound   = errors.New(<span class="s">"todo not found"</span>)
+    ErrEmptyTitle = errors.New(<span class="s">"title is required"</span>)
+)
+
+<span class="k">type</span> <span class="t">ValidationError</span> <span class="k">struct</span> { Field, Got <span class="t">string</span> }
+<span class="k">func</span> (e *<span class="t">ValidationError</span>) Error() <span class="t">string</span> { <span class="k">return</span> fmt.Sprintf(<span class="s">"field %s invalid, got %q"</span>, e.Field, e.Got) }
+
+<span class="k">func</span> CreateTodo(title <span class="t">string</span>) (<span class="t">Todo</span>, <span class="t">error</span>) {
+    title = <span class="t">strings</span>.TrimSpace(title)
+    <span class="k">if</span> title == <span class="s">""</span> {
+        <span class="k">return</span> <span class="t">Todo</span>{}, fmt.Errorf(<span class="s">"create: %w"</span>, &amp;<span class="t">ValidationError</span>{Field: <span class="s">"title"</span>, Got: title})
+    }
+    <span class="k">return</span> <span class="t">Todo</span>{ID: <span class="n">1</span>, Title: title}, <span class="k">nil</span>
+}
+
+<span class="k">func</span> readFromDisk(path <span class="t">string</span>) ([]<span class="t">byte</span>, <span class="t">error</span>) {
+    <span class="k">if</span> path == <span class="s">""</span> { <span class="k">return</span> nil, fmt.Errorf(<span class="s">"open %q: %w"</span>, path, ErrNotFound) }
+    <span class="k">return</span> []<span class="t">byte</span>(<span class="s">"[]"</span>), <span class="k">nil</span>
+}
+<span class="k">func</span> loadTodos(path <span class="t">string</span>) (<span class="t">string</span>, <span class="t">error</span>) {
+    data, err := readFromDisk(path)
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="s">""</span>, fmt.Errorf(<span class="s">"load todos: %w"</span>, err) }
+    <span class="k">return</span> <span class="t">string</span>(data), <span class="k">nil</span>
+}
+
+<span class="k">func</span> main() {
+    <span class="c">// —— §3：自定义错误类型 + errors.As ——</span>
+    _, err := CreateTodo(<span class="s">"   "</span>)
+    fmt.Println(<span class="s">"错误文本:"</span>, err)
+    <span class="k">var</span> ve *<span class="t">ValidationError</span>
+    fmt.Println(<span class="s">"As 取回类型:"</span>, errors.As(err, &amp;ve), <span class="s">"字段:"</span>, ve.Field)
+    fmt.Println(<span class="s">"Is 匹配哨兵:"</span>, errors.Is(err, ErrEmptyTitle))
+
+    <span class="c">// —— §4：三层包装 + 沿链判断 ——</span>
+    _, err = loadTodos(<span class="s">""</span>)
+    fmt.Println(<span class="s">"完整错误链:"</span>, err)
+    <span class="k">switch</span> {
+    <span class="k">case</span> errors.Is(err, ErrNotFound):   fmt.Println(<span class="s">"--&gt; 404 Not Found"</span>)
+    <span class="k">case</span> errors.Is(err, ErrEmptyTitle): fmt.Println(<span class="s">"--&gt; 400 Bad Request"</span>)
+    <span class="k">default</span>:                            fmt.Println(<span class="s">"--&gt; 500 Internal Server Error"</span>)
+    }
+    fmt.Println(<span class="s">"== 比较:"</span>, err == ErrNotFound) <span class="c">// false：包装过之后 == 就失效了</span>
+
+    <span class="c">// —— §2：类型断言（这里用 Todo 的 id 当"值"演示，不依赖 §1 的 Shape）——</span>
+    <span class="k">var</span> bag <span class="t">any</span> = <span class="t">Todo</span>{ID: <span class="n">7</span>, Title: <span class="s">"断言"</span>}
+    <span class="k">if</span> t, ok := bag.(<span class="t">Todo</span>); ok { fmt.Println(<span class="s">"断言成功:"</span>, t.ID, t.Title) }
+    <span class="k">if</span> _, ok := bag.(<span class="t">string</span>); !ok { fmt.Println(<span class="s">"不是 string（带 ok 的断言不会 panic）"</span>) }
+    <span class="k">switch</span> v := bag.(<span class="k">type</span>) {
+    <span class="k">case</span> <span class="t">Todo</span>:   fmt.Println(<span class="s">"type switch 命中 Todo:"</span>, v.Title)
+    <span class="k">case</span> <span class="k">nil</span>:    fmt.Println(<span class="s">"any 里是 nil"</span>)
+    <span class="k">default</span>:     fmt.Println(<span class="s">"其他类型"</span>)
+    }
+}</pre>
+    <pre><span class="code-label">shell</span>$ mkdir -p d4all &amp;&amp; cd d4all &amp;&amp; go run .
+错误文本: create: field title invalid, got ""
+As 取回类型: true 字段: title
+Is 匹配哨兵: false
+完整错误链: load todos: open "": todo not found
+--&gt; 404 Not Found
+== 比较: false
+断言成功: 7 断言
+不是 string（带 ok 的断言不会 panic）
+type switch 命中 Todo: 断言</pre>
+    <div class="callout tip"><p>动手改一处就懂 <code>%w</code> 的价值：把 <code>loadTodos</code> 里的 <code>"load todos: %w"</code> 改成 <code>"load todos: %v"</code> 再跑 —— 错误文本一模一样，但 <code>errors.Is(err, ErrNotFound)</code> 立刻变成 false，<code>--&gt; 404</code> 掉到 <code>--&gt; 500</code>。这就是"明天状态码全错"的成因。</p></div>
+
     <h3>5. 包管理：go mod、package、import、可见性</h3>
-    <pre><span class="code-label">shell</span>$ mkdir todo-api &amp;&amp; cd todo-api
+    <pre><span class="code-label">shell：建本周正式项目目录（就在 todo-api/ 这一层，不再分子目录）</span>$ mkdir todo-api &amp;&amp; cd todo-api
 $ go mod init github.com/你的用户名/todo-api <span class="c"># 生成 go.mod；模块路径就是 import 前缀</span>
-$ go mod tidy                              <span class="c"># 扫描 import：补齐/删除 go.mod 里的依赖</span>
-$ go run ./cmd/server                      <span class="c"># 运行 main 包所在目录</span>
-$ go build ./...                           <span class="c"># 编译整个模块（./... = 所有包）</span>
-$ go vet ./...                             <span class="c"># 静态检查：忽略 error 返回值、拷贝锁等</span></pre>
-    <p>一个 Go 文件在注释之后的第一行就是 <code>package xxx</code>；<b>同一目录下所有文件必须同一个包名</b>，包名是 import 路径的最后一段。本周项目建议的最小结构：<code>cmd/server/main.go</code>（入口）+ <code>internal/todo/todo.go</code>（库代码）+ <code>todos.json</code>（数据文件），<code>internal/</code> 目录名有魔法——只有同一父项目内的代码能 import 它。</p>
-    <pre><span class="code-label">internal/todo/todo.go</span><span class="k">package</span> todo <span class="c">// 包名：小写、单个单词、不用复数</span>
+$ go run .                              <span class="c"># 本周所有代码都在这个目录的 package main 里，一条命令跑</span>
+$ go mod tidy                           <span class="c"># 扫描 import：补齐/删除 go.mod 里的依赖（本周只用标准库）</span>
+$ go build ./...                        <span class="c"># 编译整个模块（./... = 所有包）</span>
+$ go vet ./...                          <span class="c"># 静态检查：忽略 error 返回值、拷贝锁等</span>
+$ gofmt -l .                            <span class="c"># 列出没格式化的文件；加 -w 就地改写</span></pre>
+    <pre><span class="code-label">shell：go mod init 之后 cat 一下，go.mod 就只有这三行</span>$ cat go.mod
+module github.com/你的用户名/todo-api
+
+go 1.22</pre>
+    <p>三条规则先记住：一个 Go 文件在注释之后的第一行就是 <code>package xxx</code>；<b>同一目录下所有文件必须同一个包名</b>；包名是 import 路径的最后一段。<b>同一目录 = 同一命名空间</b>，同包文件之间直接调用，不用 import，也没有 <code>./store</code> 这种相对路径（你昨天已经这么干过一次：Day 3 练习 4 的 <code>d3ex4/store.go</code> + <code>main.go</code>）。</p>
+    <p>本周项目就保持<b>一个目录、全部 <code>package main</code></b>：讲义 6 落 <code>model.go / repo.go / main.go</code> 三个文件，练习 2 补 <code>store.go</code>，练习 3 再补 <code>filerepo.go</code> + <code>acceptance.go</code>（明天真正要用的是前四个，<code>acceptance.go</code> 不做也不影响）：</p>
+    <pre><span class="code-label">todo-api/（本周结构，明天继续往里加文件）</span>todo-api/
+├── go.mod          <span class="c"># module github.com/你的用户名/todo-api</span>
+├── model.go        <span class="c"># §6：Todo 结构体 + ErrNotFound / ErrEmptyTitle（全项目只定义这一份）</span>
+├── store.go        <span class="c"># 练习 2：把 Day 3 的 LoadTodos / SaveTodos / storeFile 搬进来</span>
+├── repo.go         <span class="c"># §6：TodoRepository 接口 + MemRepo</span>
+├── filerepo.go     <span class="c"># 练习 3：FileRepo（Day 5 讲义 5 会再贴同一份，做过就跳过）</span>
+├── acceptance.go   <span class="c"># 练习 3：runAcceptance 一套断言跑两个实现（选做）</span>
+├── internal/version/ <span class="c"># 练习 2 的跨包小实验（正式拆包是第 2 周的事）</span>
+└── main.go         <span class="c"># §6：demo(repo) + 唯一的 func main()（明天整份换成 HTTP 服务入口）</span></pre>
+    <div class="callout warn"><p>除 <code>internal/version</code> 那个小实验外，这些文件都写 <code>package main</code>，但 <b><code>func main()</code> 只能有一个</b>（放 <code>main.go</code>）。跨包拆分的写法（<code>cmd/</code>、<code>internal/</code>）第 2 周才正式用；<b>本周不要把下面的 <code>internal/todo</code> 敲进 <code>todo-api/</code></b>，它里面的 <code>Todo</code>、<code>ErrNotFound</code> 会和 §6 撞名（<code>Todo redeclared in this block</code>）。</p></div>
+    <p>可见性没有关键字，<b>只看首字母</b>：大写 = 导出（别的包能用），小写 = 包内私有。下面两段是<b>第 2 周的正式结构</b>，今天只求看懂"包名.导出标识符"怎么用，不用敲：</p>
+    <pre><span class="code-label">第 2 周预览 · internal/todo/todo.go（今天不用敲）</span><span class="k">package</span> todo <span class="c">// 包名：小写、单个单词、不用复数</span>
 
 <span class="k">import</span> (
     <span class="s">"encoding/json"</span>
@@ -175,7 +294,7 @@ $ go vet ./...                             <span class="c"># 静态检查：忽�
 <span class="k">func</span> Load(path <span class="t">string</span>) ([]<span class="t">Todo</span>, <span class="t">error</span>) {
     b, err := os.ReadFile(path)
     <span class="k">if</span> os.IsNotExist(err) { <span class="k">return</span> []<span class="t">Todo</span>{}, <span class="k">nil</span> } <span class="c">// 第一次运行没文件，不算错误</span>
-    <span class="k">if</span> err != nil { <span class="k">return</span> nil, fmt.Errorf(<span class="s">"load: %w"</span>, err) }
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> nil, fmt.Errorf(<span class="s">"load: %w"</span>, err) }
     <span class="k">var</span> todos []<span class="t">Todo</span>
     <span class="k">if</span> err := json.Unmarshal(b, &amp;todos); err != nil { <span class="k">return</span> nil, fmt.Errorf(<span class="s">"decode: %w"</span>, err) }
     <span class="k">return</span> todos, <span class="k">nil</span>
@@ -183,13 +302,15 @@ $ go vet ./...                             <span class="c"># 静态检查：忽�
 
 <span class="k">func</span> Save(path <span class="t">string</span>, todos []<span class="t">Todo</span>) <span class="t">error</span> { <span class="c">// 就是 Day 3 的 SaveTodos，只是搬进包里</span>
     b, err := json.MarshalIndent(todos, <span class="s">""</span>, <span class="s">"  "</span>)
-    <span class="k">if</span> err != nil { <span class="k">return</span> fmt.Errorf(<span class="s">"encode: %w"</span>, err) }
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> fmt.Errorf(<span class="s">"encode: %w"</span>, err) }
     <span class="k">return</span> os.WriteFile(path, b, <span class="n">0o644</span>)
 }</pre>
-    <pre><span class="code-label">cmd/server/main.go</span><span class="k">package</span> main <span class="c">// main 包：编译成可执行文件，必须有 func main()</span>
+    <pre><span class="code-label">第 2 周预览 · cmd/server/main.go（今天不用敲；那时用 go run ./cmd/server）</span><span class="k">package</span> main <span class="c">// main 包：编译成可执行文件，必须有 func main()</span>
 
-<span class="k">import</span> <span class="s">"fmt"</span>
-<span class="k">import</span> <span class="s">"github.com/你的用户名/todo-api/internal/todo"</span> <span class="c">// 完整模块路径，不是相对路径</span>
+<span class="k">import</span> (
+    <span class="s">"fmt"</span>
+    <span class="s">"github.com/你的用户名/todo-api/internal/todo"</span> <span class="c">// 完整模块路径，不是相对路径</span>
+)
 
 <span class="k">func</span> main() {
     todos, err := todo.Load(<span class="s">"todos.json"</span>) <span class="c">// 用法：包名.导出标识符</span>
@@ -202,34 +323,43 @@ $ go vet ./...                             <span class="c"># 静态检查：忽�
       <tr><td>import 路径</td><td>是"模块路径 + 目录"，<b>没有</b> <code>./todo</code>、<code>../util</code> 这种相对写法；别名 <code>import t "…/internal/todo"</code> 合法，点号导入别用</td></tr>
       <tr><td>未使用的 import</td><td>编译错误（不是 warning）。临时占位可写 <code>_ "fmt"</code>，日常用 goimports 自动整理</td></tr>
       <tr><td>循环 import</td><td>A 引 B、B 引 A 直接编译失败。解法：公共类型抽到第三个包，或在使用方定义接口</td></tr>
+      <tr><td><code>internal/</code> 目录</td><td>目录名有魔法——只有同一父项目里的代码能 import 它，用来隔开"内部实现"和"给别人用的库"；第 2 周正式用它组织 <code>model / repository / handler</code></td></tr>
     </table>
+    <div class="callout note"><p><b>gofmt 和 goimports 是什么</b>：<code>gofmt -w .</code> 只做排版（缩进用 Tab、对齐、去多余空行），标准库自带；<code>goimports</code> = gofmt + <b>自动补上你用到的 import、删掉没用的</b>，所以要单独装：<code>go install golang.org/x/tools/cmd/goimports@latest</code>，然后把编辑器的"保存时格式化"指到它（VS Code 的 Go 插件默认就是这么配的）。JS 同学把它理解成"Prettier + 自动 import"就行。有了它，"未使用的 import 编译不过"这条规则基本不会烦到你。</p></div>
+    <div class="callout note"><p><code>go.mod</code> 里那行 <code>go 1.22</code> 是<b>语言版本下限</b>：写低于 <code>1.22</code>，明天 <code>mux.HandleFunc("GET /todos/{id}", …)</code> 的方法路由就不生效。不确定就跑 <code>go version</code> 看看本地版本（本周内容需要 Go 1.22 及以上）。</p></div>
     <div class="callout js"><p>对比 npm：Go 没有"装进 <code>node_modules</code>"这一步，<b>import 语句本身就是依赖声明</b>，<code>go mod tidy</code> 负责下载并写进 <code>go.mod</code>/<code>go.sum</code>；版本采用"最小版本选择"，也不会出现同一依赖 20 份拷贝。</p></div>
 
     <h3>6. 实战：待办仓储接口 + 内存实现</h3>
-    <p>明天 HTTP handler 的直接依赖。<b>接口在使用方（main 包）定义，实现可以是内存、JSON 文件、以后的 MySQL——换实现不动 handler。</b>这是一个完整的 <code>package main</code>，可直接 <code>go run repo.go</code>。</p>
-    <pre><span class="code-label">repo.go</span><span class="k">package</span> main
+    <p>明天 HTTP handler 的直接依赖。<b>接口在使用方（<code>main</code> 包）定义，实现可以是内存、JSON 文件、以后的 MySQL——换实现不动 handler。</b>下面三个文件全放进 <code>todo-api/</code>、全部 <code>package main</code>，最后一条 <code>go run .</code> 跑起来（<code>func main()</code> 只在 <code>main.go</code> 里出现一次）。</p>
+    <pre><span class="code-label">todo-api/model.go</span><span class="k">package</span> main
+
+<span class="k">import</span> <span class="s">"errors"</span>
+
+<span class="c">// 本周唯一的模型定义：Day 3 的存储、Day 5 的 handler 都用这一个 Todo</span>
+<span class="k">type</span> <span class="t">Todo</span> <span class="k">struct</span> {
+    ID        <span class="t">int</span>    <span class="s">`json:"id"`</span>
+    Title     <span class="t">string</span> <span class="s">`json:"title"`</span>
+    Done      <span class="t">bool</span>   <span class="s">`json:"done"`</span>
+    CreatedAt <span class="t">string</span> <span class="s">`json:"created_at,omitempty"`</span> <span class="c">// 不赋值就整个键都不出现（Day 3 的老朋友）</span>
+}
+
+<span class="k">var</span> (
+    ErrNotFound   = errors.New(<span class="s">"todo not found"</span>)    <span class="c">// 明天 -&gt; 404</span>
+    ErrEmptyTitle = errors.New(<span class="s">"title is required"</span>) <span class="c">// 明天 -&gt; 400</span>
+)</pre>
+    <div class="callout note"><p><b>锁是什么（三行讲完，第 5 周 day1–day3 才正式教 goroutine 与锁）</b>：<code>sync.Mutex</code> 就是试衣间的门闩——<code>Lock()</code> 进去反锁，别人来 <code>Lock()</code> 只能排队等；<code>Unlock()</code> 出来才放行。<b>为什么要锁</b>：明天的 HTTP 服务会同时处理很多请求，两次 <code>Create</code> 挤在一起可能拿到同一个 <code>nextID</code>，数据就互相盖掉了。今天你只要照抄"进函数第一行 <code>r.mu.Lock()</code>、第二行 <code>defer r.mu.Unlock()</code>"这个位置即可，别自己发明锁。</p></div>
+    <pre><span class="code-label">todo-api/repo.go</span><span class="k">package</span> main
 
 <span class="k">import</span> (
-    <span class="s">"errors"</span>
     <span class="s">"fmt"</span>
     <span class="s">"strings"</span>
     <span class="s">"sync"</span>
 )
 
-<span class="k">type</span> <span class="t">Todo</span> <span class="k">struct</span> {
-    ID    <span class="t">int</span>    <span class="s">`json:"id"`</span>
-    Title <span class="t">string</span> <span class="s">`json:"title"`</span>
-    Done  <span class="t">bool</span>   <span class="s">`json:"done"`</span>
-}
-
-<span class="k">var</span> (
-    ErrNotFound   = errors.New(<span class="s">"todo not found"</span>)    <span class="c">// 明天 -> 404</span>
-    ErrEmptyTitle = errors.New(<span class="s">"title is required"</span>) <span class="c">// 明天 -> 400</span>
-)
-
 <span class="c">// 仓储接口：只约定能力，不关心数据存在哪里</span>
+<span class="c">// 每个读方法都带 error：内存实现返回 nil，文件实现就能返回真实的读写错误</span>
 <span class="k">type</span> <span class="t">TodoRepository</span> <span class="k">interface</span> {
-    List() []<span class="t">Todo</span>
+    List() ([]<span class="t">Todo</span>, <span class="t">error</span>)
     Get(id <span class="t">int</span>) (<span class="t">Todo</span>, <span class="t">error</span>)
     Create(title <span class="t">string</span>) (<span class="t">Todo</span>, <span class="t">error</span>)
     Complete(id <span class="t">int</span>) (<span class="t">Todo</span>, <span class="t">error</span>)
@@ -250,9 +380,9 @@ $ go vet ./...                             <span class="c"># 静态检查：忽�
     <span class="k">return</span> -<span class="n">1</span>
 }
 
-<span class="k">func</span> (r *<span class="t">MemRepo</span>) List() []<span class="t">Todo</span> {
+<span class="k">func</span> (r *<span class="t">MemRepo</span>) List() ([]<span class="t">Todo</span>, <span class="t">error</span>) {
     r.mu.Lock(); <span class="k">defer</span> r.mu.Unlock()
-    <span class="k">return</span> <span class="t">append</span>([]<span class="t">Todo</span>{}, r.items...) <span class="c">// 返回副本，外部改不到内部数据</span>
+    <span class="k">return</span> <span class="t">append</span>([]<span class="t">Todo</span>{}, r.items...), <span class="k">nil</span> <span class="c">// 返回副本，外部改不到内部数据；内存版 error 恒为 nil</span>
 }
 <span class="k">func</span> (r *<span class="t">MemRepo</span>) Create(title <span class="t">string</span>) (<span class="t">Todo</span>, <span class="t">error</span>) {
     title = <span class="t">strings</span>.TrimSpace(title)
@@ -264,103 +394,240 @@ $ go vet ./...                             <span class="c"># 静态检查：忽�
 }
 <span class="k">func</span> (r *<span class="t">MemRepo</span>) Get(id <span class="t">int</span>) (<span class="t">Todo</span>, <span class="t">error</span>) {
     r.mu.Lock(); <span class="k">defer</span> r.mu.Unlock()
-    <span class="k">if</span> i := r.indexOf(id); i &lt; <span class="n">0</span> { <span class="k">return</span> <span class="t">Todo</span>{}, fmt.Errorf(<span class="s">"get %d: %w"</span>, id, ErrNotFound) }
+    i := r.indexOf(id)             <span class="c">// 先取下标再判：if i := ...; i &lt; 0 {} 里的 i 只活在 if 语句里</span>
+    <span class="k">if</span> i &lt; <span class="n">0</span> { <span class="k">return</span> <span class="t">Todo</span>{}, fmt.Errorf(<span class="s">"get %d: %w"</span>, id, ErrNotFound) }
     <span class="k">return</span> r.items[i], <span class="k">nil</span>
 }
 <span class="k">func</span> (r *<span class="t">MemRepo</span>) Complete(id <span class="t">int</span>) (<span class="t">Todo</span>, <span class="t">error</span>) {
     r.mu.Lock(); <span class="k">defer</span> r.mu.Unlock()
-    <span class="k">if</span> i := r.indexOf(id); i &lt; <span class="n">0</span> { <span class="k">return</span> <span class="t">Todo</span>{}, fmt.Errorf(<span class="s">"complete %d: %w"</span>, id, ErrNotFound) }
+    i := r.indexOf(id)
+    <span class="k">if</span> i &lt; <span class="n">0</span> { <span class="k">return</span> <span class="t">Todo</span>{}, fmt.Errorf(<span class="s">"complete %d: %w"</span>, id, ErrNotFound) }
     r.items[i].Done = <span class="k">true</span> <span class="c">// 下标访问，改的是元素本体（Day 2 的结论）</span>
     <span class="k">return</span> r.items[i], <span class="k">nil</span>
 }
 <span class="k">func</span> (r *<span class="t">MemRepo</span>) Delete(id <span class="t">int</span>) <span class="t">error</span> {
     r.mu.Lock(); <span class="k">defer</span> r.mu.Unlock()
-    <span class="k">if</span> i := r.indexOf(id); i &lt; <span class="n">0</span> { <span class="k">return</span> fmt.Errorf(<span class="s">"delete %d: %w"</span>, id, ErrNotFound) }
+    i := r.indexOf(id)
+    <span class="k">if</span> i &lt; <span class="n">0</span> { <span class="k">return</span> fmt.Errorf(<span class="s">"delete %d: %w"</span>, id, ErrNotFound) }
     r.items = <span class="t">append</span>(r.items[:i], r.items[i+<span class="n">1</span>:]...) <span class="c">// Day 3 的删除写法</span>
     <span class="k">return</span> <span class="k">nil</span>
 }
 
 <span class="c">// 编译期契约检查：*MemRepo 必须满足 TodoRepository，漏方法就编译失败</span>
-<span class="k">var</span> _ <span class="t">TodoRepository</span> = (*<span class="t">MemRepo</span>)(<span class="k">nil</span>)
+<span class="k">var</span> _ <span class="t">TodoRepository</span> = (*<span class="t">MemRepo</span>)(<span class="k">nil</span>)</pre>
+    <pre><span class="code-label">todo-api/main.go（今天唯一的 func main，明天整份换成 HTTP 服务入口）</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"errors"</span>
+    <span class="s">"fmt"</span>
+)
 
 <span class="k">func</span> demo(repo <span class="t">TodoRepository</span>) { <span class="c">// 参数只依赖接口，不依赖具体实现</span>
     t, err := repo.Create(<span class="s">"学习接口"</span>)
     <span class="k">if</span> err != nil { fmt.Println(<span class="s">"创建失败:"</span>, err); <span class="k">return</span> }
-    <span class="k">if</span> _, err := repo.Get(<span class="n">999</span>); errors.Is(err, ErrNotFound) { fmt.Println(<span class="s">"999 不存在 -> 404"</span>) }
-    <span class="k">if</span> _, err := repo.Create(<span class="s">""</span>); errors.Is(err, ErrEmptyTitle) { fmt.Println(<span class="s">"空标题 -> 400"</span>) }
-    done, _ := repo.Complete(t.ID)
-    fmt.Println(<span class="s">"标记完成:"</span>, done, <span class="s">"删除返回:"</span>, repo.Delete(t.ID), <span class="s">"剩余"</span>, len(repo.List()))
+    <span class="k">if</span> _, err := repo.Get(<span class="n">999</span>); errors.Is(err, ErrNotFound) { fmt.Println(<span class="s">"999 不存在 -&gt; 404"</span>) }
+    <span class="k">if</span> _, err := repo.Create(<span class="s">""</span>); errors.Is(err, ErrEmptyTitle) { fmt.Println(<span class="s">"空标题 -&gt; 400"</span>) }
+    done, err := repo.Complete(t.ID)
+    <span class="k">if</span> err != nil { fmt.Println(<span class="s">"标记完成失败:"</span>, err); <span class="k">return</span> }
+    fmt.Println(<span class="s">"标记完成:"</span>, done)
+    <span class="k">if</span> err := repo.Delete(t.ID); err != nil { fmt.Println(<span class="s">"删除失败:"</span>, err); <span class="k">return</span> }
+    items, err := repo.List() <span class="c">// List 现在返回两个值，别忘 ok/err 也要接</span>
+    <span class="k">if</span> err != nil { fmt.Println(<span class="s">"列表失败:"</span>, err); <span class="k">return</span> }
+    fmt.Println(<span class="s">"删除后剩余:"</span>, <span class="t">len</span>(items))
 }
+
 <span class="k">func</span> main() { demo(NewMemRepo()) }</pre>
-    <div class="callout tip"><p><code>var _ TodoRepository = (*MemRepo)(nil)</code> 是 Go 社区标准做法：<b>用空标识符做编译期契约检查</b>，既不创建实例，又能在改接口时立刻暴露"哪个实现漏了方法"。</p></div>
+    <pre><span class="code-label">shell</span>$ cd todo-api &amp;&amp; go run .
+999 不存在 -&gt; 404
+空标题 -&gt; 400
+标记完成: {1 学习接口 true }
+删除后剩余: 0
+$ go vet ./...                    <span class="c"># 没有任何输出 = 通过</span></pre>
+    <div class="callout tip"><p><code>var _ TodoRepository = (*MemRepo)(nil)</code> 是 Go 社区标准做法：<b>用空标识符做编译期契约检查</b>，既不创建实例，又能在改接口时立刻暴露"哪个实现漏了方法"。试着把接口里的 <code>List()</code> 改名成 <code>All()</code> 再 <code>go run .</code>，报错长这样：<code>repo.go:52:18: cannot use (*MemRepo)(nil) (value of type *MemRepo) as TodoRepository value in variable declaration: *MemRepo does not implement TodoRepository (missing method All)</code>。</p></div>
+    <div class="callout js"><p>为什么连 <code>List</code> 都要带 <code>error</code>？内存版永远不会失败，返回 <code>nil</code> 就行；但文件版要读磁盘、第 3 周的 MySQL 版要连库，一定会失败。<b>接口把"可能失败"提前写进签名</b>，明天的 handler 就能一句 <code>if err != nil { s.fail(w, err); return }</code> 通吃所有实现——这就是"面向接口编程"落到手上的样子。</p></div>
   </section>
 
   <section>
     <h2>今日练习</h2>
     <div class="task">
       <div class="task-title">练习 1：实现 fmt.Stringer + 跑通错误链实验（25 分钟）</div>
-      <p><code>fmt.Stringer</code> 只有一个方法 <code>String() string</code>。给昨天的 <code>Article</code> 实现它，再用 <code>fmt.Println</code> 打印值、指针、含它的 slice，观察输出变化。再定义一个 <code>Logger</code> 接口与<b>小写</b>实现类型 <code>consoleLogger</code>，写一个只接受 <code>Logger</code> 的函数。最后把讲义 4 的 <code>handlerDemo</code> 抄进同一个文件跑起来，记录 <code>errors.Is</code> 与 <code>err ==</code> 的不同结果，再把中间的 <code>%w</code> 改成 <code>%v</code> 看 <code>Is</code> 如何失效。</p>
-      <pre><span class="code-label">answer.go</span><span class="k">func</span> (a <span class="t">Article</span>) String() <span class="t">string</span> { <span class="k">return</span> fmt.Sprintf(<span class="s">"《%s》"</span>, a.Title) }
+      <p><code>fmt.Stringer</code> 只有一个方法 <code>String() string</code>。给今天反复出现的 <code>Todo</code> 实现它（不用昨天的 <code>Article</code>，明天直接能接上），再用 <code>fmt.Println</code> 打印<b>值、指针、装它的 slice</b>，观察输出变化。再定义一个 <code>Logger</code> 接口与<b>小写</b>实现类型 <code>consoleLogger</code>，写一个只接受 <code>Logger</code> 的函数。最后把讲义 4 的三层包装抄进同一个文件，记录 <code>errors.Is</code> 与 <code>err ==</code> 的不同结果，再把中间的 <code>%w</code> 改成 <code>%v</code> 看 <code>Is</code> 如何失效。</p>
+      <pre><span class="code-label">proj/d4ex1/main.go（完整可跑：新建子目录，别和 todo-api/ 混）</span><span class="k">package</span> main
 
+<span class="k">import</span> (
+    <span class="s">"errors"</span>
+    <span class="s">"fmt"</span>
+)
+
+<span class="k">type</span> <span class="t">Todo</span> <span class="k">struct</span> {
+    ID        <span class="t">int</span>    <span class="s">`json:"id"`</span>
+    Title     <span class="t">string</span> <span class="s">`json:"title"`</span>
+    Done      <span class="t">bool</span>   <span class="s">`json:"done"`</span>
+    CreatedAt <span class="t">string</span> <span class="s">`json:"created_at,omitempty"`</span>
+}
+
+<span class="c">// ① 只要写了 String() string，Todo 就自动满足 fmt.Stringer（没有 implements 声明）</span>
+<span class="k">func</span> (t <span class="t">Todo</span>) String() <span class="t">string</span> {
+    box := <span class="s">" "</span>
+    <span class="k">if</span> t.Done { box = <span class="s">"x"</span> }
+    <span class="k">return</span> fmt.Sprintf(<span class="s">"#%d %s [%s]"</span>, t.ID, t.Title, box)
+}
+
+<span class="c">// ② 小写类型：外面只能通过 Logger 接口用它</span>
 <span class="k">type</span> <span class="t">Logger</span> <span class="k">interface</span> { Log(msg <span class="t">string</span>) }
-<span class="k">type</span> <span class="t">consoleLogger</span> <span class="k">struct</span> { prefix <span class="t">string</span> } <span class="c">// 小写类型：只通过接口对外</span>
+<span class="k">type</span> <span class="t">consoleLogger</span> <span class="k">struct</span> { prefix <span class="t">string</span> }
 <span class="k">func</span> (l <span class="t">consoleLogger</span>) Log(msg <span class="t">string</span>) { fmt.Println(l.prefix, msg) }
+<span class="k">func</span> useLogger(l <span class="t">Logger</span>) { l.Log(<span class="s">"hello"</span>) } <span class="c">// 调用方不知道具体类型</span>
 
-<span class="k">func</span> useLogger(l <span class="t">Logger</span>) { l.Log(<span class="s">"hello"</span>) } <span class="c">// 调用方不知道具体类型</span></pre>
+<span class="c">// ③ 三层错误包装（讲义 4 的骨架，换成你自己的话术）</span>
+<span class="k">var</span> ErrNotFound = errors.New(<span class="s">"todo not found"</span>)
+
+<span class="k">func</span> readFromDisk(path <span class="t">string</span>) ([]<span class="t">byte</span>, <span class="t">error</span>) {
+    <span class="k">if</span> path == <span class="s">""</span> { <span class="k">return</span> <span class="k">nil</span>, fmt.Errorf(<span class="s">"open %q: %w"</span>, path, ErrNotFound) } <span class="c">// ← 把 %w 改成 %v 再跑</span>
+    <span class="k">return</span> []<span class="t">byte</span>(<span class="s">"[]"</span>), <span class="k">nil</span>
+}
+<span class="k">func</span> loadTodos(path <span class="t">string</span>) (<span class="t">string</span>, <span class="t">error</span>) {
+    data, err := readFromDisk(path)
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="s">""</span>, fmt.Errorf(<span class="s">"load todos: %w"</span>, err) }
+    <span class="k">return</span> <span class="t">string</span>(data), <span class="k">nil</span>
+}
+
+<span class="k">func</span> main() {
+    t := <span class="t">Todo</span>{ID: <span class="n">1</span>, Title: <span class="s">"写 Stringer"</span>}
+    fmt.Println(t)   <span class="c">// 值：走你的 String()</span>
+    fmt.Println(&amp;t)  <span class="c">// 指针：值方法自动进指针方法集，同样走 String()</span>
+    fmt.Println([]<span class="t">Todo</span>{{ID: <span class="n">2</span>, Title: <span class="s">"slice 里也走"</span>}, {ID: <span class="n">1</span>, Title: <span class="s">"写 Stringer"</span>, Done: <span class="k">true</span>}})
+    useLogger(<span class="t">consoleLogger</span>{prefix: <span class="s">"[info]"</span>})
+
+    _, err := loadTodos(<span class="s">""</span>)
+    fmt.Println(<span class="s">"Is :"</span>, errors.Is(err, ErrNotFound), <span class="s">" == :"</span>, err == ErrNotFound)
+}</pre>
+      <pre><span class="code-label">shell</span>$ cd d4ex1 &amp;&amp; go run .
+#1 写 Stringer [ ]
+#1 写 Stringer [ ]
+[#2 slice 里也走 [ ] #1 写 Stringer [x]]
+[info] hello
+Is : true  == : false
+$ # 把 %w 改成 %v 再跑一次 → 最后一行变成 Is : false  == : false</pre>
+      <div class="callout warn"><p>如果 <code>fmt.Println(t)</code> 打印出来还是 <code>{1 写 Stringer false }</code>，九成是接收者写成了 <code>func (t *Todo) String()</code> 而你传的是<b>值</b>：<code>Todo</code> 的方法集里没有 <code>String</code>，fmt 就退回默认格式。把接收者改成值接收者即可（这也是"值方法自动进指针方法集，反向不成立"最直观的一次体验）。</p></div>
     </div>
     <div class="task">
-      <div class="task-title">练习 2：把 Day 3 的存储拆进 internal/todo 包（35 分钟）</div>
-      <p>新建模块 <code>go mod init github.com/你的名字/todo-api</code>，按讲义 5 建 <code>cmd/server/</code> 与 <code>internal/todo/</code>，把 Day 3 的 <code>Todo / LoadTodos / SaveTodos</code> 搬进包内并导出为 <code>Todo / Load / Save</code>。验收四步：① <code>go run ./cmd/server</code> 跑通；② 把 <code>Load</code> 改成小写 <code>load</code> 再跑，抄下报错原文（unexported）；③ import 了不用，看编译错误；④ <code>go vet ./...</code> 无告警。</p>
-      <div class="callout warn"><p>最容易卡的一步：<code>go mod init</code> 的模块路径必须和 import 前缀<b>完全一致</b>。如果初始化成 <code>todo-api</code>（不带域名），import 就要写 <code>"todo-api/internal/todo"</code>，两者不能混用。</p></div>
+      <div class="task-title">练习 2：把 Day 3 的存储搬进 todo-api/（同包多文件）+ 亲手撞一次 unexported（35 分钟）</div>
+      <p>讲义 5 建好了 <code>todo-api/</code>，讲义 6 放了 <code>model.go / repo.go / main.go</code>。现在把 Day 3 的存储也搬进来，体会"同一目录 = 同一包"：<b>新建 <code>todo-api/store.go</code></b>，内容用 Day 3 <code>d3s6/todo_store.go</code> 的 <code>storeFile / LoadTodos / SaveTodos / NextID</code>，然后<b>删掉两处</b>：① 那份 <code>type Todo struct</code>（<code>model.go</code> 已经有，同包重名会报 <code>Todo redeclared in this block</code>）；② 它的 <code>func main()</code>（一个目录只能有一个）。store.go 里的 <code>Todo</code>、<code>fmt</code> 不用加包名前缀，直接用。</p>
+      <pre><span class="code-label">todo-api/store.go 只需要改文件头（其余照抄 Day 3）</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"encoding/json"</span>
+    <span class="s">"fmt"</span>
+    <span class="s">"os"</span>
+)
+
+<span class="k">const</span> storeFile = <span class="s">"todos.json"</span>
+
+<span class="c">// 下面直接是 Day 3 的 LoadTodos / SaveTodos / NextID 三个函数，
+// 它们写的 []Todo 就是 model.go 里那份 —— 同包，不用 import。</span></pre>
+      <p><b>再加一个真的跨包小实验</b>（这是今天唯一需要 <code>import</code> 自己模块内部路径的地方，也是<b>第 2 周正式拆包的引子</b>）：建 <code>todo-api/internal/version/version.go</code>，导出一个常量、留一个私有常量，然后在 <code>main.go</code> 里先用对、再用错，把报错原文抄进笔记。</p>
+      <pre><span class="code-label">todo-api/internal/version/version.go</span><span class="k">package</span> version <span class="c">// 包名 = 目录名最后一段：internal/version → version</span>
+
+<span class="k">import</span> <span class="s">"fmt"</span>
+
+<span class="k">const</span> Version  = <span class="s">"v0.1.0"</span> <span class="c">// 大写：包外能用</span>
+<span class="k">const</span> buildTag = <span class="s">"dev"</span>    <span class="c">// 小写：只有 version 包内部能用</span>
+
+<span class="c">// 想把私有值带出去？给它一个导出函数——这就是 Go 的"受控暴露"</span>
+<span class="k">func</span> Describe() <span class="t">string</span> { <span class="k">return</span> fmt.Sprintf(<span class="s">"%s (%s)"</span>, Version, buildTag) }</pre>
+      <pre><span class="code-label">todo-api/main.go：import 块里加一行，再把 func main 换成这一版</span><span class="k">import</span> (
+    <span class="s">"errors"</span>
+    <span class="s">"fmt"</span>
+    <span class="s">"github.com/你的用户名/todo-api/internal/version"</span> <span class="c">// ← 新增；写完整模块路径，不是相对路径</span>
+)
+
+<span class="c">// ……中间 demo 函数原样保留……</span>
+
+<span class="k">func</span> main() {
+    demo(NewMemRepo())
+    fmt.Println(version.Describe()) <span class="c">// v0.1.0 (dev)</span>
+    fmt.Println(version.Version)    <span class="c">// v0.1.0</span>
+    <span class="c">// fmt.Println(version.buildTag) // ← 把注释去掉，编译器立刻拦住你</span>
+}</pre>
+      <pre><span class="code-label">shell：验收四步</span>$ go run .            <span class="c"># ① 跑通：demo 四行 + v0.1.0 (dev) + v0.1.0</span>
+$ go build ./...      <span class="c"># ② 把 version.buildTag 的注释放开 → ./main.go:11:17: undefined: version.buildTag，抄原文</span>
+$ <span class="c"># ③ 再 import 一个没用到的包（比如 "os"）→ "os" imported and not used</span>
+$ go vet ./...        <span class="c"># ④ 没有任何输出 = 通过</span></pre>
+      <div class="callout warn"><p>最容易卡的两步：<b>①</b> <code>go mod init</code> 的模块路径必须和 import 前缀<b>完全一致</b>。如果你的模块初始化成了 <code>todo-api</code>（不带域名），import 就要写 <code>"todo-api/internal/version"</code>；两种写法不能混用，混用报 <code>could not import ... (no required module provides package ...)</code>。<b>②</b> <code>internal/version</code> 必须建在 <code>todo-api/</code> <b>里面</b>（它只对同一个父项目里的代码开放）。另外记住这条对照：<code>store.go</code> 调 <code>LoadTodos</code> <b>不用</b> import（同包），<code>main.go</code> 用 <code>version.Describe</code> <b>必须</b> import（跨包）——Go 里唯一的判据是"是不是同一个包"。</p></div>
+      <div class="callout note"><p><b>报错原文措辞会随 Go 版本略有出入</b>：Go 1.21+ 的统一类型检查器就报 <code>undefined: version.buildTag</code>（意思是"version 包里没有一个<b>导出的</b> <code>buildTag</code>"），更老的版本会写成 <code>cannot refer to unexported name version.buildTag</code>。只要报错里出现 <code>buildTag</code> 这个名字，就说明你撞对了：Go 的可见性<b>只有大小写一档</b>，没有 <code>private</code>、没有 <code>friend</code>、也没有"测试例外"。</p></div>
     </div>
     <div class="task">
       <div class="task-title">练习 3：仓储接口双实现 + 一套验收断言（45 分钟）</div>
-      <p>照讲义 6 敲出 <code>TodoRepository</code> 与 <code>MemRepo</code>，再写第二个实现 <code>FileRepo</code>：内部持有 <code>path</code>，写操作成功后调用 Day 3 的 <code>Load/Save</code>（<b>本题与讲义 6 保持在同一个 package main 里</b>，避免跨包类型对不上；真想拆进 <code>internal/todo</code>，就把接口和实现一起搬过去，或用 <code>type Todo = todo.Todo</code> 别名）。最后写 <code>runAcceptance(repo TodoRepository) error</code>，对两个实现跑同一套断言：Create → List 数量 +1 → Complete → Delete → Get 报 <code>ErrNotFound</code> → 空标题报 <code>ErrEmptyTitle</code>。跑通后你就体会到"面向接口编程"的全部价值。</p>
-      <pre><span class="code-label">answer.go</span><span class="k">type</span> <span class="t">FileRepo</span> <span class="k">struct</span> {
+      <p>照讲义 6 敲出 <code>TodoRepository</code> 与 <code>MemRepo</code>，再写第二个实现 <code>FileRepo</code>：内部组合一个 <code>MemRepo</code>，写操作成功后调用练习 2 的 <code>SaveTodos</code> 落盘。<b>接口、两个实现、断言全部放在 <code>todo-api/</code> 这一个 <code>package main</code> 里</b>——所以 <code>Todo</code>、<code>ErrNotFound</code> 全项目只有一份，不用 <code>todo.Todo</code> 这种限定名，也不需要类型别名。最后写 <code>runAcceptance(repo TodoRepository) error</code>，对两个实现跑同一套断言：Create → List 数量 +1 → Complete → Delete → Get 报 <code>ErrNotFound</code> → 空标题报 <code>ErrEmptyTitle</code>。跑通后你就体会到"面向接口编程"的全部价值。</p>
+      <pre><span class="code-label">todo-api/filerepo.go（package main，不写 func main）</span><span class="k">package</span> main
+
+<span class="k">type</span> <span class="t">FileRepo</span> <span class="k">struct</span> {
     inner *<span class="t">MemRepo</span> <span class="c">// 组合：复用内存实现的逻辑，只做持久化增强</span>
     path  <span class="t">string</span>
 }
 
 <span class="k">func</span> NewFileRepo(path <span class="t">string</span>) (*<span class="t">FileRepo</span>, <span class="t">error</span>) {
-    todos, err := Load(path) <span class="c">// Day 3 的 JSON 读取（同一个 package main）</span>
-    <span class="k">if</span> err != nil { <span class="k">return</span> nil, err }
-    m := <span class="n">0</span>
-    <span class="k">for</span> _, t := <span class="k">range</span> todos { <span class="k">if</span> t.ID &gt; m { m = t.ID } } <span class="c">// 新 ID 从最大值往后走</span>
-    <span class="k">return</span> &amp;<span class="t">FileRepo</span>{inner: &amp;<span class="t">MemRepo</span>{items: todos, nextID: m + <span class="n">1</span>}, path: path}, <span class="k">nil</span>
+    todos, err := LoadTodos(path) <span class="c">// store.go 里 Day 3 的那个函数，同包直接调</span>
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="k">nil</span>, err }
+    <span class="k">return</span> &amp;<span class="t">FileRepo</span>{inner: &amp;<span class="t">MemRepo</span>{items: todos, nextID: NextID(todos)}, path: path}, <span class="k">nil</span>
 }
 
-<span class="c">// 只读方法直接转发；写方法交给 write 统一落盘</span>
-<span class="k">func</span> (f *<span class="t">FileRepo</span>) List() []<span class="t">Todo</span>                  { <span class="k">return</span> f.inner.List() }
-<span class="k">func</span> (f *<span class="t">FileRepo</span>) Get(id <span class="t">int</span>) (<span class="t">Todo</span>, <span class="t">error</span>)     { <span class="k">return</span> f.inner.Get(id) }
-<span class="k">func</span> (f *<span class="t">FileRepo</span>) Create(t <span class="t">string</span>) (<span class="t">Todo</span>, <span class="t">error</span>) { <span class="k">return</span> f.write(f.inner.Create(t)) }
+<span class="c">// 只读方法直接转发；写方法先改内存、成功再整体落盘</span>
+<span class="k">func</span> (f *<span class="t">FileRepo</span>) List() ([]<span class="t">Todo</span>, <span class="t">error</span>)     { <span class="k">return</span> f.inner.List() }
+<span class="k">func</span> (f *<span class="t">FileRepo</span>) Get(id <span class="t">int</span>) (<span class="t">Todo</span>, <span class="t">error</span>) { <span class="k">return</span> f.inner.Get(id) }
+<span class="k">func</span> (f *<span class="t">FileRepo</span>) Create(t <span class="t">string</span>) (<span class="t">Todo</span>, <span class="t">error</span>)  { <span class="k">return</span> f.write(f.inner.Create(t)) }
 <span class="k">func</span> (f *<span class="t">FileRepo</span>) Complete(id <span class="t">int</span>) (<span class="t">Todo</span>, <span class="t">error</span>) { <span class="k">return</span> f.write(f.inner.Complete(id)) }
 <span class="k">func</span> (f *<span class="t">FileRepo</span>) Delete(id <span class="t">int</span>) <span class="t">error</span> {
-    <span class="k">if</span> err := f.inner.Delete(id); err != nil { <span class="k">return</span> err }
-    <span class="k">return</span> Save(f.path, f.inner.List())
+    <span class="k">if</span> err := f.inner.Delete(id); err != <span class="k">nil</span> { <span class="k">return</span> err }
+    items, err := f.inner.List()
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> err }
+    <span class="k">return</span> SaveTodos(f.path, items)
 }
 <span class="k">func</span> (f *<span class="t">FileRepo</span>) write(t <span class="t">Todo</span>, err <span class="t">error</span>) (<span class="t">Todo</span>, <span class="t">error</span>) {
-    <span class="k">if</span> err != nil { <span class="k">return</span> <span class="t">Todo</span>{}, err } <span class="c">// 一次调用的返回值转手传下去，出错就不落盘</span>
-    <span class="k">return</span> t, Save(f.path, f.inner.List())
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="t">Todo</span>{}, err } <span class="c">// 内存那步就失败了，当然不落盘</span>
+    items, err := f.inner.List()
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> t, err }
+    <span class="k">return</span> t, SaveTodos(f.path, items) <span class="c">// 一次调用转手传下去，这是 Go 里很常见的"包装写回"</span>
 }
-<span class="k">var</span> _ <span class="t">TodoRepository</span> = (*<span class="t">FileRepo</span>)(<span class="k">nil</span>)
+
+<span class="c">// 契约检查：FileRepo 也必须满足同一个接口</span>
+<span class="k">var</span> _ <span class="t">TodoRepository</span> = (*<span class="t">FileRepo</span>)(<span class="k">nil</span>)</pre>
+      <pre><span class="code-label">todo-api/acceptance.go（package main，不写 func main）</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"errors"</span>
+    <span class="s">"fmt"</span>
+)
 
 <span class="k">func</span> runAcceptance(repo <span class="t">TodoRepository</span>) <span class="t">error</span> {
-    before := len(repo.List())
+    before, err := repo.List()
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> err }
     t, err := repo.Create(<span class="s">"接口练习"</span>)
-    <span class="k">if</span> err != nil { <span class="k">return</span> err }
-    <span class="k">if</span> len(repo.List()) != before+<span class="n">1</span> { <span class="k">return</span> errors.New(<span class="s">"Create 后数量不对"</span>) }
-    <span class="k">if</span> got, err := repo.Complete(t.ID); err != nil || !got.Done { <span class="k">return</span> errors.New(<span class="s">"Complete 失败"</span>) }
-    <span class="k">if</span> err := repo.Delete(t.ID); err != nil { <span class="k">return</span> err }
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> err }
+    after, err := repo.List()
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> err }
+    <span class="k">if</span> <span class="t">len</span>(after) != <span class="t">len</span>(before)+<span class="n">1</span> { <span class="k">return</span> errors.New(<span class="s">"Create 后数量不对"</span>) }
+    <span class="k">if</span> got, err := repo.Complete(t.ID); err != <span class="k">nil</span> || !got.Done { <span class="k">return</span> errors.New(<span class="s">"Complete 失败"</span>) }
+    <span class="k">if</span> err := repo.Delete(t.ID); err != <span class="k">nil</span> { <span class="k">return</span> err }
     <span class="k">if</span> _, err := repo.Get(t.ID); !errors.Is(err, ErrNotFound) { <span class="k">return</span> fmt.Errorf(<span class="s">"应报 ErrNotFound，实际 %v"</span>, err) }
     <span class="k">if</span> _, err := repo.Create(<span class="s">"  "</span>); !errors.Is(err, ErrEmptyTitle) { <span class="k">return</span> errors.New(<span class="s">"空标题应报错"</span>) }
     <span class="k">return</span> <span class="k">nil</span>
-}
-<span class="k">func</span> main() {
+}</pre>
+      <p><b>最后把 <code>main.go</code> 里的 <code>func main</code> 换成这一版</b>（<code>demo</code> 留着不碍事，Go 允许函数没被调用；目录里依旧只有一个 <code>main</code>）：</p>
+      <pre><span class="code-label">todo-api/main.go（替换 func main）</span><span class="k">func</span> main() {
     fmt.Println(<span class="s">"内存版:"</span>, runAcceptance(NewMemRepo()))
-    f, err := NewFileRepo(<span class="s">"todos.json"</span>)
-    <span class="k">if</span> err != nil { fmt.Println(err); <span class="k">return</span> }
+    f, err := NewFileRepo(storeFile)
+    <span class="k">if</span> err != <span class="k">nil</span> { fmt.Println(<span class="s">"打开文件仓储失败:"</span>, err); <span class="k">return</span> }
     fmt.Println(<span class="s">"文件版:"</span>, runAcceptance(f))
 }</pre>
+      <pre><span class="code-label">shell</span>$ cd todo-api &amp;&amp; go run .
+内存版: &lt;nil&gt;
+文件版: &lt;nil&gt;
+$ cat todos.json
+[]                          <span class="c"># 断言里建了又删了，最后回到空数组（Day 3 留下的数据会原样回来）</span>
+$ <span class="c"># 故意把接口里 List() 的返回改回单个 []Todo 再跑：两处 var _ 检查一起报错，正好检验契约闸门好用</span></pre>
+      <div class="callout tip"><p>两份实现跑<b>同一套断言</b>都返回 <code>&lt;nil&gt;</code>，说明"换存储不用改调用方"这句话是真的。明天 <code>main.go</code> 里的 <code>NewFileRepo(storeFile)</code> 用的就是这个实现，第 3 周换成 GORM 版本时，handler 一行都不用动。</p></div>
     </div>
   </section>
 
@@ -372,7 +639,8 @@ $ go vet ./...                             <span class="c"># 静态检查：忽�
       <tr><td>返回 nil 具体指针当 error</td><td><code>if err != nil</code> 永远成立</td><td>无错误时直接 <code>return nil</code></td></tr>
       <tr><td>忽略 error 返回值</td><td>后续拿着零值继续跑，越跑越远</td><td>要么处理要么包装上抛，<code>go vet</code> 当门神</td></tr>
       <tr><td>到处用 <code>any</code></td><td>编译期安全网失效，type switch 满天飞</td><td>能用具体类型就用；接口由使用方定义</td></tr>
-      <tr><td>用相对路径 import / 小写标识符跨包用</td><td>编译失败：import 必须是模块路径 + 目录；cannot refer to unexported name</td><td>import 写完整模块路径；要外部访问的标识符大写开头</td></tr>
+      <tr><td>用相对路径 import / 小写标识符跨包用</td><td>编译失败：import 必须是模块路径 + 目录；跨包引用非导出标识符报 <code>undefined: 包名.名字</code></td><td>import 写完整模块路径；要外部访问的标识符大写开头</td></tr>
+      <tr><td>同一目录塞了两个 <code>func main()</code> / 两份 <code>Todo</code></td><td><code>main redeclared in this block</code>、<code>Todo redeclared in this block</code>，一行都跑不起来</td><td>一个目录 = 一个包：<code>func main</code> 只放 <code>main.go</code>；模型定义全项目只留 <code>model.go</code> 那一份，其余示例分子目录或改名 <code>.go.txt</code></td></tr>
     </table>
   </section>
 
@@ -390,21 +658,21 @@ $ go vet ./...                             <span class="c"># 静态检查：忽�
   </section>
 
   <section>
-    <h2>完成检查（全部勾掉才算毕业）</h2>
-    <ul class="check">
-      <li><label><input type="checkbox" data-key="w1d4c1">练习 1：<code>fmt.Println(article)</code> 打印出你自己 <code>String()</code> 的内容，能说出这叫"接口被隐式满足"</label></li>
-      <li><label><input type="checkbox" data-key="w1d4c2">练习 1 后半：<code>errors.Is</code> 与 <code>err ==</code> 的结果差异你记录了，并能解释 <code>%w</code> 与 <code>%v</code> 的区别</label></li>
-      <li><label><input type="checkbox" data-key="w1d4c3">练习 2：<code>go run ./cmd/server</code> 跑通，且抄下过一次 <code>unexported</code> 报错原文</label></li>
-      <li><label><input type="checkbox" data-key="w1d4c4">练习 3：<code>runAcceptance</code> 对 <code>MemRepo</code> 与 <code>FileRepo</code> 都返回 <code>&lt;nil&gt;</code></label></li>
-      <li><label><input type="checkbox" data-key="w1d4c5">能口述：明天 handler 里 400/404/500 分别由哪个错误决定（<code>ErrEmptyTitle</code> / <code>ErrNotFound</code> / 其他）</label></li>
-    </ul>
-  </section>
-
-  <section>
     <h2>扩展阅读（补充，不影响今日完成度）</h2>
     <ul>
       <li><a href="https://go.dev/blog/error-handling-and-go" target="_blank">Go Blog · Errors are values</a>：官方错误处理哲学</li>
       <li><a href="https://go.dev/ref/mod" target="_blank">Go Modules 参考</a> + <a href="https://go.dev/tour/methods/9" target="_blank">A Tour of Go · Interfaces</a>：包规则与接口的原文/交互练习</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w1d4c1">练习 1：<code>fmt.Println(todo)</code> 打印出你自己 <code>String()</code> 的内容（不是 <code>{1 …}</code>），能说出这叫"接口被隐式满足"</label></li>
+      <li><label><input type="checkbox" data-key="w1d4c2">练习 1 后半：<code>errors.Is</code> 与 <code>err ==</code> 的结果差异你记录了，并能解释 <code>%w</code> 与 <code>%v</code> 的区别</label></li>
+      <li><label><input type="checkbox" data-key="w1d4c3">练习 2：<code>todo-api/</code> 里 model/store/repo/main 四个同包文件 <code>go run .</code> 跑通，且抄下过一次 <code>undefined: version.buildTag</code> 报错原文</label></li>
+      <li><label><input type="checkbox" data-key="w1d4c4">练习 3：<code>runAcceptance</code> 对 <code>MemRepo</code> 与 <code>FileRepo</code> 都返回 <code>&lt;nil&gt;</code></label></li>
+      <li><label><input type="checkbox" data-key="w1d4c5">能口述：明天 handler 里 400/404/500 分别由哪个错误决定（<code>ErrEmptyTitle</code> / <code>ErrNotFound</code> / 其他）</label></li>
     </ul>
   </section>
 

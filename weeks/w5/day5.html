@@ -39,6 +39,8 @@
   <section>
     <h2>知识讲义</h2>
 
+    <p><b>本页文件怎么放：</b>第 1、2 节各是一份完整 <code>main.go</code>，分别建 <code>w5day5/pool</code>、<code>w5day5/errgroup</code> 两个目录，各自 <code>go mod init</code>（errgroup 那份还要 <code>go get golang.org/x/sync/errgroup</code>）；第 3 节的聚合器是本周项目，单独一个 <code>url-aggregator</code> 目录，别和上面两个共用一个 <code>go.mod</code>。</p>
+
     <h3>1. worker pool：任务分发流水线</h3>
     <p>问题：10000 个任务，无脑一人一个 goroutine 会把下游打挂。<b>worker pool：固定开 N 个工人，任务从一条 channel 排队发出去，谁空闲谁领活。</b>并发度被你钉死在 N，channel 满了生产者自动被背压减速（day2 学的）：</p>
     <pre><span class="code-label">main.go</span><span class="k">package</span> main
@@ -126,7 +128,7 @@
         })
     }
 
-    if err := g.Wait(); err != nil {
+    <span class="k">if</span> err := g.Wait(); err != <span class="k">nil</span> {
         fmt.Println(<span class="s">"聚合结果: 任务组失败 -"</span>, err) <span class="c">// 返回首个错误</span>
     } <span class="k">else</span> {
         fmt.Println(<span class="s">"全部成功"</span>)
@@ -211,18 +213,23 @@
         <span class="k">return</span>
     }
 
-    ctx, cancel := context.WithTimeout(r.Context(), <span class="n">5</span>*time.Second) <span class="c">// 本周验收：5 秒总预算</span>
+    mode := r.URL.Query().Get(<span class="s">"mode"</span>)
+    budget := <span class="n">5</span> * time.Second <span class="c">// 并发：本周验收线——5 秒截停</span>
+    <span class="k">if</span> mode == <span class="s">"serial"</span> {
+        budget = <span class="n">8</span> * time.Second <span class="c">// 串行：5 个 1 秒端点本来就要跑满 5 秒，共用 5 秒预算会踩线误报 partial（见下方说明）</span>
+    }
+
+    ctx, cancel := context.WithTimeout(r.Context(), budget)
     <span class="k">defer</span> cancel()
     start := time.Now()
     results := <span class="k">make</span>([]urlResult, <span class="k">len</span>(body.URLs)) <span class="c">// 预分配按下标写：不重叠，免锁（D2 练习 2 结论）</span>
 
-    mode := r.URL.Query().Get(<span class="s">"mode"</span>)
     <span class="k">if</span> mode == <span class="s">"serial"</span> {
         <span class="k">for</span> i, u := <span class="k">range</span> body.URLs {
             results[i] = fetchOne(ctx, u) <span class="c">// 串行：一个跑完才轮到下一个</span>
         }
     } <span class="k">else</span> {
-        g, _ := errgroup.WithContext(ctx)
+        g, _ := errgroup.WithContext(ctx) <span class="c">// 派生的 ctx 这里故意丢掉：任务永远 return nil，取消只会来自 budget 到期，直接用外层 ctx 更直白</span>
         g.SetLimit(<span class="n">5</span>) <span class="c">// 并发上限 5，防止 URL 列表过长打挂下游</span>
         <span class="k">for</span> i, u := <span class="k">range</span> body.URLs {
             i, u := i, u
@@ -243,7 +250,7 @@
     <span class="k">if</span> partial { <span class="c">// 超时提示：让调用方知道结果不完整</span>
         <span class="k">for</span> i := <span class="k">range</span> results {
             <span class="k">if</span> results[i].Error == <span class="s">""</span> &amp;&amp; results[i].Status == <span class="n">0</span> {
-                results[i].Error = <span class="s">"context deadline exceeded（5s 内未完成）"</span>
+                results[i].Error = fmt.Sprintf(<span class="s">"context deadline exceeded（%v 预算内未完成）"</span>, budget)
             }
         }
     }
@@ -265,6 +272,7 @@
     log.Fatal(http.ListenAndServe(<span class="s">":8080"</span>, mux))
 }</pre>
     <div class="callout note"><p>读代码时对照本周日历：<code>errgroup</code>=今天的 D5；预分配按下标写=D2 练习 2；<code>fetchOne</code> 检查 <code>ctx</code>=D4；<code>mockSlow</code> 的 <code>r.Context().Done()</code>=D4 练习 2。这就是"周中零件周末装配"的本手册节奏。</p></div>
+    <div class="callout tip"><p><b>为什么串行分支单独给 8 秒预算？</b>5 个 1 秒端点顺序跑完恰好 5 秒，若与并发分支共用同一个 5 秒 ctx，对照组就永远卡在超时线上跑：机器稍微慢一点，最后一格还没发完请求 <code>ctx</code> 就到期，串行也变成"5 秒被截停 + <code>partial:true</code> + 末项带 error"，于是"串行 ≈ 5s、并发 ≈ 1s"这组本该对比鲜明的数字糊成了两个 5 秒，你甚至会怀疑并发没生效。串行的职责是<b>提供 5×1s 的基准数</b>，超时截停要考察的是并发分支，所以给它 8 秒（约 1.6 倍余量）。真实项目同理：<b>超时预算按"这条分支合理最长耗时"设，别让对照组和被测组共用一个上限</b>。</p></div>
 
     <h3>4. 计时与验收姿势</h3>
     <pre><span class="code-label">shell</span><span class="c"># 终端 1：启动服务</span>
@@ -276,10 +284,12 @@ $ time curl -s localhost:8080/aggregate -d <span class="s">'{"urls":[
     "http://localhost:8080/mock-slow?d=1s",
     "http://localhost:8080/mock-slow?d=1s",
     "http://localhost:8080/mock-slow?d=1s",
-    "http://localhost:8080/mock-slow?d=1s"]}'</span> | python3 -m json.tool | tail -<span class="n">8</span>
+    "http://localhost:8080/mock-slow?d=1s"]}'</span> | python3 -m json.tool
+<span class="c"># 别接 | tail -8 / | head：mode、total_ms、partial 三个验收字段就在 JSON 最前面，被截掉等于没验收</span>
 
-<span class="c"># 串行模式 —— 总耗时应 ≈ 5s（同一请求加 ?mode=serial）</span>
+<span class="c"># 串行模式 —— 总耗时应 ≈ 5s（同一请求加 ?mode=serial；该分支预算 8 秒，不会被截停）</span>
 <span class="c"># 超时场景 —— 混入一个 8s 端点：约 5s 返回，partial:true，error 提示 deadline</span></pre>
+    <p><b>口径统一：</b>验收只认响应里的 <code>total_ms</code>（handler 内 <code>time.Since(start)</code>），<code>time curl</code> 的墙钟只作参照，它还包含 curl 启动和连接时间。这个数和第 4 周 D4 你在 access 日志里记的 <code>latency</code> 是同一个视角——<b>服务端到底为这个请求干了多久</b>；当时留它就是为了今天证明"并发真的变快了"。今天这个项目用标准库 mux、没接那套日志，所以把 <code>total_ms</code> 放进响应体自查；将来把它搬进 Gin，两个数字应当对得上。</p>
     <p>响应示例（超时场景）：</p>
     <pre><span class="code-label">json</span>{
   "mode": "concurrent",

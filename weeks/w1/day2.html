@@ -30,7 +30,7 @@
     <ul class="check">
       <li><label><input type="checkbox" data-key="w1d2g1">能用三种方式初始化 struct，并解释字段大小写为什么重要</label></li>
       <li><label><input type="checkbox" data-key="w1d2g2">能独立写出带接收者的方法，说清 <code>func (u User)</code> 与 <code>func (u *User)</code> 的差别</label></li>
-      <li><label><input type="checkbox" data-key="w1d2g3">知道什么时候必须用指针接收者（改字段、字段大、含 mutex）</label></li>
+      <li><label><input type="checkbox" data-key="w1d2g3">知道什么时候必须用指针接收者（改字段、字段大、含 <code>sync.Mutex</code>——后者是"排队锁"，第 5 周正式教，今天只需知道它防止多个人同时改同一份数据）</label></li>
       <li><label><input type="checkbox" data-key="w1d2g4">用嵌入（embedding）实现组合，并解释"方法提升"和"同名覆盖"</label></li>
       <li><label><input type="checkbox" data-key="w1d2g5">写完练习 1 的 User / Article 模型，<code>go run .</code> 打印结果正确</label></li>
     </ul>
@@ -45,22 +45,54 @@
   </section>
 
   <section>
+    <h2>今天的文件怎么放（先花 30 秒搭好目录）</h2>
+    <p>今天一页里有 <b>6 份自带 <code>func main()</code> 的完整示例</b>（讲义 §3、§4、§5、§6 各一份，练习里另有 ex1、ex3 两份）。Go 的规矩很硬：<b>同一个目录 = 同一个 <code>package main</code>，只能有一个 <code>func main()</code>，同一个类型也只能声明一次</b>。所以千万别把整页代码抄进一个文件、或一个目录，按下面的方式放：</p>
+    <pre><span class="code-label">tree：本周 Day 2 / Day 3 共用的练习目录</span>proj/                 <span class="c"># 先 mkdir proj &amp;&amp; cd proj &amp;&amp; go mod init proj</span>
+├── go.mod
+├── d2s3/             <span class="c"># §1+§2+§3 一起跑（它们共用 User/Article）</span>
+│   ├── model.go      <span class="c"># package main + type User + 各 func xxxDemo() 片段</span>
+│   └── main.go       <span class="c"># Article 的方法 + 唯一的 func main()</span>
+├── d2s4/
+│   └── main.go       <span class="c"># §4 值/指针接收者实验（Counter，独立一份）</span>
+├── d2s5/
+│   └── main.go       <span class="c"># §5 嵌入组合（Customer，独立一份）</span>
+├── d2s6/
+│   └── main.go       <span class="c"># §6 struct tag（Todo + tagDemo + main 调它）</span>
+└── d2ex1/
+    └── main.go       <span class="c"># 今日练习每题一个子目录：练习 2 就改 d2ex1 里的 main，练习 3 → d2ex3/、练习 4 → d2ex4/</span></pre>
+    <p>跑哪一节就 <code>cd</code> 进哪个子目录 <code>go run .</code>。<b>不想建这么多目录的退路</b>：只留一个目录，但把暂时不跑的文件改名成 <code>main.go.txt</code>——Go 只编译 <code>.go</code> 后缀，改名等于把它移出编译范围。</p>
+    <div class="callout warn"><p>三种报错都指向"文件放多了"：<code>main redeclared in this block</code>（两个文件都有 func main）、<code>User redeclared in this block</code>（同一个类型抄了两遍）、<code>"fmt" imported and not used</code>（import 了不用，Go 是编译错误不是 warning）。看到它们先数一数当前目录里有几个 <code>.go</code> 文件，而不是回去改语法。</p></div>
+    <p>每个新文件都从这份<b>起手模板</b>开始写；讲义里<b>没有</b> <code>package</code> / <code>import</code> 开头的代码块都标了"片段"，意思是粘进模板的 <code>// ↓</code> 位置：</p>
+    <pre><span class="code-label">main.go（起手模板）</span><span class="k">package</span> main
+
+<span class="k">import</span> <span class="s">"fmt"</span> <span class="c">// §6 才需要再加 "encoding/json"；加了就必须真的用到</span>
+
+<span class="c">// ↓ 讲义里的 struct / 方法 / func xxxDemo() 片段依次粘在这里</span>
+
+<span class="k">func</span> main() {
+    <span class="c">// 片段函数不会自己执行，main 里调用它才看得到输出，例如：tagDemo()</span>
+}</pre>
+  </section>
+
+  <section>
     <h2>知识讲义</h2>
 
     <h3>1. struct 定义与字段</h3>
     <p>结构体把一组<b>不同类型</b>的字段打包成一个具名类型。Go 没有默认值也没有构造函数语法糖，声明后每个字段都是自己的零值：</p>
-    <pre><span class="code-label">model.go</span><span class="k">package</span> main
+    <pre><span class="code-label">d2s3/model.go</span><span class="k">package</span> main
 
-<span class="c">// 字段名大写开头 = 对外可见（导出）；json 标签第 3 天会用到，先照抄</span>
+<span class="k">import</span> <span class="s">"fmt"</span>
+
+<span class="c">// 字段名大写开头 = 对外可见（导出）；反引号里的是 json tag，§6 专门讲，先照抄</span>
 <span class="k">type</span> <span class="t">User</span> <span class="k">struct</span> {
-    ID     <span class="t">int</span>
-    Name   <span class="t">string</span>
-    Email  <span class="t">string</span>
-    Age    <span class="t">int</span>
-    Active <span class="t">bool</span>
+    ID     <span class="t">int</span>    <span class="s">`json:"id"`</span>
+    Name   <span class="t">string</span> <span class="s">`json:"name"`</span>
+    Email  <span class="t">string</span> <span class="s">`json:"email"`</span>
+    Age    <span class="t">int</span>    <span class="s">`json:"age"`</span>
+    Active <span class="t">bool</span>   <span class="s">`json:"active"`</span>
 }</pre>
     <p>四种常用初始化写法（推荐永远用带字段名的方式，顺序写错编译器抓不到）：</p>
-    <pre><span class="code-label">model.go</span><span class="k">func</span> initDemo() {
+    <pre><span class="code-label">d2s3/model.go（片段，接上面的 type User）</span><span class="k">func</span> initDemo() {
     <span class="c">// ① 字段名（推荐）：没写的字段取零值</span>
     u1 := <span class="t">User</span>{ID: <span class="n">1</span>, Name: <span class="s">"小明"</span>, Active: <span class="k">true</span>}
 
@@ -76,11 +108,13 @@
     u1.Age = <span class="n">18</span>  <span class="c">// 导出字段可读写</span>
     fmt.Println(u1.Name, u1.Age, u2.Email, u3, u4)
 }</pre>
+    <pre><span class="code-label">shell：等 §3 那份 d2s3/main.go 写好后，把它的 func main 临时改成 main() { initDemo() } 再跑（§2 的 valueTypeDemo 同理；一个目录始终只有一个 main）</span>$ cd d2s3 &amp;&amp; go run .
+小明 18 hong@ex.com {0   0 false} &amp;{4 小刚  0 false}</pre>
     <div class="callout js"><p>JS 的 <code>const u = { }</code> 加字段靠 <code>u.xxx = 1</code> 随意扩展；Go 的 struct 字段在类型定义时就写死了，<b>运行时不能新增字段</b>。想要"动态键值对"，那是第 3 天的 <code>map</code>。</p></div>
     <div class="callout warn"><p>结构体字面量的闭括号 <code>}</code> 不要单独另起一行后接其他语句（Go 会在行尾自动补分号）；写完让编辑器 gofmt 格式化即可。</p></div>
 
     <h3>2. struct 是值类型：赋值、比较、指针</h3>
-    <pre><span class="code-label">model.go</span><span class="k">func</span> valueTypeDemo() {
+    <pre><span class="code-label">d2s3/model.go（片段，继续接在 initDemo 下面）</span><span class="k">func</span> valueTypeDemo() {
     a := <span class="t">User</span>{ID: <span class="n">1</span>, Name: <span class="s">"A"</span>, Age: <span class="n">20</span>}
     b := a            <span class="c">// 完整复制一份！不是引用</span>
     b.Name = <span class="s">"B"</span>
@@ -101,8 +135,12 @@
     <div class="callout tip"><p>经验法则：<b>方法要修改 struct，或 struct 比较大，就传 <code>*T</code></b>。Go 没有 C++ 的引用参数语法，一切靠传指针（等价于拷贝一个 8 字节地址）。</p></div>
 
     <h3>3. 方法：给类型挂函数</h3>
-    <p>方法是"带接收者（receiver）的函数"，接收者写在函数名前面：方法属于 <code>(u User)</code> 这个类型，不属于某个对象实例。</p>
-    <pre><span class="code-label">model.go</span><span class="k">type</span> <span class="t">Article</span> <span class="k">struct</span> {
+    <p>方法是"带接收者（receiver）的函数"，接收者写在函数名前面：方法属于 <code>(u User)</code> 这个类型，不属于某个对象实例。下面这份是完整的 <code>d2s3/main.go</code>（<code>type User</code> 已在同目录的 <code>model.go</code> 里，同包直接拿来用，<b>不要 import 自己</b>）：</p>
+    <pre><span class="code-label">d2s3/main.go（完整可跑）</span><span class="k">package</span> main
+
+<span class="k">import</span> <span class="s">"fmt"</span>
+
+<span class="k">type</span> <span class="t">Article</span> <span class="k">struct</span> {
     ID        <span class="t">int</span>
     Title     <span class="t">string</span>
     Content   <span class="t">string</span>
@@ -138,6 +176,9 @@
     art.Publish().AddViews(<span class="n">10</span>).AddViews(<span class="n">5</span>)
     fmt.Println(<span class="s">"浏览量:"</span>, art.Views, <span class="s">"草稿?"</span>, art.IsDraft())
 }</pre>
+    <pre><span class="code-label">shell</span>$ cd d2s3 &amp;&amp; go run .
+《Go 入门》 by 小明 (2 标签)
+浏览量: 15 草稿? false</pre>
     <div class="callout js"><p>对比 JS：① 方法不写在 class 里，而是"类型 + 方法"分离；② 没有 <code>this</code>，接收者名字（这里叫 <code>a</code>）完全由你定，同类方法请保持一致；③ 调用方不需要 <code>bind</code>，方法值 <code>f := art.Summary</code> 也是合法的，但今天不必深究。</p></div>
     <div class="callout warn"><p>同一个类型的所有方法，接收者风格要统一。别一半 <code>(a Article)</code> 一半 <code>(a *Article)</code>：<code>go vet</code> 会提示，而且混合后很容易出现"改了个拷贝、调用方没变"的隐蔽 bug。</p></div>
 
@@ -147,7 +188,12 @@
       <tr><td><code>func (u User) X()</code></td><td>一份拷贝</td><td>否</td><td>拷贝整个 struct</td><td>小 struct 的只读计算、格式化输出</td></tr>
       <tr><td><code>func (u *User) X()</code></td><td>地址</td><td>是</td><td>只拷贝一个指针（8 字节）</td><td>修改字段、大 struct、含 <code>sync.Mutex</code></td></tr>
     </table>
-    <pre><span class="code-label">receiver.go</span><span class="k">type</span> <span class="t">Counter</span> <span class="k">struct</span> {
+    <div class="callout note"><p>表里那个 <code>sync.Mutex</code>：<b>第 5 周正式教</b>，今天只需要知道它是<b>防止多个人同时改同一份数据的"排队锁"</b>（同一时刻只让一个改写者进去，其他人排队等）。含锁的 struct 一旦被值拷贝，锁也跟着被复制一份，排队就失效了——这就是"含 mutex 的类型只能有指针方法"的原因。</p></div>
+    <pre><span class="code-label">d2s4/main.go（完整可跑）</span><span class="k">package</span> main
+
+<span class="k">import</span> <span class="s">"fmt"</span>
+
+<span class="k">type</span> <span class="t">Counter</span> <span class="k">struct</span> {
     Count <span class="t">int</span>
     Name  <span class="t">string</span>
 }
@@ -180,6 +226,11 @@
 }
 
 <span class="k">func</span> doubleIt(c <span class="t">Counter</span>) { c.Count *= <span class="n">2</span> } <span class="c">// 又是拷贝</span></pre>
+    <pre><span class="code-label">shell</span>$ cd d2s4 &amp;&amp; go run .
+IncBad 之后: 0
+IncGood 之后: 2
+doubleIt 之后: 2
+点击量=2</pre>
     <p>三条选择规则，记住就够了：</p>
     <ul>
       <li>方法要<b>修改接收者</b>，或 struct 字段多/含 slice+map 混合 → 用 <code>*T</code>；</li>
@@ -190,7 +241,11 @@
 
     <h3>5. 组合替代继承：嵌入（embedding）</h3>
     <p>Go 没有 <code>extends</code>。它提供"匿名嵌入"：把一个类型作为字段写进去（只写类型名不写字段名），于是<b>内层类型的字段和方法会被"提升"到外层</b>，看起来像继承，本质是转发。</p>
-    <pre><span class="code-label">embed.go</span><span class="k">type</span> <span class="t">Address</span> <span class="k">struct</span> {
+    <pre><span class="code-label">d2s5/main.go（完整可跑）</span><span class="k">package</span> main
+
+<span class="k">import</span> <span class="s">"fmt"</span>
+
+<span class="k">type</span> <span class="t">Address</span> <span class="k">struct</span> {
     City   <span class="t">string</span>
     Street <span class="t">string</span>
     Zip    <span class="t">string</span>
@@ -233,12 +288,24 @@
     cus.Street = <span class="s">"文三路 100 号"</span> <span class="c">// 提升字段可读写</span>
     fmt.Println(cus.Name, cus.Level, cus.Address.FullAddress())
 }</pre>
+    <pre><span class="code-label">shell</span>$ cd d2s5 &amp;&amp; go run .
+杭州市文三路(310000)
+杭州
+打电话 138
+大客户 3 杭州市文三路 100 号(310000)</pre>
     <div class="callout warn"><p>两个嵌入类型里有<b>同名</b>字段或方法时，编译器不会猜：外层自己定义的优先级最高；同层的两个嵌入类型同名则报 <code>ambiguous selector</code>，必须写全路径 <code>cus.Contact.BestWayToReach()</code>。</p></div>
     <div class="callout js"><p>JS 的 <code>class B extends A</code> 同时继承"数据形状"和"行为"，且父类一改子类跟着变，是后端大坑（脆弱的基类问题）。Go 的嵌入是显式组合：你只声明"我需要什么能力"，没有隐式的 <code>super</code>、没有构造函数链、没有抽象基类。</p></div>
 
     <h3>6. 预告：struct tag（明天 JSON 的关键）</h3>
     <p>结构体字段后面反引号里的字符串叫 tag，是包名到字段的元数据。<code>encoding/json</code> 用它决定 JSON 键名，Day 3/Day 5 全靠它（下面代码里每对反引号就是 tag 本体）：</p>
-    <pre><span class="code-label">model.go</span><span class="k">type</span> <span class="t">Todo</span> <span class="k">struct</span> {
+    <pre><span class="code-label">d2s6/main.go（完整可跑）</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"encoding/json"</span>
+    <span class="s">"fmt"</span>
+)
+
+<span class="k">type</span> <span class="t">Todo</span> <span class="k">struct</span> {
     ID       <span class="t">int</span>    <span class="s">`json:"id"`</span>
     Title    <span class="t">string</span> <span class="s">`json:"title"`</span>
     Done     <span class="t">bool</span>   <span class="s">`json:"done"`</span>
@@ -253,9 +320,15 @@
         fmt.Println(<span class="s">"序列化失败:"</span>, err) <span class="c">// 结构体几乎不会失败，但 err 必须处理</span>
         <span class="k">return</span>
     }
-    fmt.Println(<span class="t">string</span>(b)) <span class="c">// {"id":1,"title":"学结构体","done":false}</span>
-}</pre>
-    <div class="callout tip"><p>先照抄语法即可（需要 <code>import "encoding/json"</code>）。字段不写 tag 时 JSON 键名就是字段原名（<code>Name</code> 而不是 <code>name</code>），前端会骂人——所以 tag 必写。</p></div>
+    fmt.Println(<span class="t">string</span>(b))
+}
+
+<span class="k">func</span> main() { tagDemo() }</pre>
+    <pre><span class="code-label">shell</span>$ cd d2s6 &amp;&amp; go run .
+{"id":1,"title":"学结构体","done":false}</pre>
+    <div class="callout note"><p><b><code>json.Marshal(t)</code> 首次出现，两句话讲清</b>：① 它把 Go 值转成 JSON 字节，等价于 JS 的 <code>JSON.stringify</code>，反方向叫 <code>json.Unmarshal(b, &amp;x)</code>（≈<code>JSON.parse</code>，Day 3 正式用）；② 返回值是 <code>([]byte, error)</code> 两个——<code>[]byte</code> 是字节切片（不是 string，所以要 <code>string(b)</code> 转一下才能打印），<code>err</code> 照样必须当场判。</p></div>
+    <div class="callout tip"><p>先照抄语法即可（这份文件已经带你写好了 <code>import "encoding/json"</code>）。字段不写 tag 时 JSON 键名就是字段原名（<code>Name</code> 而不是 <code>name</code>），前端会骂人——所以 tag 必写。</p></div>
+    <div class="callout warn"><p>这里这份 <code>Todo</code> 只为演示 tag（<code>Internal</code> / <code>Comment</code> 两个字段是编出来的）。<b>本周正式模型是 Day 3 §6 / Day 4 <code>model.go</code> 里那一份</b>：<code>Todo{ ID int; Title string; Done bool; CreatedAt string }</code>，四个字段配四个 tag，后面所有页面都用它，别再往正式模型里加字段。</p></div>
   </section>
 
   <section>
@@ -263,9 +336,9 @@
     <div class="task">
       <div class="task-title">练习 1：定义 User 与 Article（35 分钟）</div>
       <p>要求：① <code>User</code> 含 <code>ID/Name/Email/Articles 字段/Active</code>；② <code>Article</code> 含 <code>ID/Title/Content/Author(User)/Tags([]string)/Views/Published</code>；③ 写方法 <code>Intro() string</code>、<code>IsVisible() bool</code>（已发布且作者 Active 才可见）；④ main 里造 2 个用户 3 篇文章并打印。</p>
-      <pre><span class="code-label">answer.go</span><span class="k">package</span> main
+      <pre><span class="code-label">d2ex1/main.go（完整可跑）</span><span class="k">package</span> main
 
-<span class="k">import</span> <span class="t">fmt</span>
+<span class="k">import</span> <span class="s">"fmt"</span>
 
 <span class="k">type</span> <span class="t">User</span> <span class="k">struct</span> {
     ID       <span class="t">int</span>
@@ -299,15 +372,19 @@
     a2 := &amp;<span class="t">Article</span>{ID: <span class="n">2</span>, Title: <span class="s">"草稿：指针接收者"</span>, Author: u1, Tags: []<span class="t">string</span>{<span class="s">"go"</span>}}
     a3 := &amp;<span class="t">Article</span>{ID: <span class="n">3</span>, Title: <span class="s">"看不见的文章"</span>, Author: u2, Published: <span class="k">true</span>}
 
-    <span class="k">for</span> _, a := <span class="k">range</span> []*<span class="t">Article</span>{a1, a2, a3} {
+    <span class="k">for</span> _, a := <span class="k">range</span> []*<span class="t">Article</span>{a1, a2, a3} { <span class="c">// range 拿「下标 + 元素」，Day 1 §5 学过；下标不要就写 _</span>
         fmt.Println(a.Intro(), <span class="s">"可见:"</span>, a.IsVisible())
     }
 }</pre>
+      <pre><span class="code-label">shell</span>$ cd d2ex1 &amp;&amp; go run .
+#1 Go 结构体心得｜作者 小明｜标签 [go base] 可见: true
+#2 草稿：指针接收者｜作者 小明｜标签 [go] 可见: false
+#3 看不见的文章｜作者 被封号的人｜标签 [] 可见: false</pre>
     </div>
     <div class="task">
       <div class="task-title">练习 2：值接收者 vs 指针接收者实验（25 分钟）</div>
       <p>给 <code>Article</code> 加两个方法：值接收者 <code>ReadingTime() int</code>（每 300 字符算 1 分钟，向上取整，最少 1），指针接收者 <code>Visit()</code> 和 <code>Unpublish()</code>。然后在 main 里分别用值变量、指针变量、把方法赋给变量三种方式调用，观察是否报错、修改是否生效。</p>
-      <pre><span class="code-label">answer.go</span><span class="k">func</span> (a <span class="t">Article</span>) ReadingTime() <span class="t">int</span> {
+      <pre><span class="code-label">d2ex1/main.go（片段：接在练习 1 的文件里，把它的 main 换成 receiverTest()）</span><span class="k">func</span> (a <span class="t">Article</span>) ReadingTime() <span class="t">int</span> {
     n := <span class="t">len</span>(a.Content)
     <span class="k">if</span> n == <span class="n">0</span> {
         <span class="k">return</span> <span class="n">1</span>
@@ -331,11 +408,17 @@
     s[<span class="n">0</span>].Visit()            <span class="c">// OK：切片元素可寻址</span>
     <span class="c">// map 的 value 不可寻址：m["k"].Visit() 编译失败，所以 map 要存 *Article</span>
 }</pre>
+      <p><b>跑法</b>：把练习 1 的 <code>main()</code> 换成 <code>func main() { receiverTest() }</code>，只打印一行 <code>1</code>；再依次把注释里的两行"不可寻址"写法取消注释，看编译器怎么骂你。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 3：用组合给模型加能力（25 分钟）</div>
       <p>定义 <code>Base</code>（含 <code>ID int</code>、<code>CreatedAt string</code>，方法 <code>Key() string</code>）、<code>SoftDeletable</code>（含 <code>DeletedAt string</code>，方法 <code>IsDeleted() bool</code>）。用嵌入得到 <code>User</code>、<code>Article</code>，两者都免费获得 <code>Key()</code> 与 <code>IsDeleted()</code>。再写函数 <code>printKey(k interface{ Key() string })</code>，把 User、Article 都传进去（这是 Day 4 接口的开胃菜）。</p>
-      <pre><span class="code-label">answer.go</span><span class="k">type</span> <span class="t">Base</span> <span class="k">struct</span> {
+      <div class="callout warn"><p>本题的 <code>User</code>/<code>Article</code> 和练习 1 同名，<b>必须放在新目录 <code>d2ex3/</code> 里跑</b>，否则报 <code>User redeclared in this block</code>（见页首「今天的文件怎么放」）。</p></div>
+      <pre><span class="code-label">d2ex3/main.go（完整可跑）</span><span class="k">package</span> main
+
+<span class="k">import</span> <span class="s">"fmt"</span>
+
+<span class="k">type</span> <span class="t">Base</span> <span class="k">struct</span> {
     ID        <span class="t">int</span>
     CreatedAt <span class="t">string</span>
 }
@@ -359,10 +442,14 @@
     printKey(a)
     fmt.Println(u.IsDeleted(), a.IsDeleted()) <span class="c">// false false</span>
 }</pre>
+      <pre><span class="code-label">shell</span>$ cd d2ex3 &amp;&amp; go run .
+#1@2026-09-21
+#9@2026-09-22
+false false</pre>
     </div>
     <div class="task">
       <div class="task-title">练习 4：把昨天的 BMI 改造成 struct（15 分钟）</div>
-      <p>定义 <code>BodyMetric</code>（字段 <code>WeightKg/HeightM/Name</code>），把函数改为方法 <code>func (b BodyMetric) BMI() (float64, error)</code> 与 <code>func (b BodyMetric) Level() string</code>。体会"数据 + 行为"分开写但归属同一个类型的手感。</p>
+      <p>在<b>新目录</b> <code>d2ex4/main.go</code> 里写。定义 <code>BodyMetric</code>（字段 <code>WeightKg/HeightM/Name</code>），把函数改为方法 <code>func (b BodyMetric) BMI() (float64, error)</code> 与 <code>func (b BodyMetric) Level() string</code>。体会"数据 + 行为"分开写但归属同一个类型的手感。</p>
     </div>
   </section>
 
@@ -373,7 +460,8 @@
       <tr><td>以为 struct 是引用</td><td>赋值/传参后改字段，原对象没变，查半天</td><td>Go 是值拷贝；要改就传 <code>*T</code></td></tr>
       <tr><td>值接收者里改字段</td><td>方法执行完什么也没留下</td><td>修改字段一律用指针接收者</td></tr>
       <tr><td>map 的 value 上调指针方法</td><td><code>cannot address map value</code></td><td>map 存 <code>*T</code>，或取出来改完再塞回去；含 slice/map 字段的 struct 也别当 key</td></tr>
-      <tr><td>字段小写想跨包访问</td><td>编译报 <code>unexported</code> / 序列化为空</td><td>需要外部看到就大写开头</td></tr>
+      <tr><td>字段小写想跨包访问</td><td>编译报 <code>undefined: 包名.名字</code>（Day 4 练习 2 会真撞一次）/ 序列化为空</td><td>需要外部看到就大写开头</td></tr>
+      <tr><td>整页示例抄进同一个目录</td><td><code>main redeclared in this block</code>、<code>User redeclared in this block</code>，改半天语法都没用</td><td>一个子目录一份 <code>func main()</code>；不跑的文件改名 <code>.go.txt</code>（见页首「今天的文件怎么放」）</td></tr>
     </table>
   </section>
 
@@ -386,18 +474,9 @@
       <tr><td>方法（method）</td><td>带接收者的函数，语法 <code>func (r T) Name()</code>，方法属于类型而非实例；接收者 <code>T</code> 拿拷贝、<code>*T</code> 拿地址</td></tr>
       <tr><td>可寻址（addressable）</td><td>变量、切片元素、结构体字段可寻址；map 元素、函数返回值、常量不可，故无法调用指针方法</td></tr>
       <tr><td>嵌入 / 组合</td><td>匿名嵌入字段，内层类型的字段与方法被"提升"到外层，Go 用它替代继承；无 super、无菱形问题</td></tr>
+      <tr><td>range</td><td><code>for i, v := range xs</code> 一次给「下标 + 元素」，不要的用 <code>_</code> 丢弃；Day 1 §5 教的三种写法今天开始天天用</td></tr>
+      <tr><td>json tag</td><td>字段后面反引号里的元数据，<code>encoding/json</code> 靠它决定键名；<code>`json:"-"`</code> 永不输出，<code>,omitempty</code> 零值时省略</td></tr>
     </table>
-  </section>
-
-  <section>
-    <h2>完成检查（全部勾掉才算毕业）</h2>
-    <ul class="check">
-      <li><label><input type="checkbox" data-key="w1d2c1">练习 1 的 <code>User</code>/<code>Article</code> 能 <code>go run .</code> 跑通，且打印出"草稿不可见、封号作者不可见"</label></li>
-      <li><label><input type="checkbox" data-key="w1d2c2">能口述：为什么 <code>func (c Counter) IncBad()</code> 改不动 <code>c.Count</code>，改成 <code>*Counter</code> 就改得动</label></li>
-      <li><label><input type="checkbox" data-key="w1d2c3">练习 2 里至少制造过一次 <code>cannot call pointer method</code> 编译错误，并说清它为什么不可寻址</label></li>
-      <li><label><input type="checkbox" data-key="w1d2c4">练习 3 的 <code>Base</code> 嵌入生效：User 和 Article 都没写 <code>Key()</code> 却能调用</label></li>
-      <li><label><input type="checkbox" data-key="w1d2c5">笔记里记下三条"该用指针接收者"的判断规则，明天写 JSON 模型时会直接复用</label></li>
-    </ul>
   </section>
 
   <section>
@@ -405,6 +484,17 @@
     <ul>
       <li><a href="https://go.dev/tour/flow/2" target="_blank">A Tour of Go · Structs &amp; Methods</a>：交互式练习，把今天两个语法点过一遍</li>
       <li><a href="https://go.dev/doc/effective_go#methods" target="_blank">Effective Go · Methods</a>：官方对接收者选型的建议原文</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w1d2c1">练习 1 的 <code>User</code>/<code>Article</code> 在 <code>d2ex1/</code> 里 <code>go run .</code> 跑通，且打印出"草稿不可见、封号作者不可见"</label></li>
+      <li><label><input type="checkbox" data-key="w1d2c2">能口述：为什么 <code>func (c Counter) IncBad()</code> 改不动 <code>c.Count</code>，改成 <code>*Counter</code> 就改得动</label></li>
+      <li><label><input type="checkbox" data-key="w1d2c3">练习 2 里至少制造过一次 <code>cannot call pointer method</code> 编译错误，并说清它为什么不可寻址</label></li>
+      <li><label><input type="checkbox" data-key="w1d2c4">练习 3 的 <code>Base</code> 嵌入生效：User 和 Article 都没写 <code>Key()</code> 却能调用</label></li>
+      <li><label><input type="checkbox" data-key="w1d2c5">笔记里记下三条"该用指针接收者"的判断规则，明天写 JSON 模型时会直接复用</label></li>
     </ul>
   </section>
 

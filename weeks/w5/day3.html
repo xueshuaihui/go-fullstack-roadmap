@@ -44,6 +44,8 @@
   <section>
     <h2>知识讲义</h2>
 
+    <p><b>本页文件怎么放：</b>第 1、5、6 节各是一份完整 <code>main.go</code>，分别建 <code>w5day3/sec1</code>、<code>sec5</code>、<code>sec6</code> 三个目录跑（一个 <code>package main</code> 只能有一个 <code>func main</code>）；第 2、3 节是往第 1 节文件里加的写法，不用单独跑。</p>
+
     <h3>1. 案发现场：并发写 map 直接 fatal error</h3>
     <p>Go 的内置 map <b>不是并发安全的</b>，它甚至自带"并发写报警器"。day2 练习 2 里"不加锁 append / 多个 goroutine 写 map"的遗留问题，今天正式引爆：</p>
     <pre><span class="code-label">main.go</span><span class="k">package</span> main
@@ -119,7 +121,7 @@ exit status 2</pre>
       <tr><th>条件</th><th>含义</th><th>常用破解</th></tr>
       <tr><td>互斥</td><td>资源（锁）同一时刻只能被一人持有</td><td>改无锁结构（atomic）或 channel</td></tr>
       <tr><td>持有并等待</td><td>拿着一把锁的同时去等另一把</td><td>一次把所有锁按固定顺序拿齐</td></tr>
-      <tr><td>不可剥夺</td><td>锁不能被外力抢走，只能持有者自己放</td><td>带超时的等待（Go 锁不支持，context/channel 可模拟）</td></tr>
+      <tr><td>不可剥夺</td><td>锁不能被外力抢走，只能持有者自己放</td><td>带超时的等待（Go 的锁本身不支持，要用 context/channel 模拟——<b>context 明天 D4 正式讲</b>，今天知道有这条路即可）</td></tr>
       <tr><td>循环等待</td><td>A 等 B 的锁、B 等 A 的锁，成环</td><td><b>全局约定加锁顺序</b>（最实用），杜绝交叉持锁</td></tr>
     </table>
     <p>Go 运行时能检测到"所有 goroutine 都睡着"这种全局死锁并直接 <code>fatal error: all goroutines are asleep - deadlock!</code>；但两个 goroutine 互等、其余 goroutine 还在干活的那种<b>局部死锁</b>，运行时救不了你，只能靠 code review 和压测。</p>
@@ -253,7 +255,7 @@ c := &amp;Counter{} <span class="c">// 注意是 &amp;，Counter 不可拷贝</s
       <tr><td>忘 Unlock / 提前 return</td><td>第一轮正常，第二轮 Lock 永久阻塞——程序挂死</td><td>Lock 的下一行永远写 <code>defer Unlock()</code></td></tr>
       <tr><td>锁的粒度过大</td><td>锁里 sleep/发 HTTP，全部 goroutine 排长队，"并发了但没完全并发"</td><td>临界区缩到几行以内；耗时操作放锁外，结果拿回来再加锁合并</td></tr>
       <tr><td>把带锁结构体按值传参</td><td><code>go vet</code> 报 <code>copylocks</code>；锁副本导致两边各锁各的</td><td>指针接收者 + 传 <code>*T</code>；WaitGroup/Mutex 同理不可拷贝</td></tr>
-      <tr><td>对 atomic 的错觉</td><td>两个 atomic 各自安全，但 <code>if n &lt; limit { n++ }</code> 两步合起来照样超卖</td><td>跨多个值的复合判断要么用锁，要么用 <code>CompareAndSwap</code> 类接口</td></tr>
+      <tr><td>对 atomic 的错觉</td><td>两个 atomic 各自安全，但 <code>if n &lt; limit { n++ }</code> 两步合起来照样超卖</td><td>跨多个值的复合判断要么用锁，要么用 <code>atomic.CompareAndSwapInt64(&amp;n, old, old+1)</code> 这类接口（"值还是我刚才读到的那个才改"，把两步并成一步；今天不要求会写，认得即可）</td></tr>
     </table>
   </section>
 

@@ -24,6 +24,7 @@
   </div>
   <h1>channel 与 select</h1>
   <p>昨天你用 WaitGroup 解决了"等"，但没解决"拿结果"——goroutine 里算出来的东西还在它自己手里。今天的 <b>channel（通道）</b>就是 goroutine 之间递东西的传送带，也是 Go 并发哲学的正面表达：<b>不要通过共享内存来通信，而要通过通信来共享内存。</b>再配上 <b>select</b>，你还能同时盯着多条传送带、谁先来收谁。</p>
+  <div class="callout note"><p><b>承接上周：</b>第 4 周 D4 你照抄的优雅关闭里有这么一行——<code>&lt;-ctx.Done()</code>，main 挂在它上面等 SIGTERM，等来了才继续走 <code>srv.Shutdown(shutCtx)</code>。当时它被当作"模板里必须照抄的一行"，<b>而它此刻的动作正是今天要讲的 channel 接收</b>：<code>&lt;-</code> 取不到值就一直挂住，值（或 close）一到就全部醒来。昨天（D1）讲了怎么起 goroutine，今天讲它们之间怎么递东西，第 4 天再把 <code>signal.NotifyContext</code>／<code>Shutdown</code> 那套 context 从原理上讲完——上周的欠账这周全还清。</p></div>
 
   <section class="goals">
     <h2>今日目标</h2>
@@ -43,6 +44,8 @@
 
   <section>
     <h2>知识讲义</h2>
+
+    <p><b>本页文件怎么放：</b>第 1、2、3、6 节各自都是完整 <code>main.go</code>，各建一个子目录分别 <code>go run .</code>（<code>w5day2/sec1</code>、<code>sec2</code>…），练习另建 <code>w5day2/practice1</code>——一个 <code>package main</code> 里只能有一个 <code>func main</code>。标了"伪码示意"的两格不用跑。</p>
 
     <h3>1. 无缓冲 channel：一次同步握手</h3>
     <p><code>make(chan T)</code> 创建的通道<b>没有容量</b>，发送方 <code>ch &lt;- v</code> 会一直阻塞，直到某个接收方 <code>&lt;-ch</code> 来取——两个 goroutine 像换手接力棒，必须<b>同时</b>到位才算完成一次传递。这也是它叫"同步握手"的原因：</p>
@@ -112,12 +115,12 @@
 }</pre>
 
     <h3>4. 通过通信共享内存 vs 用锁保护共享内存</h3>
-    <p>Go 官方格言出自 Rob Pike。落到工程上其实就一句话：<b>当数据的"所有权"需要在 goroutine 之间流转（典型：任务进、结果出）时用 channel；当一份状态被多个 goroutine 高频读写、谁也带不走（典型：缓存 map、计数器）时用锁（明天讲 Mutex）。</b>两种都是合法武器，别教条：</p>
-    <pre><span class="code-label">channel 风格</span><span class="c">// 结果的所有权从 worker 转移到汇总方，worker 之后不再碰它</span>
+    <p>Go 官方格言出自 Rob Pike。落到工程上其实就一句话：<b>当数据的"所有权"需要在 goroutine 之间流转（典型：任务进、结果出）时用 channel；当一份状态被多个 goroutine 高频读写、谁也带不走（典型：缓存 map、计数器）时用锁（明天讲 Mutex）。</b>两种都是合法武器，别教条。下面两格是<b>伪码示意</b>，不用跑：<code>compute()</code> 代表任意函数，<code>mu</code> 是明天正式登场的 <code>sync.Mutex</code>，<code>stats</code> 是一张公共 map：</p>
+    <pre><span class="code-label">channel 风格（伪码示意）</span><span class="c">// 结果的所有权从 worker 转移到汇总方，worker 之后不再碰它</span>
 results := <span class="k">make</span>(<span class="k">chan</span> <span class="t">string</span>)
 <span class="k">go</span> <span class="k">func</span>() { results &lt;- compute() }()
 fmt.Println(&lt;-results)</pre>
-    <pre><span class="code-label">锁 风格</span><span class="c">// stats 是公共账本，人人要改一行，不存在"交给谁"</span>
+    <pre><span class="code-label">锁 风格（伪码示意）</span><span class="c">// stats 是公共账本，人人要改一行，不存在"交给谁"</span>
 mu.Lock()
 stats[url]++
 mu.Unlock()</pre>
@@ -230,9 +233,8 @@ mu.Unlock()</pre>
       <div class="task-title">练习 2：channel vs WaitGroup+锁，收集结果的两种写法（25 分钟）</div>
       <p>并发调用 5 个假 API（各 <code>time.Sleep(1s)</code> 后返回不同字符串），把结果收集进 <code>[]string</code>。写法 A：结果 channel + for range；写法 B：WaitGroup + <code>sync.Mutex</code> 保护 <code>append</code>。跑通后回答：哪种写法结果的<b>顺序</b>是完成顺序？哪种你能自己控制存放位置（如 <code>results[i] = ...</code> 按下标写）？各适合什么场景？</p>
       <details><summary>参考答案要点</summary>
-        <p>写法 A（channel）：<code>for range</code> 收到的顺序 = 完成顺序，天然适合"先到先处理"的流水线/进度上报。写法 B：预分配 <code>results := make([]string, 5)</code>，每个 goroutine 写 <code>results[i]</code>——<b>不同下标互不重叠时甚至不需要锁</b>；同一切片 <code>append</code> 才必须 <code>mu.Lock()</code>。B 适合"结果要按输入顺序回位"（如 URL 聚合保持入参顺序）。工业代码两种都常见，本周日项目会各用一次。</p>
-        <pre><span class="c">// 写法 B 核心片段</span>
-<span class="k">var</span> mu <span class="t">sync</span>.Mutex
+        <p>写法 A（channel）：<code>for range</code> 收到的顺序 = 完成顺序，天然适合"先到先处理"的流水线/进度上报。写法 B：预分配 <code>results := make([]string, 5)</code>，每个 goroutine 写 <code>results[i]</code>——<b>不同下标互不重叠时甚至不需要锁</b>；同一切片 <code>append</code> 才必须 <code>mu.Lock()</code>。B 适合"结果要按输入顺序回位"（如 URL 聚合保持入参顺序）。工业代码两种都常见，本周日项目会各用一次。<code>fakeAPI</code> 直接沿用 day1 练习 2 的定义，<code>names</code> 就是 <code>[]string{"a","b","c","d","e"}</code>，写法 B 的 import 多一个 <code>sync</code>。</p>
+        <pre><span class="code-label">main.go（写法 B 片段）</span><span class="k">var</span> mu <span class="t">sync</span>.Mutex
 <span class="k">var</span> wg <span class="t">sync</span>.WaitGroup
 results := []<span class="t">string</span>{}
 <span class="k">for</span> _, name := <span class="k">range</span> names {
@@ -252,17 +254,27 @@ wg.Wait()</pre>
       <div class="task-title">练习 3：select 竞速与超时（20 分钟）</div>
       <p>起两个 goroutine：A 在 200ms 后发 <code>"A胜"</code>，B 在 400ms 后发 <code>"B胜"</code>，都发到各自的 channel。用 <code>select</code> 收第一个到达的值并打印；再给整个 select 加 <code>case &lt;-time.After(100*time.Millisecond)</code> 超时分支，把超时缩短到 100ms 观察走超时分支。思考：这个"select 三件套（两个数据源 + 一个 time.After）"结构，离周日项目的"5 秒抓不到就返回部分结果"还差什么？</p>
       <details><summary>参考答案</summary>
-        <pre><span class="k">a</span> := <span class="k">make</span>(<span class="k">chan</span> <span class="t">string</span>)
+        <pre><span class="code-label">main.go（片段）</span>a := <span class="k">make</span>(<span class="k">chan</span> <span class="t">string</span>)
 b := <span class="k">make</span>(<span class="k">chan</span> <span class="t">string</span>)
 <span class="k">go</span> <span class="k">func</span>() { time.Sleep(<span class="n">200</span> * time.Millisecond); a &lt;- <span class="s">"A胜"</span> }()
 <span class="k">go</span> <span class="k">func</span>() { time.Sleep(<span class="n">400</span> * time.Millisecond); b &lt;- <span class="s">"B胜"</span> }()
 
+<span class="c">// ① 不带超时：200ms 时 A 先到</span>
 <span class="k">select</span> {
-<span class="k">case</span> s := &lt;-a: fmt.Println(s)            <span class="c">// 200ms 时命中</span>
+<span class="k">case</span> s := &lt;-a: fmt.Println(s) <span class="c">// ← 命中这里</span>
 <span class="k">case</span> s := &lt;-b: fmt.Println(s)
+}
+
+<span class="c">// ② 加超时分支：另起一对，别复用已经收过的 channel（A 早已空，会一直等）</span>
+c := <span class="k">make</span>(<span class="k">chan</span> <span class="t">string</span>)
+<span class="k">go</span> <span class="k">func</span>() { time.Sleep(<span class="n">200</span> * time.Millisecond); c &lt;- <span class="s">"C胜"</span> }()
+<span class="k">select</span> {
+<span class="k">case</span> s := &lt;-c: fmt.Println(s)
 <span class="k">case</span> &lt;-time.After(<span class="n">100</span> * time.Millisecond):
-    fmt.Println(<span class="s">"100ms 内无人响应"</span>)      <span class="c">// 缩短等待时命中</span>
-}</pre>
+    fmt.Println(<span class="s">"100ms 内无人响应"</span>) <span class="c">// ← C 要 200ms，命中这里</span>
+}
+<span class="c">// 把 100ms 改成 300ms，同一个 select 就变成命中 C——两个数字来回调，体感最准</span></pre>
+        <p>整段贴进 <code>main</code>（import <code>fmt</code> / <code>time</code>）。<b>注意</b>：100ms 超时分支只有把 A 的 200ms 也一起缩短才会命中，否则 select 一定先收到 A——亲手调两个数字各改一次，比背结论有用。</p>
         <p>离周日项目还差：① 要等的是<b>一批</b>任务而不是取第一个；② 超时后没完成的 goroutine 需要被<b>取消</b>，不能让它们继续白烧资源——这正是后天 context 要解决的事。</p>
       </details>
     </div>

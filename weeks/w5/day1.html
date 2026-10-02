@@ -24,6 +24,7 @@
   </div>
   <h1>goroutine 与 WaitGroup</h1>
   <p>第 5 周是本手册的分水岭：前面四周你在学"怎么把接口写对"，这一周学"怎么让接口写得<b>快</b>"。并发是 Go 的核心竞争力，也是从前端转过来最需要换脑子的一章——好消息是，只需要换一次。<b>今天只解决两个问题：怎么启动一个 goroutine，以及怎么等它干完活。</b></p>
+  <div class="callout note"><p><b>承接上周（先把账对上）：</b>第 4 周 D4 的优雅关闭里，你照抄过 <code>signal.NotifyContext</code> 造 ctx、<code>&lt;-ctx.Done()</code> 挂住 main、<code>srv.Shutdown(shutCtx)</code> 收尾，那页明写了"goroutine / channel / context 三样第 5 周正式讲"。本周就是那周，从原理讲起：<b>D1 goroutine（今天）→ D2 channel → D3 Mutex 与竞态 → D4 context（把 <code>NotifyContext</code> 和 <code>Shutdown</code> 逐行讲透）→ D5 装成项目</b>。上周优雅关闭那几行照抄代码，这周五天里逐行转正，不需要你再翻回第 4 周。</p></div>
 
   <section class="goals">
     <h2>今日目标</h2>
@@ -55,6 +56,7 @@
     </table>
 
     <h3>2. <code>go func()</code>：两个字母启动一个任务</h3>
+    <p><b>本页文件怎么放：</b>讲义与练习里有多个 <code>func main</code>，一个 <code>package main</code> 里只能有一个 <code>main</code>——按 W1D2 的老规矩，每节各建一个子目录（如 <code>w5day1/sec2/main.go</code>）分别 <code>go run .</code>，或直接覆盖同一个 <code>main.go</code> 逐节跑。标了"伪码/片段"的格子不用单独跑，旁边都给了可运行版本。</p>
     <p>在任意函数调用前加 <code>go</code>，这个调用就进入一个新的 <b>goroutine</b>（Go 协程，由 Go 运行时调度的轻量线程）里执行，当前代码<b>不等待</b>它，立刻往下走：</p>
     <pre><span class="code-label">main.go</span><span class="k">package</span> main
 
@@ -76,6 +78,7 @@
     time.Sleep(<span class="n">1</span> * time.Second)   <span class="c">// 先粗暴地等 1 秒，第 3 节会解释为什么这是权宜之计</span>
 }</pre>
     <p>goroutine 有多轻？初始栈只有几 KB（OS 线程通常 1–8 MB），起一万个毫无压力。JS 里开一万个 <code>setTimeout</code> 没问题，开一万个线程想都不敢想；Go 里一万个 goroutine 就是日常操作。</p>
+    <div class="callout note"><p><b>顺手转正一处旧代码：</b>第 4 周 D4 优雅关闭里你照抄过的 <code>go func() { srv.ListenAndServe() }()</code> 就是今天这个语法——ListenAndServe 是阻塞调用，必须丢进 goroutine，main 才能继续走到下面的 <code>&lt;-ctx.Done()</code> 等信号。当时"为什么加 go"的疑问，现在有了答案；那行 <code>&lt;-ctx.Done()</code> 本身第 4 天（context）正式展开。</p></div>
 
     <h3>3. 主函数退出不等子 goroutine：一场翻车演示</h3>
     <p>Go 的规则简单粗暴：<b><code>main</code> 函数一返回，进程立刻结束，所有还没跑完的 goroutine 直接死亡，不会有任何提示。</b>把等待的那行 <code>Sleep</code> 拿掉试试：</p>
@@ -90,8 +93,8 @@
     <pre><span class="code-label">运行结果</span>$ go run main.go
 main 退出
 <span class="c">// 五次 "worker 干完活了" 一行都没打印出来！</span></pre>
-    <p>最"能骗人"的补救法是 <code>time.Sleep(100 * time.Millisecond)</code>：</p>
-    <pre><span class="k">go</span> doHeavyTask()             <span class="c">// 假设要跑 200ms</span>
+    <p>最"能骗人"的补救法是 <code>time.Sleep(100 * time.Millisecond)</code>（下面两行是<b>伪码</b>，<code>doHeavyTask</code> 换成练习 2 的 <code>fakeAPI</code> 就能直接跑）：</p>
+    <pre><span class="code-label">伪码</span><span class="k">go</span> doHeavyTask()             <span class="c">// 假设要跑 200ms</span>
 time.Sleep(<span class="n">100</span> * time.Millisecond) <span class="c">// 只等 100ms：偶发丢结果</span></pre>
     <div class="callout warn"><p><b>Sleep 等待是并发代码的头号假朋友。</b>等短了结果丢失、机器忙时偶现、机器闲时正常——这种"今天复现明天复现不了"的 bug 比编译错误可怕一百倍。它的存在价值只有一个：让你亲手体验一次竞态，然后引出真正的解决方案。</p></div>
 
@@ -131,7 +134,7 @@ time.Sleep(<span class="n">100</span> * time.Millisecond) <span class="c">// 只
     <pre><span class="code-label">app.js</span><span class="k">const</span> urls = [<span class="s">"/a"</span>, <span class="s">"/b"</span>, <span class="s">"/c"</span>, <span class="s">"/d"</span>, <span class="s">"/e"</span>];
 <span class="k">const</span> results = <span class="k">await</span> Promise.all(urls.map(u =&gt; fetch(u)));
 <span class="c">// 5 个请求几乎同时发出，await 等所有 Promise 落定</span></pre>
-    <pre><span class="code-label">main.go</span><span class="k">var</span> wg <span class="t">sync</span>.WaitGroup
+    <pre><span class="code-label">main.go（伪码）</span><span class="k">var</span> wg <span class="t">sync</span>.WaitGroup
 <span class="k">for</span> _, u := <span class="k">range</span> urls {
     wg.Add(<span class="n">1</span>)
     <span class="k">go</span> <span class="k">func</span>(url <span class="t">string</span>) {
@@ -140,6 +143,40 @@ time.Sleep(<span class="n">100</span> * time.Millisecond) <span class="c">// 只
     }(u)
 }
 wg.Wait() <span class="c">// ≈ await Promise.all</span></pre>
+    <p>上面那格是<b>伪码</b>：<code>urls</code> 和 <code>fetch</code> 都没定义（JS 里一个是自己的数组、一个是浏览器内置函数，Go 都得自己给）。落成可跑的 Go 代码只要补上这两样——先假请求、真 sleep，保证离线能跑；D5 的项目里 <code>fetch</code> 才换成真的 <code>http.NewRequestWithContext</code>：</p>
+    <pre><span class="code-label">main.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">fmt</span>
+    <span class="t">sync</span>
+    <span class="t">time</span>
+)
+
+<span class="c">// fetch 用 sleep 代表一次"API 调用"，与上面 JS 的 fetch(u) 同位</span>
+<span class="k">func</span> fetch(url <span class="t">string</span>) <span class="t">string</span> {
+    time.Sleep(<span class="n">300</span> * time.Millisecond)
+    <span class="k">return</span> url + <span class="s">" -&gt; 200 OK"</span>
+}
+
+<span class="k">func</span> main() {
+    urls := []<span class="t">string</span>{<span class="s">"/a"</span>, <span class="s">"/b"</span>, <span class="s">"/c"</span>, <span class="s">"/d"</span>, <span class="s">"/e"</span>}
+    <span class="k">var</span> wg <span class="t">sync</span>.WaitGroup
+
+    <span class="k">for</span> _, u := <span class="k">range</span> urls {
+        wg.Add(<span class="n">1</span>) <span class="c">// Add 在 go 之前（第 4 节的纪律）</span>
+        <span class="k">go</span> <span class="k">func</span>(url <span class="t">string</span>) {
+            <span class="k">defer</span> wg.Done()
+            fmt.Println(fetch(url))
+        }(u)
+    }
+    wg.Wait() <span class="c">// ≈ await Promise.all</span>
+    fmt.Println(<span class="s">"5 个请求全部返回"</span>)
+}</pre>
+    <pre><span class="code-label">运行结果</span>$ go run .
+/a -&gt; 200 OK   <span class="c">// 5 行几乎同时冒出来</span>
+<span class="c">// ...</span>
+5 个请求全部返回
+<span class="c">// 总耗时 ≈ 0.3s；改成顺序调用 fetch 就是 5×0.3s ≈ 1.5s</span></pre>
     <div class="callout js"><p><b>JS 单线程异步 vs Go 多线程真并行。</b><code>Promise.all</code> 的"同时"是假象：JS 主线程把 5 个 fetch 交给浏览器/系统 IO 层后自己继续跑事件循环，回调仍是<b>排队串行执行</b>的；如果任务里有 <code>for</code> 大循环算 CPU，整个页面卡死。Go 的 5 个 goroutine 则可能被 5 个不同的 M 拿去不同 CPU 核上<b>真正同时执行</b>，算满 CPU 也不影响别的 goroutine。所以：<code>Promise.all</code> ≈ <code>WaitGroup</code>（等待语义相似），但底下是两种完全不同的世界。</p></div>
   </section>
 
@@ -182,7 +219,7 @@ wg.Wait() <span class="c">// ≈ await Promise.all</span></pre>
       <div class="task-title">练习 2：串行 vs 并发计时（20 分钟）</div>
       <p>写 5 个"假 API"函数，每个 <code>time.Sleep(1 * time.Second)</code> 后返回字符串。先<b>顺序调用</b> 5 次并打印总耗时，再用 WaitGroup <b>并发调用</b>并打印总耗时。记录两个数字（预期约 5s vs 约 1s）——这就是本周日项目验收标准的雏形。</p>
       <details><summary>参考答案</summary>
-        <pre><span class="k">func</span> fakeAPI(name <span class="t">string</span>) <span class="t">string</span> {
+        <pre><span class="code-label">main.go（片段）</span><span class="k">func</span> fakeAPI(name <span class="t">string</span>) <span class="t">string</span> {
     time.Sleep(<span class="n">1</span> * time.Second)
     <span class="k">return</span> name + <span class="s">"-ok"</span>
 }
@@ -201,20 +238,42 @@ start = time.Now()
 }
 wg.Wait()
 fmt.Println(<span class="s">"并发耗时:"</span>, time.Since(start)) <span class="c">// ≈ 1.00s</span></pre>
+        <p>文件怎么放：<code>fakeAPI</code> 写在 <code>main</code> 外面，上面两段计时代码依次贴进同一个 <code>main</code>；import 与练习 1 相同（<code>fmt</code> / <code>sync</code> / <code>time</code>）。</p>
       </details>
     </div>
     <div class="task">
       <div class="task-title">练习 3：亲眼见证"循环变量捕获"（15 分钟）</div>
-      <p>写 <code>for i := 0; i &lt; 5; i++ { go func(){ fmt.Println(i) }() }</code> 加 WaitGroup，用 <code>go run .</code> 跑三遍看输出是否重复；再改写成把 <code>i</code> 作为参数传入 <code>go func(id int){...}(i)</code> 的版本对比。最后执行 <code>go version</code> 确认你的版本 ≥ 1.22，思考两者区别（讲义第 5 节下方有解释，常见坑表格里也有）。</p>
+      <p>写 <code>for i := 0; i &lt; 5; i++ { go func(){ fmt.Println(i) }() }</code> 加 WaitGroup，用 <code>go run .</code> 跑三遍看输出是否重复；再改写成把 <code>i</code> 作为参数传入 <code>go func(id int){...}(i)</code> 的版本对比。最后执行 <code>go version</code> 确认你的版本 ≥ 1.22，思考两者区别（完整解释在下方"常见坑"表格第一行）。</p>
       <details><summary>参考答案与原理</summary>
-        <p>Go 1.22 起 <code>for</code> 循环<b>每轮迭代新建变量</b>，闭包捕获的是各自副本，所以两个版本在现代 Go 上都输出 0–5 的乱序但完整的五个数。在 Go 1.21 及更早版本里，旧写法会打印 5 个 <code>5</code>——所有 goroutine 共享同一个 <code>i</code>，等它们跑起来时循环早已结束、<code>i</code> 已经是 5。显式传参写法跨版本都正确，老项目里至今常见，务必认识。</p>
+        <pre><span class="code-label">main.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">fmt</span>
+    <span class="t">sync</span>
+)
+
+<span class="k">func</span> main() {
+    <span class="k">var</span> wg <span class="t">sync</span>.WaitGroup
+
+    <span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="n">5</span>; i++ {               <span class="c">// 闭包直接吃 i</span>
+        wg.Add(<span class="n">1</span>)
+        <span class="k">go</span> <span class="k">func</span>() { <span class="k">defer</span> wg.Done(); fmt.Println(<span class="s">"闭包版:"</span>, i) }()
+    }
+    <span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="n">5</span>; i++ {               <span class="c">// 把 i 当参数传进去</span>
+        wg.Add(<span class="n">1</span>)
+        <span class="k">go</span> <span class="k">func</span>(id <span class="t">int</span>) { <span class="k">defer</span> wg.Done(); fmt.Println(<span class="s">"传参版:"</span>, id) }(i)
+    }
+
+    wg.Wait()
+}</pre>
+        <p>Go 1.22 起 <code>for</code> 循环<b>每轮迭代新建变量</b>，闭包捕获的是各自副本，所以两个版本在现代 Go 上都输出 0–4 的乱序但完整的五个数。在 Go 1.21 及更早版本里，旧写法会打印 5 个 <code>5</code>——所有 goroutine 共享同一个 <code>i</code>，等它们跑起来时循环早已结束、<code>i</code> 已经是 5。显式传参写法跨版本都正确，老项目里至今常见，务必认识。</p>
       </details>
     </div>
     <div class="task">
       <div class="task-title">练习 4：眼见为实——CPU 任务真并行（选做，20 分钟）</div>
-      <p>练习 2 的 sleep 是"假任务"。写一个纯计算的 <code>burn(n int) int</code>（从 1 累加到 n，n 取 2 亿，实测单份约 0.4–0.8 秒）。先串行跑 4 份计时，再用 WaitGroup 并发跑 4 份计时；然后用 <code>GOMAXPROCS=1 go run main.go</code> 再跑一次并发版。三个数字对比，解释：为什么 GOMAXPROCS=1 时并发不再明显加速？（这题没有陷阱，只有体感。）</p>
+      <p>练习 2 的 sleep 是"假任务"。写一个纯计算的 <code>burn(n int) int64</code>（从 1 累加到 n，n 取 2 亿，实测单份约 0.4–0.8 秒）。先串行跑 4 份计时，再用 WaitGroup 并发跑 4 份计时；然后用 <code>GOMAXPROCS=1 go run main.go</code> 再跑一次并发版。三个数字对比，解释：为什么 GOMAXPROCS=1 时并发不再明显加速？（这题没有陷阱，只有体感。）</p>
       <details><summary>参考答案与解读</summary>
-        <pre><span class="k">func</span> burn(n <span class="t">int</span>) <span class="t">int64</span> {
+        <pre><span class="code-label">main.go（片段）</span><span class="k">func</span> burn(n <span class="t">int</span>) <span class="t">int64</span> {
     <span class="k">var</span> sum <span class="t">int64</span>
     <span class="k">for</span> i := <span class="n">1</span>; i &lt;= n; i++ {
         sum += <span class="t">int64</span>(i) % <span class="n">7</span>
@@ -231,6 +290,7 @@ start := time.Now()
 }
 wg.Wait()
 fmt.Println(<span class="s">"并发 4 份:"</span>, time.Since(start))</pre>
+        <p>文件怎么放：<code>burn</code> 写在 <code>main</code> 外面，上面这段贴进 <code>main</code>；串行版把 goroutine 那三行换成直接调用 <code>burn(200_000_000)</code> 四次即可。import 同练习 1。跑并发版时顺手看一眼 <code>top</code>/<code>活动监视器</code>：并发 4 份真的占了 4 个核，<code>GOMAXPROCS=1</code> 时退回 1 个核。</p>
         <p>典型结果：串行 4 份 ≈ 4×单份；并发 4 份 ≈ 1×单份多一点（4 核以上时，真并行吃满多核）；<code>GOMAXPROCS=1</code> 时并发退回 ≈ 4×单份——P 只剩 1 个，任意时刻只有一个 goroutine 在执行 Go 代码，退化成"调度器轮流切换"，和 JS 事件循环神似。<b>这一组数字就是"GMP 里 P 的个数=并行度"的直接证据。</b></p>
       </details>
     </div>

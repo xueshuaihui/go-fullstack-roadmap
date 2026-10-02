@@ -25,6 +25,15 @@
   <h1>HTTP 基础 + net/http</h1>
   <p>前四天你写的全是"命令行里的小程序"，今天它们要变成<b>网络上的服务</b>。这一页会把 Day 3 的 JSON 文件持久化和 Day 4 的仓储接口拼到一起，交付本周唯一的项目：<b>标准库 HTTP 待办服务</b>。学完今天，你就拥有了一个能被 <code>curl</code> 打到、能被前端 fetch、能被写进简历接口文档的真后端。</p>
 
+  <div class="callout note"><p><b>今天的文件怎么放（先读这一段，能省一小时）</b></p>
+    <ul>
+      <li>正式项目继续用 Day 4 建好的 <code>todo-api/</code>：目前里面有 <code>go.mod</code> + <code>model.go</code>、<code>store.go</code>、<code>repo.go</code>、<code>main.go</code>，练习 3 还加了 <code>filerepo.go</code> 和 <code>acceptance.go</code>，<b>除练习 2 的 <code>internal/version/</code> 之外全部 <code>package main</code></b>。今天只往里加一个文件、替换一个文件；<code>main.go</code> 整份换掉后，练习 2 那两行 <code>version.*</code> 打印自然就没了（version 包留在原地不碍事，没人 import 就不会被编译进程序）。</li>
+      <li><b>一个目录只能有一个 <code>func main()</code></b>。今天它是 HTTP 服务的入口，在讲义 5 那份 <code>main.go</code> 里；Day 4 留下的 <code>demo</code> 函数可以保留（没被调用也合法），但那行 <code>func main()</code> 必须被替换掉，否则 <code>main redeclared in this block</code>。</li>
+      <li>讲义 3 的 <code>hello.go</code> 和练习 1 都需要<b>自己的</b> <code>func main</code>，所以别放进 <code>todo-api/</code>。另开一个临时小模块：<code>mkdir -p hello-http &amp;&amp; cd hello-http &amp;&amp; go mod init hello-http</code>，跑完随手删。</li>
+      <li>讲义 4 是<b>片段讲解</b>（只读不改），完整可跑的版本都在讲义 5 的 <code>main.go</code> 里；每个代码块的标签上都写清了它属于哪个文件。</li>
+    </ul>
+  </div>
+
   <section class="goals">
     <h2>今日目标</h2>
     <ul class="check">
@@ -34,7 +43,7 @@
       <li><label><input type="checkbox" data-key="w1d5g4">能用 <code>json.NewDecoder/Encoder</code> 收发 JSON，并把错误链翻译成正确状态码</label></li>
       <li><label><input type="checkbox" data-key="w1d5g5">跑通本周项目：五个必做端点（+ 单条查询）+ JSON 文件落盘 + 重启数据仍在</label></li>
     </ul>
-    <p style="color:var(--text-dim);font-size:13px">↑ 这五条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这五条是「学习目标」，学的过程中随时回来勾；页面底部还有 6 条「完成检查」（含最后一条"推上 GitHub"），全部勾掉今天才算结束。</p>
   </section>
 
   <section>
@@ -48,7 +57,7 @@
 &gt; User-Agent: curl/8.4.0
 &gt;                             <span class="c"># 空行 = 头结束，下面本可以跟请求体</span>
 &lt; HTTP/1.1 200 OK             <span class="c"># 状态行 = 协议 + 状态码 + 原因短语</span>
-&lt; Content-Type: text/plain; charset=utf-8  <span class="c"># 响应头</span>
+&lt; Content-Type: application/json; charset=utf-8  <span class="c"># 响应头：服务端主动声明 body 是什么</span>
 &lt; Date: Sun, 20 Sep 2026 09:12:33 GMT
 &lt;                             <span class="c"># 空行</span>
 {"status":"ok"}               <span class="c"># 响应体：状态码和头之外，你真正要的数据</span>
@@ -59,7 +68,8 @@ $ curl -v -X POST localhost:8080/todos -H <span class="s">"Content-Type: applica
 &gt;
 &gt; {"title":"学习Go"}          <span class="c"># 请求体</span>
 &lt; HTTP/1.1 201 Created        <span class="c"># 新建成功是 201，不是 200</span>
-&lt; Location: /todos/3          <span class="c"># 新资源的地址，REST 的礼貌约定</span></pre>
+&lt; Content-Type: application/json; charset=utf-8
+&lt; Location: /todos/3          <span class="c"># 新资源的地址，REST 的礼貌约定（真实输出还有 Date / Content-Length 两行）</span></pre>
     <table>
       <tr><th>方法</th><th>语义</th><th>有没有 body</th><th>幂等？</th><th>成功码</th></tr>
       <tr><td>GET</td><td>取资源，不该有副作用</td><td>一般没有</td><td>是</td><td>200</td></tr>
@@ -93,8 +103,9 @@ $ curl -v -X POST localhost:8080/todos -H <span class="s">"Content-Type: applica
     <div class="callout note"><p>路径参数（<code>/todos/{id}</code>）标识"<b>哪一个</b>"，查询参数（<code>?done=false</code>）标识"<b>要哪些 / 怎么排</b>"。第 2 周 Gin、第 3 周 GORM 分页、第 6 周前端 axios 全都沿用这套约定，现在就把它当母语。</p></div>
 
     <h3>3. net/http 三大件：Handler、ServeMux、Server</h3>
-    <p>标准库只有三个概念要记：<code>http.Handler</code>（接口，一个方法）、<code>http.ServeMux</code>（路由器，按路径+方法找到 Handler）、<code>http.Server</code>（监听端口、每个请求开一个 goroutine）。</p>
-    <pre><span class="code-label">hello.go</span><span class="k">package</span> main
+    <p>标准库只有三个概念要记：<code>http.Handler</code>（接口，一个方法）、<code>http.ServeMux</code>（路由器，按路径+方法找到 Handler）、<code>http.Server</code>（监听端口、<b>每个请求开一个 goroutine</b>）。</p>
+    <div class="callout note"><p><b>三个新词三句话说清（第 5 周才正式讲，今天会用就行）</b>：① <b>goroutine</b> = Go 里极轻的"并发任务"，起一个只要几 KB，<code>go</code> 关键字就能开；HTTP 服务每来一个请求就开一个，所以你的 handler 会被<b>很多 goroutine 同时调用</b>——这就是 Day 4 给仓储加锁的原因。② <b><code>log</code> 包</b> = 带时间戳的 <code>fmt.Println</code>；<code>log.Fatal(x)</code> = 打完这条就 <code>os.Exit(1)</code>，专门用来处理"启动就失败"。③ <b><code>io.Writer</code></b> = "任何有 <code>Write([]byte) (int, error)</code> 方法的接口"，文件（Day 3 的 <code>*os.File</code>）、网络连接、内存 buffer 都实现了它；<code>fmt.Fprintf(w, …)</code> 的第一个参数可以是<b>任何</b> Writer。</p></div>
+    <pre><span class="code-label">hello-http/main.go（临时模块：mkdir hello-http &amp;&amp; cd hello-http &amp;&amp; go mod init hello-http；不要放进 todo-api/）</span><span class="k">package</span> main
 
 <span class="k">import</span> (
     <span class="s">"fmt"</span>
@@ -128,10 +139,20 @@ $ curl -v -X POST localhost:8080/todos -H <span class="s">"Content-Type: applica
 }</pre>
     <div class="callout tip"><p>两个细节：① 方法+通配的 pattern 要求 <b>Go 1.22 以上</b>，所以 <code>go.mod</code> 里的 <code>go</code> 版本别写太低（<code>go 1.22</code> 起生效）；② <code>w</code> 只能"往前写"：<code>w.Header().Set</code> 必须在 <code>WriteHeader</code>／第一次 <code>Write</code> 之前调用，之后设的头会被静默丢弃。</p></div>
     <div class="callout js"><p>对比 Express/Koa：<code>app.get('/todos', (req, res) =&gt; …)</code> 里 req/res 是 Node 封装过的对象，还有 <code>next()</code> 串中间件；Go 的 <code>ResponseWriter</code> 极其朴素——它只是一个 <code>io.Writer</code> 加上头/状态码方法，写之前记得自己 <code>return</code>。第 2 周 Gin 的 <code>gin.Context</code> 才把这套东西包得顺手。</p></div>
+    <pre><span class="code-label">shell：终端 A 起服务，终端 B 逐条 curl</span>$ cd hello-http &amp;&amp; go run .        <span class="c"># 终端 A：没有输出，程序阻塞在这里 = 服务在跑</span>
+$ curl -s localhost:8080/greet
+hi ada，你访问的是 /greet
+$ curl -s localhost:8080/health
+{"status":"ok","time":"2026-09-20T09:12:33+08:00"}
+$ curl -s localhost:8080/todos/7
+你要找的待办 id = 7
+$ curl -s localhost:8080/nope
+404 page not found                 <span class="c"># ServeMux 兜底的纯文本 404，不是你的 handler 跑的</span></pre>
+    <div class="callout note"><p><b>Go 的日期格式是全栈最出名的坑</b>：<code>time.Now().Format(time.RFC3339)</code> 里的 <code>time.RFC3339</code> 常量值其实是字符串 <code>"2006-01-02T15:04:05Z07:00"</code>——Go <b>不用</b> <code>YYYY-MM-DD</code> 这种占位符，而是拿"一个具体的参考时刻"当模板（2006=年、1=月、2=日、15=24 小时制的 3 点、04=分、05=秒）。想输出 <code>2026-09-20</code> 就写 <code>Format("2006-01-02")</code>，把 <code>2006-01-02</code> 当成"格式串的哑元"记。JS 的 <code>toLocaleDateString</code> 或 dayjs 的 <code>format("YYYY-MM-DD")</code> 换成这里就是 <code>Format("2006-01-02")</code>。</p></div>
 
     <h3>4. JSON 收发：一个出口 + 一个入口</h3>
     <p>API 的 body 就是 JSON。Go 用 <code>encoding/json</code> 在<b>结构体字段</b>和 <b>JSON key</b> 之间映射，靠的是 Day 2 结尾提到的 struct tag。</p>
-    <pre><span class="code-label">json.go（片段：只看读写两个动作，讲义 5 已把它们整合进 server.go）</span><span class="c">// 写：所有响应都走这一个出口，顺序固定——设头 → WriteHeader → 写 body</span>
+    <pre><span class="code-label">json.go（片段，只读不跑：需要 import ("encoding/json"; "log"; "net/http"; "strings")；讲义 5 的 main.go 里已有完整可用版本）</span><span class="c">// 写：所有响应都走这一个出口，顺序固定——设头 → WriteHeader → 写 body</span>
 <span class="k">func</span> writeJSON(w http.ResponseWriter, status <span class="t">int</span>, v <span class="t">any</span>) {
     w.Header().Set(<span class="s">"Content-Type"</span>, <span class="s">"application/json; charset=utf-8"</span>)
     w.WriteHeader(status)
@@ -159,8 +180,42 @@ $ curl -v -X POST localhost:8080/todos -H <span class="s">"Content-Type: applica
     <div class="callout warn"><p>JSON 映射三铁律（第 2 周 Gin 的 <code>ShouldBindJSON</code> 一模一样）：① 字段必须<b>大写开头</b>才导出，小写字段 JSON 里永远收不到；② 想要 snake_case 的 key 就写 <code>`json:"author_id"`</code> tag；③ 指针或 <code>omitempty</code> 用来区分"没传"和"传了零值"——本项目 <code>Done bool</code> 不传即为 <code>false</code>，正好符合语义。</p></div>
 
     <h3>5. 本周项目核心代码：标准库 HTTP 待办服务</h3>
-    <p>把 Day 3 的 <code>Load/Save</code> 与 Day 4 的 <code>TodoRepository</code>（含 <code>MemRepo</code> / <code>FileRepo</code>、<code>ErrNotFound</code>、<code>ErrEmptyTitle</code>）放进同一个 <code>package main</code>，再写下面这个 <code>server.go</code>，项目就齐了。组装时注意：三处重复声明的 <code>Todo</code> 和哨兵错误<b>各只保留一份</b>（以 Day 4 的为准），Day 4 里的 <code>demo</code> 和它自己的 <code>main</code> 要删掉，一个包只能有一个 <code>main()</code>。<b>handler 只依赖接口</b>：明天想换 MySQL，只改仓储实现，这里一行不动。</p>
-    <pre><span class="code-label">server.go（与 Day 3/4 的代码同属 package main）</span><span class="k">package</span> main
+    <p>现在 <code>todo-api/</code> 里已经有 Day 3 的 <code>store.go</code>（<code>storeFile</code> / <code>LoadTodos</code> / <code>SaveTodos</code> / <code>NextID</code>）和 Day 4 的 <code>model.go</code> + <code>repo.go</code>（仓储接口 <code>TodoRepository</code>、内存实现 <code>MemRepo</code>、两个哨兵错误），今天要补的就两件事：<b>① 有 <code>FileRepo</code>（做了 Day 4 练习 3 的话 <code>filerepo.go</code> 已经在了，跳过这段）；② 把 <code>main.go</code> 整份换成下面这个 HTTP 入口</b>。所有文件都在同一个 <code>package main</code> 里，所以互相调用不需要 import，也没有 <code>todo.Load</code> 这种限定名。</p>
+    <div class="callout warn"><p>动手前先自检一遍 <code>todo-api/</code>：<b><code>Todo</code> 只有一份</b>（在 <code>model.go</code>）、<b><code>ErrNotFound</code> / <code>ErrEmptyTitle</code> 只有一份</b>（也在 <code>model.go</code>）、<b><code>func main()</code> 只有一份</b>（<code>main.go</code> 末尾那个）。Day 3 那份 <code>todo_store.go</code> 自带的 <code>Todo</code> 和 <code>func main</code> 必须删掉，否则 <code>go run .</code> 第一行就是 <code>Todo redeclared in this block</code>。</p></div>
+    <pre><span class="code-label">todo-api/filerepo.go（练习 3 做过就跳过；它只依赖 store.go 的 LoadTodos/SaveTodos/NextID 和 repo.go 的 MemRepo）</span><span class="k">package</span> main
+
+<span class="k">type</span> <span class="t">FileRepo</span> <span class="k">struct</span> {
+    inner *<span class="t">MemRepo</span> <span class="c">// 组合：增删改查的逻辑复用内存实现，这个类只多"落盘"这一步</span>
+    path  <span class="t">string</span>
+}
+
+<span class="k">func</span> NewFileRepo(path <span class="t">string</span>) (*<span class="t">FileRepo</span>, <span class="t">error</span>) {
+    todos, err := LoadTodos(path) <span class="c">// 启动就把磁盘读回内存；文件不存在返回空列表，不算错误</span>
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="k">nil</span>, err }
+    <span class="k">return</span> &amp;<span class="t">FileRepo</span>{inner: &amp;<span class="t">MemRepo</span>{items: todos, nextID: NextID(todos)}, path: path}, <span class="k">nil</span>
+}
+
+<span class="c">// 读方法直接转发给内存实现</span>
+<span class="k">func</span> (f *<span class="t">FileRepo</span>) List() ([]<span class="t">Todo</span>, <span class="t">error</span>)     { <span class="k">return</span> f.inner.List() }
+<span class="k">func</span> (f *<span class="t">FileRepo</span>) Get(id <span class="t">int</span>) (<span class="t">Todo</span>, <span class="t">error</span>) { <span class="k">return</span> f.inner.Get(id) }
+<span class="k">func</span> (f *<span class="t">FileRepo</span>) Create(t <span class="t">string</span>) (<span class="t">Todo</span>, <span class="t">error</span>)  { <span class="k">return</span> f.write(f.inner.Create(t)) }
+<span class="k">func</span> (f *<span class="t">FileRepo</span>) Complete(id <span class="t">int</span>) (<span class="t">Todo</span>, <span class="t">error</span>) { <span class="k">return</span> f.write(f.inner.Complete(id)) }
+<span class="k">func</span> (f *<span class="t">FileRepo</span>) Delete(id <span class="t">int</span>) <span class="t">error</span> {
+    <span class="k">if</span> err := f.inner.Delete(id); err != <span class="k">nil</span> { <span class="k">return</span> err }
+    items, err := f.inner.List()
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> err }
+    <span class="k">return</span> SaveTodos(f.path, items)
+}
+<span class="k">func</span> (f *<span class="t">FileRepo</span>) write(t <span class="t">Todo</span>, err <span class="t">error</span>) (<span class="t">Todo</span>, <span class="t">error</span>) {
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="t">Todo</span>{}, err } <span class="c">// 内存那步就失败了，不落盘，错误原样上抛</span>
+    items, err := f.inner.List()
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> t, err }
+    <span class="k">return</span> t, SaveTodos(f.path, items) <span class="c">// 写成功才落盘；落盘失败就把错误交给 handler → 500</span>
+}
+
+<span class="k">var</span> _ <span class="t">TodoRepository</span> = (*<span class="t">FileRepo</span>)(<span class="k">nil</span>) <span class="c">// 契约检查：少写一个方法立刻编译失败</span></pre>
+    <div class="callout note"><p>这里的 <code>List()</code> 返回 <code>([]Todo, error)</code> 两个值，是 Day 4 讲义 6 定的签名；内存版永远返回 <code>nil</code>，文件版转发它，第 3 周换成 MySQL 时这里就会真的报错。<b>handler 里那句 <code>if err != nil { s.fail(w, err); return }</code> 之所以能通吃三种存储，全靠接口签名里预留的这个 <code>error</code>。</b></p></div>
+    <pre><span class="code-label">todo-api/main.go（整份替换 Day 4 的 main.go：全项目唯一的 func main 就在最后）</span><span class="k">package</span> main
 
 <span class="k">import</span> (
     <span class="s">"encoding/json"</span>
@@ -172,7 +227,6 @@ $ curl -v -X POST localhost:8080/todos -H <span class="s">"Content-Type: applica
     <span class="s">"time"</span>
 )
 
-<span class="k">const</span> dataFile = <span class="s">"todos.json"</span>
 <span class="k">var</span> (
     ErrBadID   = errors.New(<span class="s">"id must be a number"</span>)       <span class="c">// 本文件新增的两个哨兵，都翻译成 400</span>
     ErrBadJSON = errors.New(<span class="s">"body is not valid JSON"</span>)
@@ -220,11 +274,11 @@ $ curl -v -X POST localhost:8080/todos -H <span class="s">"Content-Type: applica
 <span class="k">func</span> (s *<span class="t">server</span>) createTodo(w http.ResponseWriter, r *http.Request) {
     <span class="k">var</span> in <span class="k">struct</span> { Title <span class="t">string</span> <span class="s">`json:"title"`</span> }
     <span class="k">if</span> err := json.NewDecoder(r.Body).Decode(&amp;in); err != nil {
-        s.fail(w, fmt.Errorf(<span class="s">"decode: %w"</span>, ErrBadJSON)); <span class="k">return</span> <span class="c">// 坏 JSON 也是客户端的错 -> 400</span>
+        s.fail(w, fmt.Errorf(<span class="s">"decode: %w"</span>, ErrBadJSON)); <span class="k">return</span> <span class="c">// 坏 JSON 也是客户端的错 -&gt; 400</span>
     }
     t, err := s.repo.Create(in.Title)     <span class="c">// 仓储内部会落盘，接口自己返回错误</span>
     <span class="k">if</span> err != nil { s.fail(w, err); <span class="k">return</span> }
-    w.Header().Set(<span class="s">"Location"</span>, <span class="s">"/todos/"</span>+strconv.Itoa(t.ID))
+    w.Header().Set(<span class="s">"Location"</span>, <span class="s">"/todos/"</span>+strconv.Itoa(t.ID)) <span class="c">// Itoa = int 转 string（Day 3 §7 的 Atoi 的反向），+ 号拼接字符串</span>
     writeJSON(w, http.StatusCreated, t)   <span class="c">// 201 + Location：新建资源的标准响应</span>
 }
 
@@ -244,7 +298,7 @@ $ curl -v -X POST localhost:8080/todos -H <span class="s">"Content-Type: applica
 }
 
 <span class="k">func</span> main() {
-    repo, err := NewFileRepo(dataFile)    <span class="c">// Day 4 练习 3 的文件仓储（内部用 Day 3 的 Load/Save）</span>
+    repo, err := NewFileRepo(storeFile)   <span class="c">// storeFile = "todos.json"，在 Day 3 搬进来的 store.go 里</span>
     <span class="k">if</span> err != nil { log.Fatal(<span class="s">"启动失败:"</span>, err) }
     s := &amp;<span class="t">server</span>{repo: repo}
 
@@ -260,22 +314,77 @@ $ curl -v -X POST localhost:8080/todos -H <span class="s">"Content-Type: applica
     logged := http.HandlerFunc(<span class="k">func</span>(w http.ResponseWriter, r *http.Request) {
         start := time.Now()
         mux.ServeHTTP(w, r)               <span class="c">// 交给真正的路由</span>
-        log.Printf(<span class="s">"%s %s -> %s"</span>, r.Method, r.URL.Path, time.Since(start))
+        log.Printf(<span class="s">"%s %s -&gt; %s"</span>, r.Method, r.URL.Path, time.Since(start))
     })
 
-    srv := &amp;http.Server{Addr: <span class="s">":8080"</span>, Handler: logged, ReadHeaderTimeout: <span class="n">5</span> * time.Second}
+    srv := &amp;http.Server{Addr: <span class="s">":8080"</span>, Handler: logged, ReadHeaderTimeout: <span class="n">5</span> * time.Second} <span class="c">// Addr=监听地址；Handler=最外层 Handler（上面那个 logged）；ReadHeaderTimeout=读请求头最多等 5 秒，防慢连接挂着（照抄即可）</span>
     log.Println(<span class="s">"待办服务已启动: http://localhost:8080"</span>)
     log.Fatal(srv.ListenAndServe())       <span class="c">// 一直阻塞，Ctrl+C 退出；返回错误说明服务挂了</span>
 }</pre>
-    <pre><span class="code-label">shell：验收命令（另开一个终端执行）</span>$ go run .                                 <span class="c"># 或 go run ./cmd/server，看到"已启动"即可</span>
-$ curl -s localhost:8080/health            <span class="c"># {"status":"ok","time":"..."} 200</span>
-$ curl -si -X POST localhost:8080/todos -d <span class="s">'{"title":"学习Go"}'</span> | head -n 1  <span class="c"># 201 Created</span>
-$ curl -s localhost:8080/todos             <span class="c"># [{"id":1,"title":"学习Go","done":false}]</span>
-$ curl -si localhost:8080/todos/999 | head -n 1     <span class="c"># 404 Not Found</span>
-$ curl -si -X POST localhost:8080/todos -d <span class="s">'{bad json'</span> | head -n 1  <span class="c"># 400 Bad Request</span>
-$ curl -si -X PATCH localhost:8080/todos/1 | head -n 1   <span class="c"># 200，done 已变 true</span>
-$ curl -si -X DELETE localhost:8080/todos/1 | head -n 1  <span class="c"># 204 No Content</span>
-$ cat todos.json                           <span class="c"># 落盘确认；Ctrl+C 重启后数据仍在 = 验收通过</span></pre>
+    <pre><span class="code-label">终端 A：起服务 + 你写的日志中间件长什么样</span>$ cd todo-api &amp;&amp; go run .
+2026/09/20 09:12:30 待办服务已启动: http://localhost:8080
+2026/09/20 09:12:33 GET /health -&gt; 1.284ms
+2026/09/20 09:12:41 POST /todos -&gt; 2.117ms
+2026/09/20 09:12:52 GET /todos/999 -&gt; 96µs        <span class="c"># 这行是 logged 包装器打的：方法 + 路径 + 耗时</span></pre>
+    <pre><span class="code-label">终端 B：验收命令（每条都带真实响应，逐条敲）</span><span class="c"># ① 健康检查 = 200</span>
+$ curl -si localhost:8080/health | head -n 1
+HTTP/1.1 200 OK
+$ curl -s localhost:8080/health
+{"status":"ok","time":"2026-09-20T09:12:33+08:00"}
+
+<span class="c"># ② 新建 = 201 + Location 头 + 新资源本体</span>
+$ curl -si -X POST localhost:8080/todos -d <span class="s">'{"title":"学习Go"}'</span> | head -n 3
+HTTP/1.1 201 Created
+Content-Type: application/json; charset=utf-8
+Location: /todos/1
+$ curl -s -X POST localhost:8080/todos -d <span class="s">'{"title":"写周报"}'</span>
+{"id":2,"title":"写周报","done":false}
+$ curl -s localhost:8080/todos
+[{"id":1,"title":"学习Go","done":false},{"id":2,"title":"写周报","done":false}]
+
+<span class="c"># ③ 单条查询 + 标记完成 = 200</span>
+$ curl -s localhost:8080/todos/2
+{"id":2,"title":"写周报","done":false}
+$ curl -s -X PATCH localhost:8080/todos/2
+{"id":2,"title":"写周报","done":true}
+
+<span class="c"># ④ 落盘确认：SaveTodos 用的是 MarshalIndent，所以是带缩进的可读 JSON</span>
+$ cat todos.json
+[
+  {
+    "id": 1,
+    "title": "学习Go",
+    "done": false
+  },
+  {
+    "id": 2,
+    "title": "写周报",
+    "done": true
+  }
+]
+
+<span class="c"># ⑤ 三种错误状态码，各撞一次</span>
+$ curl -si localhost:8080/todos/999 | head -n 1
+HTTP/1.1 404 Not Found
+$ curl -s localhost:8080/todos/999
+{"error":"待办不存在"}
+$ curl -s localhost:8080/todos/abc
+{"error":"id must be a number"}
+$ curl -s -X POST localhost:8080/todos -d <span class="s">'{bad json'</span>
+{"error":"decode: body is not valid JSON"}
+$ curl -s -X POST localhost:8080/todos -d <span class="s">'{"title":"   "}'</span>
+{"error":"title is required"}
+
+<span class="c"># ⑥ 删除 = 204（没有 body），列表回空</span>
+$ curl -si -X DELETE localhost:8080/todos/1 | head -n 1
+HTTP/1.1 204 No Content
+$ curl -s localhost:8080/todos
+[{"id":2,"title":"写周报","done":true}]
+
+<span class="c"># ⑦ 本周项目的核心验收：Ctrl+C 停掉服务再重启，数据还在</span>
+$ curl -s localhost:8080/todos
+[{"id":2,"title":"写周报","done":true}]</pre>
+    <div class="callout tip"><p>上面 ② 的 <code>{"id":1,…}</code> 里没有 <code>created_at</code>，因为 <code>FileRepo.Create</code> 没给这个字段赋值，而 tag 写了 <code>omitempty</code>（Day 3 §6 的老朋友）。想让它出现，就在 <code>MemRepo.Create</code> 里补一行 <code>t := Todo{ID: r.nextID, Title: title, CreatedAt: time.Now().Format("2006-01-02")}</code>，并给 <code>repo.go</code> 加上 <code>"time"</code> 的 import——注意"一个文件里的 import 必须列全"这条铁律。</p></div>
     <div class="callout tip"><p>注意 <code>POST</code> 那条 curl <b>没带</b> <code>Content-Type</code>（curl <code>-d</code> 默认 <code>application/x-www-form-urlencoded</code>）也照样能通——因为我们直接解 body，不看头。真实项目会校验头，那是第 2 周 Gin 绑定层做的事。</p></div>
   </section>
 
@@ -284,9 +393,12 @@ $ cat todos.json                           <span class="c"># 落盘确认；Ctrl
     <div class="task">
       <div class="task-title">练习 1：最小的 /health 服务（20 分钟）</div>
       <p>不抄讲义，自己从零写一个只监听 8080、只有一个 <code>GET /health</code> 的服务，返回 <code>{"status":"ok"}</code> 和 <code>Content-Type: application/json</code>。然后用 <code>curl -v</code> 检查：状态行是不是 <code>200 OK</code>、响应头有没有 Content-Type、换一个不存在的路径（<code>/healt</code>）服务器返回什么。</p>
-      <pre><span class="code-label">answer.go</span><span class="k">package</span> main
+      <pre><span class="code-label">hello-http/main.go（临时模块；不要放进 todo-api/，那里已经有 func main 了）</span><span class="k">package</span> main
 
-<span class="k">import</span> (<span class="s">"log"</span>; <span class="s">"net/http"</span>)
+<span class="k">import</span> (
+    <span class="s">"log"</span>
+    <span class="s">"net/http"</span>
+)
 
 <span class="k">func</span> main() {
     mux := http.NewServeMux()
@@ -297,12 +409,24 @@ $ cat todos.json                           <span class="c"># 落盘确认；Ctrl
     })
     log.Fatal(http.ListenAndServe(<span class="s">":8080"</span>, mux))
 }</pre>
+      <pre><span class="code-label">shell：curl -v 的两个观察点</span>$ curl -v localhost:8080/health 2&gt;&amp;1 | head -n 12
+&gt; GET /health HTTP/1.1
+&gt; Host: localhost:8080
+&gt;
+&lt; HTTP/1.1 200 OK          <span class="c"># ← 状态行</span>
+&lt; Content-Type: application/json; charset=utf-8   <span class="c"># ← 你要设的头，设早了设晚了结果完全不同</span>
+&lt; Date: Sun, 20 Sep 2026 01:12:33 GMT
+&lt;
+{"status":"ok"}
+
+$ curl -s localhost:8080/healt
+404 page not found         <span class="c"># 差一个字母就是这个：ServeMux 兜底的纯文本 404</span></pre>
       <p><b>观察点：</b>没注册的路径由 ServeMux 兜底返回 <code>404 page not found</code>（纯文本）。第 2 周会把它换成统一 JSON 响应。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 2：POST 收发 JSON 并做校验（25 分钟）</div>
-      <p>加一个 <code>POST /echo</code>：请求体形如 <code>{"name":"ada","age":30}</code>，服务端解析后原样返回并附加一个字段 <code>"hello":"hi ada"</code>。要求：① 坏 JSON → 400；② <code>name</code> 为空 → 400；③ 正常 → 200。注意每一步都要 <code>return</code>。</p>
-      <pre><span class="code-label">answer.go（另需在 main 里注册 POST /echo）</span><span class="k">func</span> echo(w http.ResponseWriter, r *http.Request) {
+      <p>加一个 <code>POST /echo</code>：请求体形如 <code>{"name":"ada","age":30}</code>，服务端解析后原样返回并附加一个字段 <code>"hello":"hi ada"</code>。要求：① 坏 JSON → 400；② <code>name</code> 为空 → 400；③ 正常 → 200。注意每一步都要 <code>return</code>。<b>粘贴位置：</b>接着写在 <code>todo-api/main.go</code> 里最省事——<code>writeJSON</code> 和 <code>encoding/json</code> 都已经有了，函数名 <code>echo</code> 也没被占用；然后在 <code>func main</code> 的 mux 注册区加一行 <code>mux.HandleFunc("POST /echo", echo)</code>（它是普通函数，不是 <code>s.xxx</code> 方法）。</p>
+      <pre><span class="code-label">todo-api/main.go（在 main() 之前加这个函数；main() 里注册 POST /echo）</span><span class="k">func</span> echo(w http.ResponseWriter, r *http.Request) {
     <span class="k">var</span> in <span class="k">struct</span> {
         Name <span class="t">string</span> <span class="s">`json:"name"`</span>
         Age  <span class="t">int</span>    <span class="s">`json:"age"`</span>
@@ -318,29 +442,65 @@ $ cat todos.json                           <span class="c"># 落盘确认；Ctrl
     writeJSON(w, http.StatusOK, <span class="t">map</span>[<span class="t">string</span>]<span class="t">any</span>{<span class="s">"name"</span>: in.Name, <span class="s">"age"</span>: in.Age,
         <span class="s">"hello"</span>: <span class="s">"hi "</span> + in.Name})
 }</pre>
+      <pre><span class="code-label">shell</span>$ curl -s -X POST localhost:8080/echo -d <span class="s">'{"name":"ada","age":30}'</span>
+{"age":30,"hello":"hi ada","name":"ada"}
+$ curl -s -X POST localhost:8080/echo -d <span class="s">'{"name":"","age":30}'</span>
+{"error":"name 不能为空"}
+$ curl -s -X POST localhost:8080/echo -d <span class="s">'{bad'</span>
+{"error":"bad json"}
+$ curl -si localhost:8080/echo | head -n 1   <span class="c"># 只注册了 POST，GET 撞 405</span>
+HTTP/1.1 405 Method Not Allowed
+</pre>
+      <div class="callout note"><p>第一个响应里键的顺序是 <code>age, hello, name</code>（<b>字母序</b>），不是你的书写顺序——<code>encoding/json</code> 编码 <code>map</code> 时固定按键排序，这样 diff 才稳定。想控制顺序就换一个 <code>struct</code> 来编码（这也是第 2 周写 API 响应包装时会讲的点）。</p></div>
     </div>
     <div class="task">
       <div class="task-title">练习 3：路径参数与状态码四连（25 分钟）</div>
-      <p>实现 <code>GET /todos/{id}</code>：id 不是数字返回 400，数字合法但没有这条返回 404，存在返回 200 + JSON。再用 <code>curl</code> 逐一验证四种情况：正常 200、不存在 404、<code>/todos/abc</code> 得 400、对 <code>/todos</code> 用 <code>DELETE</code> 方法（只注册了 GET/POST）得 405。</p>
-      <pre><span class="code-label">answer.go</span><span class="k">func</span> (s *<span class="t">server</span>) getTodo(w http.ResponseWriter, r *http.Request) {
+      <p>再写一个"严格版"的单条查询：<code>id</code> 不是数字返回 400，数字合法但没有这条返回 404，存在返回 200 + JSON。再用 <code>curl</code> 逐一验证四种情况：正常 200、不存在 404、非数字 id 得 400、对 <code>/todos</code> 用 <code>DELETE</code> 方法（只注册了 GET/POST）得 405。<b>两个避免撞名的约定</b>：函数叫 <code>getTodoStrict</code>（讲义 5 的 <code>getTodo</code> 已经在同一个包里了，重名就是 <code>getTodo redeclared in this block</code>），路由挂在<b>单数</b>的 <code>GET /todo/{id}</code> 上，不和已有的 <code>GET /todos/{id}</code> 抢同一条 pattern。代码放进新文件 <code>todo-api/extraroutes.go</code>（<code>package main</code>，不要写 <code>func main</code>）。</p>
+      <pre><span class="code-label">todo-api/extraroutes.go（新文件，自带 package 与 import；main.go 的注册区补一行 mux.HandleFunc("GET /todo/{id}", s.getTodoStrict)）</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"net/http"</span>
+    <span class="s">"strconv"</span>
+)
+
+<span class="k">func</span> (s *<span class="t">server</span>) getTodoStrict(w http.ResponseWriter, r *http.Request) {
     raw := r.PathValue(<span class="s">"id"</span>)            <span class="c">// 拿到的一律是 string</span>
     id, err := strconv.Atoi(raw)
-    <span class="k">if</span> err != nil {                     <span class="c">// "/todos/abc"：客户端写错了</span>
+    <span class="k">if</span> err != <span class="k">nil</span> {                     <span class="c">// "/todo/abc"：客户端写错了</span>
         writeJSON(w, http.StatusBadRequest, <span class="t">map</span>[<span class="t">string</span>]<span class="t">string</span>{<span class="s">"error"</span>: <span class="s">"id 必须是数字: "</span>+raw})
         <span class="k">return</span>
     }
     t, err := s.repo.Get(id)
-    <span class="k">if</span> err != nil {                     <span class="c">// 数字合法但没有这条：ErrNotFound -> 404</span>
+    <span class="k">if</span> err != <span class="k">nil</span> {                     <span class="c">// 数字合法但没有这条：ErrNotFound -&gt; 404</span>
         s.fail(w, err)
         <span class="k">return</span>
     }
     writeJSON(w, http.StatusOK, t)
 }</pre>
+      <pre><span class="code-label">shell：四种情况各撞一次</span>$ curl -s localhost:8080/todo/2
+{"id":2,"title":"写周报","done":true}
+$ curl -s localhost:8080/todo/999
+{"error":"待办不存在"}
+$ curl -s localhost:8080/todo/abc
+{"error":"id 必须是数字: abc"}
+$ curl -si -X DELETE localhost:8080/todos | head -n 2
+HTTP/1.1 405 Method Not Allowed
+Allow: GET, HEAD, POST       <span class="c"># ServeMux 自动告诉你这条路径支持哪些方法；注册了 GET 就顺带允许 HEAD</span></pre>
+      <div class="callout tip"><p>对比讲义 5 的 <code>getTodo</code>：它把"非数字 id"交给 <code>s.fail(w, ErrBadID)</code>，这里直接在 handler 里写响应。两种都常见，<b>本项目统一走 <code>fail</code></b>（状态码集中一处决定，第 2 周会把这个思路升级成 middleware）。练习时故意写歪一次，你就明白"错误决定状态码"这条链路长什么样了。</p></div>
     </div>
     <div class="task">
       <div class="task-title">练习 4：把项目跑通并亲手制造 400 / 404 / 500（45 分钟）</div>
-      <p>按讲义 5 把 Day 3 的 <code>Load/Save</code>、Day 4 的 <code>TodoRepository + MemRepo + FileRepo</code>、本页的 <code>server.go</code> 组装成能 <code>go run .</code> 的项目，逐条跑完验收命令。然后<b>故意制造三种错误状态码</b>并记录你看到的日志输出：① <code>-d '{bad'</code> → 400；② <code>GET /todos/999</code> → 404；③ 另开终端执行 <code>chmod 000 todos.json</code> 再 POST → <code>Save</code> 失败一路 <code>%w</code> 上抛 → 500（记得 <code>chmod 644 todos.json</code> 还原）。最后 <code>Ctrl+C</code> 重启服务，确认列表还在。</p>
-      <div class="callout warn"><p>如果 POST 之后重启数据没了，九成是 <code>Create</code> 里忘了调用 <code>Save</code>，或者 <code>FileRepo</code> 用的是 <code>MemRepo</code> 的副本却没写回文件。先在 <code>Save</code> 里加一行 <code>log.Println("写入", path)</code> 确认它到底有没有被执行——<b>后端调试第一招：把怀疑的函数打日志</b>。</p></div>
+      <p>按讲义 5 把 Day 3 的 <code>LoadTodos / SaveTodos</code>（<code>store.go</code>）、Day 4 的 <code>TodoRepository + MemRepo</code>（<code>repo.go</code>）+ <code>FileRepo</code>（<code>filerepo.go</code>）、本页的 <code>main.go</code> 组装成一个目录里能 <code>go run .</code> 的项目，逐条跑完讲义 5 终端 B 的验收命令。然后<b>故意制造三种错误状态码</b>并记录你看到的日志输出：① <code>-d '{bad'</code> → 400；② <code>GET /todos/999</code> → 404；③ 另开终端执行 <code>chmod 000 todos.json</code> 再 POST → <code>SaveTodos</code> 失败一路 <code>%w</code> 上抛 → 500（记得 <code>chmod 644 todos.json</code> 还原）。最后 <code>Ctrl+C</code> 重启服务，确认列表还在。</p>
+      <pre><span class="code-label">shell：制造 500 的那一步，终端 A 的日志会留下真实原因</span>$ chmod 000 todos.json
+$ curl -si -X POST localhost:8080/todos -d <span class="s">'{"title":"炸一次"}'</span> | head -n 1
+HTTP/1.1 500 Internal Server Error
+$ curl -s -X POST localhost:8080/todos -d <span class="s">'{"title":"炸一次"}'</span>
+{"error":"服务内部错误"}          <span class="c"># 给客户端的只有一句人话，详情在日志里</span>
+$ <span class="c"># 终端 A 里多出这两行：</span>
+2026/09/20 09:15:02 internal: open todos.json: permission denied   <span class="c"># fail() 的 default 分支用 log.Println 记的就是它</span>
+2026/09/20 09:15:02 POST /todos -&gt; 386µs
+$ chmod 644 todos.json             <span class="c"># 记得还原，否则下一个 500 会让你怀疑人生</span></pre>
+      <div class="callout warn"><p>如果 POST 之后重启数据没了，九成是 <code>FileRepo</code> 的写方法里忘了调用 <code>SaveTodos</code>，或者 <code>FileRepo</code> 用的是 <code>MemRepo</code> 的副本却没写回文件。先在 <code>SaveTodos</code> 里加一行 <code>log.Println("写入", path)</code> 确认它到底有没有被执行——<b>后端调试第一招：把怀疑的函数打日志</b>。</p></div>
     </div>
   </section>
 
@@ -355,6 +515,8 @@ $ cat todos.json                           <span class="c"># 落盘确认；Ctrl
       <tr><td>JSON 字段小写开头</td><td>Decode 后字段全是零值，Encode 出来是 <code>{}</code></td><td>导出字段 + <code>`json:"snake_case"`</code> tag</td></tr>
       <tr><td>500 把内部错误原文吐给客户端</td><td>泄漏路径 / SQL / 依赖版本，前端也看不懂</td><td>日志里存详情，响应里给一句人话</td></tr>
       <tr><td>不检查 <code>ListenAndServe</code> 返回值</td><td>端口被占，程序"看起来在跑"其实秒退</td><td><code>log.Fatal</code> 或自己处理，别把 error 丢了</td></tr>
+      <tr><td>把 <code>todos.json</code>、编译出的二进制也 commit 了</td><td>仓库越来越胖，两个人同时改数据文件必然冲突</td><td>先写 <code>.gitignore</code> 再 <code>git add .</code>；已提交的用 <code>git rm --cached todos.json</code> 撤下（<code>--cached</code> 只删仓库里的，本地文件保留）</td></tr>
+      <tr><td>HTTPS 推送时填了 GitHub 登录密码</td><td><code>remote: Support for password authentication was removed</code>，一直 403</td><td>要么配 SSH key，要么用 Personal Access Token 当密码（见「把今天推上 GitHub」）</td></tr>
     </table>
   </section>
 
@@ -369,7 +531,79 @@ $ cat todos.json                           <span class="c"># 落盘确认；Ctrl
       <tr><td>ServeMux</td><td>路由器：按"方法 + 路径 pattern"找到 Handler，没匹配上返回 404</td></tr>
       <tr><td>ResponseWriter</td><td>响应对象的写接口：设头、写状态码、写 body，只能按顺序往前用</td></tr>
       <tr><td>中间件雏形</td><td>包一层 Handler，在调用真实路由前后加日志/计时，第 2 周正式展开</td></tr>
+      <tr><td>仓库 / 暂存区 / 工作区</td><td>git 的三个空间：改文件（工作区）→ <code>git add</code>（暂存区）→ <code>git commit</code>（本地仓库 <code>.git</code>）→ <code>git push</code>（远端）</td></tr>
+      <tr><td>remote / origin</td><td><code>remote</code> 是"别人机器上那个仓库"的别名，<code>origin</code> 是惯例名，指向你的 GitHub 地址</td></tr>
+      <tr><td>SSH key / PAT</td><td>让 GitHub 认识你的两种凭据：公钥贴到网站（SSH），或生成 Personal Access Token 当密码（HTTPS）；二选一</td></tr>
     </table>
+  </section>
+
+  <section id="push">
+    <h2>把今天推上 GitHub（10 分钟）</h2>
+    <p>本周项目的最后一步不是写完代码，而是<b>让它在 GitHub 上能被别人打开</b>——简历上那行"独立实现 RESTful 待办 API"需要一个能点的链接。今天只用到 6 条 git 命令，先把仓库推上去，<b>git 的原理第 4 周会系统讲</b>，现在照抄即可。</p>
+    <p><b>第 0 步：先在 GitHub 上有一个空仓库</b>（二选一，别两个都做）：</p>
+    <pre><span class="code-label">shell：方式 A（装了 GitHub CLI，一行建库）/ 方式 B（网页建）</span>$ gh repo create todo-api --private --source=. --remote=origin --push   <span class="c"># A：建库 + 加 remote + 推送，一次做完</span>
+<span class="c"># B：打开 github.com → 右上角 + → New repository → Repository name 填 todo-api →
+#     不要勾 "Add a README"（本地已有，勾了会冲突）→ Create repository</span></pre>
+    <pre><span class="code-label">shell：方式 C（没装 gh 就手动 6 条，在 todo-api/ 目录里执行）</span>$ git init
+$ git add .
+$ git commit -m "W1: 标准库待办 API（JSON 文件持久化 + 仓储接口）"
+$ git branch -M main                 <span class="c"># 把默认分支名改成 main，和 GitHub 一致</span>
+$ git remote add origin git@github.com:你的用户名/todo-api.git
+$ git push -u origin main</pre>
+    <pre><span class="code-label">shell：三条命令的真实输出（长这样就是成功了）</span>$ git init
+Initialized empty Git repository in /Users/你/todo-api/.git/
+$ git commit -m "W1: 标准库待办 API（JSON 文件持久化 + 仓储接口）"
+[main (root-commit) e0f1a2b] W1: 标准库待办 API（JSON 文件持久化 + 仓储接口）  <span class="c"># Git 2.28 之前默认分支叫 master，这里就是 [master (root-commit) …]</span>
+ 8 files changed, 214 insertions(+)
+ create mode 100644 .gitignore
+ create mode 100644 README.md
+ create mode 100644 filerepo.go
+ create mode 100644 go.mod
+ create mode 100644 main.go
+ create mode 100644 model.go
+ create mode 100644 repo.go
+ create mode 100644 store.go
+$ git push -u origin main
+Enumerating objects: 9, done.
+<span class="c"># 中间还有 Counting / Compressing / Writing objects 几行进度输出，这里省略</span>
+To github.com:你的用户名/todo-api.git
+ * [new branch]      main -&gt; main
+branch 'main' set up to track 'origin/main'.</pre>
+    <p><b>推之前先写两个文件</b>（<code>git add .</code> 之前）：<code>.gitignore</code> 让数据文件和编译产物别进仓库，<code>README.md</code> 让打开的人知道怎么跑：</p>
+    <pre><span class="code-label">todo-api/.gitignore</span>todos.json               <span class="c"># 运行期数据，不进版本库</span>
+/todo-api                  <span class="c"># go build 出来的同名二进制</span>
+*.test</pre>
+    <pre><span class="code-label">todo-api/README.md</span># todo-api（W1 项目 · 只用标准库）
+
+Go 全栈手册第 1 周作业：待办 REST API，JSON 文件持久化，仓储接口可换实现。
+
+## 跑起来
+go run .                  <span class="c"># 监听 :8080，数据文件 todos.json 自动创建</span>
+
+## 接口
+GET    /health            健康检查
+GET    /todos             列表
+POST   /todos             新建（body: {"title":"..."}），201 + Location
+GET    /todos/{id}        单条，404 时返回 {"error":"待办不存在"}
+PATCH  /todos/{id}        标记完成
+DELETE /todos/{id}        删除，204
+
+## 验证
+curl -s -X POST localhost:8080/todos -d '{"title":"学习Go"}'
+curl -s localhost:8080/todos</pre>
+    <div class="callout warn"><p><b>推送时卡在认证，是新手最容易放弃的一步</b>，两种方案二选一：<br>
+      ① <b>SSH（推荐，配一次永久有效）</b>：<code>ssh-keygen -t ed25519 -C "你的邮箱"</code> 一路回车 → <code>cat ~/.ssh/id_ed25519.pub</code> 复制整行 → GitHub 右上角头像 → Settings → SSH and GPG keys → New SSH key 粘贴 → remote 用 <code>git@github.com:你的用户名/todo-api.git</code>。<br>
+      ② <b>HTTPS + Personal Access Token</b>：remote 用 <code>https://github.com/你的用户名/todo-api.git</code>，提示输密码时贴 <b>token</b>（GitHub Settings → Developer settings → Personal access tokens → Tokens (classic) → 勾 <code>repo</code> 权限生成），<b>不是</b>你的登录密码；macOS 会把它存进钥匙串，之后不用再输。</p></div>
+    <div class="callout note"><p>三条常见报错的解法：<code>remote origin already exists</code> → 改用 <code>git remote set-url origin 新地址</code>；<code>error: src refspec main does not match any</code> → 说明还没 <code>git commit</code>，先提交；<code>failed to push some refs</code> 且网页上已有 README → <code>git pull --rebase origin main</code> 后再 push。占位符 <code>你的用户名</code> 要换成 GitHub 上真实的用户名，大小写都要对。</p></div>
+    <p>推完打开 <code>https://github.com/你的用户名/todo-api</code> 看一眼：能看到 <code>README.md</code> 渲染出的接口表、<code>main.go</code> 里那个唯一的 <code>func main</code>，今天就算真的毕业了。<b>下周开始每个项目都这么收尾。</b></p>
+  </section>
+
+  <section>
+    <h2>扩展阅读（补充，不影响今日完成度）</h2>
+    <ul>
+      <li><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP" target="_blank">MDN HTTP 基础</a>：方法、状态码、头的权威清单</li>
+      <li><a href="https://go.dev/blog/routing-enhancements" target="_blank">Go Blog · 1.22 路由增强</a> + <a href="https://pkg.go.dev/net/http#Handler" target="_blank">net/http · Handler</a>：方法 pattern 与 <code>PathValue</code> 的官方说明</li>
+    </ul>
   </section>
 
   <section>
@@ -379,15 +613,8 @@ $ cat todos.json                           <span class="c"># 落盘确认；Ctrl
       <li><label><input type="checkbox" data-key="w1d5c2">练习 2/3：400（坏 JSON、空 name、非数字 id）与 404（不存在的 id）都真实返回过，且响应也是 JSON</label></li>
       <li><label><input type="checkbox" data-key="w1d5c3">练习 4：GET/POST/PATCH/DELETE 四个端点全通，POST 返回 201 且 <code>cat todos.json</code> 能看到新数据</label></li>
       <li><label><input type="checkbox" data-key="w1d5c4"><code>chmod 000</code> 制造出过一次 500，并确认服务端日志里有真实原因</label></li>
-      <li><label><input type="checkbox" data-key="w1d5c5">Ctrl+C 重启服务后待办仍在，并能口述为什么——数据在 JSON 文件里，启动时 <code>Load</code> 回内存</label></li>
-    </ul>
-  </section>
-
-  <section>
-    <h2>扩展阅读（补充，不影响今日完成度）</h2>
-    <ul>
-      <li><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP" target="_blank">MDN HTTP 基础</a>：方法、状态码、头的权威清单</li>
-      <li><a href="https://go.dev/blog/routing-enhancements" target="_blank">Go Blog · 1.22 路由增强</a> + <a href="https://pkg.go.dev/net/http#Handler" target="_blank">net/http · Handler</a>：方法 pattern 与 <code>PathValue</code> 的官方说明</li>
+      <li><label><input type="checkbox" data-key="w1d5c5">Ctrl+C 重启服务后待办仍在，并能口述为什么——数据在 JSON 文件里，启动时 <code>LoadTodos</code> 回内存</label></li>
+      <li><label><input type="checkbox" data-key="w1d5c6">按本页 <a href="#push">「把今天推上 GitHub」</a> 推成功，浏览器打开仓库能看到 README 的接口表</label></li>
     </ul>
   </section>
 

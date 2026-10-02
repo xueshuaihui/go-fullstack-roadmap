@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>W5D4 · context 取消与超时 | Go 全栈修炼手册</title>
-<meta name="description" content="Day 4：context.Context 是什么（取消信号+截止时间+值）、WithCancel/WithTimeout/WithDeadline、ctx.Done() 与子 context 传播、HTTP 的 r.Context() 与 http.NewRequestWithContext、GORM 传 ctx，含 3 秒超时慢接口练习。">
+<meta name="description" content="Day 4：context.Context 是什么（取消信号+截止时间+值）、WithCancel/WithTimeout/WithDeadline、ctx.Done() 与子 context 传播、HTTP 的 r.Context() 与 http.NewRequestWithContext、GORM 传 ctx，含超时截停练习与客户端提前 abort 的慢接口练习。">
 <link rel="stylesheet" href="../../assets/style.css">
 <script src="../../assets/app.js"></script>
 </head>
@@ -44,6 +44,8 @@
   <section>
     <h2>知识讲义</h2>
 
+    <p><b>本页文件怎么放：</b>第 2、3 节和第 4 节的 <code>heavyLoop</code>、练习 1、练习 2 各是一份完整 <code>main.go</code>，建议目录 <code>w5day4/sec2 / sec3 / sec4 / p1 / p2</code>（一个 <code>package main</code> 只能有一个 <code>func main</code>）；第 4 节的 Gin handler 要贴回你第 4 周的 goblog 才跑得起来（<code>User</code>、<code>db</code> 的最小前置定义已给全），今天照着敲一遍、把 <code>WithContext</code> 的姿势记住即可。</p>
+
     <h3>1. context.Context 是什么</h3>
     <p>它就是一个接口，方法少得可怜：</p>
     <pre><span class="code-label">接口定义（标准库 context）</span><span class="k">type</span> Context <span class="k">interface</span> {
@@ -53,6 +55,7 @@
     Value(key <span class="k">any</span>) <span class="k">any</span>     <span class="c">// 请求级小数据：requestID、已解析的 user 等</span>
 }</pre>
     <p>根 context 有两个：<code>context.Background()</code>（程序根，偶尔在 main/初始化用）和 <code>context.TODO()</code>（"还没想好传什么"的占位符）。所有其它 context 都从它们<b>逐层派生</b>。记一条纪律：<b>ctx 只用作参数往下传，绝不存进 struct 字段</b>（除非实现 http.Request 这类标准结构）。</p>
+    <div class="callout note"><p><b>你其实已经抄过一次 ctx：</b>第 4 周 D4 的优雅关闭里，<code>signal.NotifyContext</code> 给你一个"收到 SIGTERM 就取消"的 ctx，main 挂在 <code>&lt;-ctx.Done()</code> 上等信号，<code>srv.Shutdown(shutCtx)</code> 吃的正是 <code>WithTimeout</code> 派生的 ctx。当时按模板照抄，今天这套东西全部转正——顺便解释了一句老疑问：Shutdown 为什么能"等在途请求跑完"？因为 <b>cancel 只是广播信号，接不接由被等的那一方决定</b>（协作式取消，见本页末尾坑表"误以为 ctx 能强行杀死 goroutine"一行）。</p></div>
 
     <h3>2. WithCancel：手动喊停</h3>
     <p>派生方法都返回"新 context + 停止函数 cancel"。取消的实现正是前两天学的 channel 关闭：<b><code>cancel()</code> 一调用，<code>ctx.Done()</code> 这条 channel 被关闭</b>，所有阻塞在 <code>&lt;-ctx.Done()</code> 上的 goroutine 同时醒来：</p>
@@ -91,15 +94,32 @@
     <div class="callout note"><p>为什么 <code>cancel()</code> 之后所有阻塞在 <code>&lt;-ctx.Done()</code> 的 goroutine 都能醒？因为<b>从已关闭的 channel 接收会立即返回零值</b>（day2 学过的特性）——关闭一条 channel 等于向全世界所有接收者广播。这就是 context"广播取消"的底层原理。</p></div>
 
     <h3>3. WithTimeout 与 WithDeadline：到点自动喊停</h3>
-    <p>超时是取消的最常见特例。<code>WithTimeout(parent, 2*time.Second)</code> 等价于"2 秒后自动 <code>cancel()</code>"；<code>WithDeadline</code> 则是给定一个具体时刻（如 <code>time.Now().Add(90*time.Second)</code>）：</p>
-    <pre>ctx, cancel := context.WithTimeout(context.Background(), <span class="n">2</span>*time.Second)
-<span class="k">defer</span> cancel() <span class="c">// 即使提前完成也要 cancel：释放内部定时器</span>
+    <p>超时是取消的最常见特例。<code>WithTimeout(parent, 2*time.Second)</code> 等价于"2 秒后自动 <code>cancel()</code>"；<code>WithDeadline</code> 则是给定一个具体时刻（如 <code>time.Now().Add(90*time.Second)</code>）。本页第一个自定义函数 <code>doSlowTask</code> 就 5 行，一起抄进去即可直接运行：</p>
+    <pre><span class="code-label">main.go</span><span class="k">package</span> main
 
-<span class="k">select</span> {
-<span class="k">case</span> &lt;-doSlowTask():
-    fmt.Println(<span class="s">"任务完成"</span>)
-<span class="k">case</span> &lt;-ctx.Done():
-    fmt.Println(<span class="s">"失败:"</span>, ctx.Err()) <span class="c">// context deadline exceeded</span>
+<span class="k">import</span> (
+    <span class="t">context</span>
+    <span class="t">fmt</span>
+    <span class="t">time</span>
+)
+
+<span class="c">// doSlowTask 返回只读 channel：3 秒后被 close，代表"活儿干完了"（day2 学的关闭即广播）</span>
+<span class="k">func</span> doSlowTask() &lt;-<span class="k">chan</span> <span class="t">struct</span>{} {
+    done := <span class="k">make</span>(<span class="k">chan</span> <span class="t">struct</span>{})
+    <span class="k">go</span> <span class="k">func</span>() { time.Sleep(<span class="n">3</span> * time.Second); close(done) }()
+    <span class="k">return</span> done
+}
+
+<span class="k">func</span> main() {
+    ctx, cancel := context.WithTimeout(context.Background(), <span class="n">2</span>*time.Second)
+    <span class="k">defer</span> cancel() <span class="c">// 即使提前完成也要 cancel：释放内部定时器</span>
+
+    <span class="k">select</span> {
+    <span class="k">case</span> &lt;-doSlowTask():
+        fmt.Println(<span class="s">"任务完成"</span>)
+    <span class="k">case</span> &lt;-ctx.Done():
+        fmt.Println(<span class="s">"失败:"</span>, ctx.Err()) <span class="c">// 实际输出：失败: context deadline exceeded</span>
+    }
 }</pre>
     <table>
       <tr><th>派生方法</th><th>触发取消的时机</th><th>ctx.Err() 的值</th></tr>
@@ -112,6 +132,24 @@
 
     <h3>4. HTTP 场景：ctx 的两端</h3>
     <p><b>入口端：</b>每个进入 handler 的请求自带一个 context——客户端还在不在听？<b>浏览器一关标签页/用户按取消，net/http（及 Gin 的 <code>c.Request()</code>）就把这个请求的 context cancel 掉</b>，你借它省算力。<b>出口端：</b>你发起的下游请求要 <code>http.NewRequestWithContext</code> 才会继承超时预算，否则"上游已撤、下游还在烧钱"：</p>
+    <p>下面这段用到 gin、gorm、以及第 3 周的 <code>User</code> 模型——都是你项目里已有的东西（<code>User</code> 字段与第 3 周模型一致，这里只留演示要用的两列）。先把最小前置定义贴齐（真实项目里 <code>db</code> 由第 4 周的构造函数注入，这里为省笔墨写成包级变量）：</p>
+    <pre><span class="code-label">前置定义（照抄即可）</span><span class="k">import</span> (
+    <span class="t">"context"</span>
+    <span class="t">"net/http"</span>
+    <span class="t">"time"</span>
+
+    <span class="t">"github.com/gin-gonic/gin"</span>
+    <span class="t">"gorm.io/gorm"</span>
+
+    <span class="t">"goblog/internal/pkg/response"</span> <span class="c">// 全站统一响应壳（第 2 周起），别在这里退回 c.JSON</span>
+)
+
+<span class="k">type</span> <span class="t">User</span> <span class="k">struct</span> {
+    <span class="t">gorm</span>.Model
+    Username <span class="t">string</span> <span class="k">json</span>:<span class="s">"username"</span>
+}
+
+<span class="k">var</span> db *<span class="t">gorm</span>.DB <span class="c">// 第 4 周 config 读出 DB_* 后 gorm.Open 建好的句柄</span></pre>
     <pre><span class="code-label">handler.go（Gin 版）</span><span class="k">func</span> reportHandler(c *gin.Context) {
     ctx := c.Request.Context() <span class="c">// 请求级 ctx：客户端断连即 cancel</span>
 
@@ -123,7 +161,7 @@
     resp, err := http.DefaultClient.Do(req)
     <span class="k">if</span> err != <span class="k">nil</span> {
         <span class="c">// ctx 超时/取消时 err 里包装着 callCtx.Err()</span>
-        c.JSON(<span class="n">502</span>, gin.H{<span class="s">"error"</span>: err.Error()})
+        response.Fail(c, <span class="n">502</span>, <span class="n">5000</span>, err.Error()) <span class="c">// 5000 = 服务器内部错误（全站唯一码表）</span>
         <span class="k">return</span>
     }
     <span class="k">defer</span> resp.Body.Close()
@@ -131,22 +169,38 @@
     <span class="c">// GORM 同理：所有方法都有 WithContext 变体</span>
     <span class="k">var</span> users []User
     <span class="k">if</span> err := db.WithContext(callCtx).Find(&amp;users).Error; err != <span class="k">nil</span> {
-        c.JSON(<span class="n">500</span>, gin.H{<span class="s">"error"</span>: err.Error()})
+        response.Fail(c, <span class="n">500</span>, <span class="n">5000</span>, err.Error())
         <span class="k">return</span>
     }
-    c.JSON(<span class="n">200</span>, users)
+    response.OK(c, users)
 }</pre>
-    <p>长任务里还要主动"查岗"：每做一阵就 non-blocking 地探一眼 ctx，发现取消就提前 return：</p>
-    <pre><span class="k">func</span> heavyLoop(ctx <span class="t">context</span>.Context) <span class="t">error</span> {
+    <p>长任务里还要主动"查岗"：每做一阵就 non-blocking 地探一眼 ctx，发现取消就提前 return。下面整段（含顶部 <code>package</code> 与 <code>import</code>）贴进 <code>w5day4/sec4/main.go</code> 就能直接跑，<code>doChunk</code> 是最小实现，代表"一次迭代要干的活儿"：</p>
+    <pre><span class="code-label">main.go（可跑）</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">context</span>
+    <span class="t">fmt</span>
+    <span class="t">time</span>
+)
+
+<span class="k">func</span> doChunk(i <span class="t">int</span>) { time.Sleep(<span class="n">30</span> * time.Millisecond) } <span class="c">// 假装干活</span>
+
+<span class="k">func</span> heavyLoop(ctx <span class="t">context</span>.Context) <span class="t">error</span> {
     <span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="n">100</span>; i++ {
         <span class="k">select</span> {
         <span class="k">case</span> &lt;-ctx.Done():
-            <span class="k">return</span> ctx.Err() <span class="c">// 第 37 次迭代时遇到取消，立刻收摊</span>
+            <span class="k">return</span> ctx.Err() <span class="c">// 约 1s/30ms ≈ 第 33 次迭代时撞上取消，立刻收摊</span>
         <span class="k">default</span>:
         }
         doChunk(i)
     }
     <span class="k">return</span> <span class="k">nil</span>
+}
+
+<span class="k">func</span> main() {
+    ctx, cancel := context.WithTimeout(context.Background(), <span class="n">1</span>*time.Second)
+    <span class="k">defer</span> cancel()
+    fmt.Println(<span class="s">"heavyLoop 返回:"</span>, heavyLoop(ctx)) <span class="c">// ≈1 秒时打印 context deadline exceeded</span>
 }</pre>
     <div class="callout tip"><p>签名规范从第 1 周就该遵守：<b>ctx 是函数第一个参数、命名就叫 ctx、不传 nil</b>（没有就用 context.Background()）。库函数若收到 <code>ctx == nil</code>，按规范应视同已取消或直接返回错误。</p></div>
 
@@ -167,7 +221,7 @@
       <div class="task-title">练习 1：WithTimeout 观察取消日志（必做，20 分钟）</div>
       <p>写一个 <code>slowJob(ctx, name, cost)</code>：内部按 100ms 一格循环共 <code>cost</code> 时长，每格 select 探一次 ctx；main 里给 2 秒超时的 ctx 同时交给一个 1 秒任务和一个 5 秒任务。预期输出：1 秒任务正常完成，5 秒任务在约 2 秒时打印 <code>被取消: context deadline exceeded</code> 后 return。</p>
       <details><summary>参考答案</summary>
-        <pre><span class="k">package</span> main
+        <pre><span class="code-label">main.go</span><span class="k">package</span> main
 
 <span class="k">import</span> (
     <span class="t">context</span>
@@ -176,7 +230,9 @@
     <span class="t">time</span>
 )
 
-<span class="k">func</span> slowJob(ctx <span class="t">context</span>.Context, wg <span class="t">sync</span>.WaitGroup, name <span class="t">string</span>, cost <span class="t">time</span>.Duration) {
+<span class="c">// wg 必须是指针 *sync.WaitGroup：按值传会拷出一份，函数里 Done 的是副本，
+// 外面 Wait 的计数压根没减过（day1 坑表最后一行，go vet 会直接点名）</span>
+<span class="k">func</span> slowJob(ctx <span class="t">context</span>.Context, wg <span class="t">*sync</span>.WaitGroup, name <span class="t">string</span>, cost <span class="t">time</span>.Duration) {
     <span class="k">defer</span> wg.Done()
     <span class="k">for</span> elapsed := <span class="t">time</span>.Duration(<span class="n">0</span>); elapsed &lt; cost; elapsed += <span class="n">100</span> * time.Millisecond {
         <span class="k">select</span> {
@@ -190,46 +246,84 @@
 }
 
 <span class="k">func</span> main() {
+    start := time.Now()
     ctx, cancel := context.WithTimeout(context.Background(), <span class="n">2</span>*time.Second)
     <span class="k">defer</span> cancel()
+
     <span class="k">var</span> wg <span class="t">sync</span>.WaitGroup
-    <span class="k">go</span> slowJob(ctx, wg, <span class="s">"快任务"</span>, <span class="n">1</span>*time.Second)
-    <span class="k">go</span> slowJob(ctx, wg, <span class="s">"慢任务"</span>, <span class="n">5</span>*time.Second)
+    wg.Add(<span class="n">1</span>) <span class="c">// Add 永远写在 go 之前（day1 第 4 节的纪律）</span>
+    <span class="k">go</span> slowJob(ctx, &amp;wg, <span class="s">"快任务"</span>, <span class="n">1</span>*time.Second)
+    wg.Add(<span class="n">1</span>)
+    <span class="k">go</span> slowJob(ctx, &amp;wg, <span class="s">"慢任务"</span>, <span class="n">5</span>*time.Second)
+
     wg.Wait()
+    fmt.Println(<span class="s">"main 收工，总耗时"</span>, time.Since(start).Round(<span class="n">1</span>*time.Millisecond))
 }</pre>
+        <pre><span class="code-label">运行结果</span>快任务 正常完成                                    <span class="c">// ≈1s</span>
+慢任务 被取消: context deadline exceeded（已跑 1.9s） <span class="c">// ≈2s</span>
+main 收工，总耗时 2.001s
+<span class="c">// "已跑"在 1.9s / 2.0s 之间浮动属正常：最后一格里 time.After 与 ctx.Done 同时就绪，select 随机挑一个</span></pre>
+        <p>两个值得复述的点：① <b>快任务没被慢任务的超时牵连</b>——它 1 秒就 <code>Done</code> 走人，共享同一个 ctx 不代表互相拖累；② 慢任务是自己"查岗"看到取消才退的，Go 没有强杀 goroutine 这回事，这就是"协作式取消"。反面试着把 <code>wg.Add(1)</code> 挪进 <code>slowJob</code>、或把参数改回值传递 <code>sync.WaitGroup</code>，你会分别得到"提前退出"和"永久死等"——day1 的两大坑当场复习。</p>
       </details>
     </div>
     <div class="task">
-      <div class="task-title">练习 2：3 秒超时的慢接口 + 客户端提前 abort（30 分钟）</div>
+      <div class="task-title">练习 2：10 秒慢接口 + 客户端 2 秒提前 abort（30 分钟）</div>
       <p>用标准库起一个服务：<code>GET /slow?d=10s</code> handler 按 500ms 一格模拟 10 秒工作，每格检查 <code>r.Context().Done()</code>，被取消就打日志 <code>"客户端已离开，提前收工"</code> 并 return；正常完成则回 200。另开终端：<code>curl localhost:8080/slow &amp;</code> 后立刻 <code>pkill curl</code>（或 <code>curl --max-time 2</code>），观察服务端日志在约 2 秒时出现取消行，且 <code>ctx.Err()</code> 是 <code>context.Canceled</code>。</p>
       <details><summary>参考答案核心片段</summary>
-        <pre><span class="k">func</span> slow(w <span class="t">http</span>.ResponseWriter, r *<span class="t">http</span>.Request) {
+        <pre><span class="code-label">main.go（练习 2 完整可跑）</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">fmt</span>
+    <span class="t">log</span>
+    <span class="t">net/http</span>
+    <span class="t">time</span>
+)
+
+<span class="k">func</span> slow(w <span class="t">http</span>.ResponseWriter, r *<span class="t">http</span>.Request) {
     ctx := r.Context()
-    <span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="n">20</span>; i++ { <span class="c">// 20 格 × 500ms = 10s</span>
+    d, err := time.ParseDuration(r.URL.Query().Get(<span class="s">"d"</span>))
+    <span class="k">if</span> err != <span class="k">nil</span> || d &lt;= <span class="n">0</span> {
+        d = <span class="n">10</span> * time.Second <span class="c">// 不带 ?d= 就按 10 秒算</span>
+    }
+    <span class="k">for</span> elapsed := <span class="t">time</span>.Duration(<span class="n">0</span>); elapsed &lt; d; elapsed += <span class="n">500</span> * time.Millisecond { <span class="c">// 500ms 一格</span>
         <span class="k">select</span> {
         <span class="k">case</span> &lt;-ctx.Done():
-            log.Println(<span class="s">"客户端已离开，提前收工"</span>, ctx.Err())
+            log.Println(<span class="s">"客户端已离开，提前收工"</span>, ctx.Err(), <span class="s">"已跑"</span>, elapsed)
             <span class="k">return</span>
         <span class="k">case</span> &lt;-time.After(<span class="n">500</span> * time.Millisecond):
         }
     }
-    fmt.Fprintln(w, <span class="s">"10 秒到，结果如下…"</span>)
+    fmt.Fprintln(w, d, <span class="s">"到，结果如下…"</span>)
+}
+
+<span class="k">func</span> main() {
+    mux := <span class="t">http</span>.NewServeMux()
+    mux.HandleFunc(<span class="s">"/slow"</span>, slow)
+    log.Fatal(<span class="t">http</span>.ListenAndServe(<span class="s">":8080"</span>, mux)) <span class="c">// 第 1 周就会的两行，今天只是多接了个 ctx</span>
 }</pre>
-        <p>对照实验：把 select 的 ctx 分支删掉再 abort 一次，服务端日志显示它<b>傻跑满 10 秒</b>——这就是"ctx 不传到底，取消就是空话"。</p>
+        <p>import 已在格子顶部给齐（<code>fmt / log / net/http / time</code> 四个包，一个都不能少，Go 的未使用 import 是编译错误）。对照实验：把 select 的 ctx 分支删掉再 abort 一次，服务端日志显示它<b>傻跑满 10 秒</b>——这就是"ctx 不传到底，取消就是空话"。</p>
       </details>
     </div>
     <div class="task">
       <div class="task-title">练习 3：下游调用继承超时（20 分钟）</div>
       <p>给练习 2 的服务加一个 <code>GET /proxy-slow</code>：handler 用 <code>http.NewRequestWithContext</code> 调本机 <code>/slow?d=10s</code>，并套 <code>WithTimeout(r.Context(), 2s)</code>。用 curl 访问 /proxy-slow，确认约 2 秒即返回错误（而非 10 秒），且服务端 <code>/slow</code> 一侧也几乎同时打出取消日志——证明超时沿 context 树传下去了。</p>
       <details><summary>参考答案要点</summary>
-        <pre>ctx, cancel := context.WithTimeout(r.Context(), <span class="n">2</span>*time.Second)
-<span class="k">defer</span> cancel()
-req, _ := http.NewRequestWithContext(ctx, <span class="s">"GET"</span>, <span class="s">"http://localhost:8080/slow?d=10s"</span>, <span class="k">nil</span>)
-resp, err := http.DefaultClient.Do(req)
-<span class="k">if</span> err != <span class="k">nil</span> {
-    http.Error(w, <span class="s">"下游超时/取消: "</span>+err.Error(), <span class="n">504</span>)
-    <span class="k">return</span>
-}</pre>
+        <p>接着练习 2 的<b>同一个文件</b>写：import 再加一个 <code>context</code>，不要再写第二个 <code>func main</code>，只在 mux 上多注册一行路由。</p>
+        <pre><span class="code-label">main.go（接练习 2）</span><span class="k">func</span> proxySlow(w <span class="t">http</span>.ResponseWriter, r *<span class="t">http</span>.Request) {
+    ctx, cancel := <span class="t">context</span>.WithTimeout(r.Context(), <span class="n">2</span>*time.Second)
+    <span class="k">defer</span> cancel()
+
+    req, _ := <span class="t">http</span>.NewRequestWithContext(ctx, <span class="t">http</span>.MethodGet, <span class="s">"http://localhost:8080/slow?d=10s"</span>, <span class="k">nil</span>)
+    resp, err := <span class="t">http</span>.DefaultClient.Do(req)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        http.Error(w, <span class="s">"下游超时/取消: "</span>+err.Error(), <span class="n">504</span>)
+        <span class="k">return</span>
+    }
+    <span class="k">defer</span> resp.Body.Close()
+    fmt.Fprintln(w, <span class="s">"下游按时返回"</span>)
+}
+
+<span class="c">// main 里补一行：mux.HandleFunc("/proxy-slow", proxySlow)</span></pre>
         <p>关键点：<code>/slow</code> 也能感知取消，是因为 client 侧 ctx 取消会断开 TCP 连接，server 侧 <code>r.Context()</code> 随之 cancel。<b>若忘了 NewRequestWithContext 而用了裸 <code>http.Get</code>，下游 <code>/slow</code> 会被傻等到 10 秒——这就是验收里"超时不生效"的经典成因。</b></p>
       </details>
     </div>

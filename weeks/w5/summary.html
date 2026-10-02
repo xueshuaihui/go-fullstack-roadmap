@@ -89,7 +89,7 @@ context（D4）
     <div class="task">
       <div class="task-title">Q4 · 何时 channel、何时锁、何时 atomic？</div>
       <details><summary>答案</summary>
-        <p>数据所有权要在 goroutine 间移交（任务进、结果出）→ channel；一份状态人人读写（缓存、账本）→ Mutex/RWMutex；只动一个数字 → atomic。复合判断（check-then-act）atomic 也救不了，得上锁或 CAS。</p>
+        <p>数据所有权要在 goroutine 间移交（任务进、结果出）→ channel；一份状态人人读写（缓存、账本）→ Mutex/RWMutex；只动一个数字 → atomic。复合判断（先检查再动手，check-then-act）atomic 也救不了，要么上锁、要么用 D3 坑表里那种"比对再换"的 CAS 接口。</p>
       </details>
     </div>
     <div class="task">
@@ -113,7 +113,7 @@ context（D4）
       <tr><th>步骤</th><th>时间</th><th>要做的事</th><th>完成的标志</th></tr>
       <tr><td>1. 装配骨架</td><td>60 分钟</td><td><code>go mod init url-aggregator</code>，<code>go get golang.org/x/sync/errgroup</code>；实现 <code>/mock-slow?d=1s</code>（含 <code>r.Context().Done()</code> 监听）</td><td>curl /mock-slow?d=2s 两秒后返回 pong</td></tr>
       <tr><td>2. 并发聚合</td><td>90 分钟</td><td>POST <code>/aggregate</code> 解析 urls 数组；errgroup+SetLimit(5)；<code>context.WithTimeout(r.Context(), 5s)</code> 贯穿每次 <code>http.NewRequestWithContext</code>；结果按下标预分配写入</td><td>5 个 d=1s 并发 total_ms ≈ 1000</td></tr>
-      <tr><td>3. 串行对照</td><td>30 分钟</td><td>加 <code>?mode=serial</code> 分支，同一请求体顺序抓取</td><td>同参数 total_ms ≈ 5000</td></tr>
+      <tr><td>3. 串行对照</td><td>30 分钟</td><td>加 <code>?mode=serial</code> 分支，同一请求体顺序抓取；<b>这条分支的预算单独放宽到 8 秒</b>（5×1s 恰好踩在 5 秒线上，会被自己的超时误判成 partial，见 day5）</td><td>同参数 total_ms ≈ 5000 且 <code>partial:false</code></td></tr>
       <tr><td>4. 超时与部分结果</td><td>60 分钟</td><td>混入一个 <code>d=8s</code> 端点：确认约 5s 截停、<code>partial:true</code>、未完成项带 error 提示、服务端日志出现"mock-slow 被取消"</td><td>响应结构与 day5 示例一致</td></tr>
       <tr><td>5. 测试与交付</td><td>60 分钟</td><td>给聚合核心补一个 <code>go test -race</code> 的并发测试（见下一节）；git init + commit；写 README（接口文档 + 三组耗时数字 + 一张 context 传播示意图）</td><td>本页验收清单全勾</td></tr>
     </table>
@@ -172,7 +172,8 @@ context（D4）
 === RUN   TestFetchOneConcurrent
 --- PASS: TestFetchOneConcurrent (1.02s)
 PASS</pre>
-    <div class="callout tip"><p>三个要点：① 断言的是<b>耗时上界</b>（2 秒红线）——固定 sleep 让这条测试不会因网络波动误报；② <code>-race</code> 让每次 CI 都顺带扫一遍竞态；③ <code>httptest.Server</code> 是 Go 自带的轻量假服务，第 1 周至今所有接口测试都靠它，本周正式会师。</p></div>
+    <div class="callout tip"><p>三个要点：① 断言的是<b>耗时上界</b>（2 秒红线）——固定 sleep 让这条测试不会因网络波动误报；② <code>-race</code> 让每次 CI 都顺带扫一遍竞态；③ <code>httptest.Server</code> 是 Go 自带的轻量假服务，<b>第 4 周 D5 引入后所有接口测试都靠它</b>，本周把它加上 <code>-race</code> 用来测并发，两条线正式会师。</p></div>
+    <div class="callout note"><p>顺带把 httptest 的另一半补齐：D5 用的是 <code>httptest.NewRecorder()</code>（不起端口，把请求直接灌进 handler 再读 Recorder）；今天这条测试需要给被测代码一个<b>真能访问的 URL</b>，所以用 <code>httptest.NewServer(handler)</code> —— 它在随机端口上起一个临时服务，<code>slow.URL</code> 就是 <code>http://127.0.0.1:59832</code> 这种地址，<code>defer slow.Close()</code> 用完即散。照抄即可，本周不会深讲。</p></div>
   </section>
 
   <section>
@@ -188,7 +189,7 @@ $ curl -s localhost:8080/aggregate -d '{"urls":[
     "http://localhost:8080/mock-slow?d=1s",
     "http://localhost:8080/mock-slow?d=1s"]}' | python3 -m json.tool
 
-<span class="c"># 第 2 组：同一请求体加 ?mode=serial（期望 total_ms ≈ 5000）</span>
+<span class="c"># 第 2 组：同一请求体加 ?mode=serial（期望 total_ms ≈ 5000，且 partial 为 false——串行分支预算 8 秒）</span>
 $ curl -s "localhost:8080/aggregate?mode=serial" -d '{ ...同上... }' | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['mode'], d['total_ms'], 'ms')"
 
 <span class="c"># 第 3 组：超时部分结果（把任意一个 d=1s 换成 d=8s）</span>
@@ -207,7 +208,7 @@ $ go test -race ./...</pre>
   <section>
     <h2>验收清单（全勾才算本周毕业）</h2>
     <ul class="check">
-      <li><label><input type="checkbox" data-key="w5sum1">5 个固定 1 秒延迟的模拟端点：<b>并发 total ≈ 1s、串行 total ≈ 5s</b>（固定 sleep 验收，不受网络波动影响，数字稳定可复现）</label></li>
+      <li><label><input type="checkbox" data-key="w5sum1">5 个固定 1 秒延迟的模拟端点：<b>并发 total ≈ 1s、串行 total ≈ 5s 且 <code>partial:false</code></b>（固定 sleep 验收，不受网络波动影响，数字稳定可复现；串行分支单独 8 秒预算，理由见 day5）</label></li>
       <li><label><input type="checkbox" data-key="w5sum2">混入超 5 秒的 URL（d=8s）：约 5 秒截停，返回<b>已完成的部分结果 + partial:true + 超时提示</b>，且 /mock-slow 侧日志可见取消</label></li>
       <li><label><input type="checkbox" data-key="w5sum3"><code>go run -race .</code> 跑完全部三组场景零 WARNING，<code>go test -race ./...</code>（上一节的测试）PASS</label></li>
       <li><label><input type="checkbox" data-key="w5sum4">非法请求（urls 为空/JSON 错误）返回 400 而不是 panic；curl 演示全部通过</label></li>
@@ -223,7 +224,7 @@ $ go test -race ./...</pre>
     <div class="grade">
       <div><b>及格线</b>三组验收数字全部达标（≈1s / ≈5s / 5s 截停 partial）；-race 干净；能独立默写 WaitGroup 三件套与 errgroup 基本骨架。</div>
       <div><b>良好线</b>及格之上：<code>go test -race</code> 的并发测试已进项目；能讲清"聚合要吞错误、批处理要抛错误"的语义差别；给项目加上 <code>atomic</code> 计数或 <code>/stats</code>。</div>
-      <div><b>优秀线</b>良好之上：把聚合器改用 Gin 重写并复用第 4 周工程结构（handler/service 分层）；思考题有答案——如果 1000 个 URL，怎么改造成"边抓边流式返回"（SSE）？</div>
+      <div><b>优秀线</b>良好之上：把聚合器改用 Gin 重写并复用第 4 周工程结构（handler/service 分层）；思考题有答案——如果 1000 个 URL，怎么改造成"边抓边流式返回"？（SSE 是课程不单独展开的加分项，答出骨架即可：把"攒齐 1000 条再 Encode"改成"收一条写一条"——worker 每产出一条就 <code>fmt.Fprintln(w, string(json))</code>，再调 <code>w.(http.Flusher).Flush()</code> 把这一条推给客户端；这也正好用上 D2 的"结果 channel + for range 按完成顺序收"。想验证的话，把 <code>curl</code> 换成 <code>curl -N</code> 就能看到一行行往外冒。）</div>
     </div>
   </section>
 
@@ -261,7 +262,7 @@ $ go test -race ./...</pre>
   <section>
     <h2>下周预告：第 6 周 · 全栈联调</h2>
     <div class="callout js"><p>从下周起，你熟悉的 React 回来了——但角色变了：不再是"页面里随便 fetch"，而是<b>拿着第 4 周的 JWT 双 token 规范、第 5 周的超时取消意识</b>，去对接一个真正的 Go 后端。五天走完：登录注册对接 → 文章列表/详情（分页搜索）→ 创建编辑删除的权限控制 → axios 拦截器静默刷新（401 时用 refresh token 换发重试）→ CORS/代理/构建。练手项目：<b>React + Go 博客前端</b>，验收要求浏览器里从注册到删帖全流程跑通、token 过期用户无感知。讲义照旧<b>全中文、全部可运行代码、不需要你额外搜索任何资料</b>。</p></div>
-    <p>本周项目留两个钩子下周继续用：① 聚合 API 保持可运行——第 6 周前端联调时它就是你的"第三方慢接口"练习对象；② 把 <code>go test -race</code> 写进你的肌肉记忆，第 8 周综合实战的 CI 里它还在等。</p>
+    <p>本周项目留两个钩子：① <code>url-aggregator</code> 归档前先补齐 README 和三组耗时数字——它是你第一个"有基准数据的并发功能"，以后任何时候给别的接口做并发改造，回来对照这份 5s/1s 的量法就够用了；② 把 <code>go test -race</code> 写进你的肌肉记忆，第 8 周综合实战的 CI 里它还在等。</p>
     <p>最后三条维护习惯，从这周带到第 8 周：</p>
     <ul>
       <li>任何碰共享状态的 PR/提交前，先跑一遍 <code>go vet ./... &amp;&amp; go test -race ./...</code>；</li>
