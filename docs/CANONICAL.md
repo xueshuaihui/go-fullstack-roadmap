@@ -29,7 +29,7 @@ W7 起 compose：`name: goblog`，服务名 `mysql / backend / frontend / migrat
 |---|---|---|
 | 0 | 成功 | 2xx |
 | 1001 | 资源不存在（通用） | 404 |
-| 1002 | 密码错误 | 401 |
+| 1002 | 认证失败（密码错误；防用户名枚举，"用户不存在或密码错"登录场景统一返回 1002） | 401 |
 | 1003 | 权限不足/禁止 | 403 |
 | 1004 | 参数错误 | 400 |
 | 1005 | 未认证/token 无效 | 401 |
@@ -48,6 +48,7 @@ type User struct {
     Nickname string `gorm:"type:varchar(32)" json:"nickname"`
     Email    string `gorm:"type:varchar(128);uniqueIndex" json:"email"`
     Password string `gorm:"type:varchar(72);not null" json:"-"`
+    ArticleCount int `gorm:"default:0" json:"article_count"` // W3D5 引入，事务内维护
     Role     Role   `gorm:"column:role;type:tinyint;not null;default:0;index" json:"role"` // W7 迁移 000002 引入
     Articles []Article `gorm:"foreignKey:UserID" json:"articles,omitempty"`
 }

@@ -70,32 +70,51 @@ err := db.Transaction(<span class="k">func</span>(tx *gorm.DB) <span class="t">e
     <div class="callout warn"><p>三条铁律：① 闭包里<b>只能用 <code>tx</code></b>，写成 <code>db.Create(...)</code> 就跳出事务了（这是本周最容易犯且最难发现的 bug）；② 事务里<b>不要有网络调用、不要 <code>time.Sleep</code></b>，连接被独占期间别人拿不到；③ 嵌套调用 <code>tx.Transaction(...)</code> GORM 会用 <b>savepoint</b>，内层回滚不影响外层，但别把逻辑绕复杂。</p></div>
 
     <h3>2. 事务跨层：把 tx 当参数传下去</h3>
-    <p>真实项目里「创建文章」还要写「操作日志」「更新用户文章数」，它们分布在多个 repository。标准做法是让 repository 方法接收一个 <code>*gorm.DB</code>，谁开事务谁负责：</p>
-    <pre><span class="code-label">repository / service 协作</span><span class="c">// repository：不自己开事务，用传进来的 handle</span>
-<span class="k">func</span> (r *articleRepo) CreateWith(ctx <span class="t">context.Context</span>, tx *gorm.DB, a *model.Article) <span class="t">error</span> {
-    <span class="k">return</span> tx.WithContext(ctx).Create(a).Error       <span class="c">// WithContext 让请求取消能传导到 SQL</span>
+    <p>真实项目里「创建文章」不止建一行：挂标签、给作者的文章数 +1（<code>ArticleCount</code> 是 day2 在 <code>internal/model/user.go</code> 里就定好的冗余列，类型 <code>int64</code>、tag 是 <code>gorm:"column:article_count;type:bigint;not null;default:0"</code>），这些写入分属不同 repository。标准做法是让仓储方法多收一个<b>事务句柄 <code>tx *gorm.DB</code></b>——谁开事务谁把 <code>tx</code> 传下去，方法内部只用传进来的 <code>tx</code>，绝不碰自己那份 <code>r.db</code>。下面是形状（<b>完整可跑版在练习 1</b>）：</p>
+    <pre><span class="code-label">片段：仓储方法接 tx + 新文件 stats.go（完整实现见练习 1）</span><span class="c">// internal/repository/article.go：在 day3 那份 gormArticleRepo 上补一个 tx 版 Create</span>
+<span class="k">func</span> (r *<span class="t">gormArticleRepo</span>) CreateWith(ctx <span class="t">context.Context</span>, tx *gorm.DB, a model.Article) (model.Article, <span class="t">error</span>) {
+    <span class="k">if</span> err := tx.WithContext(ctx).Create(&amp;a).Error; err != <span class="k">nil</span> {
+        <span class="k">return</span> model.Article{}, err
+    }
+    <span class="k">return</span> a, <span class="k">nil</span>
 }
 
-<span class="k">func</span> (r *statRepo) IncArticleCount(tx *gorm.DB, userID <span class="t">uint</span>) <span class="t">error</span> {
-    <span class="c">// 前提：User 模型上有一个冗余计数字段 ArticleCount int（gorm:"not null;default:0"）</span>
-    <span class="k">return</span> tx.Model(&amp;model.User{}).Where(<span class="s">"id = ?"</span>, userID).
-        UpdateColumn(<span class="s">"article_count"</span>, gorm.Expr(<span class="s">"article_count + ?"</span>, <span class="n">1</span>)).Error <span class="c">// DB 端自增，避免读改写丢数</span>
+<span class="c">// internal/repository/stats.go：day5 新文件，专门维护上面那个 ArticleCount 冗余列</span>
+<span class="k">type</span> <span class="t">StatsRepository</span> <span class="k">interface</span> {
+    IncArticleCount(ctx <span class="t">context.Context</span>, tx *gorm.DB, userID <span class="t">uint</span>) <span class="t">error</span>
 }
 
-<span class="c">// service：业务边界 = 事务边界</span>
-<span class="k">func</span> (s *articleService) Publish(ctx <span class="t">context.Context</span>, in dto.CreateArticleReq) <span class="t">error</span> {
-    a := &amp;model.Article{Title: in.Title, Content: in.Content, UserID: in.UserID}
-    <span class="k">return</span> s.db.Transaction(<span class="k">func</span>(tx *gorm.DB) <span class="t">error</span> {
-        <span class="k">if</span> err := s.articles.CreateWith(ctx, tx, a); err != <span class="k">nil</span> {
-            <span class="k">return</span> err
-        }
-        tags := s.tags.FindOrCreateMany(tx, in.Tags)
-        <span class="k">if</span> err := tx.Model(a).Association(<span class="s">"Tags"</span>).Replace(tags); err != <span class="k">nil</span> {
-            <span class="k">return</span> err
-        }
-        <span class="k">return</span> s.stats.IncArticleCount(tx, in.UserID)
-    })
+<span class="k">type</span> <span class="t">gormStatsRepo</span> <span class="k">struct</span> { db *gorm.DB }
+
+<span class="k">func</span> NewStatsRepo(db *gorm.DB) <span class="t">StatsRepository</span> { <span class="k">return</span> &amp;gormStatsRepo{db: db} }
+
+<span class="k">var</span> _ StatsRepository = (*gormStatsRepo)(<span class="k">nil</span>)
+
+<span class="c">// DB 端自增（gorm.Expr）避免「读出来 +1 再写回去」的并发丢更新；UpdateColumn 不顺手改 updated_at</span>
+<span class="k">func</span> (r *<span class="t">gormStatsRepo</span>) IncArticleCount(ctx <span class="t">context.Context</span>, tx *gorm.DB, userID <span class="t">uint</span>) <span class="t">error</span> {
+    <span class="k">return</span> tx.WithContext(ctx).Model(&amp;model.User{}).Where(<span class="s">"id = ?"</span>, userID).
+        UpdateColumn(<span class="s">"article_count"</span>, gorm.Expr(<span class="s">"article_count + ?"</span>, <span class="n">1</span>)).Error
 }</pre>
+    <p>service 层的<b>业务边界就是事务边界</b>：day3 定型的 <code>ArticleService</code> 有三个依赖（<code>arts</code>/<code>users</code>/<code>tags</code>），day5 为「开事务 + 更新计数」再加 <code>db</code>（只用来 <code>Transaction</code>）和 <code>stats</code>（上面那个仓储），构造函数从 3 参扩到 5 参——这正是 day3 练习里预告的「day5 会给它加 db 和 stats」那次签名变化：</p>
+    <pre><span class="code-label">片段：service 开事务，把 tx 往下传</span><span class="c">// internal/service/article.go（struct 与构造函数的完整改造见练习 1）</span>
+<span class="k">func</span> (s *<span class="t">ArticleService</span>) publishInTx(ctx <span class="t">context.Context</span>, userID <span class="t">uint</span>, req dto.CreateArticleReq) (model.Article, <span class="t">error</span>) {
+    <span class="k">var</span> created model.Article
+    err := s.db.WithContext(ctx).Transaction(<span class="k">func</span>(tx *gorm.DB) <span class="t">error</span> {
+        a, err := s.arts.CreateWith(ctx, tx, model.Article{
+            Title: req.Title, Content: req.Content,
+            Summary: req.Summary, CoverImage: req.CoverImage, UserID: userID, <span class="c">// 作者来自登录态，不在 DTO 里</span>
+        })
+        <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> err }
+        <span class="c">// 标签：先用 tx 版 FindOrCreateWith 拿带 ID 的 tag，再 ReplaceForWith 挂关系（练习 1 给全）</span>
+        <span class="k">if</span> err := s.attachTags(ctx, tx, a.ID, req.Tags); err != <span class="k">nil</span> { <span class="k">return</span> err }
+        <span class="k">if</span> err := s.stats.IncArticleCount(ctx, tx, userID); err != <span class="k">nil</span> { <span class="k">return</span> err }
+        created = a
+        <span class="k">return</span> <span class="k">nil</span>                        <span class="c">// 返回 nil → COMMIT；中途 return err → ROLLBACK</span>
+    })
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> model.Article{}, err }
+    <span class="k">return</span> s.arts.DetailWithRels(created.ID)   <span class="c">// 事务外回读一次，把 user/tags 填好</span>
+}</pre>
+    <div class="callout note"><p><b><code>context.Context</code> 第一次进本项目（第 5 周正式讲，今天照抄）</b>：它是 Go 沿调用链往下传「取消信号 / 超时 / trace-id」的固定约定，凡是能阻塞的 I/O 都接一个 <code>ctx</code>。对照你在 JS 里熟悉的 <code>AbortSignal</code>——前端断开连接时 <code>signal.aborted</code> 变 <code>true</code>；Go 里对应 <code>ctx.Done()</code> 这个 channel 被关闭，<code>tx.WithContext(ctx)</code> 让 MySQL 驱动看到取消就中断当前查询。区别是 Go 把它做成了<b>贯穿标准库的显式参数</b>，而 JS 各库各自决定接不接。<b>今天的用法记两条就够</b>：<code>ctx</code> 从 handler 的 <code>c.Request.Context()</code> 取、一路往下传；脚本里没有请求就传 <code>context.Background()</code>，别传 <code>nil</code>。</p></div>
     <div class="callout note"><p>顺带一个 GORM 冷知识：<b><code>Create</code> 单条记录（含关联）默认就已经包在一个事务里</b>，日志里会看到 <code>BEGIN;...COMMIT;</code>。如果你的写入路径单一、不需要这些额外 BEGIN/COMMIT，可以在配置里 <code>SkipDefaultTransaction: true</code> 关掉；<b>但学习阶段建议保持默认 false（即不跳过）</b>，多一层保护。</p></div>
 
     <h3>3. 手工事务：Begin / Commit / Rollback</h3>
@@ -109,7 +128,8 @@ err := <span class="k">func</span>() <span class="t">error</span> {
     <span class="k">if</span> err := tx.Create(&amp;article).Error; err != <span class="k">nil</span> {
         <span class="k">return</span> err
     }
-    <span class="k">if</span> err := tx.Model(&amp;article).Association(<span class="s">"Tags"</span>).Replace(tags).Error; err != <span class="k">nil</span> {
+    <span class="c">// Association(...).Replace(...) 返回的是裸 error，没有 .Error 可取（day3 第 4 节强调过）</span>
+    <span class="k">if</span> err := tx.Model(&amp;article).Association(<span class="s">"Tags"</span>).Replace(tags); err != <span class="k">nil</span> {
         <span class="k">return</span> err
     }
     <span class="k">return</span> <span class="k">nil</span>
@@ -123,28 +143,28 @@ err := <span class="k">func</span>() <span class="t">error</span> {
     <div class="callout tip"><p>能用 <code>db.Transaction</code> 就用它——闭包版本不会忘记 Rollback（每个 return 路径都自动处理）。手工 <code>Begin</code> 只在你需要「事务生命周期比一个函数更长」的少见场景使用，且必须保证每条出口都 Commit 或 Rollback，否则<b>连接泄漏，池子被耗尽</b>。</p></div>
 
     <h3>4. 连接池：三个参数的调法</h3>
-    <p><code>gorm.Open</code> 返回的 <code>db</code> 内部持有一个 <code>*sql.DB</code>（<b>不是连接，是连接池</b>），Go 标准库 <code>database/sql</code> 自带池化。想调参数就取出来：</p>
-    <pre><span class="code-label">internal/repository/db.go</span><span class="k">package</span> repository
+    <p><code>gorm.Open</code> 返回的 <code>db</code> 内部持有一个 <code>*sql.DB</code>（<b>不是连接，是连接池</b>），Go 标准库 <code>database/sql</code> 自带池化。<b>day1 的 <code>internal/repository/db.go</code> 里那个 <code>New(dsn)</code> 已经取出了 <code>sqlDB</code> 做 <code>Ping</code></b>，今天就在它旁边补几行池参数（<code>MustConnect</code> 不动，它内部调的还是这个 <code>New</code>）：</p>
+    <pre><span class="code-label">internal/repository/db.go（在 day1 的 New 里补池参数）</span><span class="k">package</span> repository
 
 <span class="k">import</span> (
     <span class="t">fmt</span>
     <span class="t">time</span>
 
-    <span class="t">gorm.io/driver/mysql</span>
-    <span class="t">gorm.io/gorm</span>
-    <span class="t">gorm.io/gorm/logger</span>
+    <span class="s">"gorm.io/driver/mysql"</span>
+    <span class="s">"gorm.io/gorm"</span>
+    <span class="s">"gorm.io/gorm/logger"</span>
 )
 
 <span class="k">func</span> New(dsn <span class="t">string</span>) (*gorm.DB, <span class="t">error</span>) {
     db, err := gorm.Open(mysql.Open(dsn), &amp;gorm.Config{
-        Logger:            logger.Default.LogMode(logger.Warn),
-        BlockGlobalUpdate: <span class="k">true</span>,
+        Logger:            logger.Default.LogMode(logger.Info), <span class="c">// day1 原样：开发期把 SQL 打到终端</span>
+        BlockGlobalUpdate: <span class="k">true</span>,                              <span class="c">// day1 原样</span>
     })
     <span class="k">if</span> err != <span class="k">nil</span> {
         <span class="k">return</span> <span class="k">nil</span>, fmt.Errorf(<span class="s">"open mysql: %w"</span>, err)
     }
 
-    sqlDB, err := db.DB()          <span class="c">// 拿到标准库的连接池</span>
+    sqlDB, err := db.DB()          <span class="c">// 拿到标准库的连接池（day1 这里只做了 Ping）</span>
     <span class="k">if</span> err != <span class="k">nil</span> {
         <span class="k">return</span> <span class="k">nil</span>, err
     }
@@ -167,15 +187,14 @@ err := <span class="k">func</span>() <span class="t">error</span> {
     <div class="callout js"><p>对照 Node：<code>mysql2</code> 的 <code>connectionLimit: 10</code> 就是 <code>SetMaxOpenConns</code>。区别在于 Go 的 <code>db</code> 变量<b>本身就是池</b>，全进程共用一个 <code>*gorm.DB</code> 就对了——不要每次请求 <code>gorm.Open</code> 一次，那等于每次握手新建连接，性能立刻塌方。</p></div>
 
     <h3>5. 软删除：gorm.DeletedAt 与 Unscoped</h3>
-    <p>只要模型里有 <code>DeletedAt gorm.DeletedAt</code> 字段（内嵌 <code>gorm.Model</code> 已含），<code>Delete</code> 就自动变成 UPDATE：</p>
-    <pre><span class="code-label">模型与行为</span><span class="k">type</span> Article <span class="k">struct</span> {
-    ID        <span class="t">uint</span>           <span class="s">`gorm:"primaryKey" json:"id"`</span>
-    Title     <span class="t">string</span>         <span class="s">`gorm:"type:varchar(128);not null;index" json:"title"`</span>
-    UserID    <span class="t">uint</span>           <span class="s">`gorm:"not null;index" json:"user_id"`</span>
-    CreatedAt <span class="t">time.Time</span>      <span class="s">`json:"created_at"`</span>
-    UpdatedAt <span class="t">time.Time</span>      <span class="s">`json:"updated_at"`</span>
-    DeletedAt gorm.DeletedAt <span class="s">`gorm:"index" json:"-"`</span>   <span class="c">// ← 软删除开关</span>
-}</pre>
+    <p>判断「删一行到底是 UPDATE 还是 DELETE」只看一件事：<b>模型有没有 <code>DeletedAt</code> 字段</b>。day2 定的 <code>User</code> 与 <code>Article</code> 都内嵌了 <code>gorm.Model</code>，而 <code>gorm.Model</code> 里就躺着 <code>DeletedAt gorm.DeletedAt `gorm:"index"`</code>——所以对它俩调 <code>Delete</code> 发的是 UPDATE：</p>
+    <pre><span class="code-label">谁软删、谁硬删（对照 day2 的三个模型，不重定义）</span><span class="c">// User / Article：内嵌 gorm.Model → 有 DeletedAt → Delete 打时间戳（软删除）</span>
+<span class="c">// Tag（day2）：只写 ID/Name/CreatedAt，没有 gorm.Model 也没有 DeletedAt →</span>
+<span class="c">//   db.Delete(&amp;tag, id) 发的是真 DELETE，行直接从 tags 表消失</span>
+
+<span class="c">// gorm.Model 展开出来那行就是开关（day2 第 1 节已给）：</span>
+DeletedAt gorm.DeletedAt <span class="s">`gorm:"index"`</span>  <span class="c">// ← 有它 = 软删除；json 没打标，所以序列化时会露 deleted_at，</span>
+                                       <span class="c">//   要藏就在 DTO 里处理（day1 第 6 节那个 note 讲过大写键问题）</span></pre>
     <pre><span class="code-label">shell / Go 对照</span><span class="c">// ① 删除：不是 DELETE，而是打上时间戳</span>
 db.Delete(&amp;model.Article{}, <span class="n">1</span>)
 <span class="c">// UPDATE articles SET deleted_at='2026-09-23 10:00:00' WHERE articles.id = 1</span>
@@ -191,90 +210,297 @@ db.Unscoped().Delete(&amp;model.Article{}, <span class="n">1</span>) <span class
 
 <span class="c">// ④ 只列已删除的</span>
 db.Unscoped().Where(<span class="s">"deleted_at IS NOT NULL"</span>).Find(&amp;trash)</pre>
-    <div class="callout warn"><p>软删除的四个代价要知道：① <b>唯一索引仍占位</b>——软删了 <code>a@x.com</code> 的用户后，注册同名邮箱会撞 <code>Error 1062</code>；解法是把唯一索引改成 <code>(email, deleted_at)</code> 联合，或删除时把邮箱改名（<code>deleted_1_a@x.com</code>），或用 <code>is_deleted</code> 标记列而非 NULL。<br>② <b>Preload 的关联也会被过滤</b>，作者被软删后文章的 <code>User</code> 字段是零值，展示要留 <code>user_name</code> 冗余字段。<br>③ <b>AutoMigrate 不会因为删掉 <code>DeletedAt</code> 字段就恢复硬删除</b>——列还在表里，得手工 DROP。<br>④ 第 3 周说的「删除用户不会级联删文章」在软删除下同样成立，业务上要么在事务里一起软删，要么允许「孤儿文章」并在 UI 显示「已注销用户」。</p></div>
+    <div class="callout warn"><p>软删除的四个代价要知道：① <b>唯一索引仍占位</b>——软删了 <code>a@x.com</code> 的用户后，注册同名邮箱会撞 <code>Error 1062</code>；解法是把唯一索引改成 <code>(email, deleted_at)</code> 联合，或删除时把邮箱改名（<code>deleted_1_a@x.com</code>），或用 <code>is_deleted</code> 标记列而非 NULL。<br>② <b>Preload 的关联也会被过滤</b>，作者被软删后文章的 <code>User</code> 字段是零值，展示要留 <code>user_name</code> 冗余字段。<br>③ <b>AutoMigrate 不会因为删掉 <code>DeletedAt</code> 字段就恢复硬删除</b>——列还在表里，得手工 DROP。<br>④ day3 说的「删除用户不会级联删文章」在软删除下同样成立，业务上要么在事务里一起软删，要么允许「孤儿文章」并在 UI 显示「已注销用户」。</p></div>
   </section>
 
   <section>
     <h2>今日练习</h2>
     <div class="task">
       <div class="task-title">练习 1：事务 + 故意失败，观察回滚（45 分钟 · 本周最重要的练习）</div>
-      <p>实现 <code>POST /articles</code>（带 <code>tags: ["go","docker"]</code>），把「建文章 + 挂标签」放进同一事务；再加一个开关 <code>?fail=1</code>，让事务在第二步之后返回一个错误。</p>
-      <pre><span class="code-label">internal/handler/article.go</span><span class="k">func</span> (h *ArticleHandler) Create(c *gin.Context) {
+      <p>把 day3 那个「故意不带事务」的 <code>Create</code> 换成事务版：建文章 + 挂标签 + 作者计数 +1 全进同一个 <code>db.Transaction</code>；再加一次性开关 <code>?fail=1</code>，让事务在写完之后 <code>return err</code>，亲眼看它整段回滚。<b>顺序仍是三层：仓储补 tx 版方法 → service 开事务 → handler 只调 service</b>——第 1 节那条铁律「handler 里不许出现 <code>db.Transaction</code>、也不许出现 <code>*gorm.DB</code>」今天必须守住。</p>
+      <pre><span class="code-label">internal/repository/article.go + tag.go（补 tx 版方法；两个文件的 import 各加一行 "context"）</span><span class="c">// —— article.go：接口加一行 CreateWith，实现接收 tx 而不是 r.db ——</span>
+<span class="c">//   CreateWith(ctx context.Context, tx *gorm.DB, a model.Article) (model.Article, error)</span>
+<span class="k">func</span> (r *<span class="t">gormArticleRepo</span>) CreateWith(ctx <span class="t">context.Context</span>, tx *gorm.DB, a model.Article) (model.Article, <span class="t">error</span>) {
+    <span class="k">if</span> err := tx.WithContext(ctx).Create(&amp;a).Error; err != <span class="k">nil</span> {
+        <span class="k">return</span> model.Article{}, err
+    }
+    <span class="k">return</span> a, <span class="k">nil</span>
+}
+
+<span class="c">// —— tag.go：接口加两行，实现把 day3 那份从 r.db 换成传入的 tx ——</span>
+<span class="c">//   FindOrCreateWith(ctx context.Context, tx *gorm.DB, name string) (model.Tag, error)</span>
+<span class="c">//   ReplaceForWith(ctx context.Context, tx *gorm.DB, articleID uint, tagIDs []uint) error</span>
+<span class="k">func</span> (r *<span class="t">gormTagRepo</span>) FindOrCreateWith(ctx <span class="t">context.Context</span>, tx *gorm.DB, name <span class="t">string</span>) (model.Tag, <span class="t">error</span>) {
+    <span class="k">var</span> tag model.Tag
+    err := tx.WithContext(ctx).Where(<span class="t">map</span>[<span class="t">string</span>]<span class="t">any</span>{<span class="s">"name"</span>: name}).FirstOrCreate(&amp;tag).Error
+    <span class="k">return</span> tag, err
+}
+
+<span class="k">func</span> (r *<span class="t">gormTagRepo</span>) ReplaceForWith(ctx <span class="t">context.Context</span>, tx *gorm.DB, articleID <span class="t">uint</span>, tagIDs []<span class="t">uint</span>) <span class="t">error</span> {
+    a := model.Article{ID: articleID}
+    <span class="k">if</span> <span class="t">len</span>(tagIDs) == <span class="n">0</span> {
+        <span class="k">return</span> tx.Model(&amp;a).Association(<span class="s">"Tags"</span>).Clear()   <span class="c">// 裸 error，别写 .Error（day3 第 4 节）</span>
+    }
+    <span class="k">var</span> tags []model.Tag
+    <span class="k">if</span> err := tx.WithContext(ctx).Find(&amp;tags, tagIDs).Error; err != <span class="k">nil</span> {
+        <span class="k">return</span> err
+    }
+    <span class="k">return</span> tx.Model(&amp;a).Association(<span class="s">"Tags"</span>).Replace(tags) <span class="c">// 裸 error，别写 .Error</span>
+}</pre>
+      <pre><span class="code-label">internal/service/article.go（day5 定稿：struct 加到 5 个依赖，Create 走事务）</span><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="t">context</span>
+    <span class="t">errors</span>
+
+    <span class="s">"gorm.io/gorm"</span>
+
+    <span class="s">"goblog/internal/dto"</span>
+    <span class="s">"goblog/internal/model"</span>
+    <span class="s">"goblog/internal/repository"</span>
+)
+
+<span class="k">type</span> <span class="t">ArticleService</span> <span class="k">struct</span> {
+    arts  repository.ArticleRepository
+    users repository.UserRepository
+    tags  repository.TagRepository
+    stats repository.StatsRepository <span class="c">// ← day5 新增（section 2 的 stats.go）</span>
+    db    *gorm.DB                   <span class="c">// ← day5 新增：只为开事务，不拿来直接 Where/Find</span>
+}
+
+<span class="c">// 构造函数从 day3 的 3 参加到 5 参 —— 就是 day3 练习里预告的那次签名变化</span>
+<span class="k">func</span> NewArticleService(arts repository.ArticleRepository, users repository.UserRepository,
+    tags repository.TagRepository, stats repository.StatsRepository, db *gorm.DB) *<span class="t">ArticleService</span> {
+    <span class="k">return</span> &amp;ArticleService{arts: arts, users: users, tags: tags, stats: stats, db: db}
+}
+
+<span class="c">// attachTags：事务内把标签名换成带 ID 的 tag，再整体替换关系（只动 article_tags）</span>
+<span class="k">func</span> (s *<span class="t">ArticleService</span>) attachTags(ctx <span class="t">context.Context</span>, tx *gorm.DB, articleID <span class="t">uint</span>, names []<span class="t">string</span>) <span class="t">error</span> {
+    ids := <span class="k">make</span>([]<span class="t">uint</span>, <span class="n">0</span>, <span class="t">len</span>(names))
+    <span class="k">for</span> _, name := <span class="k">range</span> names {
+        t, err := s.tags.FindOrCreateWith(ctx, tx, name) <span class="c">// 有则复用、无则插入</span>
+        <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> err }
+        ids = append(ids, t.ID)
+    }
+    <span class="k">return</span> s.tags.ReplaceForWith(ctx, tx, articleID, ids)
+}
+
+<span class="c">// Create 取代 day3 的无事务版：建文章 + 挂标签 + 计数 +1，要么全成要么全废。</span>
+<span class="c">// forceFail 只是本练习的「故意炸」开关，验收完从签名里删掉，Create 回到 (ctx, userID, req)。</span>
+<span class="k">func</span> (s *<span class="t">ArticleService</span>) Create(ctx <span class="t">context.Context</span>, userID <span class="t">uint</span>, req dto.CreateArticleReq, forceFail <span class="t">bool</span>) (model.Article, <span class="t">error</span>) {
+    <span class="k">if</span> _, err := s.users.Get(userID); err != <span class="k">nil</span> {
+        <span class="k">if</span> IsNotFound(err) { <span class="k">return</span> model.Article{}, ErrAuthorNotFound } <span class="c">// → 400 + 1004</span>
+        <span class="k">return</span> model.Article{}, err
+    }
+    <span class="k">var</span> created model.Article
+    err := s.db.WithContext(ctx).Transaction(<span class="k">func</span>(tx *gorm.DB) <span class="t">error</span> {
+        a, err := s.arts.CreateWith(ctx, tx, model.Article{
+            Title: req.Title, Content: req.Content,
+            Summary: req.Summary, CoverImage: req.CoverImage, UserID: userID,
+        })
+        <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> err }
+        <span class="k">if</span> err := s.attachTags(ctx, tx, a.ID, req.Tags); err != <span class="k">nil</span> { <span class="k">return</span> err }
+        <span class="k">if</span> err := s.stats.IncArticleCount(ctx, tx, userID); err != <span class="k">nil</span> { <span class="k">return</span> err }
+        <span class="k">if</span> forceFail { <span class="k">return</span> errors.New(<span class="s">"故意失败：观察回滚"</span>) } <span class="c">// ← 触发 ROLLBACK</span>
+        created = a
+        <span class="k">return</span> <span class="k">nil</span>                                    <span class="c">// ← 返回 nil 才 COMMIT</span>
+    })
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> model.Article{}, err }
+    <span class="k">return</span> s.arts.DetailWithRels(created.ID)         <span class="c">// 事务外回读，把 user/tags 填好</span>
+}</pre>
+      <pre><span class="code-label">internal/handler/article.go（Create 改调事务版 service；路由仍走 day3 的 auth.POST("/articles", h.Create)）</span><span class="k">func</span> (h *<span class="t">ArticleHandler</span>) Create(c *gin.Context) {
     <span class="k">var</span> req dto.CreateArticleReq
     <span class="k">if</span> err := c.ShouldBindJSON(&amp;req); err != <span class="k">nil</span> {
-        c.JSON(<span class="n">400</span>, gin.H{<span class="s">"code"</span>: <span class="n">1004</span>, <span class="s">"message"</span>: <span class="s">"参数错误: "</span> + err.Error()})
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam,
+            <span class="s">"title(≥2)/content 必填，tags 最多 8 个"</span>)
         <span class="k">return</span>
     }
-
-    <span class="k">var</span> a model.Article
-    <span class="k">var</span> relTags []model.Tag
-    err := h.db.Transaction(<span class="k">func</span>(tx *gorm.DB) <span class="t">error</span> {
-        a = model.Article{Title: req.Title, Content: req.Content, UserID: req.UserID}
-        <span class="k">if</span> err := tx.Create(&amp;a).Error; err != <span class="k">nil</span> {
-            <span class="k">return</span> err
-        }
-        <span class="k">for</span> _, name := <span class="k">range</span> req.Tags {
-            <span class="k">var</span> tag model.Tag
-            <span class="k">if</span> err := tx.Where(<span class="t">map</span>[<span class="t">string</span>]<span class="t">any</span>{<span class="s">"name"</span>: name}).FirstOrCreate(&amp;tag).Error; err != <span class="k">nil</span> {
-                <span class="k">return</span> fmt.Errorf(<span class="s">"创建标签 %s 失败: %w"</span>, name, err)
-            }
-            relTags = append(relTags, tag)
-        }
-        <span class="k">if</span> err := tx.Model(&amp;a).Association(<span class="s">"Tags"</span>).Replace(relTags); err != <span class="k">nil</span> {
-            <span class="k">return</span> err
-        }
-        <span class="k">if</span> c.Query(<span class="s">"fail"</span>) == <span class="s">"1"</span> {
-            <span class="k">return</span> errors.New(<span class="s">"故意失败：观察回滚"</span>)   <span class="c">// ← 触发 ROLLBACK</span>
-        }
-        <span class="k">return</span> <span class="k">nil</span>
-    })
-    <span class="k">if</span> err != <span class="k">nil</span> {
-        c.JSON(<span class="n">500</span>, gin.H{<span class="s">"code"</span>: <span class="n">5001</span>, <span class="s">"message"</span>: <span class="s">"创建失败: "</span> + err.Error()})
-        <span class="k">return</span>
+    userID := c.GetUint(<span class="s">"userID"</span>)        <span class="c">// day3：来自 RequireAuth，本周恒为 1；所以 body 里没有 user_id</span>
+    forceFail := c.Query(<span class="s">"fail"</span>) == <span class="s">"1"</span>  <span class="c">// 仅本练习用</span>
+    a, err := h.svc.Create(c.Request.Context(), userID, req, forceFail)
+    <span class="k">switch</span> {
+    <span class="k">case</span> errors.Is(err, service.ErrAuthorNotFound):
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"作者不存在"</span>)
+    <span class="k">case</span> err != <span class="k">nil</span>:
+        response.Fail(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"创建失败"</span>) <span class="c">// 500 + 5000</span>
+    <span class="k">default</span>:
+        response.Created(c, a)            <span class="c">// 201 + code 0</span>
     }
-    c.JSON(<span class="n">201</span>, gin.H{<span class="s">"code"</span>: <span class="n">0</span>, <span class="s">"message"</span>: <span class="s">"success"</span>, <span class="s">"data"</span>: a})
 }</pre>
-      <pre><span class="code-label">验收 shell</span><span class="c"># 正常创建</span>
-$ curl -s -X POST localhost:8080/articles -H <span class="s">"Content-Type: application/json"</span> \
-    -d <span class="s">'{"title":"事务实验","user_id":1,"tags":["go","docker"]}'</span>
-{"code":0,"message":"success","data":{"id":26,...}}
+      <pre><span class="code-label">cmd/server/main.go（day5：装配补 statsRepo 与 db，其余沿用 day2/day3）</span>statsRepo := repository.NewStatsRepo(db)                                       <span class="c">// 新文件 stats.go</span>
+artSvc := service.NewArticleService(artRepo, userRepo, tagRepo, statsRepo, db) <span class="c">// 3 参 → 5 参</span>
+handler.NewArticleHandler(artSvc).Register(api, auth)                            <span class="c">// 路由不变</span></pre>
+      <pre><span class="code-label">shell（写完 <code>go build ./...</code> 起服务，另开终端验收；写接口要带 Bearer）</span><span class="c"># ① 正常创建：201 + code 0，回读带 tags</span>
+$ curl -si -X POST <span class="s">"localhost:8080/api/v1/articles"</span> -H <span class="s">"Content-Type: application/json"</span> \
+    -H <span class="s">"Authorization: Bearer go-fullstack-2026"</span> \
+    -d <span class="s">'{"title":"事务实验","content":"正文若干","tags":["go","docker"]}'</span>
+HTTP/1.1 201 Created
+{"code":0,"message":"success","data":{"ID":26,"title":"事务实验", ... "tags":[{"id":1,"name":"go"},{"id":4,"name":"docker"}]}}
 
-<span class="c"># 故意失败</span>
-$ curl -s -X POST <span class="s">"localhost:8080/articles?fail=1"</span> -H <span class="s">"Content-Type: application/json"</span> \
-    -d <span class="s">'{"title":"我不该存在","user_id":1,"tags":["go","docker"]}'</span>
-{"code":5001,"message":"创建失败: 故意失败：观察回滚"}
+<span class="c"># ② 故意失败：?fail=1 → 事务中途 return err → 500 + code 5000</span>
+$ curl -si -X POST <span class="s">"localhost:8080/api/v1/articles?fail=1"</span> -H <span class="s">"Content-Type: application/json"</span> \
+    -H <span class="s">"Authorization: Bearer go-fullstack-2026"</span> \
+    -d <span class="s">'{"title":"我不该存在","content":"x","tags":["go","docker"]}'</span>
+HTTP/1.1 500 Internal Server Error
+{"code":5000,"message":"创建失败","data":null}
 
-<span class="c"># 关键验证：文章没留下，标签也没多</span>
-$ docker exec -it golearn-mysql mysql -ugolearn -pgolearn123 --database=study_plan -e \
-  <span class="s">"SELECT COUNT(*) FROM articles WHERE title='我不该存在'; SELECT COUNT(*) FROM tags;"</span>
+<span class="c"># ③ 关键验证：文章没留下、标签没多、计数也没被那次失败的 +1</span>
+$ docker exec -it goblog-mysql mysql -ugoblog -pgoblog123 --database=goblog -e \
+  <span class="s">"SELECT COUNT(*) AS 脏数据 FROM articles WHERE title='我不该存在'; SELECT username, article_count FROM users WHERE id=1;"</span>
 0
-2</pre>
-      <p><b>参考答案</b>：日志里能看到 <code>BEGIN</code> → 若干 INSERT → <code>ROLLBACK</code>；<code>articles</code> 表里查不到那篇（自增 ID 会跳号，这是正常的——InnoDB 不回滚 AUTO_INCREMENT）。标签数不变，因为 <code>FirstOrCreate</code> 建的标签也在同一事务里被撤销。</p>
+xiaoming  1     <span class="c"># 只有 ① 那次成功创建让计数 +1；② 那次整段回滚，计数停在原地</span></pre>
+      <p><b>参考答案</b>：日志里 ② 会打出 <code>BEGIN</code> → <code>INSERT articles</code> → <code>INSERT article_tags</code> → <code>UPDATE users SET article_count</code> → <code>ROLLBACK</code>。查库：脏数据 <code>0</code> 条，<code>article_count</code> 只等于成功创建的那一次。自增 ID 会跳号（<code>26</code> 之后可能是 <code>28</code>），这是正常的——<b>InnoDB 不回滚 <code>AUTO_INCREMENT</code></b>。day3 练习 4 末尾那个「文章建了但标签挂失败」留下的脏行，今天被事务整段消灭。跑完记得把 <code>forceFail</code> 从 <code>Create</code> 签名删掉。<b>计数列提醒：</b>seed（day3/day4）是直接 <code>Create</code> 灌的文章，没走 <code>service.Create</code>，所以那 25 篇不会计入 <code>article_count</code>；它只反映经过事务这条路的创建。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 2：连接池参数实验（30 分钟）</div>
-      <p>把 <code>SetMaxOpenConns(1)</code> 打开，用 <code>for i in $(seq 1 10); do curl -s "localhost:8080/articles?size=20" -o /dev/null -w "%{time_total}\n" &amp;; done; wait</code> 并发打 10 个请求；然后改回 <code>25</code> 再打一次，比较总耗时。再打印 <code>sqlDB.Stats()</code>。</p>
-      <pre><span class="code-label">观察池状态</span>st := sqlDB.Stats()
-fmt.Printf(<span class="s">"open=%d inuse=%d idle=%d 等待中=%d 累计等待时长=%v\n"</span>,
-    st.OpenConnections, st.InUse, st.Idle, st.WaitCount, st.WaitDuration)</pre>
-      <p><b>参考答案</b>：<code>maxOpen=1</code> 时 10 个请求变成串行，总耗时 ≈ 单请求 × 10，<code>WaitCount</code> 明显 &gt; 0；<code>maxOpen=25</code> 时总耗时接近单请求。<b>这告诉你：池子大小就是吞吐上限之一</b>，也和第 5 周的并发直接相关。</p>
+      <p>分两步：<b>先用一个独立小程序把 <code>sqlDB.Stats()</code> 打出来</b>（这才是「池子的仪表盘」，注意 <code>sqlDB</code> 必须先用 <code>db.DB()</code> 取出来，不能凭空 <code>sqlDB.Stats()</code>——它在 <code>New</code> 里是局部变量，出了函数就没了）；<b>再用 shell 并发轰真实服务</b>感受排队。新建 <code>cmd/pooltest/main.go</code>（与 <code>cmd/server</code> 平级，各自一个 <code>package main</code>），整份抄进去就能跑：</p>
+      <pre><span class="code-label">cmd/pooltest/main.go（完整可跑）</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">database/sql</span>
+    <span class="t">fmt</span>
+    <span class="t">log</span>
+
+    <span class="s">"goblog/internal/config"</span>
+    <span class="s">"goblog/internal/model"</span>
+    <span class="s">"goblog/internal/repository"</span>
+)
+
+<span class="k">func</span> main() {
+    db := repository.MustConnect(config.DSN) <span class="c">// day5 版 New 已设好 SetMaxOpenConns 等</span>
+    sqlDB, err := db.DB()                     <span class="c">// 取底层 *sql.DB，就是那个池</span>
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        log.Fatal(err)
+    }
+    printStats(<span class="s">"启动后"</span>, sqlDB)
+
+    <span class="k">var</span> total <span class="t">int64</span>
+    <span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="n">5</span>; i++ { <span class="c">// 串行跑 5 条，连接用完即归还进 idle</span>
+        <span class="k">if</span> err := db.Model(&amp;model.Article{}).Count(&amp;total).Error; err != <span class="k">nil</span> {
+            log.Fatal(err)
+        }
+    }
+    printStats(<span class="s">"跑 5 条后"</span>, sqlDB)
+    fmt.Println(<span class="s">"articles 总数 ="</span>, total)
+}
+
+<span class="c">// printStats 读连接池实时状态：字段全在 sql.DBStats 上</span>
+<span class="k">func</span> printStats(tag <span class="t">string</span>, sqlDB *sql.DB) {
+    st := sqlDB.Stats()
+    fmt.Printf(<span class="s">"%-8s open=%d inuse=%d idle=%d waitCount=%d waitDuration=%v\n"</span>,
+        tag, st.OpenConnections, st.InUse, st.Idle, st.WaitCount, st.WaitDuration)
+}</pre>
+      <p>然后拿真实服务压并发：<b>把 <code>internal/repository/db.go</code> 的 <code>SetMaxOpenConns</code> 改成 <code>1</code></b>、重启服务，用下面这行 shell 并发打 10 个请求（shell 的 <code>&amp;</code> 是后台并发，不涉及 goroutine，第 5 周才教并发编程）；再改回 <code>25</code> 打一次，比较总耗时。</p>
+      <pre><span class="code-label">shell</span>$ go run ./cmd/pooltest                <span class="c"># 先看池仪表盘（串行，waitCount=0）</span>
+启动后      open=1 inuse=0 idle=1 waitCount=0 waitDuration=0s
+跑 5 条后   open=1 inuse=0 idle=1 waitCount=0 waitDuration=0s
+
+$ <span class="k">for</span> i <span class="k">in</span> $(seq 1 10); <span class="k">do</span>
+    curl -s <span class="s">"localhost:8080/api/v1/articles?size=20"</span> -o /dev/null -w <span class="s">"%{time_total}\n"</span> &amp;
+  <span class="k">done</span>; wait                                <span class="c"># maxOpen=1 vs 25 各跑一遍，把 10 个 time_total 抄进笔记</span></pre>
+      <p><b>参考答案</b>：<code>pooltest</code> 是串行取用，所以 <code>waitCount</code> 恒为 <code>0</code>、<code>inuse</code> 顶多 1，这正说明「池子平时用不满」。真正的排队发生在并发那次：<code>maxOpen=1</code> 时 10 个 curl 被迫串行，<code>time_total</code> 逐个叠加（总耗时 ≈ 单请求 × 10）；<code>maxOpen=25</code> 时并发跑满，总耗时接近单个请求。<b>这告诉你：池子大小就是吞吐上限之一</b>，也和第 5 周的并发直接相关。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 3：软删除三件套（35 分钟）</div>
-      <p>实现 ① <code>DELETE /articles/:id</code>（软删）；② <code>GET /articles/:id</code> 删后返回 404；③ <code>GET /admin/articles/trash</code> 用 <code>Unscoped().Where("deleted_at IS NOT NULL")</code> 列出回收站；④ 再补一个永久删除（<code>Unscoped().Delete</code>）。</p>
-      <pre><span class="code-label">internal/repository/article.go</span><span class="k">func</span> (r *articleRepo) SoftDelete(id <span class="t">uint</span>) <span class="t">error</span> {
-    res := r.db.Delete(&amp;model.Article{}, id)   <span class="c">// 有 DeletedAt → UPDATE deleted_at</span>
+      <p><b>先纠正一件事</b>：day2 的 <code>gormArticleRepo.Delete</code> 其实<b>早就</b>是软删除了（<code>Article</code> 内嵌 <code>gorm.Model</code> 带 <code>DeletedAt</code>），所以这里<b>不用</b>再写一个 <code>SoftDelete</code>。今天真正要补的是「读回收站」和「真删除」两个能力，走满三层（handler 里不许出现 <code>*gorm.DB</code>，也不许 <code>c.JSON</code>），路由全部挂 <code>/api/v1</code>。</p>
+      <pre><span class="code-label">internal/repository/article.go（接口加两行，实现接在文件末尾）</span><span class="c">//   Trash(q dto.PageQuery) ([]model.Article, int64, error)   // 回收站：分页 + 总数</span>
+<span class="c">//   HardDelete(id uint) error                                // 真·DELETE</span>
+
+<span class="c">// Trash：Unscoped 关掉软删除过滤，再手动只挑 deleted_at 非空的行；base 每次返新链，Count/Find 不互污（day4 的规矩）</span>
+<span class="k">func</span> (r *<span class="t">gormArticleRepo</span>) Trash(q dto.PageQuery) ([]model.Article, <span class="t">int64</span>, <span class="t">error</span>) {
+    base := <span class="k">func</span>() *gorm.DB {
+        <span class="k">return</span> r.db.Unscoped().Model(&amp;model.Article{}).Where(<span class="s">"articles.deleted_at IS NOT NULL"</span>)
+    }
+    <span class="k">var</span> total <span class="t">int64</span>
+    <span class="k">if</span> err := base().Count(&amp;total).Error; err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, <span class="n">0</span>, err
+    }
+    list := []model.Article{}
+    err := base().Order(<span class="s">"articles.deleted_at desc"</span>).Limit(q.Size).Offset(q.Offset()).Find(&amp;list).Error
+    <span class="k">return</span> list, total, err
+}
+
+<span class="c">// HardDelete：Unscoped().Delete 才发 DELETE FROM，而不是再打一次时间戳</span>
+<span class="k">func</span> (r *<span class="t">gormArticleRepo</span>) HardDelete(id <span class="t">uint</span>) <span class="t">error</span> {
+    res := r.db.Unscoped().Delete(&amp;model.Article{}, id)
     <span class="k">if</span> res.Error != <span class="k">nil</span> { <span class="k">return</span> res.Error }
     <span class="k">if</span> res.RowsAffected == <span class="n">0</span> { <span class="k">return</span> ErrArticleNotFound }
     <span class="k">return</span> <span class="k">nil</span>
+}</pre>
+      <pre><span class="code-label">internal/service/article.go（补三个转发）</span><span class="c">// day5 之前 service 没有文章 Delete，这里补上（转发给 day2 的软删除实现）</span>
+<span class="k">func</span> (s *<span class="t">ArticleService</span>) Delete(id <span class="t">uint</span>) <span class="t">error</span> { <span class="k">return</span> s.arts.Delete(id) }
+
+<span class="k">func</span> (s *<span class="t">ArticleService</span>) Trash(q dto.PageQuery) (dto.PageResult, <span class="t">error</span>) {
+    q.Normalize()                                   <span class="c">// 夹紧排在 Size/Offset 之前（day4）</span>
+    list, total, err := s.arts.Trash(q)
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> dto.PageResult{}, err }
+    <span class="k">return</span> dto.NewPageResult(list, total, q), <span class="k">nil</span>   <span class="c">// {list,total,page,size,total_page}</span>
 }
 
-<span class="k">func</span> (r *articleRepo) Trash() ([]model.Article, <span class="t">error</span>) {
-    <span class="k">var</span> list []model.Article
-    err := r.db.Unscoped().Where(<span class="s">"deleted_at IS NOT NULL"</span>).Order(<span class="s">"deleted_at desc"</span>).Find(&amp;list).Error
-    <span class="k">return</span> list, err
+<span class="k">func</span> (s *<span class="t">ArticleService</span>) HardDelete(id <span class="t">uint</span>) <span class="t">error</span> { <span class="k">return</span> s.arts.HardDelete(id) }</pre>
+      <pre><span class="code-label">internal/handler/article.go（Register 补三行 + 三个 handler，全走 response）</span><span class="k">func</span> (h *<span class="t">ArticleHandler</span>) Register(public, auth *gin.RouterGroup) {
+    public.GET(<span class="s">"/articles"</span>, h.List)                <span class="c">// day4</span>
+    public.GET(<span class="s">"/articles/:id"</span>, h.Get)             <span class="c">// day3</span>
+    public.GET(<span class="s">"/users/:id/articles"</span>, h.ListByUser)<span class="c">// day3</span>
+    auth.POST(<span class="s">"/articles"</span>, h.Create)               <span class="c">// day3/day5</span>
+    auth.DELETE(<span class="s">"/articles/:id"</span>, h.Delete)                       <span class="c">// day2 的 Delete = 软删除</span>
+    auth.DELETE(<span class="s">"/articles/:id/permanent"</span>, h.HardDelete)         <span class="c">// day5：回收站里的真删除</span>
+    auth.GET(<span class="s">"/articles/trash"</span>, h.Trash)                         <span class="c">// day5：走 RequireAuth，第 8 周再收进管理员</span>
+}
+
+<span class="k">func</span> (h *<span class="t">ArticleHandler</span>) Delete(c *gin.Context) {
+    id, ok := parseID(c)
+    <span class="k">if</span> !ok { <span class="k">return</span> }
+    <span class="k">if</span> err := h.svc.Delete(id); err != <span class="k">nil</span> {
+        <span class="k">if</span> service.IsArticleNotFound(err) {
+            response.Fail(c, http.StatusNotFound, response.CodeArticleNotFound, <span class="s">"文章不存在"</span>) <span class="c">// 404 + 2001</span>
+            <span class="k">return</span>
+        }
+        response.Fail(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务繁忙"</span>)
+        <span class="k">return</span>
+    }
+    response.OK(c, gin.H{<span class="s">"soft_deleted"</span>: id})
+}
+
+<span class="k">func</span> (h *<span class="t">ArticleHandler</span>) Trash(c *gin.Context) {
+    <span class="k">var</span> q dto.PageQuery
+    <span class="k">if</span> err := c.ShouldBindQuery(&amp;q); err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"page/size 必须是整数"</span>)
+        <span class="k">return</span>
+    }
+    res, err := h.svc.Trash(q)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务繁忙"</span>)
+        <span class="k">return</span>
+    }
+    response.OK(c, res)
+}
+
+<span class="k">func</span> (h *<span class="t">ArticleHandler</span>) HardDelete(c *gin.Context) {
+    id, ok := parseID(c)
+    <span class="k">if</span> !ok { <span class="k">return</span> }
+    <span class="k">if</span> err := h.svc.HardDelete(id); err != <span class="k">nil</span> {
+        <span class="k">if</span> service.IsArticleNotFound(err) {
+            response.Fail(c, http.StatusNotFound, response.CodeArticleNotFound, <span class="s">"文章不存在"</span>)
+            <span class="k">return</span>
+        }
+        response.Fail(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务繁忙"</span>)
+        <span class="k">return</span>
+    }
+    response.OK(c, gin.H{<span class="s">"deleted"</span>: id})
 }</pre>
-      <p><b>参考答案</b>：软删后 <code>SELECT COUNT(*) FROM articles</code> 行数<b>不变</b>（这就是证据），但 <code>GET /articles</code> 少了一条、<code>total</code> 也少 1；回收站里能看到它，且 <code>deleted_at</code> 有值。</p>
+      <pre><span class="code-label">shell（写接口都带 Bearer；状态用 -w 取，不靠 head 截字段）</span>$ curl -s -X DELETE <span class="s">"localhost:8080/api/v1/articles/26"</span> -H <span class="s">"Authorization: Bearer go-fullstack-2026"</span> \
+    -o /dev/null -w <span class="s">"%{http_code}\n"</span>            <span class="c"># 200：软删除成功</span>
+$ curl -s <span class="s">"localhost:8080/api/v1/articles/26"</span> -o /dev/null -w <span class="s">"%{http_code}\n"</span>   <span class="c"># 404（+ 2001）</span>
+$ curl -s <span class="s">"localhost:8080/api/v1/articles/trash"</span> -H <span class="s">"Authorization: Bearer go-fullstack-2026"</span> \
+    | grep -o <span class="s">"\"total\":[0-9]*"</span>               <span class="c"># 回收站里能看到那条</span>
+$ curl -s -X DELETE <span class="s">"localhost:8080/api/v1/articles/26/permanent"</span> -H <span class="s">"Authorization: Bearer go-fullstack-2026"</span> \
+    -o /dev/null -w <span class="s">"%{http_code}\n"</span>            <span class="c"># 200：真删除</span>
+
+<span class="c"># 库里证据：软删只是打时间戳；permanent 之后这行彻底查不到</span>
+$ docker exec -it goblog-mysql mysql -ugoblog -pgoblog123 --database=goblog -e \
+  <span class="s">"SELECT id,title,deleted_at FROM articles WHERE id=26;"</span></pre>
+      <p><b>参考答案</b>：软删后 <code>SELECT COUNT(*) FROM articles</code> 行数<b>不变</b>（这就是证据），但 <code>GET /api/v1/articles</code> 少一条、<code>total</code> 也少 1；<code>/api/v1/articles/26</code> 返 404 + <code>2001</code>；回收站里那条 <code>deleted_at</code> 有值。跑 <code>permanent</code> 之后再 <code>SELECT</code> 就查不到了（真 <code>DELETE</code>）。记住 <code>Unscoped</code> 只在管理员 / 回收站场景用，普通列表绝不能带它。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 4：设计题（20 分钟，写进笔记）</div>
@@ -319,13 +545,13 @@ fmt.Printf(<span class="s">"open=%d inuse=%d idle=%d 等待中=%d 累计等待�
       <li><label><input type="checkbox" data-key="w3d5c1">练习 1：<code>?fail=1</code> 时日志出现 <code>ROLLBACK</code>，<code>SELECT COUNT(*) FROM articles WHERE title='我不该存在'</code> 为 0</label></li>
       <li><label><input type="checkbox" data-key="w3d5c2">练习 1 正常路径：文章创建成功且 <code>article_tags</code> 里有对应关系行</label></li>
       <li><label><input type="checkbox" data-key="w3d5c3">练习 2：<code>maxOpen=1</code> 与 <code>25</code> 两组总耗时数字记进了笔记，并能解释 <code>WaitCount</code></label></li>
-      <li><label><input type="checkbox" data-key="w3d5c4">练习 3：软删后 <code>GET /articles</code> 少一条、表行数不变，回收站接口能看到 <code>deleted_at</code></label></li>
+      <li><label><input type="checkbox" data-key="w3d5c4">练习 3：软删后 <code>GET /api/v1/articles</code> 少一条、表行数不变，回收站接口 <code>GET /api/v1/articles/trash</code> 能看到 <code>deleted_at</code></label></li>
       <li><label><input type="checkbox" data-key="w3d5c5">能口述事务三种结局、三个池参数各调大/调小的后果</label></li>
     </ul>
   </section>
 
   <nav class="day-nav">
-    <a href="../../index.html"><span class="hint">← 回到</span>8 周路线总览</a>
+    <a href="day4.html"><span class="hint">← 上一天 · W3D4</span>分页、搜索、排序</a>
     <a href="summary.html"><span class="hint">本周收官 · W3 总结 →</span>项目冲刺与验收</a>
   </nav>
 </article>

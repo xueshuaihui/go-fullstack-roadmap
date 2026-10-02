@@ -11,7 +11,7 @@
 <body>
 <header class="site-header">
   <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
-  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 3 周总结</a></nav>
+  <nav><a href="../../index.html">8 周路线</a><a href="day1.html">第 3 周每日课</a></nav>
 </header>
 
 <main class="page">
@@ -45,9 +45,9 @@
       <tr><th>步骤</th><th>要做什么</th><th>成功信号</th><th>预计耗时</th></tr>
       <tr><td>①</td><td><code>docker-compose.yml</code> 起 MySQL 8（卷 + healthcheck）</td><td><code>docker compose ps</code> 显示 <code>Up (healthy)</code>；<code>docker exec ... mysql -e "SELECT VERSION();"</code> 有输出</td><td>20 分钟</td></tr>
       <tr><td>②</td><td>模型 + <code>AutoMigrate</code>：User / Article / Tag（含 <code>foreignKey</code>、<code>many2many</code>）</td><td><code>SHOW TABLES</code> 出现 <code>users / articles / tags / article_tags</code>，列与 tag 一致</td><td>40 分钟</td></tr>
-      <tr><td>③</td><td>repository 层换成 GORM 实现，<b>接口与 service/handler 不动</b></td><td><code>git diff internal/service internal/handler</code> 为空；五个用户接口行为同上周</td><td>60–90 分钟</td></tr>
-      <tr><td>④</td><td>文章接口：创建（带 tags、走事务）、列表、详情（带 tags + user）</td><td><code>POST /articles</code> 后 <code>article_tags</code> 出现关系行；详情返回嵌套 tags</td><td>60 分钟</td></tr>
-      <tr><td>⑤</td><td><code>GET /users/:id/articles</code> 与分页搜索排序 DTO</td><td><code>?page=1&amp;size=10&amp;keyword=go&amp;sort=-created_at</code> 返回正确 PageResult</td><td>60 分钟</td></tr>
+      <tr><td>③</td><td>repository 层换成 GORM 实现：<b>接口签名不变、用户层 service/handler 换实现时零改动</b>；文章层（article/tag/stats 三件套）是本周从零新增</td><td><code>git diff internal/service/user.go internal/handler/user.go</code> 相对上周只含 day2 讲的那几行（模型字段 / 接口加 <code>ExistsUsername</code>），<b>换 GORM 实现没逼它们改</b>；<code>git status</code> 里 <code>article.go / tag.go / stats.go</code> 全是新增</td><td>60–90 分钟</td></tr>
+      <tr><td>④</td><td>文章接口：创建（带 tags、走事务）、列表、详情（带 tags + user）</td><td><code>POST /api/v1/articles</code>（带 Bearer、body 无 <code>user_id</code>）后 <code>article_tags</code> 出现关系行；详情返回嵌套 tags</td><td>60 分钟</td></tr>
+      <tr><td>⑤</td><td><code>GET /api/v1/users/:id/articles</code> 与分页搜索排序 DTO</td><td><code>?page=1&amp;size=10&amp;keyword=go&amp;sort=-views</code> 返回 <code>{list,total,page,size,total_page}</code></td><td>60 分钟</td></tr>
       <tr><td>⑥</td><td>软删除 + 404/500 错误口径，最后跑一遍验收 curl</td><td>下方「验收清单」全部勾掉</td><td>40 分钟</td></tr>
       <tr><td>⑦</td><td>Git 提交 + README（写清启动方式：compose up → go run）</td><td>README 里的两条命令在<b>干净机器</b>上能复现环境</td><td>20 分钟</td></tr>
     </table>
@@ -57,26 +57,47 @@
   <section>
     <h2>本周项目完整配置</h2>
 
+    <h3>目录结构（本周终态）</h3>
+    <p>跑完本周，<code>goblog</code> 目录应该长这样——注意 <code>pkg/response/</code> 在模块根（day1 从 <code>gin-api</code> 搬来，全周不改），<code>middleware/</code>、<code>dto/</code>、<code>repository/stats.go</code>、<code>cmd/seed</code>、<code>cmd/pooltest</code> 都是本周分几天补进来的：</p>
+    <pre><span class="code-label">goblog/ 目录树</span>goblog/
+├── go.mod                                  <span class="c"># module goblog</span>
+├── docker-compose.yml                      <span class="c"># 起 MySQL：容器 goblog-mysql、库 goblog</span>
+├── pkg/response/response.go                <span class="c"># day1 搬来：{code,message,data} + OK/Created/Fail + 错误码常量</span>
+├── cmd/
+│   ├── server/main.go                      <span class="c"># 装配：连库 → 迁移 → newRepo → newService → newHandler → 路由</span>
+│   ├── seed/main.go                        <span class="c"># day4：灌 25 篇文章 + 标签（FirstOrCreate 幂等）</span>
+│   └── pooltest/main.go                    <span class="c"># day5：db.DB() 取 *sql.DB，打连接池 Stats</span>
+└── internal/
+    ├── config/config.go                    <span class="c"># const DSN（day1；第 4 周换成 .env + DB_* 拼装）</span>
+    ├── model/user.go  article.go  tag.go   <span class="c"># day2 定稿：User/Article 内嵌 gorm.Model（软删），Tag 无 DeletedAt</span>
+    ├── dto/user.go  article.go  page.go    <span class="c"># day2/3/4：入参出参 + PageResult{list,total,page,size,total_page}</span>
+    ├── repository/db.go                    <span class="c"># New / MustConnect（day1，day5 补 SetMaxOpenConns 等池参数）</span>
+    ├── repository/errors.go                <span class="c"># 全周唯一「不存在」哨兵：ErrUserNotFound(1001) / ErrArticleNotFound(2001)</span>
+    ├── repository/user.go  article.go  tag.go  stats.go   <span class="c"># 接口 + GORM 实现（stats.go 是 day5 新增）</span>
+    ├── service/user.go  article.go         <span class="c"># 业务规则；article.go 的 Create 走事务（day5）</span>
+    ├── handler/user.go  article.go         <span class="c"># Gin 层：Register(public, auth *gin.RouterGroup)</span>
+    └── middleware/cors.go  timer.go  auth.go   <span class="c"># day1 搬来；auth 是假 Bearer token，第 4 周换 JWT</span></pre>
+
     <h3>docker-compose.yml 全文</h3>
     <pre><span class="code-label">docker-compose.yml</span><span class="t">services</span>:
-  <span class="t">mysql</span>:
+  <span class="t">mysql</span>:                              <span class="c"># 服务名，第 7 周 compose 也叫 mysql</span>
     <span class="t">image</span>: <span class="s">mysql:8.0</span>
-    <span class="t">container_name</span>: <span class="s">golearn-mysql</span>
+    <span class="t">container_name</span>: <span class="s">goblog-mysql</span>      <span class="c"># 固定容器名，第 3~8 周都用这个名字（docker exec 直呼其名）</span>
     <span class="t">restart</span>: <span class="s">unless-stopped</span>
     <span class="t">environment</span>:
-      <span class="t">MYSQL_ROOT_PASSWORD</span>: <span class="s">"root123456"</span>
-      <span class="t">MYSQL_DATABASE</span>: <span class="s">"study_plan"</span>
-      <span class="t">MYSQL_USER</span>: <span class="s">"golearn"</span>
-      <span class="t">MYSQL_PASSWORD</span>: <span class="s">"golearn123"</span>
+      <span class="t">MYSQL_ROOT_PASSWORD</span>: <span class="s">"goblogroot"</span>
+      <span class="t">MYSQL_DATABASE</span>: <span class="s">"goblog"</span>        <span class="c"># 首次启动自动 CREATE DATABASE</span>
+      <span class="t">MYSQL_USER</span>: <span class="s">"goblog"</span>             <span class="c"># 业务账号，别拿 root 连应用</span>
+      <span class="t">MYSQL_PASSWORD</span>: <span class="s">"goblog123"</span>     <span class="c"># 学习用的口令就长这样，别照抄到真项目</span>
     <span class="t">ports</span>:
-      - <span class="s">"3306:3306"</span>            <span class="c"># 本机已占 3306 就改 "3307:3306"，DSN 同步改</span>
+      - <span class="s">"3306:3306"</span>                    <span class="c"># 本机已占 3306 就改 "3307:3306"，DSN 同步改</span>
     <span class="t">volumes</span>:
-      - <span class="s">mysql-data:/var/lib/mysql</span>   <span class="c"># ← 重启/重建容器数据不丢全靠这一行</span>
+      - <span class="s">mysql-data:/var/lib/mysql</span>      <span class="c"># ← 重启/重建容器数据不丢全靠这一行</span>
     <span class="t">command</span>:
       - <span class="s">--character-set-server=utf8mb4</span>
       - <span class="s">--collation-server=utf8mb4_unicode_ci</span>
     <span class="t">healthcheck</span>:
-      <span class="t">test</span>: [<span class="s">"CMD"</span>, <span class="s">"mysqladmin"</span>, <span class="s">"ping"</span>, <span class="s">"-h127.0.0.1"</span>, <span class="s">"-uroot"</span>, <span class="s">"-proot123456"</span>]
+      <span class="t">test</span>: [<span class="s">"CMD"</span>, <span class="s">"mysqladmin"</span>, <span class="s">"ping"</span>, <span class="s">"-h127.0.0.1"</span>, <span class="s">"-uroot"</span>, <span class="s">"-pgoblogroot"</span>]
       <span class="t">interval</span>: <span class="s">10s</span>
       <span class="t">timeout</span>: <span class="s">5s</span>
       <span class="t">retries</span>: <span class="n">5</span>
@@ -86,7 +107,7 @@
   <span class="t">mysql-data</span>: {}</pre>
     <pre><span class="code-label">shell</span>$ docker compose up -d &amp;&amp; docker compose ps
 $ docker compose logs --tail=30 mysql          <span class="c"># 起不来先看这里</span>
-$ docker exec -it golearn-mysql mysql -ugolearn -pgolearn123 --database=study_plan</pre>
+$ docker exec -it goblog-mysql mysql -ugoblog -pgoblog123 --database=goblog</pre>
 
     <h3>模型定义全文（含关联）</h3>
     <pre><span class="code-label">internal/model/user.go</span><span class="k">package</span> model
@@ -97,12 +118,23 @@ $ docker exec -it golearn-mysql mysql -ugolearn -pgolearn123 --database=study_pl
 <span class="k">type</span> User <span class="k">struct</span> {
     gorm.Model
 
-    Name     <span class="t">string</span> <span class="s">`gorm:"column:name;type:varchar(64);size:64;not null" json:"name"`</span>
-    Email    <span class="t">string</span> <span class="s">`gorm:"type:varchar(128);size:128;not null;uniqueIndex" json:"email"`</span>
-    Password <span class="t">string</span> <span class="s">`gorm:"type:varchar(255);not null" json:"-"`</span>
+    Username <span class="t">string</span> <span class="s">`gorm:"type:varchar(32);uniqueIndex;not null" json:"username"`</span> <span class="c">// 登录名（没有 name 列）</span>
+    Nickname <span class="t">string</span> <span class="s">`gorm:"type:varchar(32)" json:"nickname"`</span>                     <span class="c">// 显示名</span>
+    Email    <span class="t">string</span> <span class="s">`gorm:"type:varchar(128);uniqueIndex" json:"email"`</span>
+    Password <span class="t">string</span> <span class="s">`gorm:"type:varchar(72);not null" json:"-"`</span>                <span class="c">// 72 = bcrypt 上限；json:"-" 永不输出</span>
+    Role     <span class="t">Role</span>   <span class="s">`gorm:"column:role;type:tinyint;not null;default:0;index" json:"role"`</span>
 
-    Articles []Article <span class="s">`gorm:"foreignKey:UserID" json:"articles,omitempty"`</span>
-}</pre>
+    ArticleCount <span class="t">int64</span>     <span class="s">`gorm:"column:article_count;type:bigint;not null;default:0" json:"article_count"`</span> <span class="c">// 冗余计数，day5 事务里维护</span>
+    Articles     []Article <span class="s">`gorm:"foreignKey:UserID" json:"articles,omitempty"`</span>
+}
+
+<span class="c">// Role 自定义整型：0 普通用户，1 管理员（第 8 周正式讲权限，本周只存不判）</span>
+<span class="k">type</span> <span class="t">Role</span> <span class="t">int8</span>
+
+<span class="k">const</span> (
+    RoleUser  <span class="t">Role</span> = <span class="n">iota</span>
+    RoleAdmin
+)</pre>
     <pre><span class="code-label">internal/model/article.go</span><span class="k">package</span> model
 
 <span class="k">import</span> <span class="t">gorm.io/gorm</span>
@@ -110,75 +142,75 @@ $ docker exec -it golearn-mysql mysql -ugolearn -pgolearn123 --database=study_pl
 <span class="k">type</span> Article <span class="k">struct</span> {
     gorm.Model
 
-    Title   <span class="t">string</span> <span class="s">`gorm:"type:varchar(128);size:128;not null;index" json:"title"`</span>
-    Content <span class="t">string</span> <span class="s">`gorm:"type:text" json:"content"`</span>
-    Views   <span class="t">int</span>    <span class="s">`gorm:"not null;default:0" json:"views"`</span>
+    Title      <span class="t">string</span> <span class="s">`gorm:"type:varchar(120);not null" json:"title"`</span>
+    Content    <span class="t">string</span> <span class="s">`gorm:"type:text" json:"content"`</span>
+    Summary    <span class="t">string</span> <span class="s">`gorm:"type:varchar(255)" json:"summary"`</span>     <span class="c">// 列表页摘要，第 6 周前端直接吃它</span>
+    CoverImage <span class="t">string</span> <span class="s">`gorm:"type:varchar(255)" json:"cover_image"`</span> <span class="c">// 封面 URL，第 8 周上传复用同一列</span>
+    Views      <span class="t">int64</span>  <span class="s">`gorm:"default:0" json:"views"`</span>
 
-    <span class="c">// 一对多：外键 articles.user_id 指向 users.id</span>
-    UserID <span class="t">uint</span> <span class="s">`gorm:"type:bigint unsigned;not null;index" json:"user_id"`</span>
-    User   User <span class="s">`gorm:"foreignKey:UserID;references:ID" json:"user,omitempty"`</span>
-
-    <span class="c">// 多对多：中间表 article_tags(article_id, tag_id)</span>
-    Tags []Tag <span class="s">`gorm:"many2many:article_tags;" json:"tags,omitempty"`</span>
+    UserID <span class="t">uint</span>  <span class="s">`gorm:"index" json:"user_id"`</span>                    <span class="c">// 一对多外键：真正进表的列</span>
+    User   User  <span class="s">`gorm:"foreignKey:UserID" json:"user,omitempty"`</span> <span class="c">// belongs to：不落列，Preload/Joins 才有值（键叫 user）</span>
+    Tags   []Tag <span class="s">`gorm:"many2many:article_tags" json:"tags,omitempty"`</span> <span class="c">// 多对多：关系在中间表 article_tags</span>
 }</pre>
     <pre><span class="code-label">internal/model/tag.go</span><span class="k">package</span> model
 
-<span class="k">import</span> (
-    <span class="t">time</span>
-)
+<span class="k">import</span> <span class="t">time</span>
 
+<span class="c">// Tag 不用 gorm.Model：标签没有「改」也没有「软删」的需求 → db.Delete 发的是真 DELETE</span>
 <span class="k">type</span> Tag <span class="k">struct</span> {
     ID        <span class="t">uint</span>      <span class="s">`gorm:"primaryKey" json:"id"`</span>
-    Name      <span class="t">string</span>    <span class="s">`gorm:"type:varchar(32);size:32;not null;uniqueIndex" json:"name"`</span>
+    Name      <span class="t">string</span>    <span class="s">`gorm:"type:varchar(32);not null;uniqueIndex" json:"name"`</span>
     CreatedAt <span class="t">time.Time</span> <span class="s">`json:"created_at"`</span>
 }
 
 <span class="k">func</span> (Tag) TableName() <span class="t">string</span> { <span class="k">return</span> <span class="s">"tags"</span> }</pre>
-    <pre><span class="code-label">cmd/server/main.go（装配与迁移）</span><span class="k">package</span> main
+    <pre><span class="code-label">cmd/server/main.go（装配 · 本周终态，完整可跑）</span><span class="k">package</span> main
 
 <span class="k">import</span> (
     <span class="t">log</span>
+    <span class="t">net/http</span>
 
     <span class="s">"github.com/gin-gonic/gin"</span>
 
     <span class="s">"goblog/internal/config"</span>
     <span class="s">"goblog/internal/handler"</span>
+    <span class="s">"goblog/internal/middleware"</span>
     <span class="s">"goblog/internal/model"</span>
     <span class="s">"goblog/internal/repository"</span>
     <span class="s">"goblog/internal/service"</span>
+    <span class="s">"goblog/pkg/response"</span>
 )
 
 <span class="k">func</span> main() {
-    db, err := repository.New(config.DSN)      <span class="c">// gorm.Open + 连接池 + Ping</span>
-    <span class="k">if</span> err != <span class="k">nil</span> {
-        log.Fatalf(<span class="s">"init db: %v"</span>, err)
-    }
-    <span class="k">if</span> err := db.AutoMigrate(&amp;model.User{}, &amp;model.Tag{}, &amp;model.Article{}); err != <span class="k">nil</span> {
-        log.Fatalf(<span class="s">"migrate: %v"</span>, err)
+    db := repository.MustConnect(config.DSN)   <span class="c">// day1 的 db.go：gorm.Open + 连接池参数 + Ping，别再自己 gorm.Open</span>
+    <span class="k">if</span> err := db.AutoMigrate(&amp;model.User{}, &amp;model.Article{}, &amp;model.Tag{}); err != <span class="k">nil</span> {
+        log.Fatalf(<span class="s">"迁移失败: %v"</span>, err)         <span class="c">// 中间表 article_tags 由 many2many 自动建</span>
     }
 
-    userRepo := repository.NewGormUserRepo(db)       <span class="c">// ← 上周这里是 NewMemUserRepo()</span>
-    artRepo := repository.NewGormArticleRepo(db)
-    userSvc := service.NewUserService(userRepo, artRepo)
-    artSvc := service.NewArticleService(artRepo, userRepo)
+    <span class="c">// 仓储：四个构造函数都返回接口类型，换实现只动这一段</span>
+    userRepo := repository.NewUserRepo(db)     <span class="c">// ← 上周这里是 NewMemRepo()，只改这一行</span>
+    artRepo := repository.NewArticleRepo(db)
+    tagRepo := repository.NewTagRepo(db)
+    statsRepo := repository.NewStatsRepo(db)    <span class="c">// day5 新增：维护 users.article_count</span>
+
+    <span class="c">// service：注入仓储。文章 service day5 起还要 db 开事务（3 参 → 5 参，day3 预告过）</span>
+    userSvc := service.NewUserService(userRepo)
+    artSvc := service.NewArticleService(artRepo, userRepo, tagRepo, statsRepo, db)
 
     r := gin.Default()
-    r.GET(<span class="s">"/health"</span>, <span class="k">func</span>(c *gin.Context) { c.JSON(<span class="n">200</span>, gin.H{<span class="s">"status"</span>: <span class="s">"ok"</span>}) })
+    r.Use(middleware.CORS(), middleware.Timer())
+    <span class="c">// 健康检查：无前缀，但仍走统一 Body（response.OK 包成 {code:0,message,data}）</span>
+    r.GET(<span class="s">"/health"</span>, <span class="k">func</span>(c *gin.Context) { response.OK(c, gin.H{<span class="s">"status"</span>: <span class="s">"ok"</span>}) })
 
-    h := handler.New(userSvc, artSvc)
-    r.GET(<span class="s">"/users"</span>, h.UserList)
-    r.POST(<span class="s">"/users"</span>, h.UserCreate)
-    r.GET(<span class="s">"/users/:id"</span>, h.UserDetail)
-    r.PUT(<span class="s">"/users/:id"</span>, h.UserUpdate)
-    r.DELETE(<span class="s">"/users/:id"</span>, h.UserDelete)
-    r.GET(<span class="s">"/users/:id/articles"</span>, h.ArticlesByUser)
+    api := r.Group(<span class="s">"/api/v1"</span>)                  <span class="c">// 读接口挂这里</span>
+    auth := r.Group(<span class="s">"/api/v1"</span>)                 <span class="c">// 同前缀再开一个带鉴权的组</span>
+    auth.Use(middleware.RequireAuth())          <span class="c">// Bearer go-fullstack-2026，第 4 周换 JWT</span>
+    handler.NewUserHandler(userSvc).Register(api, auth)
+    handler.NewArticleHandler(artSvc).Register(api, auth)
 
-    r.GET(<span class="s">"/articles"</span>, h.ArticleList)          <span class="c">// page/size/keyword/sort/tag/user_id</span>
-    r.POST(<span class="s">"/articles"</span>, h.ArticleCreate)        <span class="c">// 事务：建文章 + 挂标签</span>
-    r.GET(<span class="s">"/articles/:id"</span>, h.ArticleDetail)      <span class="c">// Preload Tags + User</span>
-    r.PUT(<span class="s">"/articles/:id"</span>, h.ArticleUpdate)
-    r.DELETE(<span class="s">"/articles/:id"</span>, h.ArticleDelete)   <span class="c">// 软删除</span>
-
+    r.NoRoute(<span class="k">func</span>(c *gin.Context) {   <span class="c">// 兜底：未匹配路由 → 404 + 通用码 1001</span>
+        response.Fail(c, http.StatusNotFound, response.CodeUserNotFound, <span class="s">"接口不存在: "</span>+c.Request.URL.Path)
+    })
     log.Fatal(r.Run(<span class="s">":8080"</span>))
 }</pre>
 
@@ -186,59 +218,63 @@ $ docker exec -it golearn-mysql mysql -ugolearn -pgolearn123 --database=study_pl
     <table>
       <tr><th>#</th><th>改造动作</th><th>注意点</th></tr>
       <tr><td>1</td><td>模型从 <code>struct + 手写 ID 自增</code> 换成带 tag 的 GORM 模型（<code>internal/model</code>）</td><td>给每个字段补 <code>json</code> tag，密码 <code>json:"-"</code>，否则响应结构一变前端就崩</td></tr>
-      <tr><td>2</td><td>repository 接口保持不变，新增 GORM 实现（<code>NewGormUserRepo(db) UserRepo</code>）</td><td>构造函数返回<b>接口类型</b>，编译器立刻能查出你漏实现了哪个方法</td></tr>
-      <tr><td>3</td><td>把「内存里用 for 循环过滤」的查询换成 <code>Where</code>；「切片追加」换成 <code>Create</code></td><td>service 层不要出现 <code>*gorm.DB</code>，否则接口又漏出实现了</td></tr>
-      <tr><td>4</td><td>「找不到就返回 <code>nil, nil</code>」的语义改成 <code>ErrXxxNotFound</code> + <code>errors.Is</code></td><td>让 handler 能区分 404 与 500，这是本周错误口径的关键升级</td></tr>
+      <tr><td>2</td><td>repository 接口保持不变，新增 GORM 实现（<code>NewUserRepo(db) UserRepository</code>、<code>NewArticleRepo</code>、<code>NewTagRepo</code>、day5 的 <code>NewStatsRepo</code>）</td><td>构造函数返回<b>接口类型</b>，编译器立刻能查出你漏实现了哪个方法</td></tr>
+      <tr><td>3</td><td>把「内存里用 for 循环过滤」的查询换成 <code>Where</code>；「切片追加」换成 <code>Create</code></td><td>service 层默认不出现 <code>*gorm.DB</code>；<b>唯一例外</b>是 day5 给 <code>ArticleService</code> 注入的 <code>db</code>，它<b>只用来 <code>Transaction</code> 开事务</b>，绝不拿它直接 <code>Where/Find</code></td></tr>
+      <tr><td>4</td><td>「找不到就返回 <code>nil, nil</code>」的语义改成 <code>ErrXxxNotFound</code> + <code>errors.Is</code></td><td>让 handler 能区分 404 与 500，这是本周错误口径的关键升级；<code>nil, nil</code> 从此绝迹</td></tr>
       <tr><td>5</td><td>删掉 map + RWMutex 的并发保护代码</td><td>内存版才需要自己加锁；并发正确性交给数据库与事务（D5）</td></tr>
-      <tr><td>6</td><td><code>main.go</code> 里换装配，保留旧实现在文件里注释一行</td><td>以后写测试时可以用内存版或 sqlite 桩做「双实现对照」</td></tr>
+      <tr><td>6</td><td><code>main.go</code> 里只换装配那几行（repo 构造函数 + 路由组）</td><td>内存版留在 <code>gin-api</code> 模块当测试桩参考，<b>不搬进 goblog</b>（day1 承接清单第 7 行），所以给接口加方法时不会撞到旧实现</td></tr>
     </table>
-    <div class="callout js"><p>做完这六步你会直观地看到：<b>变的只有 repository 和 model，service/handler 几乎零改动</b>。这就是第 2 周分层与第 1 周接口设计的回报——依赖倒置不是术语，是「换实现不重写」这件事本身。</p></div>
+    <div class="callout js"><p>做完这六步你会直观地看到：<b>repository 和 model 整个换掉、文章层（service/handler/dto）本周从零新增，而用户层 service/handler 几乎零改动</b>——换 GORM 实现没逼它们改一行。这就是第 2 周分层与第 1 周接口设计的回报——依赖倒置不是术语，是「换实现不重写」这件事本身。</p></div>
   </section>
 
   <section>
     <h2>验收：照着敲一遍，全对才算过</h2>
-    <pre><span class="code-label">shell</span><span class="c"># ① 重启服务与容器后数据不丢（本周命根子）</span>
-$ curl -s localhost:8080/users | python3 -c <span class="s">"import sys,json;print(len(json.load(sys.stdin)['data']))"</span>   <span class="c"># 记下条数</span>
+    <pre><span class="code-label">shell（全带 /api/v1；写接口带 Bearer；状态用 -w 取，不靠 head/tail 截字段）</span><span class="c"># ① 重启服务与容器后数据不丢（本周命根子）</span>
+$ curl -s <span class="s">localhost:8080/api/v1/users</span> | python3 -c <span class="s">"import sys,json;print(len(json.load(sys.stdin)['data']))"</span>   <span class="c"># 记下条数</span>
 $ docker compose restart mysql                     <span class="c"># 重启数据库容器</span>
 $ pkill -f goblog; go build -o /tmp/goblog ./cmd/server &amp;&amp; /tmp/goblog &amp;   <span class="c"># 重启 Go 服务</span>
-$ curl -s localhost:8080/users | python3 -c <span class="s">"import sys,json;print(len(json.load(sys.stdin)['data']))"</span>   <span class="c"># 条数没变 → 通过</span>
+$ curl -s <span class="s">localhost:8080/api/v1/users</span> | python3 -c <span class="s">"import sys,json;print(len(json.load(sys.stdin)['data']))"</span>   <span class="c"># 条数没变 → 通过</span>
 
-<span class="c"># ② 用户维度分页 + 关联作者</span>
-$ curl -s <span class="s">'localhost:8080/users/1/articles?page=1&amp;size=10'</span>
-<span class="c"># 期望 data.user.id == 1；data.list 长度 ≤ 10；每项含 user 与 tags；page/size/total/total_page 齐全</span>
+<span class="c"># ② 用户维度分页 + 关联作者（返回的是 PageResult）</span>
+$ curl -s <span class="s">'localhost:8080/api/v1/users/1/articles?page=1&amp;size=10'</span>
+<span class="c"># 期望顶层是 {list,total,page,size,total_page}；list 里每项的 user.id==1、且带 tags；page/size 回显入参</span>
 
-<span class="c"># ③ 关键词搜索（大小写不敏感）与排序</span>
-$ curl -s <span class="s">'localhost:8080/articles?page=1&amp;size=10&amp;keyword=go'</span>
-$ curl -s <span class="s">'localhost:8080/articles?page=1&amp;size=10&amp;keyword=GO'</span>       <span class="c"># total 与上一条相同</span>
-$ curl -s <span class="s">'localhost:8080/articles?page=1&amp;size=10&amp;sort=-views'</span>      <span class="c"># 第一项 views 最大</span>
-$ curl -s <span class="s">'localhost:8080/articles?page=1&amp;size=10&amp;sort=password'</span>    <span class="c"># 200 + 默认序，绝不 500</span>
-$ curl -s <span class="s">"localhost:8080/articles?keyword=' OR '1'='1"</span>             <span class="c"># 0 条而不是全表</span>
+<span class="c"># ③ 关键词搜索（大小写不敏感）与排序白名单</span>
+$ curl -s <span class="s">'localhost:8080/api/v1/articles?page=1&amp;size=10&amp;keyword=go'</span>
+$ curl -s <span class="s">'localhost:8080/api/v1/articles?page=1&amp;size=10&amp;keyword=GO'</span>      <span class="c"># total 与上一条相同（Count/Find 同条件）</span>
+$ curl -s <span class="s">'localhost:8080/api/v1/articles?page=1&amp;size=10&amp;sort=-views'</span>     <span class="c"># 第一项 views 最大</span>
+$ curl -s <span class="s">'localhost:8080/api/v1/articles?page=1&amp;size=10&amp;sort=password'</span>   <span class="c"># 不在白名单 → 回落默认序，绝不 500</span>
+$ curl -s <span class="s">"localhost:8080/api/v1/articles?keyword=' OR '1'='1"</span>            <span class="c"># 参数化：0 条而不是全表</span>
 
-<span class="c"># ④ 文章带标签：创建 → 详情带 tags → 同名标签不重复</span>
-$ curl -s -X POST localhost:8080/articles -H <span class="s">"Content-Type: application/json"</span> \
-    -d <span class="s">'{"title":"GORM 事务实验","content":"...","user_id":1,"tags":["go","docker"]}'</span>
-$ curl -s localhost:8080/articles/26 | python3 -m json.tool
-$ docker exec -it golearn-mysql mysql -ugolearn -pgolearn123 --database=study_plan -e \
-    <span class="s">"SELECT name, COUNT(*) c FROM tags GROUP BY name HAVING c &gt; 1;"</span>   <span class="c"># 空结果 → 通过</span>
+<span class="c"># ④ 文章带标签：创建 → 详情带 tags + user → 同名标签不重复（作者取自登录态，body 里没有 user_id）</span>
+$ curl -si -X POST <span class="s">localhost:8080/api/v1/articles</span> -H <span class="s">"Content-Type: application/json"</span> \
+    -H <span class="s">"Authorization: Bearer go-fullstack-2026"</span> \
+    -d <span class="s">'{"title":"GORM 事务实验","content":"正文","tags":["go","docker"]}'</span>   <span class="c"># 201 + code 0</span>
+$ curl -s <span class="s">localhost:8080/api/v1/articles/26</span> | python3 -m json.tool         <span class="c"># data.tags 非空、data.user.id==1</span>
+$ docker exec -it goblog-mysql mysql -ugoblog -pgoblog123 --database=goblog -e \
+    <span class="s">"SELECT name, COUNT(*) c FROM tags GROUP BY name HAVING c &gt; 1;"</span>   <span class="c"># 空结果 → 通过（go 只有一行）</span>
 
-<span class="c"># ⑤ 事务回滚</span>
-$ curl -s -X POST <span class="s">"localhost:8080/articles?fail=1"</span> -H <span class="s">"Content-Type: application/json"</span> \
-    -d <span class="s">'{"title":"脏数据","user_id":1,"tags":["go"]}'</span>                 <span class="c"># 返回 500 + code 5001</span>
-$ curl -s <span class="s">'localhost:8080/articles?keyword=脏数据'</span> | grep -o <span class="s">'"total":[0-9]*'</span>   <span class="c"># total: 0</span>
+<span class="c"># ⑤ 事务回滚：故意失败一次，整段不该留下</span>
+$ curl -si -X POST <span class="s">"localhost:8080/api/v1/articles?fail=1"</span> -H <span class="s">"Content-Type: application/json"</span> \
+    -H <span class="s">"Authorization: Bearer go-fullstack-2026"</span> \
+    -d <span class="s">'{"title":"脏数据","content":"x","tags":["go"]}'</span>                 <span class="c"># 返回 500 + code 5000</span>
+$ curl -s <span class="s">'localhost:8080/api/v1/articles?keyword=脏数据'</span> | grep -o <span class="s">'"total":[0-9]*'</span>   <span class="c"># total:0</span>
 
-<span class="c"># ⑥ 软删除</span>
-$ curl -s -X DELETE localhost:8080/articles/26 -i | head -1          <span class="c"># HTTP/1.1 200</span>
-$ curl -s localhost:8080/articles/26 -i | head -1                    <span class="c"># HTTP/1.1 404</span>
-$ docker exec -it golearn-mysql mysql -ugolearn -pgolearn123 --database=study_plan \
+<span class="c"># ⑥ 软删除 + 回收站：写接口都带 Bearer</span>
+$ curl -s -X DELETE <span class="s">localhost:8080/api/v1/articles/26</span> -H <span class="s">"Authorization: Bearer go-fullstack-2026"</span> \
+    -o /dev/null -w <span class="s">"%{http_code}\n"</span>                             <span class="c"># 200：软删（打时间戳）</span>
+$ curl -s <span class="s">localhost:8080/api/v1/articles/26</span> -o /dev/null -w <span class="s">"%{http_code}\n"</span>   <span class="c"># 404（普通查询自动过滤 deleted_at）</span>
+$ curl -s <span class="s">localhost:8080/api/v1/articles/trash</span> -H <span class="s">"Authorization: Bearer go-fullstack-2026"</span> | grep -o <span class="s">'"total":[0-9]*'</span>   <span class="c"># 回收站能看到那条</span>
+$ docker exec -it goblog-mysql mysql -ugoblog -pgoblog123 --database=goblog \
     -e <span class="s">"SELECT id,title,deleted_at FROM articles WHERE id=26;"</span>        <span class="c"># 行还在，deleted_at 有值</span></pre>
     <ul class="check">
-      <li><label><input type="checkbox" data-key="w3sum1">① <b>重启 Go 服务 + 重启 MySQL 容器后，<code>/users</code> 与 <code>/articles</code> 的数据条数完全不变</b></label></li>
-      <li><label><input type="checkbox" data-key="w3sum2">② <code>GET /users/1/articles?page=1&amp;size=10</code> 分页正确：第 1 页 ≤10 条、第 3 页 5 条、越界页返回 <code>list: []</code> 且 <code>total</code> 不变</label></li>
+      <li><label><input type="checkbox" data-key="w3sum1">① <b>重启 Go 服务 + 重启 MySQL 容器后，<code>/api/v1/users</code> 与 <code>/api/v1/articles</code> 的数据条数完全不变</b></label></li>
+      <li><label><input type="checkbox" data-key="w3sum2">② <code>GET /api/v1/users/1/articles?page=1&amp;size=10</code> 分页正确：返回 <code>{list,total,page,size,total_page}</code>，第 1 页至多 10 条、第 3 页 5 条、越界页 <code>list: []</code> 且 <code>total</code> 不变</label></li>
       <li><label><input type="checkbox" data-key="w3sum3">③ <code>keyword=go</code> 与 <code>keyword=GO</code> 命中一致，且 <code>total</code> 随关键词变化（说明 Count 与 Find 用了同一套条件）</label></li>
       <li><label><input type="checkbox" data-key="w3sum4">④ 每篇文章详情里带 <code>tags</code> 数组与 <code>user</code> 对象，该请求在 Go 进程日志里的 SELECT 不超过 3 条（没有 N+1）</label></li>
-      <li><label><input type="checkbox" data-key="w3sum5">⑤ <code>?fail=1</code> 触发 <code>ROLLBACK</code>，脏数据一条都没留下</label></li>
-      <li><label><input type="checkbox" data-key="w3sum6">⑥ 软删除生效：接口查不到、数据库里行还在、回收站接口能看到</label></li>
-      <li><label><input type="checkbox" data-key="w3sum7">错误口径统一：<code>400 + code:1004</code>（参数）、<code>404 + code:1001/1002</code>（不存在）、<code>500 + code:5000</code>（内部错），响应里搜不到 <code>password</code></label></li>
+      <li><label><input type="checkbox" data-key="w3sum5">⑤ <code>?fail=1</code> 触发 <code>ROLLBACK</code>，脏数据一条都没留下、<code>article_count</code> 也没被那次 +1</label></li>
+      <li><label><input type="checkbox" data-key="w3sum6">⑥ 软删除生效：普通接口查不到、数据库里行还在、回收站 <code>GET /api/v1/articles/trash</code> 能看到 <code>deleted_at</code></label></li>
+      <li><label><input type="checkbox" data-key="w3sum7">错误口径统一：<code>400 + code:1004</code>（参数）、<code>404 + code:1001</code>（通用不存在，含 NoRoute 兜底）、<code>404 + code:2001</code>（文章不存在）、<code>500 + code:5000</code>（内部错），响应里搜不到 <code>password</code></label></li>
       <li><label><input type="checkbox" data-key="w3sum8">Git 至少 5 次有意义的提交（按天/按功能），README 写清 <code>docker compose up -d</code> → <code>go mod tidy</code> → <code>go run ./cmd/server</code> 三步启动</label></li>
     </ul>
   </section>
@@ -282,13 +318,13 @@ $ docker exec -it golearn-mysql mysql -ugolearn -pgolearn123 --database=study_pl
 
   <section>
     <h2>下周预告：第 4 周 JWT + 工程化</h2>
-    <p>数据能存住了，但谁都能改任何数据——下周解决「<b>这是谁在操作</b>」。三件事：</p>
+    <p>数据能存住了，但谁都能改任何数据——下周解决「<b>这是谁在操作</b>」。<b>第 4 周不另起项目，就在 <code>goblog</code> 这个模块里原地加 <code>auth</code>/<code>config</code>/<code>logger</code></b>（W4 是 W3 的延续，模块名不换、目录不推倒重来）。三件事：</p>
     <ul>
-      <li><b>密码哈希</b>：<code>bcrypt</code>，本周模型里那个 <code>Password varchar(255)</code> 就是为 60 字符的 bcrypt 摘要预留的；注册时哈希、登录时 <code>CompareHashAndPassword</code>。</li>
-      <li><b>JWT 双 token</b>：短期 <code>access</code>（15 分钟，随请求头带）+ 长期 <code>refresh</code>（7 天，只用来调 <code>POST /auth/refresh</code> 换新的 access）。为什么要两个？<b>泄露半径</b>：access 被偷了 15 分钟就失效，refresh 存得严严实实。第 6 周 React 的 axios 拦截器就靠这条链路实现「无感刷新」。</li>
-      <li><b>工程化</b>：<code>.env</code> + godotenv 把本周硬编码的 DSN 挪出去（这周的 <code>const DSN</code> 就是下周的配置项）、slog 结构化日志与请求 ID、优雅关闭、<code>httptest</code> 接口测试——本周换掉的内存版 repository 那时会变成<b>测试桩</b>，分层的好处再来一次。</li>
+      <li><b>密码哈希</b>：<code>bcrypt</code>，本周模型里那个 <code>Password varchar(72)</code>（day2 已定）就是为 60 字符的 bcrypt 摘要预留的；注册时哈希、登录时 <code>CompareHashAndPassword</code>。</li>
+      <li><b>JWT 双 token</b>：短期 <code>access</code>（15 分钟，随请求头带）+ 长期 <code>refresh</code>（7 天，只用来调 <code>POST /api/v1/auth/refresh</code> 换新的 access）。两个密钥分开：<code>JWT_SECRET</code> 签 access、<code>JWT_REFRESH_SECRET</code> 签 refresh。为什么要两个？<b>泄露半径</b>：access 被偷了 15 分钟就失效，refresh 存得严严实实。第 6 周 React 的 axios 拦截器就靠这条链路实现「无感刷新」。</li>
+      <li><b>工程化</b>：<code>.env</code> + godotenv 把本周硬编码的 <code>const DSN</code> 挪出去——config 读 <code>DB_HOST / DB_PORT / DB_USER / DB_PASS / DB_NAME</code>（外加 <code>PORT / GIN_MODE / JWT_SECRET / JWT_REFRESH_SECRET</code>）再拼 DSN，库名/账号仍是那套 <code>goblog</code>；再加 slog 结构化日志与请求 ID、优雅关闭、<code>httptest</code> 接口测试——本周留在 <code>gin-api</code> 的内存版 repository 那时会变成<b>测试桩</b>，分层的好处再来一次。</li>
     </ul>
-    <div class="callout tip"><p>提前做准备：本周项目里给 <code>Article</code> 留好 <code>UserID</code>（你已经有了），下周的「仅作者可编辑/删除」就直接依赖它；再给 <code>POST /articles</code> 加个未登录就 401 的心理预期。<b>进入第 4 周前，先确保本周的 8 条验收全绿。</b></p></div>
+    <div class="callout tip"><p>提前做准备：本周项目里给 <code>Article</code> 留好 <code>UserID</code>（你已经有了），下周的「仅作者可编辑/删除」就直接依赖它；本周 <code>POST /api/v1/articles</code> 已经挂了 <code>middleware.RequireAuth()</code>（写死的假 Bearer <code>go-fullstack-2026</code>），第 4 周把它整段换成验 JWT 的真 <code>middleware.Auth(secret)</code>——届时未登录才是 <code>401 + code:1005</code>。<b>进入第 4 周前，先确保本周的 8 条验收全绿。</b></p></div>
   </section>
 
   <nav class="day-nav">

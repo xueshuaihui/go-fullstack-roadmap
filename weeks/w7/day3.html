@@ -28,17 +28,18 @@
   <section class="goals">
     <h2>今日目标</h2>
     <ul class="check">
-      <li><label><input type="checkbox" data-key="w7d3g1">写出完整 <code>docker-compose.yml</code>：mysql + backend + frontend，能逐段解释每个字段</label></li>
-      <li><label><input type="checkbox" data-key="w7d3g2">彻底搞懂服务间 DNS：为什么 backend 的 DSN 主机名是 <code>mysql</code> 而不是 <code>localhost</code></label></li>
-      <li><label><input type="checkbox" data-key="w7d3g3">会写三种 healthcheck，并用 <code>depends_on.condition: service_healthy</code> 控制启动顺序</label></li>
-      <li><label><input type="checkbox" data-key="w7d3g4"><code>docker compose up -d --build</code> 一键起全栈，并用 ps/logs/exec 三板斧逐服务排查一次故障</label></li>
+      <li><label><input type="checkbox" data-key="w7d3g1">写出完整 <code>docker-compose.yml</code>：mysql + backend + frontend，能逐段解释每个字段，且 <code>environment</code> 里的键与第 4 周 <code>internal/config</code> 读的<b>一一对齐</b></label></li>
+      <li><label><input type="checkbox" data-key="w7d3g2">彻底搞懂服务间 DNS：为什么 backend 的 DB 主机名是 <code>mysql</code> 而不是 <code>localhost</code></label></li>
+      <li><label><input type="checkbox" data-key="w7d3g3">会写 healthcheck（<code>CMD</code> 与 <code>CMD-SHELL</code> 的分工、<code>${VAR}</code> 与 <code>$$VAR</code> 分别在哪台机器上展开），并用 <code>depends_on.condition: service_healthy</code> 控制启动顺序</label></li>
+      <li><label><input type="checkbox" data-key="w7d3g4"><code>docker compose up -d --build</code> 一键起全栈，用 ps/logs/exec 三板斧排查一次故障，并从宿主机连进 MySQL 验一遍数据</label></li>
     </ul>
-    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 6 条「完成检查」，全部勾掉今天才算结束。</p>
   </section>
 
   <section>
     <h2>课前须知</h2>
-    <div class="callout note"><p>今天起，你的仓库应该是这个形状（把前两天的产物各归其位）：</p></div>
+    <div class="callout js"><p><b>先用你熟的东西类比：</b><code>docker-compose.yml</code> 干的活相当于 <code>package.json</code> 的 <code>scripts</code> 再叠一份 <code>pm2.json</code>——"起几个进程、各读哪些环境变量、谁要等谁、崩了要不要自动拉起"全部写进一个受版本控制的文件，一条命令起全栈。差别只有一条：compose 管的单位是<b>容器</b>，每个容器有<b>自己的 localhost 和自己的网卡</b>，所以"我此刻在哪台机器上"这件事必须想清楚（第 2 节）。</p></div>
+    <p>仓库形状（D1/D2 的产物各就各位，今天只在<b>根目录</b>新增三个文件）：</p>
     <pre><span class="code-label">项目结构</span>goblog/
 ├── backend/
 │   ├── cmd/server/main.go
@@ -50,9 +51,11 @@
 │   ├── Dockerfile              <span class="c"># W7D2 产物</span>
 │   ├── nginx.conf
 │   └── .dockerignore
-├── docker-compose.yml          <span class="c"># 今天的主角</span>
-├── docker-compose.override.yml <span class="c"># 开发环境差异（今天讲思路）</span>
-└── .env                        <span class="c"># 密钥的家，绝不进 Git（.gitignore 里加一行）</span></pre>
+├── docker-compose.yml          <span class="c"># 今天的主角（进 Git）</span>
+├── docker-compose.override.yml <span class="c"># 开发环境差异（进 Git，里面没有密钥）</span>
+└── .env                        <span class="c"># 密钥的家，绝不进 Git：.gitignore 里加一行 .env</span></pre>
+    <div class="callout warn"><p><b>开工前先清场，三个理由一个都跑不掉。</b>① 第 3 周那个 MySQL 容器还占着宿主机的 <code>3306</code>（那页的 yml 里写了 <code>ports: "3306:3306"</code>），而今天要绑同一个端口；② 它留下的<b>卷叫 <code>goblog_mysql-data</code>，和今天 compose 将要用的卷同名</b>，不清就被直接复用（后果见第 4 节末尾）；③ 昨天手工跑的 <code>mysql</code> / <code>backend</code> / <code>frontend</code> 也还在机器上，同名容器全局唯一，撞上了就是 <code>Error response from daemon: Conflict. The container name "/goblog-mysql" is already in use by container …</code>。具体命令与输出示例在<b>练习 1 的第 0 步</b>，先跑它再写 yml。</p></div>
+    <div class="callout note"><p>今天的三服务文件不是终点：D4 会加一个 <code>migrate</code>（<code>profiles: [tools]</code>，平时不起、只在迁移时手动起），D5 上云再加一个 <code>caddy</code>（自动 HTTPS）。编排文件是<b>会长大</b>的，所以它才值得进 Git。</p></div>
   </section>
 
   <section>
@@ -60,56 +63,63 @@
 
     <h3>1. docker-compose.yml 全文（可直接抄用）</h3>
     <pre><span class="code-label">docker-compose.yml</span><span class="c"># Compose v2 规范：顶层没有 version 字段（那是老 YAML 的遗物，加了会警告）</span>
-name: goblog
+name: goblog                             <span class="c"># 项目名：决定网络名 goblog_default、卷名 goblog_mysql-data</span>
 
 services:
-  <span class="c"># ---------------- 数据库 ----------------</span>
+  <span class="c"># ==================== ① 数据库：这一段键名由 mysql 镜像规定 ====================</span>
   mysql:
     image: mysql:<span class="n">8.0</span>                     <span class="c"># 官方镜像，直接 pull，无需构建</span>
-    container_name: goblog-mysql
-    restart: unless-stopped              <span class="c"># 机器重启后自动拉起；手动 stop 则不拉</span>
+    container_name: goblog-mysql          <span class="c"># 名字写死：D4 迁移、D5 备份都按这个名字找它</span>
+    restart: unless-stopped               <span class="c"># 机器重启后自动拉起；手动 stop 则不拉</span>
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DB:-goblog}          <span class="c"># :- 提供默认值</span>
-      MYSQL_USER: ${MYSQL_USER:-goblog}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-      TZ: Asia/Shanghai
+      <span class="c"># :? = 变量为空就让 compose 直接报错退出（fail-fast，见第 4 节）；:- = 给默认值</span>
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 里设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME:-goblog}         <span class="c"># 复用后端段的 DB_NAME，不再起第二个键名</span>
+      MYSQL_USER: ${DB_USER:-goblog}             <span class="c"># 复用 DB_USER：镜像首启时自动建这个普通用户</span>
+      MYSQL_PASSWORD: ${DB_PASS:?请在 .env 里设置 DB_PASS}   <span class="c"># 复用 DB_PASS</span>
+      TZ: Asia/Shanghai                   <span class="c"># 容器内时区；字符集参数在下面的 command 里</span>
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     volumes:
-      - mysql-data:/var/lib/mysql        <span class="c"># named volume：删容器不删数据</span>
+      - mysql-data:/var/lib/mysql         <span class="c"># named volume：删容器不删数据</span>
     healthcheck:
+      <span class="c"># ${...} 由 compose 在宿主机渲染期替换成真实值（第 3 节讲透这一步）</span>
       test: [<span class="s">"CMD"</span>, <span class="s">"mysqladmin"</span>, <span class="s">"ping"</span>, <span class="s">"-h"</span>, <span class="s">"127.0.0.1"</span>, <span class="s">"-u"</span>, <span class="s">"root"</span>, <span class="s">"-p${MYSQL_ROOT_PASSWORD}"</span>, <span class="s">"--silent"</span>]
       interval: 10s
       timeout: 5s
       retries: <span class="n">10</span>
-      start_period: 30s                  <span class="c"># MySQL 首次初始化很慢，前 30 秒失败不计数</span>
-    <span class="c"># 生产不暴露 3306；本地要图形化工具连库时，在 override 文件里放开（见第 5 节）</span>
+      start_period: 30s                   <span class="c"># MySQL 首次初始化很慢，前 30 秒失败不计数</span>
+    <span class="c"># 这里故意没有 ports：3306 不对外发布，只在 compose 内网里被 mysql:3306 访问（第 5 节 override 放开本机）</span>
 
-  <span class="c"># ---------------- Go 后端 ----------------</span>
+  <span class="c"># ==================== ② Go 后端：这一段键名 = internal/config 读的那 9 个 ====================</span>
   backend:
     build:
-      context: ./backend                 <span class="c"># 本地构建；image 给出产物 tag</span>
+      context: ./backend                  <span class="c"># 本地构建；image 给构建产物打 tag</span>
     image: goblog-backend:local
     container_name: goblog-backend
     restart: unless-stopped
     environment:
-      GIN_MODE: release
-      SERVER_PORT: <span class="s">"8080"</span>
+      PORT: ${PORT:-<span class="n">8080</span>}
+      GIN_MODE: release                   <span class="c"># 生产形态；开发在 override 里覆盖成 debug</span>
+      AUTO_MIGRATE: ${AUTO_MIGRATE:-true} <span class="c"># 今天这份代码还不读它，D4 把它变成开关</span>
       <span class="c"># 灵魂一行：主机名是服务名 mysql，不是 localhost、不是 127.0.0.1！</span>
-      MYSQL_DSN: ${MYSQL_USER:-goblog}:${MYSQL_PASSWORD}@tcp(mysql:<span class="n">3306</span>)/${MYSQL_DB:-goblog}?charset=utf8mb4&amp;parseTime=True&amp;loc=Local
-      JWT_SECRET: ${JWT_SECRET}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      DB_HOST: mysql
+      DB_PORT: <span class="s">"3306"</span>                    <span class="c"># 注意要加引号：不加也能跑，但见第 4 节末尾的坑</span>
+      DB_USER: ${DB_USER:-goblog}
+      DB_PASS: ${DB_PASS:?请在 .env 里设置 DB_PASS}
+      DB_NAME: ${DB_NAME:-goblog}
+      JWT_SECRET: ${JWT_SECRET:?请在 .env 里设置 JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?请在 .env 里设置 JWT_REFRESH_SECRET}
     depends_on:
       mysql:
-        condition: service_healthy       <span class="c"># 等 mysql 的 healthcheck 通过才启动我</span>
+        condition: service_healthy        <span class="c"># 等 mysql 的 healthcheck 通过才启动我</span>
     healthcheck:
-      test: [<span class="s">"CMD"</span>, <span class="s">"wget"</span>, <span class="s">"-qO-"</span>, <span class="s">"http://127.0.0.1:8080/health"</span>]   <span class="c"># alpine 自带 busybox wget</span>
+      test: [<span class="s">"CMD"</span>, <span class="s">"wget"</span>, <span class="s">"-qO-"</span>, <span class="s">"http://127.0.0.1:${PORT:-8080}/health"</span>]   <span class="c"># alpine 自带 busybox wget</span>
       interval: 15s
       timeout: 5s
       retries: <span class="n">5</span>
       start_period: 10s
 
-  <span class="c"># ---------------- 前端 + 反代 ----------------</span>
+  <span class="c"># ==================== ③ 前端 + 反代：全栈唯一对外端口 ====================</span>
   frontend:
     build:
       context: ./frontend
@@ -117,10 +127,10 @@ services:
     container_name: goblog-frontend
     restart: unless-stopped
     ports:
-      - <span class="s">"80:80"</span>                        <span class="c"># 全栈唯一对外端口</span>
+      - <span class="s">"80:80"</span>                        <span class="c"># 唯一的 ports；宿主机 http://localhost/ 就打到这里</span>
     depends_on:
-      - backend                          <span class="c"># 数组式：只保证"它先起"，不等健康</span>
-
+      - backend                           <span class="c"># 数组式：只保证"它先起"，不等健康</span>
+    <span class="c"># 没有 environment：VITE_API_BASE 是构建期常量，已经 ENV 在 D2 的 Dockerfile 里烧进 JS 产物了</span>
     healthcheck:
       test: [<span class="s">"CMD"</span>, <span class="s">"wget"</span>, <span class="s">"-qO-"</span>, <span class="s">"http://127.0.0.1/"</span>]
       interval: 30s
@@ -130,111 +140,477 @@ services:
 <span class="c"># 顶层声明 named volume；名字会自动加项目前缀 → goblog_mysql-data</span>
 volumes:
   mysql-data:</pre>
+    <div class="callout tip"><p>抄完先做一次<b>纯语法体检</b>（不启动任何容器，只看 compose 渲染出的最终配置）：</p></div>
+    <pre><span class="code-label">shell</span>$ docker compose config
+<span class="n">name</span>: goblog
+services:
+  backend:
+    <span class="c"># …</span>
+    environment:
+      AUTO_MIGRATE: <span class="s">"true"</span>
+      DB_HOST: mysql
+      DB_NAME: goblog
+      DB_PASS: <span class="s">"a3f19c7b8d2e4451"</span>       <span class="c"># ← .env 的值已经被替换进来（这一步只在你终端里显示，不落盘）</span>
+      DB_PORT: <span class="s">"3306"</span>
+      DB_USER: goblog
+      GIN_MODE: release
+      JWT_REFRESH_SECRET: <span class="s">"9cHa7YtRe5QwErTy…"</span>
+      JWT_SECRET: <span class="s">"m4Xk2LpQ8vR1sYt6…"</span>
+      PORT: <span class="s">"8080"</span>
+  frontend:
+    build:
+      context: /Users/you/goblog/frontend
+      <span class="c"># …</span>
+    healthcheck:
+      test:
+        - <span class="s">CMD</span>
+        - <span class="s">wget</span>
+        - <span class="s">-qO-</span>
+        - <span class="s">http://127.0.0.1:8080/health</span>   <span class="c"># ← ${PORT:-8080} 已经在"渲染期"被换掉了，容器里没人再换一次</span></pre>
+    <p>缩进少一格、多打个冒号、把 <code>ports</code> 挂到了服务外面，这一步全会当场报出来（下面三条都是真跑出来的报错原文）：</p>
+    <pre><span class="code-label">shell</span><span class="c"># ① mysql: 下面那行写成了 "image mysql:8.0"（少一个冒号）</span>
+$ docker compose config
+services.mysql must be a mapping
+
+<span class="c"># ② 用 Tab 缩进（YAML 只用空格，前端同学最容易犯）</span>
+$ docker compose config
+go-yaml scanner error in scanner (while scanning for the next token) at L<span class="n">4</span>.C<span class="n">1</span>: found character that cannot start any token
+
+<span class="c"># ③ ports 少缩进两格，挂到了 services 这一层</span>
+$ docker compose config
+services.ports must be a mapping</pre>
     <table>
       <tr><th>字段</th><th>要点</th></tr>
-      <tr><td><code>build</code> vs <code>image</code></td><td>只有 image = 从仓库拉现成镜像（mysql）；build = 从本地 Dockerfile 构建。两者可同写：build 的产物打上 image 这个 tag。W7D5 服务器上就是直接 <code>up -d --build</code> 现场构建，不需要镜像仓库账号</td></tr>
-      <tr><td><code>${VAR}</code> / <code>${VAR:-默认}</code></td><td>compose 自动读取<b>同目录 .env</b> 做变量替换。密钥进 .env（不进 Git），编排进 yml（进 Git），从此密码不出现在任何提交里</td></tr>
+      <tr><td><code>build</code> vs <code>image</code></td><td>只有 image = 从仓库拉现成镜像（mysql）；build = 从本地 Dockerfile 构建。两者可同写：<b>build 的产物打上 image 这个 tag</b>。D1/D2 里你用 <code>docker build -t goblog-api:0.1 …</code> 手动打 tag（<code>goblog-api</code> / <code>goblog-web</code> 这两个名字只活在练习里，今天起不再出现），现在交给 compose 打：<b>全周唯一口径是 <code>goblog-backend:local</code> 与 <code>goblog-frontend:local</code></b>，D4 迁移、D5 上线与备份脚本都按这一对写，不要再混用 <code>:0.1</code> / <code>:0.2</code>。W7D5 服务器上就是直接 <code>up -d --build</code> 现场构建，不需要镜像仓库账号</td></tr>
+      <tr><td><code>${VAR}</code> / <code>${VAR:-默认}</code> / <code>${VAR:?文案}</code></td><td>compose 自动读取<b>同目录 .env</b> 做变量替换（第 4 节会精确讲"什么时候替换"）。密钥进 .env（不进 Git），编排进 yml（进 Git），从此密码不出现在任何提交里</td></tr>
+      <tr><td>两段时间的键名不能串</td><td><code>MYSQL_*</code> 是 <b>mysql 镜像自己</b>读的（首启建库建用户用），<code>DB_*</code> 是 <b>你的 Go 程序</b>读的。本项目只有一份事实：<code>MYSQL_DATABASE/USER/PASSWORD</code> 直接引用 <code>DB_NAME/DB_USER/DB_PASS</code>，额外只有 <code>MYSQL_ROOT_PASSWORD</code> 是 root 专用。别名 <code>MYSQL_DSN</code> / <code>SERVER_PORT</code> / <code>DB_PASSWORD</code> 一律不用</td></tr>
       <tr><td>ports 只给 frontend</td><td>backend:8080、mysql:3306 <b>故意不映射</b>：内网服务名互访根本不需要发布端口。少暴露一个端口少一分被扫描爆破的风险——这是今天最重要的安全观</td></tr>
+      <tr><td><code>container_name</code></td><td>写死名字后，<code>docker logs goblog-backend</code>、D4 的 <code>docker compose exec mysql …</code>、D5 的备份脚本都有稳定的靶子。代价是同名容器全局唯一（所以课前须知里要先清场）</td></tr>
     </table>
 
     <h3>2. 经典坑正解：服务间网络 DNS，DSN 主机名为什么是 mysql</h3>
     <p>compose 默认把同一文件里的所有服务挂进一个 bridge 网络（<code>goblog_default</code>），并内置 DNS 服务器：<b>服务名 = 容器名别名 = 可直接解析的主机名</b>。于是 backend 里写 <code>tcp(mysql:3306)</code>，Docker DNS 把 <code>mysql</code> 解析成数据库容器的内网 IP。</p>
     <div class="callout warn"><p><b>localhost 三连击（本周报错率第一名）：</b>① 在 backend 容器里，<code>localhost:3306</code> 指向 backend <b>自己</b>——那里没有 mysqld，日志刷 <code>dial tcp 127.0.0.1:3306: connect: connection refused</code>；② 在宿主机 curl 容器内端口也没用（没映射就不存在）；③ 图形化工具从宿主机连库，则要反过来用 <code>127.0.0.1:3306</code> 且先在 override 里映射端口。<b>判断口径只有一句话：我此刻在哪个网络命名空间里？</b></p></div>
-    <p>动手验证 DNS 机制（三行命令看穿黑盒）：</p>
-    <pre><span class="code-label">shell</span>$ docker compose exec backend sh -c <span class="s">"getent hosts mysql"</span>
-<span class="n">172.18</span>.<span class="n">0.2</span>      mysql                      <span class="c"># 服务名解析出了容器 IP ✔</span>
+    <p>动手验证 DNS 机制（三条命令看穿黑盒，都在容器起好之后跑）：</p>
+    <pre><span class="code-label">shell</span><span class="c"># ① 钻进 backend 容器里问一句：mysql 是谁？（busybox 自带 nslookup，alpine 镜像里一定能用）</span>
+$ docker compose exec backend nslookup mysql
+Server:		<span class="n">127.0.0.11</span>
+Address:	<span class="n">127.0.0.11</span>:<span class="n">53</span>
 
-$ docker inspect goblog_mysql --format <span class="s">'{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'</span>
-<span class="n">172.18</span>.<span class="n">0.2</span>                                <span class="c"># 与上面对得上 ✔</span>
+Name:		mysql
+Address: <span class="n">172.18.0.2</span>                       <span class="c"># ← 127.0.0.11 是 Docker 内置 DNS，它把服务名换成了容器 IP ✔</span>
 
+<span class="c"># ② 从容器外核对：这个 IP 确实是那个数据库容器</span>
+$ docker inspect goblog-mysql --format <span class="s">'{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'</span>
+<span class="n">172.18</span>.<span class="n">0.2</span>                                <span class="c"># ← 与上面对得上 ✔（注意是 goblog-mysql，中划线，compose 起的容器名以 container_name 为准）</span>
+
+<span class="c"># ③ 谁和谁在同一张网上</span>
 $ docker network inspect goblog_default --format <span class="s">'{{range .Containers}}{{.Name}} {{end}}'</span>
-goblog-mysql goblog-backend goblog-frontend  <span class="c"># 三兄弟同网 ✔</span></pre>
+goblog-mysql goblog-backend goblog-frontend  <span class="c"># ← 三兄弟同网 ✔</span></pre>
+    <div class="callout note"><p>如果你的 ③ 少了一个名字，多半是那个容器没起来或者 yml 里给它写了 <code>network_mode</code> / <code>networks</code> 覆盖了默认网络。<b>服务名解析不了的典型报错</b>：<code>dial tcp: lookup mysql on 127.0.0.11:53: no such host</code>——先回去看 mysql 那个 service 的名字拼写。</p></div>
 
     <h3>3. 启动顺序：裸 depends_on 与 service_healthy 的差别</h3>
     <p>裸 <code>depends_on</code>（数组式）只保证"MySQL 容器<b>被创建并启动</b>"再启动我。而 MySQL 容器起来 ≠ mysqld 可用——首次初始化要 20~40 秒，这期间 TCP 能连上但认证/查询全失败，backend 连库报错直接退出。这就是第 3 周你见过"backend 崩一次、第二次才活"的原因。</p>
     <p>正解是<b>健康检查驱动的依赖</b>：<code>depends_on.mysql.condition: service_healthy</code>，它会轮询 mysql 自己的 <code>healthcheck</code>，<b>真的能 ping 通了</b>才放行 backend。frontend 对 backend 用数组式即可（nginx 起不来无非 502，不需要强等）。</p>
     <table>
       <tr><th>healthcheck 五件套</th><th>含义</th></tr>
-      <tr><td><code>test</code></td><td>容器内执行的探测命令，退出码 0 即健康。三种写法：<code>CMD</code>（直接执行，需镜像里有该二进制）、<code>CMD-SHELL</code>（丢给 sh 跑，可写 <code>-p${VAR}</code> 这类变量展开）、裸数组等价 CMD</td></tr>
+      <tr><td><code>test</code></td><td>容器内执行的探测命令，退出码 0 即健康。两种写法：<b><code>CMD</code></b>（数组＝直接 <code>exec</code> 那个二进制，<b>没有 shell 参与</b>，所以命令里不能出现 <code>$VAR</code>、<code>&amp;&amp;</code>、重定向）、<b><code>CMD-SHELL</code></b>（整条字符串丢给容器内的 <code>/bin/sh -c</code> 跑，能用 shell 的一切语法）。裸数组等价于 <code>CMD</code>。要点见下面 3.1</td></tr>
       <tr><td><code>interval</code> / <code>timeout</code></td><td>每 10s 探测一次 / 单次超 5s 算失败</td></tr>
       <tr><td><code>retries</code></td><td>连续失败 N 次才判 unhealthy</td></tr>
       <tr><td><code>start_period</code></td><td>启动宽限期，此期间失败不计数（MySQL 必需，否则初始化就被判死刑）</td></tr>
     </table>
-    <p>各服务的探测命令选择：MySQL 用 <code>mysqladmin ping</code>；有 shell 的 Linux 发行版镜像（alpine/debian）用 <code>wget -qO-</code>；<b>scratch 镜像连 wget 都没有</b>，只能让程序自己实现（不少 Go 项目引入 <code>google/go-containerregistry</code> 的 <code>/healthz</code> 风格探针或干脆把探测放到编排层）——这也是 W7D1 推荐 alpine 的原因之一。</p>
+
+    <h4>3.1 healthcheck 里的 <code>${VAR}</code> 到底是谁替换的</h4>
+    <p>这是本课第 4 个"变量在哪台机器上展开"的坑，说清楚只有一句话：<b>compose 文件里所有 <code>${...}</code>，无论写在 <code>environment:</code> 还是 <code>healthcheck.test</code> 里，都是 <code>docker compose</code> 命令在<b>宿主机上解析 YAML 时</b>替换掉的；等容器真正跑起来，命令里已经看不到 <code>$</code> 了。</b></p>
+    <p>所以 <code>test: ["CMD", "mysqladmin", "ping", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}", "--silent"]</code> <b>不需要 shell 也能拿到密码</b>——compose 早就把它换成了 <code>-p你的真实密码</code>。验证给你看：</p>
+    <pre><span class="code-label">shell（都是实测输出，容器起来后自己跑一遍）</span><span class="c"># ① 容器配置里存的是"替换完"的命令：-p 后面已经是一串字面量密码，$ 没了</span>
+$ docker inspect goblog-mysql --format <span class="s">'{{json .Config.Healthcheck.Test}}'</span>
+[<span class="s">"CMD"</span>,<span class="s">"mysqladmin"</span>,<span class="s">"ping"</span>,<span class="s">"-h"</span>,<span class="s">"127.0.0.1"</span>,<span class="s">"-u"</span>,<span class="s">"root"</span>,<span class="s">"-pf0b8c2d94ae71365d8c4f2a90b7e5d11"</span>,<span class="s">"--silent"</span>]
+
+<span class="c"># ② 最近几次探测的原始记录（Docker 只留最后 5 条，顺序是老的在前）</span>
+$ docker inspect goblog-mysql --format <span class="s">'{{json .State.Health}}'</span> | head -c <span class="n">300</span>
+{<span class="s">"Status"</span>:<span class="s">"healthy"</span>,<span class="s">"FailingStreak"</span>:<span class="n">0</span>,<span class="s">"Log"</span>:[{<span class="s">"Start"</span>:<span class="s">"2026-09-30T07:58:18.586…Z"</span>,<span class="s">"End"</span>:<span class="s">"2026-09-30T07:58:18.655…Z"</span>,<span class="s">"ExitCode"</span>:<span class="n">0</span>,<span class="s">"Output"</span>:<span class="s">"mysqladmin: [Warning] Using a password …\nmysqld is alive\n"</span></pre>
+    <p>这段输出里藏着三个实测出来的事实，比"healthcheck 会探测"这种话有用得多：</p>
+    <ul>
+      <li><b><code>--silent</code> 并没有真的安静</b>：<code>Output</code> 里照旧有 <code>mysqld is alive</code> 和一句"命令行里带密码不安全"的警告。Docker 判定健康只看 <code>ExitCode</code>，Output 只是给你看的，所以别把 <code>--silent</code> 当"隐身"。</li>
+      <li><b>密码写错时 <code>mysqladmin ping</code> 打印 <code>Access denied</code>，但 ExitCode 仍然是 <code>0</code></b>（我把密码换成 <code>WRONG</code> 实测过）——它只证明"mysqld 在监听"。</li>
+      <li><b>只有连不上时才退 <code>1</code></b>：初始化那 20 多秒里日志能看到一串 <code>ExitCode:1</code>，这正是 <code>start_period</code> 存在的意义。</li>
+    </ul>
+    <p>那 <code>CMD-SHELL</code> 什么时候必须用？① 命令里要写 <code>&amp;&amp;</code>、管道、重定向；② 你想让<b>容器内</b>的环境变量来展开（而不是宿主机 .env 的那份）。想让健康状态<b>连认证一起验</b>，正好两个都用上：</p>
+    <pre><span class="code-label">docker-compose.yml（healthcheck 的 YAML 块式写法：想换掉第 ① 段的 ping 就用这份）</span>    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysql -u<span class="s">"$$MYSQL_USER"</span> -p<span class="s">"$$MYSQL_PASSWORD"</span> -e <span class="s">"SELECT 1"</span> <span class="s">"$$MYSQL_DATABASE"</span> &gt;/dev/null   <span class="c"># ← 两个 $ 才留到容器里展开</span>
+      interval: 10s
+      timeout: 5s
+      retries: <span class="n">10</span>
+      start_period: 30s</pre>
+    <pre><span class="code-label">shell（同一条命令在容器里手动跑，看退出码）</span>$ docker compose exec mysql sh -c <span class="s">'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SELECT 1" "$MYSQL_DATABASE" &gt;/dev/null; echo exit=$?'</span>
+mysql: [<span class="n">Warning</span>] Using a password on the command line interface can be insecure.
+exit=<span class="n">0</span>                                     <span class="c"># 密码对 ✔</span>
+$ docker compose exec mysql sh -c <span class="s">'mysql -u"$MYSQL_USER" -p"WRONG" -e "SELECT 1" "$MYSQL_DATABASE" >/dev/null; echo exit=$?'</span>
+mysql: [<span class="n">Warning</span>] Using a password on the command line interface can be insecure.
+exit=<span class="n">1</span>                                     <span class="c"># 密码错 ✔ → 换成探针命令后，.env 里改错密码会立刻 unhealthy</span></pre>
+    <div class="callout tip"><p>口诀：<b>单 <code>${VAR}</code> = 宿主机渲染期由 compose 替换；双 <code>$$VAR</code> = 原样下发，由容器里的 shell 替换</b>。写错成一对的后果很具体：<code>$$</code> 用在 <code>environment:</code> 段里，容器会拿到字面量 <code>$MYSQL_ROOT_PASSWORD</code> 当密码；单 <code>$</code> 用在你以为"容器会展开"的地方，宿主机 .env 里没这个键时就被替换成<b>空串</b>，探测命令变成 <code>-p --silent</code>。今天本课的编排用第一段的 <code>ping</code> 版本就够（它只负责"别在 mysqld 监听前放 backend 进去"），<b>密码对不对由 backend 自己证明</b>——它连不上就退出、状态变 <code>Restarting</code>，练习 3 会亲眼看到。</p></div>
+    <p>各服务的探测命令选择：MySQL 用 <code>mysqladmin ping</code>（或上面那条认证版）；有 shell 的发行版镜像（alpine/debian）用 <code>wget -qO-</code>；<b>scratch 镜像连 wget 都没有</b>，只能把探测放到编排层（<code>depends_on</code> 用 <code>service_started</code>），或者在 Dockerfile 里 <code>COPY</code> 一个自己写的小探针二进制进镜像——这也是 W7D1 推荐 alpine 的原因之一。</p>
 
     <h3>4. .env 与变量注入</h3>
-    <pre><span class="code-label">.env（模板：值全部换成你自己的强随机串，此文件加入 .gitignore）</span>MYSQL_ROOT_PASSWORD=<span class="s">&lt;生成: openssl rand -base64 24&gt;</span>
-MYSQL_USER=goblog
-MYSQL_PASSWORD=<span class="s">&lt;生成: openssl rand -base64 24&gt;</span>
-MYSQL_DB=goblog
-JWT_SECRET=<span class="s">&lt;生成: openssl rand -base64 32&gt;</span>
-JWT_REFRESH_SECRET=<span class="s">&lt;生成: openssl rand -base64 32，与上面必须不同&gt;</span></pre>
-    <p>两条规则分清：<b>yml 里的 <code>${VAR}</code></b> 是 compose 在<b>渲染阶段</b>做的文本替换（读的是项目目录 .env）；<b><code>environment:</code> 注入的值</b>才是容器内进程真正读到的环境变量。踩过的坑在这里汇合：变量没定义时替换成<b>空串</b>，MySQL 拿到空 root 密码照常初始化，backend 带密码连库则 <code>Access denied for user</code>——报错和真因隔着十万八千里。</p>
-    <div class="callout warn"><p><b>YAML 特殊字符雷区：</b>密码里含 <code>#</code> 会被 YAML 当注释截断、含 <code>:</code> 可能破坏键值解析、含 <code>$</code> 会被 compose 再做一次变量展开。最省事：<b>密码只用字母数字</b>（openssl rand -hex 24 就是安全且免转义的），或整值加双引号。</p></div>
+    <p><code>.env</code> 里只有两类键：<b>后端读的 9 个</b>（第 4 周 <code>internal/config</code> 就那几个，全周口径一致）和 <b>mysql 镜像读的 1 个</b>（root 密码）。其余 <code>MYSQL_*</code> 在 yml 里已经指向第 1 段的 <code>DB_*</code> 了，<b>不要在这里重复写一遍</b>——一处事实只写一次。</p>
+    <pre><span class="code-label">shell（在 goblog/ 根目录整块抄；此文件绝不进 Git）</span>$ ROOTPW=$(openssl rand -hex <span class="n">24</span>)     <span class="c"># ① 先在宿主机把 4 个随机串生成到 shell 变量</span>
+$ DBPASS=$(openssl rand -hex <span class="n">24</span>)
+$ JWTACC=$(openssl rand -base64 <span class="n">32</span>)
+$ JWTRTF=$(openssl rand -base64 <span class="n">32</span>)
+$ cat &gt; .env &lt;&lt;EOF                   <span class="c"># ② 定界符不带引号 → 这十几行里的 $DBPASS 等在宿主机就展开完</span>
+<span class="c"># ========== 第 1 段：Go 后端读的键（与 internal/config 一一对应） ==========</span>
+PORT=<span class="n">8080</span>
+GIN_MODE=release
+AUTO_MIGRATE=true
+DB_HOST=mysql
+DB_PORT=<span class="n">3306</span>
+DB_USER=goblog
+DB_PASS=$DBPASS
+DB_NAME=goblog
+JWT_SECRET=$JWTACC
+JWT_REFRESH_SECRET=$JWTRTF
+
+<span class="c"># ========== 第 2 段：mysql 镜像自己的键（只有 root 这一个） ==========</span>
+MYSQL_ROOT_PASSWORD=$ROOTPW
+EOF
+$ grep -v <span class="s">'^#'</span> .env | grep -c <span class="s">'='</span>   <span class="c"># ③ 数一下非注释行数 = 键的个数</span>
+<span class="n">11</span>                                 <span class="c"># PORT/GIN_MODE/AUTO_MIGRATE + DB_×5 + JWT_×2 + MYSQL_ROOT_PASSWORD ✔</span>
+$ grep <span class="s">'^DB_PASS='</span> .env           <span class="c"># ④ 抽查那个来自 shell 变量的键：应该是 48 位十六进制，而不是字面量 "$DBPASS"</span>
+DB_PASS=a3f19c7b8d2e4451c0b7e9f215ad6c338be0f47a2d19c6e5</pre>
+    <div class="callout warn"><p><b>为什么 .env 内容里一个行尾注释都没有？</b>因为 <code># 说明</code> 跟在值后面（前面有空格）会被 compose 当行注释<b>截掉后半句</b>（本段末尾有实测表）。上一课 <code>docker run --env-file</code> 用 heredoc 时我们特意把注释写满，是因为那份文件由 Docker 逐行读成环境变量、规则不同；今天这份是 compose 插值用的，规则是"<b>一行就是一个 <code>KEY=value</code>，多余的字一个都别写</b>"。要解释，写在 <code>.env.example</code> 里。</p></div>
+    <p>再手写一份<b>进 Git</b> 的模板：键名、分段注释全保留，值的位置留空并写清怎么生成。队友 <code>cp .env.example .env</code> 后照提示填值就能起项目——<b>解释写在 example 里、值只活在 .env 里</b>。注意注释一律<b>独占一行写在键的上面</b>（这个文件会被复制成 .env，行尾注释不合规）：</p>
+    <pre><span class="code-label">.env.example（进 Git）</span><span class="c"># ========== 第 1 段：Go 后端读的键（与 internal/config 一一对应，别改名） ==========</span>
+<span class="c"># PORT：后端监听端口，compose 与 frontend/nginx.conf 都引用它</span>
+PORT=<span class="n">8080</span>
+<span class="c"># GIN_MODE：release（生产形态）/ debug（本地看日志）</span>
+GIN_MODE=release
+<span class="c"># AUTO_MIGRATE：D4 起才生效，true 只给本地开发，生产必须 false</span>
+AUTO_MIGRATE=true
+<span class="c"># DB_HOST：在 compose 网络里是服务名 mysql；本机裸跑后端才写 127.0.0.1</span>
+DB_HOST=mysql
+DB_PORT=<span class="n">3306</span>
+<span class="c"># DB_USER：mysql 镜像首启会自动建这个普通用户（第 2 段引用同一个值）</span>
+DB_USER=goblog
+<span class="c"># DB_PASS：自己生成 → openssl rand -hex 24（只用字母数字，零转义）</span>
+DB_PASS=
+DB_NAME=goblog
+<span class="c"># JWT_SECRET / JWT_REFRESH_SECRET：各跑一次 openssl rand -base64 32，两把必须不同</span>
+JWT_SECRET=
+JWT_REFRESH_SECRET=
+
+<span class="c"># ========== 第 2 段：mysql 镜像自己的键（另外三个 MYSQL_* 在 yml 里复用第 1 段） ==========</span>
+<span class="c"># MYSQL_ROOT_PASSWORD：openssl rand -hex 24，只用于建库、D4 迁移、D5 备份</span>
+MYSQL_ROOT_PASSWORD=</pre>
+    <pre><span class="code-label">shell</span>$ echo <span class="s">'.env'</span> >> .gitignore          <span class="c"># 没有 .gitignore 就先 touch 一个</span>
+$ git status --short
+?? .env.example
+?? docker-compose.override.yml
+?? docker-compose.yml                <span class="c"># 三个新文件都该被 Git 看见；唯独没有 .env ✔</span></pre>
+    <p>两条规则分清（<b>本课第 5 次强调"变量在哪台机器上展开"</b>）：yml 里的 <code>${VAR}</code> 是 compose 在<b>渲染阶段</b>、在<b>你的终端进程里</b>做的文本替换（读的是 yml 同目录的 <code>.env</code>，也接受你在命令最前面临时写 <code>DB_PASS=xxx docker compose up</code> 那种进程环境变量，进程变量优先于 .env）；替换完成后，容器里的进程才通过 <code>os.Getenv</code> 读到最终值。所以"<b>改了 .env 但 up 了个没变化的容器</b>"这事是有解的：compose 只在执行 <code>up</code> 的那一刻读 .env，改完必须重新 <code>up -d</code>（改了 yml 还要 <code>--build</code>）。</p>
+    <p>变量没定义会怎样？两种写法两种命运，都给你实测输出：</p>
+    <pre><span class="code-label">shell</span><span class="c"># 写法一：${MYSQL_ROOT_PASSWORD}  —— 缺键时只是警告一声，塞个空串继续（最阴）</span>
+$ docker compose config
+time=<span class="s">"2026-09-30T15:52:37+08:00"</span> level=warning msg=<span class="s">"The \"MYSQL_ROOT_PASSWORD\" variable is not set. Defaulting to a blank string."</span>
+$ docker compose up -d mysql <span class="c">&amp;&amp;</span> sleep <span class="n">3</span> <span class="c">&amp;&amp;</span> docker compose logs mysql --tail <span class="n">5</span>
+<span class="n">2026</span>-<span class="n">09</span>-<span class="n">30</span> <span class="n">07</span>:<span class="n">56</span>:<span class="n">30</span>+<span class="n">00</span>:<span class="n">00</span> [<span class="n">ERROR</span>] [Entrypoint]: Database is uninitialized and password option is not specified
+    You need to specify one of the following as an environment variable:
+        - MYSQL_ROOT_PASSWORD
+        - MYSQL_ALLOW_EMPTY_PASSWORD
+        - MYSQL_RANDOM_PASSWORD
+<span class="c"># 空串密码 → mysql 直接退出 → healthcheck 永远不过 → backend 卡在 dependency failed to start</span>
+
+<span class="c"># 写法二：${MYSQL_ROOT_PASSWORD:?请在 .env 里设置 MYSQL_ROOT_PASSWORD} —— 当场拒绝，省掉上面这一整轮排查</span>
+$ docker compose config
+error while interpolating services.mysql.environment.MYSQL_ROOT_PASSWORD: required variable MYSQL_ROOT_PASSWORD is missing a value: 请在 .env 里设置 MYSQL_ROOT_PASSWORD
+$ echo $?
+<span class="n">1</span>                                     <span class="c"># ← 非 0 退出码，脚本里也拦得住</span></pre>
+    <div class="callout warn"><p><b>空串只是开始，另一半是这个：</b>mysql 镜像<b>只在数据目录为空时</b>执行"建库建用户设密码"。所以等你 named volume 已经初始化过、再回头改 <code>.env</code> 里的 <code>DB_PASS</code>，<b>库里那个用户的密码不会跟着变</b>，backend 于是 <code>Access denied for user 'goblog'@'…'</code>——"我明明改了密码"就是不改。开发期最省事的解法是连卷一起清（<b>数据全没，想清楚再按回车</b>）：</p></div>
+    <pre><span class="code-label">shell</span>$ docker compose down -v              <span class="c"># 带 -v：连 named volume 一起删，下次 up 才是"首启"</span>
+$ docker compose up -d --build
+<span class="c"># 不想删数据就得手动改密：先进容器、让容器里的 sh 展开它自己的环境变量（引号位置是关键，别照抄错）</span>
+$ docker compose exec mysql sh -c <span class="s">'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD"'</span>
+mysql&gt; <span class="t">ALTER USER</span> <span class="s">'goblog'</span>@<span class="s">'%'</span> <span class="t">IDENTIFIED BY</span> <span class="s">'新的 DB_PASS 值'</span>;
+mysql&gt; <span class="t">EXIT</span>
+$ docker compose restart backend       <span class="c"># 后端拿着新密码重连一次</span></pre>
+    <p>这条命令的引号值得说一句：外层<b>单引号</b>让宿主机 shell 原样把 <code>$MYSQL_ROOT_PASSWORD</code> 送进容器，容器里的 <code>sh</code> 再用<b>它自己那份</b>环境变量展开——和 3.1 里 <code>$$VAR</code> 是同一个原理。<b>D4 迁移、D5 备份全靠这个姿势</b>，今天先练熟。</p>
+    <div class="callout tip"><p>把 <code>${VAR:?文案}</code> 用成肌肉记忆：<b>密钥类一律 <code>:?</code>，可选项一律 <code>:-默认值</code></b>。报错文案写中文、写清"去哪儿改"，比英文 <code>required variable</code> 友好十倍——这是你写给三个月后的自己的注释。</p></div>
+    <p><code>.env</code> 的解析规则也实测一遍（这些行为<b>和昨天的 <code>docker run --env-file</code> 不完全一样</b>，别凭感觉推）：</p>
+    <table>
+      <tr><th>.env 里写</th><th>compose 渲染出的值</th><th>结论</th></tr>
+      <tr><td><code>A="quoted"</code></td><td><code>quoted</code></td><td>首尾引号被<b>剥掉</b>；而 <code>docker run --env-file</code> 会连引号一起当值（D1 实测）。所以别指望加引号能躲转义</td></tr>
+      <tr><td><code>B=mid#hash</code></td><td><code>mid#hash</code></td><td><code>#</code> 紧跟值、前面没空格 → 不算注释，安全</td></tr>
+      <tr><td><code>C=pre # after</code></td><td><code>pre</code></td><td><b>空格 + #</b> → 后半句被当行注释吃掉。密码里带这个组合就等着连不上库</td></tr>
+      <tr><td><code>D=val$dollar</code></td><td><code>val</code>（外加一条 warning）</td><td>值里的 <code>$</code> 会被<b>再做一次变量展开</b>，等于给自己埋二次替换的雷</td></tr>
+    </table>
+    <div class="callout warn"><p>结论照旧省事务实：<b>数据库与 root 密码只用 <code>openssl rand -hex 24</code></b>（纯 <code>0-9a-f</code>，上面四个雷一个都踩不到）；JWT 用 <code>-base64 32</code> 没问题（可能含 <code>+ / =</code>，它们不在雷区里），但<b>别把 base64 串拿去当 MySQL 密码</b>。</p></div>
+
+    <h4>4.1 一处真实的历史包袱：DB_PORT 现在没人读</h4>
+    <p>第 4 周写 <code>config.Load()</code> 时端口是<b>硬编码在格式串里</b>的，所以今天 <code>.env</code> 里那行 <code>DB_PORT=3306</code> 其实没人消费。改一行把它接上（顺手，也保证以后换端口不会"改了没生效"）：</p>
+    <pre><span class="code-label">backend/internal/config/config.go（改 DSN 那一行）</span><span class="c">// 第 4 周原样：3306 写死在格式串里</span>
+c.DSN = fmt.<span class="t">Sprintf</span>(<span class="s">"%s:%s@tcp(%s:3306)/%s?charset=utf8mb4&amp;parseTime=True&amp;loc=Local"</span>,
+    <span class="t">getEnv</span>(<span class="s">"DB_USER"</span>, <span class="s">"root"</span>), dbPass, <span class="t">getEnv</span>(<span class="s">"DB_HOST"</span>, <span class="s">"127.0.0.1"</span>), <span class="t">getEnv</span>(<span class="s">"DB_NAME"</span>, <span class="s">"blog"</span>))
+
+<span class="c">// 第 7 周改成：端口也走 DB_PORT，默认值仍是 3306</span>
+c.DSN = fmt.<span class="t">Sprintf</span>(<span class="s">"%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&amp;parseTime=True&amp;loc=Local"</span>,
+    <span class="t">getEnv</span>(<span class="s">"DB_USER"</span>, <span class="s">"root"</span>), dbPass,
+    <span class="t">getEnv</span>(<span class="s">"DB_HOST"</span>, <span class="s">"127.0.0.1"</span>), <span class="t">getEnv</span>(<span class="s">"DB_PORT"</span>, <span class="s">"3306"</span>),
+    <span class="t">getEnv</span>(<span class="s">"DB_NAME"</span>, <span class="s">"blog"</span>))</pre>
+    <p>参数个数从 4 变 5，格式串里的 <code>3306</code> 变成 <code>%s</code>——<b>顺序千万别排错</b>，Go 的 <code>Sprintf</code> 不会替你检查语义，DSN 拼歪了就是 <code>unknown host</code> 或者更诡异的 <code>Access denied</code>。改完在本地跑一遍确认没编译错、没参数漏：</p>
+    <pre><span class="code-label">shell</span>$ <span class="t">cd</span> backend
+$ go vet ./...                           <span class="c"># 参数与 %s 不匹配时 vet 直接报：fmt.Sprintf format %s has arg 4 of wrong type</span>
+$ go build ./... <span class="c">&amp;&amp;</span> echo <span class="s">"编译通过 ✔"</span>
+编译通过 ✔
+$ <span class="t">cd</span> ..                                  <span class="c"># 回到 goblog/ 根目录：compose 的 build context、.env 都是按这个目录算的</span>
+$ docker compose build backend           <span class="c"># 改了 Go 代码就要重新构建镜像，up -d 不会替你热更新（第 6 节练习 1 见）</span></pre>
 
     <h3>5. 开发 vs 生产：override 文件思路</h3>
     <p>base 文件保持"生产形态"，环境差异用叠加文件解决。compose 的合并规则：<code>docker compose up</code> 会<b>自动</b>加载 <code>docker-compose.yml</code> + <code>docker-compose.override.yml</code>；生产则显式指定，不走默认：</p>
     <pre><span class="code-label">docker-compose.override.yml（开发专用，仓库里也提交它——里面没有密钥）</span>services:
   mysql:
     ports:
-      - <span class="s">"127.0.0.1:3306:3306"</span>   <span class="c"># 只绑回环：本机能连库调试，公网扫不到</span>
+      - <span class="s">"127.0.0.1:3306:3306"</span>   <span class="c"># 只绑回环：本机能连库调试，公网扫不到（动手前先看 5.1）</span>
   backend:
     environment:
-      GIN_MODE: debug            <span class="c"># 覆盖 base 的 release</span></pre>
-    <pre><span class="code-label">docker-compose.prod.yml（服务器上不放或只放加固差异）</span>services:
+      GIN_MODE: debug            <span class="c"># 覆盖 base 的 release：本地要看得懂启动日志</span>
+      AUTO_MIGRATE: <span class="s">"true"</span>       <span class="c"># 开发期让 GORM 顺手补列；生产要置成 false（D4 讲为什么）</span></pre>
+    <pre><span class="code-label">docker-compose.prod.yml（服务器上只放"差异"，绝不复制整份文件）</span>services:
   backend:
     restart: always              <span class="c"># 机器重启必须自动拉起</span>
+    environment:
+      AUTO_MIGRATE: <span class="s">"false"</span>      <span class="c"># 生产只认迁移文件，不认 GORM 的"顺手补列"（D4）</span>
     logging:
       driver: json-file
       options:
         max-size: <span class="s">"10m"</span>          <span class="c"># 日志限量，防止刷爆系统盘</span>
-        max-file: <span class="s">"3"</span></pre>
-    <pre><span class="code-label">shell</span><span class="c"># 开发（本机）：自动合并 base + override</span>
+        max-file: <span class="s">"3"</span>
+  <span class="c"># 注意这里没有 mysql.ports：base 里本来就没映射，生产不加载 override，3306 天然不对外。</span>
+  <span class="c"># 想在 prod 里"清掉"某个字段必须写 ports: !reset []，写 ports: [] 是无效的（5.2 实测）。</span></pre>
+    <p><b>两份文件怎么被合到一起</b>——这条命令值得记住，它是一切"我明明改了 prod 文件"疑问的答案：</p>
+    <pre><span class="code-label">shell</span><span class="c"># 开发（本机）：自动合并 base + override，所以不用写 -f</span>
 $ docker compose up -d --build
 
-<span class="c"># 生产（服务器）：显式两文件，.env 用 --env-file 指定绝对路径更稳</span>
-$ docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d --build</pre>
+<span class="c"># 生产（服务器）：显式两文件，顺序有意义——后出现的文件覆盖先出现的；不写 override 就等于没有</span>
+$ docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d --build
+
+<span class="c"># 合并结果不靠脑子想、只看渲染出来的最终配置（这里应该只看见 80 那一条）</span>
+$ docker compose -f docker-compose.yml -f docker-compose.prod.yml config | grep -B <span class="n">2</span> -A <span class="n">5</span> <span class="s">'ports:'</span>
+  frontend:
+    image: goblog-frontend:local
+    ports:
+      - mode: ingress
+        target: <span class="n">80</span>
+        published: <span class="s">"80"</span>
+        protocol: tcp
+<span class="c"># ← 全文只有 frontend 这一处命中：mysql 的 3306 在生产口径下根本不存在 ✔</span></pre>
     <div class="callout tip"><p>原则：<b>能合并、不复制</b>。绝不维护两份完整的 compose 文件——那是一切"改了这边忘了那边"事故的温床。</p></div>
+
+    <h4>5.1 把 3306 发布到本机之前，先看一眼这个端口现在归谁</h4>
+    <p>第 3 周你已经跑过一个 MySQL 容器，不少同学宿主机上还常驻着 Homebrew MySQL 或 MySQL.app——端口只有一个 3306，撞上就是这句报错：</p>
+    <pre>$ docker compose up -d
+Error response from daemon: driver failed programming external connectivity on endpoint goblog-mysql:
+Bind for <span class="n">127.0.0.1</span>:<span class="n">3306</span> failed: port is already allocated</pre>
+    <p>先查再动手（macOS / Linux 通用，输出示例都给你）：</p>
+    <pre><span class="code-label">shell</span>$ lsof -nP -iTCP:<span class="n">3306</span> -sTCP:LISTEN        <span class="c"># macOS 自带；Linux 上若没装 lsof，用 ss -ltnp | grep 3306</span>
+COMMAND  PID  USER   FD   TYPE   DEVICE   SIZE/OFF   NODE   NAME
+mysqld   <span class="n">812</span>  mysql  <span class="n">21u</span>  IPv6  <span class="n">0x…</span>        <span class="n">0t0</span>        TCP    <span class="n">127.0.0.1</span>:<span class="n">3306</span> (LISTEN)   <span class="c"># ← 宿主机自己的 mysqld</span>
+
+$ docker ps --format <span class="s">'table {{.Names}}\t{{.Ports}}'</span>   <span class="c"># 另一种常见可能：端口被"上周那个容器"占着</span>
+NAMES             PORTS
+goblog-mysql      <span class="n">0.0.0.0</span>:<span class="n">3306</span>-&gt;<span class="n">3306</span>/tcp            <span class="c"># ← 第 3 周起的 MySQL（那页的名字也可能是 golearn-mysql），今天就叫它 goblog-mysql，重名又占端口</span></pre>
+    <div class="callout warn"><p><b>本课口径写死，不留悬念：</b>① 占端口的是<b>旧容器</b>（第 3 周或昨天 <code>docker run</code> 的）→ 按<b>练习 1 第 0 步</b>清掉，继续用 <code>127.0.0.1:3306:3306</code>；② 占端口的是<b>宿主机常驻 MySQL</b>（Homebrew / MySQL.app，你不想停它）→ 只改 override 那一行为 <code>"127.0.0.1:3307:3306"</code>，此后<b>图形化工具连 3307</b>，而 <code>docker compose exec mysql …</code> 那类命令<b>完全不受影响</b>（那是容器内网，永远 3306）。<b>别发明第三种方案</b>：改 base 文件、给 mysql 换 <code>container_name</code>、把 3306 发到 <code>0.0.0.0</code>，都是给未来的自己挖坑。</p></div>
+
+    <h4>5.2 一个很容易想当然的合并规则：<code>ports: []</code> 清不掉 base 的端口</h4>
+    <p>很多人以为在 prod 文件里写 <code>ports: []</code> 就能把 base/override 的映射清空。<b>实测：不行</b>——列表字段是<b>追加合并</b>，<code>ports: []</code> 只等于"再追加零条"：</p>
+    <pre><span class="code-label">shell（base.yml 给 web 服务映射了 127.0.0.1:3306:3306，empty.yml 里写 ports: []）</span>$ docker compose -f base.yml -f empty.yml config | grep -A <span class="n">5</span> <span class="s">'ports:'</span>
+    ports:
+      - mode: ingress
+        host_ip: <span class="n">127.0.0.1</span>
+        target: <span class="n">3306</span>                      <span class="c"># ← 还活着！ports: [] 白写</span>
+        published: <span class="s">"3306"</span>
+
+$ docker compose -f base.yml -f reset.yml config | grep -A <span class="n">5</span> <span class="s">'ports:'</span>
+                                          <span class="c"># ← 一行都没有：reset.yml 里写的是 ports: !reset []</span></pre>
+    <p>正解两个，按你的 Compose 版本选：</p>
+    <ul>
+      <li><b>要显式清空就用 <code>!reset</code></b>：<code>ports: !reset []</code>（<b>Compose v2.24 起支持</b>；先跑 <code>docker compose version</code> 确认，D5 的 prod 文件会再强调一次）。注意它是 YAML 自定义标签，所以 <code>!</code> 前面不能加引号。</li>
+      <li><b>更稳的工程做法：base 里根本不写端口映射</b>（今天这份文件就是这样，<code>mysql</code> 没有 <code>ports</code>），只在 <code>override</code> 里加。<b>生产用 <code>-f docker-compose.yml -f docker-compose.prod.yml</code> 时压根不加载 override</b>，"生产不暴露 3306"于是天然成立，不需要任何 reset。<b>把"发布端口"当成开发环境的特权</b>，你就永远不会踩这条。</li>
+    </ul>
   </section>
 
   <section>
     <h2>今日练习</h2>
     <div class="task">
       <div class="task-title">练习 1：一键起全栈（必做，40 分钟）</div>
-      <p>清理昨天的手工容器网络（<code>docker rm -f mysql backend frontend; docker network rm goblog; docker volume rm mysql-demo</code>——注意最后这条会删掉演示数据），写 <code>.env</code> 与 <code>docker-compose.yml</code>，然后：</p>
+      <p><b>第 0 步：清场（三分钟，能省你两小时）。</b>三件事必须先做，否则今天会在莫名其妙的报错里绕圈：① 第 3 周那个 MySQL 容器把宿主机的 <code>3306</code> 占着（5.1 会撞）；② 它留下的<b>卷的名字和今天完全一样</b>（下一段解释为什么这最要命）；③ 昨天手工跑的 <code>mysql</code> / <code>backend</code> / <code>frontend</code> 也还躺在机器上。先看清家底，再<b>按名字精确删</b>——绝对不要用 <code>docker rm -f $(docker ps -aq)</code> 这种"全清"命令，你机器上还有第 5 周、第 6 周的作业容器：</p>
+      <pre><span class="code-label">shell</span>$ docker ps -a --format <span class="s">'table {{.Names}}\t{{.Status}}\t{{.Ports}}'</span>   <span class="c"># ① -a 连已退出的一起看</span>
+NAMES             STATUS                      PORTS
+golearn-mysql     Up <span class="n">5</span> days                   <span class="n">0.0.0.0</span>:<span class="n">3306</span>-&gt;<span class="n">3306</span>/tcp    <span class="c"># ← 第 3 周那页建的，占着 3306</span>
+mysql             Up <span class="n">26</span> hours                 <span class="n">3306</span>/tcp                    <span class="c"># ← 昨天练习 4 手工跑的</span>
+backend           Exited (<span class="n">1</span>) <span class="n">26</span> hours ago
+frontend          Exited (<span class="n">0</span>) <span class="n">26</span> hours ago
+aggregator-worker Exited (<span class="n">0</span>) <span class="n">6</span> days ago                                <span class="c"># ← 第 5 周的作业，别顺手删！</span>
+
+$ docker volume ls | grep mysql           <span class="c"># ② 卷也要看一眼</span>
+local     goblog_mysql-data               <span class="c"># ← 第 3 周留下的，名字和今天要用的【一模一样】</span>
+local     mysql-demo                      <span class="c"># 昨天的演示卷</span>
+
+<span class="c"># ③ 删容器：for 循环写法可以容忍"本来就不存在"（第 3 周那页你的名字可能叫 golearn-mysql 或 goblog-mysql，两个都试）</span>
+$ <span class="k">for</span> n <span class="k">in</span> golearn-mysql goblog-mysql mysql backend frontend; <span class="k">do</span>
+      docker rm -f <span class="s">"$n"</span> >/dev/null <span class="n">2</span>&gt;&amp;<span class="n">1</span> <span class="c">&amp;&amp;</span> echo <span class="s">"已删容器 $n"</span> || <span class="k">true</span>
+  <span class="k">done</span>
+已删容器 golearn-mysql
+已删容器 mysql
+已删容器 backend
+已删容器 frontend
+
+$ docker network rm goblog                <span class="c"># ④ 昨天手工建的网络；compose 的网络叫 goblog_default，不冲突</span>
+goblog
+$ docker volume rm goblog_mysql-data mysql-demo   <span class="c"># ⑤ 两个卷都删——注意：这会清掉第 3 周那份 study_plan 数据</span>
+goblog_mysql-data
+mysql-demo
+
+$ docker ps -a --filter name=mysql --filter name=goblog     <span class="c"># ⑥ 确认清干净：只剩表头</span>
+CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
+$ docker volume ls | grep -c mysql
+<span class="n">0</span></pre>
+    <div class="callout warn"><p><b>为什么第 ② 步那个同名卷最要命：</b>卷的默认命名规则是 <code>&lt;项目名&gt;_&lt;yml 里的卷键名&gt;</code>。第 3 周那份文件没写 <code>name:</code>，项目名取目录名 <code>goblog</code>；今天这份显式写了 <code>name: goblog</code>，卷键名也都是 <code>mysql-data</code> → 两边算出来同为 <code>goblog_mysql-data</code>。如果你不清它，今天的 <code>up</code> 会直接骑到那个装着 <code>study_plan</code> 库、root 密码是 <code>root123456</code> 的老卷上：MySQL 一路 <code>healthy</code>（它只是把老数据重新打开而已，因为数据目录非空，<b>建库建用户设密码那段代码根本不会再执行</b>），而 backend 拿着新 <code>DB_PASS</code> 去连，得到 <code>Access denied for user 'goblog'@'…'</code>。这就是第 4 节末尾那条机制的活教材。</p></div>
+      <p><b>第 1 步：</b>按第 4 节写 <code>.env</code>、按第 1 节写 <code>docker-compose.yml</code>（<b>先不要写 override</b>，保持"端口最干净"的状态起一次）。<b>第 2 步：不启动先预检</b>：</p>
+      <pre><span class="code-label">shell</span>$ docker compose config --quiet <span class="c">&amp;&amp;</span> echo <span class="s">"yml 与 .env 都对 ✔"</span>
+yml 与 .env 都对 ✔                           <span class="c"># --quiet：只在有问题时才说话，很适合写进脚本</span></pre>
+      <p><b>第 3 步：起。</b></p>
       <pre><span class="code-label">shell</span>$ docker compose up -d --build
+[+] Building <span class="n">38.6</span>s (24/24) FINISHED                              <span class="c"># 两个 build 上下文，第一次很慢，之后有层缓存</span>
 [+] Running <span class="n">6/6</span>
  ✔ Network goblog_default      Created
  ✔ Volume <span class="s">"goblog_mysql-data"</span>   Created
- ✔ Container goblog-mysql      Healthy        <span class="c"># ← 等了 30 秒，值得</span>
+ ✔ Container goblog-mysql      Healthy        <span class="c"># ← 这里等了约 30 秒：service_healthy 在替你打工</span>
  ✔ Container goblog-backend    Started
  ✔ Container goblog-frontend   Started</pre>
-      <p>浏览器开 <code>http://localhost/</code>：注册 → 登录 → 发文章全通即本周项目主体完成。<b>注意此时访问的是 80 端口</b>（frontend 映射），8080/3306 从宿主机都连不上——这是特性不是故障。</p>
-    </div>
-    <div class="task">
-      <div class="task-title">练习 2：ps / logs 三板斧读态（15 分钟）</div>
-      <p>执行 <code>docker compose ps</code>，对照输出说清三个服务的状态字段：</p>
-      <pre><span class="code-label">shell</span>$ docker compose ps
+      <p><b>第 4 步：验收。</b>三跳逐层验，每层都留输出：</p>
+      <pre><span class="code-label">shell</span>$ docker compose ps                          <span class="c"># 状态列应该全是 (healthy)</span>
 NAME              IMAGE                 STATUS                    PORTS
 goblog-backend    goblog-backend:local  Up <span class="n">2</span> minutes (healthy)   <span class="n">8080</span>/tcp
-goblog-frontend   goblog-frontend:local Up <span class="n">2</span> minutes (healthy)   <span class="n">0.0</span>.<span class="n">0</span>.<span class="n">0</span>:<span class="n">80</span>-&gt;<span class="n">80</span>/tcp
-goblog-mysql      mysql:<span class="n">8.0</span>             Up <span class="n">3</span> minutes (healthy)   <span class="n">3306</span>/tcp, <span class="n">33060</span>/tcp</pre>
-      <p>再 <code>docker compose logs backend --tail=<span class="n">20</span></code> 与 <code>docker compose exec backend env | sort | head</code>，确认注入的 MYSQL_DSN 生效。<b>healthy 从哪来的？</b>——就是第 3 节那段 healthcheck 在替你打工。</p>
+goblog-frontend   goblog-frontend:local Up <span class="n">2</span> minutes (healthy)   <span class="n">0.0.0.0</span>:<span class="n">80</span>-&gt;<span class="n">80</span>/tcp
+goblog-mysql      mysql:<span class="n">8.0</span>             Up <span class="n">2</span> minutes (healthy)   <span class="n">3306</span>/tcp, <span class="n">33060</span>/tcp
+
+<span class="c"># URL 里有 &amp; —— 整个 URL 必须加引号，否则 shell 会把前半条丢到后台跑，你会看见一个诡异的 [1] 12345</span>
+$ curl -s <span class="s">"http://localhost/api/v1/articles?page=1&amp;size=10"</span>
+{<span class="s">"code"</span>:<span class="n">0</span>,<span class="s">"message"</span>:<span class="s">"success"</span>,<span class="s">"data"</span>:{<span class="s">"list"</span>:[],<span class="s">"total"</span>:<span class="n">0</span>,<span class="s">"page"</span>:<span class="n">1</span>,<span class="s">"size"</span>:<span class="n">10</span>,<span class="s">"total_page"</span>:<span class="n">0</span>}}
+
+<span class="c"># 探健康：注意 80 端口上 /health 没有 location，它落进了 try_files 的兜底 → 返回 HTML</span>
+$ curl -s http://localhost/health | head -c <span class="n">60</span>
+<span class="c">&lt;!doctype html&gt;</span>
+&lt;html lang=<span class="s">"zh-CN"</span>
+<span class="c"># ↑ 这就是 D2 说的"假绿探针"：200 是真的，但一行 Go 都没跑到，别拿它当健康检查</span>
+
+<span class="c"># 真探针：在 backend 容器里问它自己（8080 从宿主机是连不上的，这是特性不是故障）</span>
+$ docker compose exec backend sh -c <span class="s">'wget -qO- http://127.0.0.1:8080/health'</span>
+{<span class="s">"code"</span>:<span class="n">0</span>,<span class="s">"message"</span>:<span class="s">"ok"</span>,<span class="s">"data"</span>:{<span class="s">"status"</span>:<span class="s">"ok"</span>}}   <span class="c"># D5 会在 nginx 里补 location = /health 把这条路打通</span></pre>
+      <p>浏览器开 <code>http://localhost/</code>（<b>没有端口号</b>，80 是默认端口）：注册 → 登录 → 发文章全通，本周项目主体就完成了。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 2：ps / logs / exec 三板斧读态（15 分钟）</div>
+      <p>上一条练习里 <code>docker compose ps</code> 的三个 <code>(healthy)</code> 是结果，现在看过程与内里：</p>
+      <pre><span class="code-label">shell</span>$ docker compose logs backend --tail <span class="n">20</span>
+<span class="n">2026</span>-<span class="n">09</span>-<span class="n">30</span>T<span class="n">15</span>:<span class="n">11</span>:<span class="n">02</span>Z <span class="c">...</span> <span class="s">"[GIN]</span> <span class="n">200</span> |         <span class="n">0</span>ms | <span class="n">172.18.0.1</span> | GET      <span class="s">"/health"</span>   <span class="c"># healthcheck 每 15 秒来一次，日志会一直刷这条</span>
+<span class="c"># 提醒：GIN_MODE=release 下不会有 [GIN-debug] 路由表那一大段（D1 已经见过），日志安静才是对的</span>
+
+$ docker compose exec backend sh -c <span class="s">'env | sort | grep -E "^(AUTO|DB|GIN|JWT|PORT)"'</span>
+AUTO_MIGRATE=true
+DB_HOST=mysql                                <span class="c"># ← 服务名，不是 localhost</span>
+DB_NAME=goblog
+DB_PASS=a3f19c7b8d2e4451c0b7e9f215ad6c338be0f47a2d19c6e5
+DB_PORT=<span class="n">3306</span>
+DB_USER=goblog
+GIN_MODE=release
+JWT_REFRESH_SECRET=9cHa7YtRe5QwErTy…
+JWT_SECRET=m4Xk2LpQ8vR1sYt6…
+PORT=<span class="n">8080</span></pre>
+      <p>逐条对照：<b>输出里应该一个 <code>MYSQL_DSN</code> / <code>SERVER_PORT</code> 都没有</b>（如果你从别处抄过那种键，后端压根不读，它会安静地去连 <code>127.0.0.1:3306</code> 然后失败）。<b>healthy 是从哪来的？</b>——就是第 3 节那段 healthcheck 在替你打工；想看它每一次的退出码：</p>
+      <pre>$ docker inspect goblog-backend --format <span class="s">'{{.State.Health.Status}} 连续失败={{.State.Health.FailingStreak}}'</span>
+healthy 连续失败=<span class="n">0</span></pre>
     </div>
     <div class="task">
       <div class="task-title">练习 3：故意制造 localhost 故障（20 分钟，本周最有价值的 20 分钟）</div>
-      <p>把 yml 里 DSN 的 <code>tcp(mysql:3306)</code> 改成 <code>tcp(localhost:3306)</code>，<code>docker compose up -d backend</code> 使其生效，然后：</p>
-      <pre><span class="code-label">shell</span>$ docker compose ps
-goblog-backend   goblog-backend:local  Restarting (<span class="n">1</span>) <span class="n">8</span> seconds ago   <span class="c"># ← 崩溃循环</span>
+      <p>把 base 文件里 <code>backend.environment.DB_HOST: mysql</code> 改成 <code>DB_HOST: localhost</code>（就这一行），<code>up -d</code> 让它生效，然后观察"崩溃循环"长什么样：</p>
+      <pre><span class="code-label">shell</span>$ docker compose up -d backend
+[+] Running <span class="n">2/2</span>
+ ✔ Container goblog-mysql    Healthy
+ ✔ Container goblog-backend  Started       <span class="c"># compose 只负责"拉起来"，它不知道进程 0.3 秒后就崩了</span>
 
-$ docker compose logs backend --tail <span class="n">5</span>
-<span class="n">2026</span>/09/23 <span class="n">14:02:11</span> ERROR init db failed
-dial tcp <span class="n">127.0.0.1</span>:<span class="n">3306</span>: connect: connection refused  <span class="c"># ← 容器里的 localhost 没有 mysqld</span></pre>
-      <p>改回 <code>mysql</code>，观察恢复 healthy。<b>把"我此刻在哪个网络命名空间"这句话抄在便签上贴屏幕边。</b></p>
+$ docker compose ps
+NAME              IMAGE                 STATUS                          PORTS
+goblog-backend    goblog-backend:local  Restarting (<span class="n">1</span>) <span class="n">6</span> seconds ago    <span class="n">8080</span>/tcp
+
+$ docker compose logs backend --tail <span class="n">3</span>
+<span class="n">2026</span>/<span class="n">09</span>/<span class="n">30</span> <span class="n">15</span>:<span class="n">24</span>:<span class="n">07</span> 数据库连接失败: dial tcp <span class="n">127.0.0.1</span>:<span class="n">3306</span>: connect: connection refused
+<span class="c"># ↑ 容器里的 localhost 就是它自己，那里没有 mysqld；上一行是 W4 main.go 里 log.Fatal 的原文</span>
+
+$ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localhost/api/v1/articles
+<span class="n">502</span>                                       <span class="c"># 前端这层的表现：nginx 找不到能用的 upstream</span></pre>
+      <p>再玩一次拼写错误：<code>DB_HOST: mysqldb</code>（把服务名写错），日志变成 <code>dial tcp: lookup mysqldb on 127.0.0.11:53: no such host</code>——<b>connection refused 是"解析成功但没人监听"，no such host 是"连名字都没人知道"</b>，两种报错的排查方向完全不同。改回 <code>mysql</code>，<code>up -d backend</code>，看着它重新变 healthy。</p>
+      <pre><span class="code-label">shell</span>$ docker compose up -d backend
+[+] Running <span class="n">2/2</span>
+ ✔ Container goblog-mysql    Healthy
+ ✔ Container goblog-backend  Started
+$ sleep <span class="n">16</span> <span class="c">&amp;&amp;</span> docker compose ps --format <span class="s">'table {{.Name}}\t{{.Status}}'</span>   <span class="c"># healthcheck interval 15s，等一轮</span>
+NAME              STATUS
+goblog-backend    Up <span class="n">16</span> seconds (healthy)
+goblog-frontend   Up <span class="n">16</span> minutes (healthy)
+goblog-mysql      Up <span class="n">16</span> minutes (healthy)</pre>
+      <p><b>把"我此刻在哪个网络命名空间"这句话抄在便签上贴屏幕边。</b></p>
     </div>
     <div class="task">
-      <div class="task-title">练习 4：开发 override（15 分钟）</div>
-      <p>按第 5 节写 <code>docker-compose.override.yml</code> 放开 <code>127.0.0.1:3306</code>，<code>up -d</code> 后用任意图形化工具（或命令行）以 goblog 用户连库，查 <code>users</code> 表确认练习 1 注册的账号在里面。再验证生产口径：<code>docker compose -f docker-compose.yml config</code>（只看渲染结果不启动），确认输出里<b>没有</b> 3306 端口映射。</p>
+      <div class="task-title">练习 4：开发 override + 从宿主机连库（20 分钟）</div>
+      <p>按第 5 节写 <code>docker-compose.override.yml</code>（mysql 的 <code>127.0.0.1:3306:3306</code> + backend 的 <code>GIN_MODE: debug</code>），然后：</p>
+      <pre><span class="code-label">shell</span>$ docker compose up -d                 <span class="c"># 只改了端口和 env，不用 --build；compose 只重建受影响的那个容器</span>
+[+] Running <span class="n">6/6</span>
+ ✔ Container goblog-mysql      Recreated      <span class="c"># ← 端口变了必须重建容器</span>
+ ✔ Container goblog-backend    Recreated      <span class="c"># 它 depends_on mysql，被连带重建</span>
+ ✔ Container goblog-mysql      Healthy
+ ✔ Container goblog-backend    Started
+ ✔ Container goblog-frontend   Running        <span class="c"># 没受影响，原样继续跑</span>
+<span class="c"># named volume 一次都没动，所以练习 1 注册的账号还在——这就是"删容器不删数据"。</span>
+$ docker compose logs backend --tail <span class="n">3</span>
+[GIN-debug] GET    /api/v1/articles        --> goblog/internal/handler.(*ArticleHandler).List-<span class="n">fm</span> (<span class="n">7</span> handlers)
+[GIN-debug] POST   /api/v1/articles        --> goblog/internal/handler.(*ArticleHandler).Create-<span class="n">fm</span> (<span class="n">7</span> handlers)
+[GIN-debug] Listening and serving HTTP on :<span class="n">8080</span>   <span class="c"># ← 路由表又回来了：override 的 GIN_MODE=debug 生效 ✔</span>
+
+$ docker compose config | grep -A <span class="n">5</span> <span class="s">'ports:'</span>          <span class="c"># 合并后的最终配置：两处命中</span>
+    ports:
+      - mode: ingress
+        target: <span class="n">80</span>                     <span class="c"># frontend（base 里就有）</span>
+        published: <span class="s">"80"</span>
+    ports:
+      - mode: ingress
+        host_ip: <span class="n">127.0.0.1</span>             <span class="c"># mysql（只来自 override，绑死回环）</span>
+        target: <span class="n">3306</span>
+        published: <span class="s">"3306"</span>
+
+$ lsof -nP -iTCP:<span class="n">3306</span> -sTCP:LISTEN     <span class="c"># 宿主机确实在听了，COMMAND 是 VPNKit/com.docker.backend（Docker Desktop）</span>
+COMMAND    PID USER   FD   TYPE   DEVICE   SIZE/OFF   NODE   NAME
+vpnkit    <span class="n">604</span> you    <span class="n">48u</span>  IPv4  <span class="n">0x…</span>      <span class="n">0t0</span>       TCP    <span class="n">127.0.0.1</span>:<span class="n">3306</span> (LISTEN)</pre>
+      <p><b>连库验数据。</b>命令行版（今天必须掌握，D4/D5 全靠它）：</p>
+      <pre><span class="code-label">shell</span>$ docker compose exec mysql sh -c <span class="s">'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"'</span>
+mysql&gt; <span class="t">SELECT</span> id, username, nickname, created_at <span class="t">FROM</span> users <span class="t">ORDER BY</span> id <span class="t">DESC</span> <span class="t">LIMIT</span> <span class="n">3</span>;
++----+----------+--------------+---------------------+
+| id | username | nickname     | created_at          |
++----+----------+--------------+---------------------+
+|  1 | fe01     | 前端来客     | <span class="n">2026</span>-<span class="n">09</span>-<span class="n">30</span> <span class="n">15</span>:<span class="n">20</span>:<span class="n">31</span> |
++----+----------+--------------+---------------------+
+mysql&gt; <span class="t">EXIT</span></pre>
+      <p>注意那行命令的引号：<b>外层单引号</b>让宿主机的 shell 完全不碰里面的 <code>$MYSQL_USER</code>，进容器后由容器里的 <code>sh</code> 用它<b>自己那份</b>环境变量展开（3.1 的口诀）。密码不需要你看得见，也不需要你复制。</p>
+      <div class="callout note"><p><b>图形化工具（可选，不用也不影响后面任何一课）：</b>想要 GUI 的话，macOS/Windows/Linux 都免费可选 <b>TablePlus</b>（<code>tableplus.com</code>，个人使用免费版够用）或 <b>DBeaver Community</b>（<code>dbeaver.io</code>，Java 写的、功能全但界面重）。连接参数：<code>Host=127.0.0.1</code>、<code>Port=3306</code>（撞端口时按 5.1 改的是 <code>3307</code>）、<code>User=goblog</code>、<code>Database=goblog</code>、密码从容器里取一份最省事：<code>docker compose exec backend printenv DB_PASS</code>。<b>别选 root</b>——普通用户权限足够，这也是练习里唯一该用的账号。</p></div>
+      <p><b>最后一步：验证生产口径。</b>把 override 摘掉，只看 base：</p>
+      <pre>$ docker compose -f docker-compose.yml config | grep -A <span class="n">5</span> <span class="s">'ports:'</span>
+    ports:
+      - mode: ingress
+        target: <span class="n">80</span>                     <span class="c"># ← 只剩 frontend 一处；3306 不在生产配置里 ✔</span>
+        published: <span class="s">"80"</span></pre>
+      <p><b>参考答案排错：</b><code>up -d</code> 时报 <code>port is already allocated</code> → 回 5.1 查谁占着；<code>mysql -uroot -p</code> 报 <code>Access denied</code> 而你确定密码没写错 → 十有八九是第 4 节末尾那个"卷里已初始化过，改 .env 不改库"的机制，用 <code>docker compose down -v</code> 重来（数据会没）或按那里的 <code>ALTER USER</code> 改密。玩完 <code>docker compose down</code>（<b>不带 -v！</b>）留卷给明天。</p>
     </div>
   </section>
 
@@ -242,12 +618,18 @@ dial tcp <span class="n">127.0.0.1</span>:<span class="n">3306</span>: connect: 
     <h2>常见坑（新手 100% 会踩）</h2>
     <table>
       <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
-      <tr><td>DSN 写 localhost</td><td>backend <code>Restarting</code> 循环，日志 connection refused</td><td>同网络一律用服务名；理解"容器里的 localhost 是它自己"</td></tr>
-      <tr><td>裸 depends_on 就完事</td><td>首次冷启 backend 连不上还没初始化完的 MySQL</td><td>依赖方 depends_on + 被依赖方 healthcheck，二者缺一不可</td></tr>
-      <tr><td>.env 变量没定义</td><td>MySQL 空密码初始化"成功"，backend 却 Access denied</td><td>渲染后先 <code>docker compose config</code> 肉眼过一遍；关键变量可用 <code>${VAR:?报错文案}</code> 强制要求存在</td></tr>
-      <tr><td>密码含 # : $ 未加引号</td><td>行为诡异：配置"明明写了"却不生效</td><td>只生成字母数字密码，或整值双引号</td></tr>
-      <tr><td>给所有服务映射端口</td><td>8080/3306 公网裸奔，等着被爆破</td><td>只有需要外部访问的才 ports；内网走服务名</td></tr>
+      <tr><td>DSN 主机写 localhost</td><td>backend <code>Restarting</code> 循环，日志 <code>dial tcp 127.0.0.1:3306: connection refused</code></td><td>同网络一律用服务名；理解"容器里的 localhost 是它自己"（练习 3）</td></tr>
+      <tr><td>沿用别名键 <code>MYSQL_DSN</code> / <code>SERVER_PORT</code></td><td>compose 起得一切正常，后端却连 <code>127.0.0.1:3306</code>（它没读到那串 DSN，用了默认值）</td><td>只认第 4 周 <code>config</code> 读的那 9 个键；<code>docker compose exec backend sh -c 'env | sort'</code> 自查一遍</td></tr>
+      <tr><td>裸 depends_on 就完事</td><td>首次冷启 backend 连不上还没初始化完的 MySQL</td><td>依赖方 <code>depends_on.condition: service_healthy</code> + 被依赖方 <code>healthcheck</code>，二者缺一不可</td></tr>
+      <tr><td><code>.env</code> 变量没定义</td><td>只有一行 warning，接着 mysql 因空 root 密码直接退出、backend 永远起不来</td><td>密钥类一律 <code>${VAR:?中文提示}</code>；改完先 <code>docker compose config --quiet</code></td></tr>
+      <tr><td>改了 <code>.env</code> 里的 <code>DB_PASS</code> 就当是改了密码</td><td><code>Access denied for user 'goblog'@'…'</code>，怎么重启都没用</td><td>数据卷非空时镜像不再建用户：开发期 <code>down -v</code> 重来，或按第 4 节末尾 <code>ALTER USER</code> 改密</td></tr>
+      <tr><td>没清第 3 周的老容器和老卷</td><td><code>port is already allocated</code>，或者"健康地"连上一个装着 <code>study_plan</code> 的老库</td><td>练习 1 第 0 步逐条走完：容器、网络、卷各确认一次</td></tr>
+      <tr><td>拿 <code>mysqladmin ping</code> 当"密码对不对"的探针</td><td>密码写错照样 <code>(healthy)</code>，问题一路拖到 backend 才炸</td><td>ping 只证明"在监听"；认证用 <code>mysql -e "SELECT 1"</code>（3.1 实测），或者交给 backend 自己崩给你看</td></tr>
+      <tr><td>密码里出现 <code>空格 #</code> 或 <code>$</code></td><td>行为诡异：配置"明明写了"却不生效</td><td>数据库/root 密码只用 <code>openssl rand -hex 24</code>；别指望加引号，compose 会剥引号（第 4 节实测表）</td></tr>
+      <tr><td>给所有服务映射端口</td><td>8080/3306 公网裸奔，等着被爆破</td><td>只有需要外部访问的才 <code>ports</code>，而且绑 <code>127.0.0.1</code>；内网走服务名</td></tr>
+      <tr><td>用 <code>ports: []</code> 想清掉 base 的映射</td><td>prod 配置里端口还在，服务器 3306 对外裸奔</td><td>列表是追加合并；要清用 <code>!reset []</code>（Compose v2.24+），或者按本课做法：base 里根本不写（5.2）</td></tr>
       <tr><td>改了代码 up 了个"没变化"的站</td><td>部署后跑的还是旧逻辑</td><td><code>up -d --build</code>；或先 <code>docker compose build backend</code> 再 up。周末总结页的卡点复盘专题</td></tr>
+      <tr><td>把 <code>down</code> 敲成 <code>down -v</code></td><td>整库数据没了</td><td><code>down</code> 只删容器和网络；<code>-v</code> 才删卷。D5 里 <code>-v</code> 是"彻底重置"级别的动作，敲之前先想三秒</td></tr>
     </table>
   </section>
 
@@ -271,6 +653,7 @@ dial tcp <span class="n">127.0.0.1</span>:<span class="n">3306</span>: connect: 
       <li><label><input type="checkbox" data-key="w7d3c3"><code>docker compose ps</code> 三服务均 (healthy)，能说出每个 healthcheck 的探测命令为什么那样写</label></li>
       <li><label><input type="checkbox" data-key="w7d3c4">密钥全部收敛在 .env 且已加入 .gitignore，<code>docker compose config</code> 里看不到任何真实密码提交风险</label></li>
       <li><label><input type="checkbox" data-key="w7d3c5">named volume 生效：故意 <code>docker compose down</code>（不带 -v！）再 up，注册过的账号还在</label></li>
+      <li><label><input type="checkbox" data-key="w7d3c6">练习 1 第 0 步真的做过，并且能说出<b>为什么第 3 周那个 <code>goblog_mysql-data</code> 卷必须删</b>（提示：命名规则 + "数据目录非空就不再初始化"）</label></li>
     </ul>
   </section>
 

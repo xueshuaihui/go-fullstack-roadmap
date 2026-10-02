@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>W8D3 · 前端权限与功能收尾 | Go 全栈修炼手册</title>
-<meta name="description" content="Day 3：useAuth 扩展存储 userInfo.role、ProtectedRoute 加 role 参数拦截 /admin、菜单按角色显隐、管理员页面（用户表格+强制删文）、评论功能查漏（GORM 一对多模型 + 评论区组件：列表/提交/作者删评）。">
+<meta name="description" content="Day 3：useAuth.js 增量加 role/isAdmin/refreshUser、ProtectedRoute.jsx 加 role 参数（未登录跳 /login?redirect=、角色不够渲染 403）、路由表对齐第 6 周并新增 /admin、Navbar 按角色显隐、评论三层（model/comment.go + repository + service + handler）、迁移 000005_add_comments 成对 up/down 与「小号补跑」的真相、前端一律 import { http }。">
 <link rel="stylesheet" href="../../assets/style.css">
 <script src="../../assets/app.js"></script>
 </head>
@@ -23,157 +23,227 @@
     <span class="chip">难度 ★★★☆☆</span>
   </div>
   <h1>前端权限与功能收尾</h1>
-  <p>后端已有 RBAC 和上传，今天回到 React：把第 6 周的路由守卫升级成<b>带角色的守卫</b>，给管理员拼一个后台页面，再把评论功能查缺补漏。记住 D1 的那句话——<b>前端所有权限代码都只是「体验」，后端中间件才是「安全」</b>；今天写的每一行防御，都要假设对方能绕过它直接 curl。</p>
+  <p>后端已有 RBAC（D1）和上传（D2），今天回到 <code>goblog/frontend/</code>：把第 6 周那份路由守卫升级成<b>带角色的守卫</b>，给管理员拼一个后台页面，再把评论功能查缺补漏（三层后端 + 评论区组件）。开工前把 D1 那句话抄在便签上贴屏幕边——<b>前端所有权限代码都只是「体验」，后端中间件才是「安全」</b>；今天写的每一行防御，都要假设对方能绕过它直接 curl。</p>
 
   <section class="goals">
     <h2>今日目标</h2>
     <ul class="check">
-      <li><label><input type="checkbox" data-key="w8d3g1">登录后把含 role 的 userInfo 存进 store，全局可用</label></li>
-      <li><label><input type="checkbox" data-key="w8d3g2"><code>ProtectedRoute</code> 支持 role 参数：非管理员访问 /admin 显示 403 页</label></li>
-      <li><label><input type="checkbox" data-key="w8d3g3">导航菜单按角色显隐，管理员页能用上 D1 的三个接口</label></li>
-      <li><label><input type="checkbox" data-key="w8d3g4">评论功能前后端闭环：列表、提交、作者/管理员可删</label></li>
+      <li><label><input type="checkbox" data-key="w8d3g1">给 <code>src/hooks/useAuth.js</code> 加 <code>role / isAdmin / refreshUser()</code>，说清为什么 localStorage 里的 role 只是快照</label></li>
+      <li><label><input type="checkbox" data-key="w8d3g2">给 <code>src/components/ProtectedRoute.jsx</code> 加 <code>role</code> 参数：未登录跳 <code>/login?redirect=</code>、角色不够渲染 403（不再顺手发明第二条回跳方案）</label></li>
+      <li><label><input type="checkbox" data-key="w8d3g3">评论走完整三层：model → repository → service → handler，三条路由 + <code>000005_add_comments</code> 成对迁移</label></li>
+      <li><label><input type="checkbox" data-key="w8d3g4">前端所有新代码一律 <code>import { http } from '../api/http'</code>，不写 <code>/api/v1</code> 全路径、不做第二次 <code>data.data</code> 拆包</label></li>
     </ul>
     <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
   </section>
 
   <section>
+    <h2>课前须知：今天的三条纪律</h2>
+    <div class="callout js"><p><b>1. 三层防御，前两层是装饰。</b>菜单不显示（体验）→ 路由守卫 403（体验）→ 后端 <code>RequireRole</code>（安全）。前两层任何人手敲 URL 或 curl 都能绕过，第三层才是墙。今天写的前两层，D4 要用 httptest 给第三层补一个常驻测试。</p></div>
+    <div class="callout note"><p><b>2. 复用第 6 周的文件，不另起炉灶。</b>本周前端只有两个既有文件要动：<code>src/hooks/useAuth.js</code> 与 <code>src/components/ProtectedRoute.jsx</code>（都是 <b>named export</b>）。今天一律用 <b>diff 展示增量</b>，不整文件替换——你把守卫重写成 <code>src/auth/useAuth.jsx</code> 的话，第 6 周那些 import 全断。</p></div>
+    <div class="callout tip"><p><b>3. 回跳方案全站只有一条。</b>第 6 周定的是 <code>/login?redirect=编码后的 pathname+search</code>，登录后 <code>decodeURIComponent</code> 再 <code>navigate</code>。今天新增的 403 分支不搞 <code>state.from</code>，未登录分支保持不动。</p></div>
+  </section>
+
+  <section>
     <h2>知识讲义</h2>
 
-    <h3>1. userInfo.role 进 store：扩展第 6 周的 useAuth</h3>
-    <p>第 6 周的 <code>useAuth</code> 只存了 token。现在登录接口返回的 <code>data.user</code> 里已经带 <code>role</code>（D1 改了 JSON），把它一起收进来即可。<code>role</code> 数字与后端 <code>model.Role</code> 对齐：0=user，1=admin。</p>
-    <pre><span class="code-label">src/auth/useAuth.jsx</span><span class="k">import</span> { createContext, useContext, useState, useCallback } <span class="k">from</span> <span class="s">"react"</span>
-<span class="k">import</span> api <span class="k">from</span> <span class="s">"../api"</span>
+    <h3>1. role 进 store：useAuth.js 的三处增量</h3>
+    <p>第 6 周的 <code>useAuth()</code> 从 localStorage 读 <code>user</code>。D1 之后登录接口的 <code>data.user</code> 里已经带 <code>role</code>（<code>0=user 1=admin</code>，和后端 <code>model.Role</code> 逐字对齐），所以<b>写入侧一行都不用改</b>——<code>saveSession()</code> 是整个 user 对象塞进去的，role 顺路就来了。要动的只有读取侧：把 role 提成显眼的能力，外加兑现 D2 欠的那个 <code>refreshUser()</code>。</p>
+    <pre><span class="code-label">src/hooks/useAuth.js（在第 6 周那份上做三处增量，其余保持不动）</span><span class="c">// ① 文件顶部：角色常量与后端 model.Role 的 iota 一一对应（D1）</span>
+<span class="s">+ export const ROLE_USER = 0
++ export const ROLE_ADMIN = 1        // 判断用 role &gt;= ROLE_ADMIN，将来加第三种角色不用改前端</span>
 
-<span class="k">const</span> AuthCtx = createContext(<span class="k">null</span>)
-<span class="k">export const</span> ROLE_USER = <span class="n">0</span>
-<span class="k">export const</span> ROLE_ADMIN = <span class="n">1</span>
+<span class="c">// ② useAuth() 的 return 之前：加 refreshUser（D2 第 9 节欠的账）</span>
+<span class="s">+   const refreshUser = async () =&gt; {
++     const data = await authApi.fetchMe()        // GET /users/me，拦截器已拆包 = { user: {...} }
++     localStorage.setItem('user', JSON.stringify(data.user))
++     broadcast()                                 // 广播后，所有订阅 useAuth 的组件立刻重读
++     return data.user
++   }
++   // 头像上传成功、资料改完之后调它：localStorage 里的 user 是登录那一刻的快照，不会自己变新</span>
 
-<span class="k">export function</span> AuthProvider({ children }) {
-  <span class="c">// 刷新页面后从 localStorage 恢复；user 里必须带 role</span>
-  <span class="k">const</span> [user, setUser] = useState(() =&gt; {
-    <span class="k">try</span> { <span class="k">return</span> JSON.parse(localStorage.getItem(<span class="s">"user"</span>) || <span class="s">"null"</span>) }
-    <span class="k">catch</span> { <span class="k">return</span> <span class="k">null</span> }
-  })
+<span class="c">// ③ 换掉最后一行 return（原来只有 user/login/logout/isLoggedIn）</span>
+-   return { user, login, logout, isLoggedIn: Boolean(user) }
+<span class="s">+   const role = user?.role ?? ROLE_USER   // 老快照里没这个字段 → 兜底成最小权限，别兜 undefined
++   return {
++     user, role, isAdmin: role &gt;= ROLE_ADMIN,
++     login, logout, refreshUser, isLoggedIn: Boolean(user),
++   }</span></pre>
+    <div class="callout warn"><p><code>user?.role ?? ROLE_USER</code> 这行不是洁癖：D1 之前登录的用户，localStorage 里的 <code>user</code> 根本没有 role 键，<code>undefined &lt; 1</code> 结果是 <code>false</code>——守卫会<b>放行</b>，管理员页渲染出来再被接口 403 打个满脸。兜底成 0 之后行为才对：没角色 = 普通用户。<b>今天必踩的第二个坑是「升级前登录的旧会话」，解法只有退出重登一次</b>（练习 1 会让你两种都撞一遍）。</p></div>
+    <div class="callout warn"><p>localStorage 里的 role 是<b>用户可随意篡改的快照</b>（DevTools 把 0 改成 1 就能「自封管理员」）。它只决定「看不看得见入口」；页面发出的每个请求都会被后端 <code>RequireRole</code> 用真 token 里的 role 把关——这正是 D1 坚持服务端也要判的原因。D2 那句话在这里同样成立：本地快照 vs 服务端真值的漂移，和第 1 天 JWT 里的 role 是同一类问题。</p></div>
 
-  <span class="k">const</span> login = useCallback(<span class="k">async</span> (username, password) =&gt; {
-    <span class="k">const</span> { data } = <span class="k">await</span> api.post(<span class="s">"/api/v1/auth/login"</span>, { username, password })
-    localStorage.setItem(<span class="s">"accessToken"</span>, data.data.accessToken)
-    localStorage.setItem(<span class="s">"refreshToken"</span>, data.data.refreshToken)
-    localStorage.setItem(<span class="s">"user"</span>, JSON.stringify(data.data.user)) <span class="c">// ← 含 role</span>
-    setUser(data.data.user)
-  }, [])
+    <h3>2. ProtectedRoute 加 role 参数（diff，不是重写）</h3>
+    <p>第 6 周的守卫只判「有没有 token」。今天加第二个可选参数 <code>role</code>：传了就要比等级。两条分支的行为刻意不同——<b>未登录 → 跳登录页（带 redirect，登录完送回原页）；已登录但角色不够 → 就地渲染 403</b>。别把权限不足也重定向回首页：那是把 bug 藏起来，用户以为页面坏了，你查半小时。</p>
+    <pre><span class="code-label">src/components/ProtectedRoute.jsx（named export，路径与第 6 周一致）</span>- import { Navigate, useLocation } from 'react-router-dom'
+<span class="s">+ import { Link, Navigate, useLocation } from 'react-router-dom'   // ← Link 是新加的，403 那段要用
++ import { useAuth } from '../hooks/useAuth'                        // ← 注意是 hooks/，不是 auth/</span>
 
-  <span class="k">const</span> logout = useCallback(() =&gt; {
-    [<span class="s">"accessToken"</span>, <span class="s">"refreshToken"</span>, <span class="s">"user"</span>].forEach(k =&gt; localStorage.removeItem(k))
-    setUser(<span class="k">null</span>)
-  }, [])
+- export function ProtectedRoute({ children }) {
+<span class="s">+ export function ProtectedRoute({ children, role }) {</span>
+    const token = localStorage.getItem('accessToken')
+    const location = useLocation()
+<span class="s">+   const { user } = useAuth()        // 角色读同步快照；token 有效性不由前端判断</span>
 
-  <span class="k">const</span> value = { user, isAdmin: user?.role &gt;= ROLE_ADMIN, login, logout }
-  <span class="k">return</span> &lt;AuthCtx.Provider value={value}&gt;{children}&lt;/AuthCtx.Provider&gt;
+    if (!token) {
+      const redirect = encodeURIComponent(location.pathname + location.search)
+      return &lt;Navigate to={`/login?redirect=${redirect}`} replace /&gt;
+    }
+<span class="s">+   // role 没传（undefined）= 只要求登录；传了 = 还要够等级
++   // 用 ?? 兜 0：老快照没有 role 键时按最小权限处理，绝不因 undefined 而放行
++   if (role !== undefined &amp;&amp; (user?.role ?? 0) &lt; role) {
++     return (
++       &lt;div style={{ padding: '40px 20px', textAlign: 'center' }}&gt;
++         &lt;h2&gt;403 · 无权限&lt;/h2&gt;
++         &lt;p&gt;这个页面只对管理员开放。当前身份：{user?.nickname || user?.username || '未知'}&lt;/p&gt;
++         &lt;p&gt;&lt;Link to="/"&gt;回到首页&lt;/Link&gt;&lt;/p&gt;   {/* 这里没 import Link 就是 ReferenceError */}
++       &lt;/div&gt;
++     )
++   }</span>
+    return children
+  }</pre>
+    <div class="callout note"><p>守卫依然<b>不判断 token 有没有过期</b>（第 6 周那条理由原样成立：要判有效期就得在前端解 JWT，多一层代码还不可信）。过期由拦截器那条链路兜：请求 → 401 → 静默 refresh → 重试。守卫只回答「本地有没有会话 + 快照里的角色够不够」。</p></div>
+
+    <h3>3. 路由表：只有 /admin 是新增</h3>
+    <p>第 6 周的路由是 <code>/ /login /register /post/new /post/:id /post/:id/edit /me</code>。本周只加一条 <code>/admin</code>。<b>本页旧版写过的 <code>/editor/:id?</code> 和 <code>/article/:id</code> 是全站不存在的两条路径</b>——照抄会直接 404，看到旧笔记里那两个路径的同学今天统一改回来。</p>
+    <pre><span class="code-label">src/App.jsx（路由表第 6 周版 + 今天一条）</span><span class="k">import</span> { <span class="t">ProtectedRoute</span> } <span class="k">from</span> <span class="s">'./components/ProtectedRoute'</span>
+<span class="k">import</span> { <span class="t">ROLE_ADMIN</span> } <span class="k">from</span> <span class="s">'./hooks/useAuth'</span>
+<span class="k">import</span> <span class="t">AdminPanel</span> <span class="k">from</span> <span class="s">'./pages/AdminPanel'</span>
+
+&lt;<span class="t">Routes</span>&gt;
+  &lt;<span class="t">Route</span> path="/" element={&lt;<span class="t">ArticleList</span> /&gt;} /&gt;
+  &lt;<span class="t">Route</span> path="/login" element={&lt;<span class="t">Login</span> /&gt;} /&gt;
+  &lt;<span class="t">Route</span> path="/register" element={&lt;<span class="t">Register</span> /&gt;} /&gt;
+  &lt;<span class="t">Route</span> path="/post/:id" element={&lt;<span class="t">ArticleDetail</span> /&gt;} /&gt;          <span class="c">// 详情：游客可读，今天在里面挂评论区</span>
+  &lt;<span class="t">Route</span> path="/post/new" element={
+    &lt;<span class="t">ProtectedRoute</span>&gt;&lt;<span class="t">Editor</span> /&gt;&lt;/<span class="t">ProtectedRoute</span>&gt;} /&gt;              <span class="c">// 不传 role = 只要登录</span>
+  &lt;<span class="t">Route</span> path="/post/:id/edit" element={
+    &lt;<span class="t">ProtectedRoute</span>&gt;&lt;<span class="t">Editor</span> /&gt;&lt;/<span class="t">ProtectedRoute</span>&gt;} /&gt;
+  &lt;<span class="t">Route</span> path="/me" element={
+    &lt;<span class="t">ProtectedRoute</span>&gt;&lt;<span class="t">Profile</span> /&gt;&lt;/<span class="t">ProtectedRoute</span>&gt;} /&gt;
+<span class="s">+ &lt;Route path="/admin" element={
++   &lt;ProtectedRoute role={ROLE_ADMIN}&gt;&lt;AdminPanel /&gt;&lt;/ProtectedRoute&gt;} /&gt;   // ← 今天唯一的新路由</span>
+&lt;/<span class="t">Routes</span>&gt;</pre>
+
+    <h3>4. Navbar：一行显隐 + D2 头像</h3>
+    <pre><span class="code-label">src/components/NavBar.jsx（第 6 周练习 3 那份的 diff）</span><span class="k">import</span> { <span class="t">Link</span> } <span class="k">from</span> <span class="s">'react-router-dom'</span>
+<span class="k">import</span> { <span class="t">useAuth</span> } <span class="k">from</span> <span class="s">'../hooks/useAuth'</span>
+
+<span class="k">export function</span> <span class="t">NavBar</span>() {
+-  const { user, logout } = useAuth()
+<span class="s">+  const { user, role, isAdmin, logout } = useAuth()</span>
+   return (
+     &lt;nav&gt;
+       &lt;Link to="/"&gt;&lt;b&gt;Go 博客&lt;/b&gt;&lt;/Link&gt;
+       &lt;Link to="/post/new"&gt;写文章&lt;/Link&gt;
+<span class="s">+      {isAdmin &amp;&amp; &lt;Link to="/admin"&gt;管理后台&lt;/Link&gt;}        {/* ← 全部改动就这一行 */}
++      {/* 用 role 而不是 role === 1：将来加 RoleSuperAdmin 时这里不用回来改 */}</span>
+       {user ? (
+         &lt;&gt;
+<span class="s">+          &lt;img src={user.avatar || '/avatar-default.png'} width={24} alt="头像" /&gt;  {/* D2 写进 users.avatar 的相对 URL */}</span>
+           你好，{user.nickname}
+-          &lt;button onClick={logout}&gt;退出&lt;/button&gt;
++          {role &gt;= 1 &amp;&amp; &lt;span className="badge"&gt;ADMIN&lt;/span&gt;}
++          &lt;button onClick={logout}&gt;退出&lt;/button&gt;
+         &lt;/&gt;
+       ) : (
+         &lt;&gt;&lt;Link to="/login"&gt;登录&lt;/Link&gt; · &lt;Link to="/register"&gt;注册&lt;/Link&gt;&lt;/&gt;
+       )}
+     &lt;/nav&gt;
+   )
+ }</pre>
+    <div class="callout tip"><p>头像这里的 <code>user.avatar</code> 来自登录快照；刚上传完新头像时它还是旧值——这就是 D2 那条 callout 说的漂移，现在用 <code>refreshUser()</code> 收口：<code>&lt;ImageUpload kind="avatar" onDone={() =&gt; refreshUser()} /&gt;</code>（放到 <code>src/pages/Profile.jsx</code>）。<code>refreshUser</code> 里那句 <code>broadcast()</code> 会让 NavBar 立刻重读 localStorage，不用刷整页。</p></div>
+
+    <h3>5. 先把 D1 的返回键统一成蛇形（一处 DTO）</h3>
+    <p>D1 的 <code>ListUsers</code> 是 <code>response.OK(c, gin.H{"list": users...})</code>，直接把 <code>model.User</code> 丢进响应。内嵌的 <code>gorm.Model</code> 没打 json tag（第 3 周 D1 那条注已经说明），于是前端拿到的键是 <code>ID / CreatedAt</code> 大写，而第 6 周列表页读的一直是 <code>article.id / created_at</code>（第 7 周基准）。<b>前端记两套键名是纯粹的痛苦</b>，所以后台页开工前先补一个 DTO——它同时是「不把 <code>password</code> 交给序列化兜底」的第二层防线。</p>
+    <pre><span class="code-label">internal/handler/admin.go（ListUsers 换返回体，其余两接口不动）</span><span class="k">package</span> handler
+
+<span class="c">// UserBrief 管理后台用的用户视图：只列要展示的列，键名蛇形，与第 6/7 周前端一致。
+// Password 根本不出现在这个结构体里 —— 比 D1 那句 Omit("Password") 更强：连内存里都不带。</span>
+<span class="k">type</span> UserBrief <span class="k">struct</span> {
+    ID        <span class="t">uint</span>       <span class="s">`json:"id"`</span>
+    Username  <span class="t">string</span>     <span class="s">`json:"username"`</span>
+    Nickname  <span class="t">string</span>     <span class="s">`json:"nickname"`</span>
+    Email     <span class="t">string</span>     <span class="s">`json:"email"`</span>
+    Role      model.Role <span class="s">`json:"role"`</span>
+    Avatar    <span class="t">string</span>     <span class="s">`json:"avatar"`</span>      <span class="c">// D2 的列</span>
+    CreatedAt <span class="t">time.Time</span>  <span class="s">`json:"created_at"`</span>
 }
 
-<span class="k">export function</span> useAuth() {
-  <span class="k">const</span> ctx = useContext(AuthCtx)
-  <span class="k">if</span> (!ctx) <span class="k">throw new</span> Error(<span class="s">"useAuth 必须在 AuthProvider 内使用"</span>)
-  <span class="k">return</span> ctx
-}</pre>
-    <div class="callout warn"><p>localStorage 里的 role 是<b>用户可随意篡改的快照</b>（开 DevTools 把 0 改成 1 就能"自封管理员"）。它只决定「看不看得见入口」；管理员页发出的每个请求都会被后端 <code>RequireRole</code> 用真 token 里的 role 把关——这就是为什么 D1 坚持服务端也要判。</p></div>
+<span class="c">// ListUsers 里把 Find 的目标换成 []UserBrief（Select 明确列，别 SELECT *）：</span>
+- var users []model.User
+- h.db.Omit(<span class="s">"Password"</span>).Order(<span class="s">"role DESC, id ASC"</span>).Offset(...).Limit(...).Find(&amp;users)
++ var users []UserBrief
++ h.db.Model(&amp;model.User{}).
++     Select(<span class="s">"id, username, nickname, email, role, avatar, created_at"</span>).
++     Order(<span class="s">"role DESC, id ASC"</span>).
++     Offset((page - <span class="n">1</span>) * size).Limit(size).Find(&amp;users)</pre>
+    <div class="callout note"><p>要新增的 import 只有 <code>"time"</code>（<code>model</code>、<code>response</code> 那份文件已经有了）。这一节是「今天必须做」而不是选做：下一节的 <code>AdminPanel.jsx</code> 读的是 <code>u.id</code> / <code>u.created_at</code>，跳过这步它整个表格都是 <code>undefined</code>。</p></div>
 
-    <h3>2. ProtectedRoute 加 role 参数</h3>
-    <p>第 6 周的路由守卫只判「有没有登录」。升级后签名变成 <code>&lt;ProtectedRoute role={1}&gt;</code>：未登录 → 跳登录页（登录后送回原页）；登录了但角色不够 → 渲染 403 提示（<b>不要跳回首页装没发生</b>，明确报错对调试和用户都更诚实）。</p>
-    <pre><span class="code-label">src/auth/ProtectedRoute.jsx</span><span class="k">import</span> { useLocation, Navigate, Link } <span class="k">from</span> <span class="s">"react-router-dom"</span>
-<span class="k">import</span> { useAuth } <span class="k">from</span> <span class="s">"./useAuth"</span>
+    <h3>6. 管理员页面：AdminPanel.jsx</h3>
+    <p>写法与第 6 周列表页完全一样（useEffect 拉数据 + map 渲染 + 按钮调接口），只是接口换成 D1 的 <code>/admin/*</code>。<b>api 层照第 6 周规矩单独建文件</b>，组件不直接碰 <code>http</code>；URL 全部写相对路径（<code>baseURL: '/api/v1'</code> 已经拼好了前缀），响应被拦截器拆过包，所以 <code>res.list</code> 直接就是数组。</p>
+    <pre><span class="code-label">src/api/admin.js（新文件）</span><span class="k">import</span> { http } <span class="k">from</span> <span class="s">'../api/http'</span>        <span class="c">// ← named export，全站唯一写法</span>
 
-<span class="k">export default function</span> ProtectedRoute({ children, role }) {
-  <span class="k">const</span> { user } = useAuth()
-  <span class="k">const</span> location = useLocation()
+<span class="k">export const</span> <span class="t">listUsers</span> = ({ page = <span class="n">1</span>, size = <span class="n">20</span> } = {}) =&gt;
+  http.<span class="t">get</span>(<span class="s">'/admin/users'</span>, { params: { page, size } })
 
-  <span class="k">if</span> (!user) {
-    <span class="c">// 记录来路：登录成功后跳回来，第 6 周已做，保持不动</span>
-    <span class="k">return</span> &lt;Navigate to=<span class="s">"/login"</span> state={{ from: location }} replace /&gt;
-  }
-  <span class="k">if</span> (role !== undefined &amp;&amp; user.role &lt; role) {
-    <span class="k">return</span> (
-      &lt;div className=<span class="s">"denied"</span>&gt;
-        &lt;h2&gt;403 · 无权限&lt;/h2&gt;
-        &lt;p&gt;这个页面只对管理员开放。&lt;Link to=<span class="s">"/"</span>&gt;回到首页&lt;/Link&gt;&lt;/p&gt;
-      &lt;/div&gt;
-    )
-  }
-  <span class="k">return</span> children
-}</pre>
-    <pre><span class="code-label">src/App.jsx（路由表节选）</span>&lt;Route path=<span class="s">"/editor/:id?"</span> element={
-  &lt;ProtectedRoute&gt;&lt;ArticleEditor /&gt;&lt;/ProtectedRoute&gt;        <span class="c">// 只要登录</span>} /&gt;
-&lt;Route path=<span class="s">"/admin"</span> element={
-  &lt;ProtectedRoute role={<span class="n">1</span>}&gt;&lt;AdminPanel /&gt;&lt;/ProtectedRoute&gt; <span class="c">// 必须是管理员</span>} /&gt;</pre>
-    <div class="callout js"><p>对比 JS 前端老思路：以前「藏路由」就完事；现在你要能说出<b>三层防御</b>——菜单不显示（体验）→ 路由守卫 403（体验）→ 后端 RequireRole（安全）。前两层被绕过无所谓，第三层才是墙。</p></div>
+<span class="k">export const</span> <span class="t">forceDeleteArticle</span> = (id) =&gt;
+  http.<span class="t">delete</span>(<span class="s">`/admin/articles/${id}`</span>)
 
-    <h3>3. 菜单按角色显隐：一段渲染判断</h3>
-    <pre><span class="code-label">src/components/Navbar.jsx</span><span class="k">import</span> { NavLink } <span class="k">from</span> <span class="s">"react-router-dom"</span>
-<span class="k">import</span> { useAuth } <span class="k">from</span> <span class="s">"../auth/useAuth"</span>
+<span class="k">export const</span> <span class="t">adminStats</span> = () =&gt; http.<span class="t">get</span>(<span class="s">'/admin/stats'</span>)</pre>
+    <pre><span class="code-label">src/pages/AdminPanel.jsx（新文件：整份复制即可跑）</span><span class="k">import</span> { useEffect, useState, useCallback } <span class="k">from</span> <span class="s">'react'</span>
+<span class="k">import</span> { <span class="t">Link</span> } <span class="k">from</span> <span class="s">'react-router-dom'</span>
+<span class="k">import</span> { <span class="t">listUsers</span>, <span class="t">forceDeleteArticle</span>, <span class="t">adminStats</span> } <span class="k">from</span> <span class="s">'../api/admin'</span>
+<span class="k">import</span> { <span class="t">listArticles</span> } <span class="k">from</span> <span class="s">'../api/article'</span>   <span class="c">// 第 6 周就有，直接复用</span>
 
-<span class="k">export default function</span> Navbar() {
-  <span class="k">const</span> { user, isAdmin, logout } = useAuth()
-  <span class="k">return</span> (
-    &lt;nav className=<span class="s">"nav"</span>&gt;
-      &lt;NavLink to=<span class="s">"/"</span>&gt;文章&lt;/NavLink&gt;
-      {user ? (
-        &lt;&gt;
-          &lt;NavLink to=<span class="s">"/editor"</span>&gt;写文章&lt;/NavLink&gt;
-          {isAdmin &amp;&amp; &lt;NavLink to=<span class="s">"/admin"</span>&gt;管理后台&lt;/NavLink&gt;}  <span class="c">// ← 就这一行</span>
-          &lt;button onClick={logout}&gt;退出（{user.username}）&lt;/button&gt;
-        &lt;/&gt;
-      ) : (
-        &lt;NavLink to=<span class="s">"/login"</span>&gt;登录&lt;/NavLink&gt;
-      )}
-    &lt;/nav&gt;
-  )
-}</pre>
-    <p>可以在头像旁加一个小徽标强化演示效果：<code>{isAdmin &amp;&amp; &lt;span className="badge"&gt;ADMIN&lt;/span&gt;}</code>。</p>
-
-    <h3>4. 管理员页面：用户表格 + 强制删文</h3>
-    <p>完全复用第 6 周列表页的写法（useEffect 拉数据 + map 渲染 + 按钮调接口），只是接口换成 D1 的 <code>/admin/*</code>。被 403 时后端返回 <code>code:1003</code>，axios 拦截器已有统一错误提示，页面不用特判。</p>
-    <pre><span class="code-label">src/pages/AdminPanel.jsx</span><span class="k">import</span> { useEffect, useState, useCallback } <span class="k">from</span> <span class="s">"react"</span>
-<span class="k">import</span> api <span class="k">from</span> <span class="s">"../api"</span>
-
-<span class="k">export default function</span> AdminPanel() {
+<span class="k">export default function</span> <span class="t">AdminPanel</span>() {
   <span class="k">const</span> [users, setUsers] = useState([])
   <span class="k">const</span> [articles, setArticles] = useState([])
   <span class="k">const</span> [stats, setStats] = useState(<span class="k">null</span>)
+  <span class="k">const</span> [busy, setBusy] = useState(<span class="k">false</span>)
+  <span class="k">const</span> [err, setErr] = useState(<span class="k">null</span>)
 
   <span class="k">const</span> load = useCallback(<span class="k">async</span> () =&gt; {
-    <span class="k">const</span> [u, a, s] = <span class="k">await</span> Promise.all([
-      api.get(<span class="s">"/api/v1/admin/users"</span>, { params: { page: <span class="n">1</span>, size: <span class="n">20</span> } }),
-      api.get(<span class="s">"/api/v1/articles"</span>, { params: { page: <span class="n">1</span>, size: <span class="n">20</span> } }),
-      api.get(<span class="s">"/api/v1/admin/stats"</span>),
-    ])
-    setUsers(u.data.data.list)
-    setArticles(a.data.data.list)
-    setStats(s.data.data)
+    <span class="k">try</span> {
+      <span class="c">// 四个请求并发；后端 PageResult 已经把 list 包好，所以取的是 res.list（没有第二层 .data）</span>
+      <span class="k">const</span> [u, a, s] = await Promise.all([
+        <span class="t">listUsers</span>({ page: <span class="n">1</span>, size: <span class="n">20</span> }),
+        <span class="t">listArticles</span>({ page: <span class="n">1</span>, size: <span class="n">20</span> }),
+        <span class="t">adminStats</span>(),
+      ])
+      setUsers(u.list); setArticles(a.list); setStats(s)
+      setErr(<span class="k">null</span>)
+    } catch (e) {
+      setErr(e.message)          <span class="c">// code≠0 时拦截器 reject，带的就是后端 message；403 会走到这里</span>
+    }
   }, [])
 
-  useEffect(() =&gt; { load().catch(() =&gt; {}) }, [load])
+  useEffect(() =&gt; { load() }, [load])
 
   <span class="k">async function</span> forceDelete(id) {
-    <span class="k">if</span> (!confirm(<span class="s">"确定强制下架这篇文章？（软删除，可恢复）"</span>)) <span class="k">return</span>
-    <span class="k">await</span> api.delete(<span class="s">`/api/v1/admin/articles/${id}`</span>)
-    load() <span class="c">// 删完重新拉，比本地 splice 更不易出 bug</span>
+    <span class="k">if</span> (!confirm(<span class="s">'确定强制下架这篇文章？（软删除，可恢复）'</span>)) return
+    setBusy(true)
+    <span class="k">try</span> {
+      await <span class="t">forceDeleteArticle</span>(id)
+      load()                     <span class="c">// 删完重新拉，比本地 splice 更不易出 bug</span>
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
 
-  <span class="k">return</span> (
-    &lt;div className=<span class="s">"admin"</span>&gt;
+  return (
+    &lt;div className="admin" style={{ padding: <span class="s">'20px'</span> }}&gt;
       &lt;h1&gt;管理后台&lt;/h1&gt;
+      {err &amp;&amp; &lt;p className="err"&gt;{err}&lt;/p&gt;}
       {stats &amp;&amp; &lt;p&gt;用户 {stats.users} · 文章 {stats.articles} · 评论 {stats.comments}&lt;/p&gt;}
 
       &lt;h2&gt;用户&lt;/h2&gt;
       &lt;table border=<span class="s">"1"</span> cellPadding=<span class="s">"6"</span>&gt;
-        &lt;thead&gt;&lt;tr&gt;&lt;th&gt;ID&lt;/th&gt;&lt;th&gt;用户名&lt;/th&gt;&lt;th&gt;角色&lt;/th&gt;&lt;th&gt;注册时间&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+        &lt;thead&gt;&lt;tr&gt;&lt;th&gt;ID&lt;/th&gt;&lt;th&gt;用户名&lt;/th&gt;&lt;th&gt;昵称&lt;/th&gt;&lt;th&gt;角色&lt;/th&gt;&lt;th&gt;注册时间&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
         &lt;tbody&gt;
-          {users.map(u =&gt; (
-            &lt;tr key={u.ID}&gt;
-              &lt;td&gt;{u.ID}&lt;/td&gt;&lt;td&gt;{u.username}&lt;/td&gt;
-              &lt;td&gt;{u.role === <span class="n">1</span> ? <span class="s">"管理员"</span> : <span class="s">"普通用户"</span>}&lt;/td&gt;
-              &lt;td&gt;{<span class="k">new</span> Date(u.CreatedAt).toLocaleDateString()}&lt;/td&gt;
+          {users.map((u) =&gt; (
+            &lt;tr key={u.id}&gt;                          <span class="c">// ← 第 5 节 DTO 之后才是小写 id</span>
+              &lt;td&gt;{u.id}&lt;/td&gt;
+              &lt;td&gt;{u.username}&lt;/td&gt;
+              &lt;td&gt;{u.nickname || <span class="s">'—'</span>}&lt;/td&gt;
+              &lt;td&gt;{u.role === 1 ? <span class="s">'管理员'</span> : <span class="s">'普通用户'</span>}&lt;/td&gt;
+              &lt;td&gt;{new Date(u.created_at).toLocaleDateString()}&lt;/td&gt;
             &lt;/tr&gt;
           ))}
         &lt;/tbody&gt;
@@ -181,158 +251,492 @@
 
       &lt;h2&gt;文章管理&lt;/h2&gt;
       &lt;ul&gt;
-        {articles.map(a =&gt; (
-          &lt;li key={a.ID}&gt;
-            &lt;Link to={`/article/${a.ID}`}&gt;{a.title}&lt;/Link&gt;（{a.author?.username}）
-            &lt;button className=<span class="s">"danger"</span> onClick={() =&gt; forceDelete(a.ID)}&gt;强制下架&lt;/button&gt;
+        {articles.map((a) =&gt; (
+          &lt;li key={a.id}&gt;
+            &lt;Link to={`/post/${a.id}`}&gt;{a.title}&lt;/Link&gt;（{a.user?.nickname}）
+            &lt;button disabled={busy} onClick={() =&gt; forceDelete(a.id)}&gt;强制下架&lt;/button&gt;
           &lt;/li&gt;
         ))}
       &lt;/ul&gt;
     &lt;/div&gt;
   )
 }</pre>
+    <div class="callout warn"><p>三处「今天最容易照抄错的」：<b>①</b> <code>/post/${a.id}</code> ——详情页路由是 <code>/post/:id</code>，不是 <code>/article/:id</code>；<b>②</b> 文章对象里作者键是 <code>user</code>（第 3 周起的 json tag 就是 <code>json:"user,omitempty"</code>），不是 <code>author</code>，只有<b>评论</b>里的作者才叫 <code>author</code>（下一节自己定义的）；<b>③</b> 403 时后端返回 <code>code:1003</code>，拦截器直接 reject，所以页面只要 <code>setErr</code>，不用自己判状态码。</p></div>
 
-    <h3>5. 评论查漏（一）：后端 Comment 模型与接口</h3>
-    <p>规划第 8 周「保留功能」里写了评论——如果第 3~4 周你没做，现在补，一次到位。一对多复用上第 3 周：<code>Article → []Comment</code>、<code>Comment belongsTo Author</code>。注意 JSON 里带出 <code>author</code>，前端才知道「谁写的、我能不能删」。</p>
-    <pre><span class="code-label">internal/model/comment.go</span><span class="k">type</span> Comment <span class="k">struct</span> {
-    gorm.Model
-    Content   <span class="t">string</span> <span class="s">`gorm:"type:text;notNull" json:"content"`</span>
-    ArticleID <span class="t">uint</span>   <span class="s">`gorm:"index;notNull" json:"article_id"`</span>
-    AuthorID  <span class="t">uint</span>   <span class="s">`gorm:"index;notNull" json:"author_id"`</span>
-    Author    User   <span class="s">`gorm:"foreignKey:AuthorID" json:"author"`</span>
+    <h3>7. 评论查漏（一）：模型与 000005 迁移</h3>
+    <p>规划第 8 周「保留功能」里写了评论，第 3~4 周没做的话现在一次补完。一对多关系复用上第 3 周。<b>注意这里没有内嵌 <code>gorm.Model</code></b>：那是第 3 周 <code>Tag</code> 的先例——需要软删字段，但想把 json 键名一次写对（前端 <code>cm.id</code> / <code>cm.created_at</code>），省掉第 5 节那种 DTO 回合。</p>
+    <pre><span class="code-label">internal/model/comment.go（整份复制即可编译）</span><span class="k">package</span> model
+
+<span class="k">import</span> (
+    <span class="t">time</span>
+
+    <span class="s">"gorm.io/gorm"</span>
+)
+
+<span class="c">// Comment 文章评论。列名与 000005_add_comments 逐字对应（GORM 默认蛇形列名）。
+// Author 用 Preload 带出：前端要知道「谁写的」才能决定删除按钮显不显示。
+// 反向的 Article.Comments 字段故意不加：评论一律按 article_id 反查，
+// 不动 D1 定稿的 Article 模型，也避免详情页每次序列化把整坨评论带进文章对象。</span>
+<span class="k">type</span> Comment <span class="k">struct</span> {
+    ID        <span class="t">uint</span>           <span class="s">`gorm:"primaryKey" json:"id"`</span>
+    Content   <span class="t">string</span>         <span class="s">`gorm:"type:text;not null" json:"content"`</span>
+    ArticleID <span class="t">uint</span>           <span class="s">`gorm:"column:article_id;type:bigint unsigned;not null;index" json:"article_id"`</span>
+    AuthorID  <span class="t">uint</span>           <span class="s">`gorm:"column:author_id;type:bigint unsigned;not null;index" json:"author_id"`</span>
+    Author    User           <span class="s">`gorm:"foreignKey:AuthorID" json:"author"`</span>
+    CreatedAt <span class="t">time.Time</span>      <span class="s">`json:"created_at"`</span>
+    UpdatedAt <span class="t">time.Time</span>      <span class="s">`json:"updated_at"`</span>
+    DeletedAt gorm.DeletedAt <span class="s">`gorm:"index" json:"-"`</span>   <span class="c">// 软删除：第 3 周那套，下架后评论仍可恢复</span>
 }</pre>
-    <pre><span class="code-label">internal/handler/comment.go</span><span class="c">// ListComments GET /api/v1/articles/:id/comments —— 游客可读</span>
-<span class="k">func</span> (h *CommentHandler) ListComments(c *gin.Context) {
-    <span class="k">var</span> list []model.Comment
-    h.db.Where(<span class="s">"article_id = ?"</span>, c.Param(<span class="s">"id"</span>)).
-        Preload(<span class="s">"Author"</span>).Order(<span class="s">"id DESC"</span>).Find(&amp;list)
-    response.OK(c, list)
+    <pre><span class="code-label">migrations/000005_add_comments.up.sql</span><span class="c">-- 一个迁移只做一件事：建评论表。编号接 D1 说好的 000005（000006 是 D2 的 avatar）</span>
+CREATE TABLE comments (
+    id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    content     TEXT NOT NULL,
+    article_id  BIGINT UNSIGNED NOT NULL,
+    author_id   BIGINT UNSIGNED NOT NULL,
+    created_at  DATETIME(3) NULL,
+    updated_at  DATETIME(3) NULL,
+    deleted_at  DATETIME(3) NULL,               <span class="c">// GORM 软删除列，必须可空</span>
+    PRIMARY KEY (id),
+    KEY idx_comments_article_id (article_id),    <span class="c">// GET /articles/:id/comments 的主查询路径</span>
+    KEY idx_comments_author_id  (author_id),     <span class="c">// 「我评论过什么」以及将来按人清理</span>
+    KEY idx_comments_deleted_at (deleted_at)     <span class="c">// 每条自动带 WHERE deleted_at IS NULL</span>
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;</pre>
+    <pre><span class="code-label">migrations/000005_add_comments.down.sql</span>DROP TABLE IF EXISTS comments;   <span class="c">// 成对是铁律：空 down 会让「回滚」变成假动作（第 7 周 D4）</span></pre>
+    <pre><span class="code-label">shell（应用迁移；注意本机 CLI 与 compose 容器的分工）</span>$ set -a; source .env; set +a                 <span class="c"># 与 D1 同一条前置动作</span>
+
+<span class="c"># URL 尾部照第 7 周 D4 的口径带上 ?multiStatements=true（MySQL 驱动缺它一个文件里只认第一条语句）；
+# 这条 CLI 的 URL 和 GORM 的 DSN 不是一回事，别互相抄。</span>
+
+<span class="c"># 关键一步：D2 那天已经把库推到 version 6，migrate 只会跑「比当前版本大」的文件，
+# 直接 up 的话 000005 会被永久跳过，comments 表根本不会建（现象：评论接口 500 + Table 'goblog.comments' doesn't exist）</span>
+$ migrate -path ./migrations -database \
+    <span class="s">"mysql://goblog:$DB_PASS@tcp(127.0.0.1:3306)/goblog?multiStatements=true"</span> down 1     <span class="c"># 撤 000006：DROP COLUMN avatar → version=5</span>
+$ migrate -path ./migrations -database \
+    <span class="s">"mysql://goblog:$DB_PASS@tcp(127.0.0.1:3306)/goblog?multiStatements=true"</span> force 4    <span class="c"># 只改记录号，不动结构（此刻结构正好等于 000004）</span>
+$ docker compose --profile tools run --rm migrate up                 <span class="c"># 于是按 5 → 6 顺序补跑两对</span>
+$ docker compose --profile tools run --rm migrate version
+<span class="n">6</span>
+dirty: <span class="k">false</span>
+
+$ docker compose exec -T mysql sh -c \
+    <span class="s">'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" goblog -e "SHOW TABLES LIKE \"comments\";"'</span></pre>
+    <div class="callout warn"><p><b>这条坑值得单独记一句：迁移编号是「计划号」，不是「先来后到的号」。</b>本周两对迁移（000005 评论、000006 头像）在真实团队里会写在<b>同一个 PR</b> 里一次合入，migrate 自然按 5→6 顺序跑；我们是把它拆成两天教，才出现「6 已跑、5 后补」这种顺序倒置。上面那三行 <code>down 1 / force 4 / up</code> 是解法，但只在<b>本地或测试库</b>做（force 是改数字不改结构，生产上乱 force 会让记录和真实结构脱钩，那就是第 7 周 D4 讲的 dirty 事故现场）。生产要加评论表？新开一对 <code>000007_add_comments</code>，让编号继续单调递增。</p></div>
+    <div class="callout tip"><p>不想动版本记录也有第二条路：把上面这段 SQL 直接贴进 <code>docker compose exec mysql</code> 执行，再 <code>migrate force 6</code>？<b>不要</b>——手敲 SQL 建完表又去改版本号，等于让 schema_migrations 从此说谎。照抄上面三步，或者干脆重开一个干净库（<code>docker compose down -v</code> 会连 mysql-data 一起删，练手库才许这么干）按 D1→D2→D3 的顺序把两对迁移一次跑齐。</p></div>
+
+    <h3>8. 评论查漏（二）：repository 与 service</h3>
+    <p>第 2 周那条「handler 不认识 DB」的线在评论上完整走一遍：<b>repository 只管 SQL，service 只管规则，handler 只管 HTTP</b>。三条规则都住在 service 里——内容非空且不超 500 字、文章必须存在、删除要「作者本人或管理员」。</p>
+    <pre><span class="code-label">internal/repository/comment.go（整份复制即可编译）</span><span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="t">errors</span>
+
+    <span class="s">"gorm.io/gorm"</span>
+
+    <span class="s">"goblog/internal/model"</span>
+)
+
+<span class="c">// CommentRepository 评论的数据访问面：service 只认这个接口，不认 *gorm.DB。
+// 形状照第 3 周的 ArticleRepository（List/Get/Create/Delete + 返回 total）。</span>
+<span class="k">type</span> CommentRepository <span class="k">interface</span> {
+    ListByArticle(articleID <span class="t">uint</span>, limit, offset <span class="t">int</span>) ([]model.Comment, int64, <span class="t">error</span>)
+    Get(id <span class="t">uint</span>) (model.Comment, <span class="t">error</span>)
+    Create(cm model.Comment) (model.Comment, <span class="t">error</span>)
+    Delete(id <span class="t">uint</span>) <span class="t">error</span>
 }
 
-<span class="c">// CreateComment POST /api/v1/articles/:id/comments —— 需登录</span>
-<span class="k">func</span> (h *CommentHandler) CreateComment(c *gin.Context) {
+<span class="c">// ErrCommentNotFound 哨兵：handler 用 errors.Is 认它，翻译成 404 + 1001（通用「资源不存在」）</span>
+<span class="k">var</span> ErrCommentNotFound = errors.New(<span class="s">"评论不存在"</span>)
+
+<span class="k">type</span> gormCommentRepo <span class="k">struct</span> { db *gorm.DB }
+
+<span class="k">func</span> NewCommentRepo(db *gorm.DB) CommentRepository { <span class="k">return</span> &amp;gormCommentRepo{db: db} }
+
+<span class="k">var</span> _ CommentRepository = (*gormCommentRepo)(<span class="k">nil</span>)   <span class="c">// 编译期接口断言，第 3 周的规矩</span>
+
+<span class="c">// ListByArticle 两条 SELECT：Count 一次 + 主表一次（Preload Author 再一条 IN，共 3 条）。
+// 不 Preload 就成了 for 循环里逐条查作者的 N+1，第 3 周那笔账在这儿重算一遍没有意义。</span>
+<span class="k">func</span> (r *gormCommentRepo) ListByArticle(articleID <span class="t">uint</span>, limit, offset <span class="t">int</span>) ([]model.Comment, int64, <span class="t">error</span>) {
+    <span class="k">var</span> total int64
+    <span class="k">if</span> err := r.db.Model(&amp;model.Comment{}).Where(<span class="s">"article_id = ?"</span>, articleID).Count(&amp;total).Error; err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, <span class="n">0</span>, err
+    }
+    list := []model.Comment{}
+    err := r.db.Where(<span class="s">"article_id = ?"</span>, articleID).
+        Preload(<span class="s">"Author"</span>).
+        Order(<span class="s">"id DESC"</span>).Limit(limit).Offset(offset).
+        Find(&amp;list).Error
+    <span class="k">return</span> list, total, err
+}
+
+<span class="k">func</span> (r *gormCommentRepo) Get(id <span class="t">uint</span>) (model.Comment, <span class="t">error</span>) {
+    <span class="k">var</span> cm model.Comment
+    err := r.db.Preload(<span class="s">"Author"</span>).First(&amp;cm, id).Error
+    <span class="k">if</span> errors.<span class="t">Is</span>(err, gorm.ErrRecordNotFound) { <span class="k">return</span> model.Comment{}, ErrCommentNotFound }
+    <span class="k">return</span> cm, err
+}
+
+<span class="k">func</span> (r *gormCommentRepo) Create(cm model.Comment) (model.Comment, <span class="t">error</span>) {
+    <span class="k">if</span> err := r.db.Create(&amp;cm).Error; err != <span class="k">nil</span> { <span class="k">return</span> model.Comment{}, err }
+    <span class="k">return</span> cm, <span class="k">nil</span>
+}
+
+<span class="k">func</span> (r *gormCommentRepo) Delete(id <span class="t">uint</span>) <span class="t">error</span> {
+    res := r.db.Delete(&amp;model.Comment{}, id)   <span class="c">// 软删除：只打 deleted_at</span>
+    <span class="k">if</span> res.Error != <span class="k">nil</span> { <span class="k">return</span> res.Error }
+    <span class="k">if</span> res.RowsAffected == <span class="n">0</span> { <span class="k">return</span> ErrCommentNotFound }
+    <span class="k">return</span> <span class="k">nil</span>
+}</pre>
+    <pre><span class="code-label">internal/service/comment.go（整份复制即可编译）</span><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="t">errors</span>
+    <span class="t">strings</span>
+    <span class="t">unicode/utf8</span>
+
+    <span class="s">"goblog/internal/dto"</span>
+    <span class="s">"goblog/internal/model"</span>
+    <span class="s">"goblog/internal/repository"</span>
+)
+
+<span class="c">// CommentService 持有两个接口：评论自身的数据访问，以及发文前确认文章是否存在。
+// 第 5 天要写的 README「权限设计」一节里，这个文件是最好讲的一个例子：规则集中在服务层。</span>
+<span class="k">type</span> CommentService <span class="k">struct</span> {
+    repo repository.CommentRepository
+    arts repository.ArticleRepository
+}
+
+<span class="k">func</span> NewCommentService(repo repository.CommentRepository, arts repository.ArticleRepository) *CommentService {
+    <span class="k">return</span> &amp;CommentService{repo: repo, arts: arts}
+}
+
+<span class="k">const</span> MaxCommentRunes = <span class="n">500</span>   <span class="c">// 与 handler 的 binding:"max=500" 同一个数，别再两处各写一遍字面量</span>
+
+<span class="k">var</span> (
+    ErrCommentEmpty = errors.New(<span class="s">"评论内容不能为空"</span>)
+    ErrCommentLong  = errors.New(<span class="s">"评论内容超过 500 字"</span>)
+    ErrNotAuthor    = errors.New(<span class="s">"只能删除自己的评论"</span>)
+)
+
+<span class="c">// List 直接吃归一化好的 PageQuery（第 3 周 dto.PageQuery：Normalize + Offset 都是现成的）</span>
+<span class="k">func</span> (s *CommentService) List(articleID <span class="t">uint</span>, q dto.PageQuery) (dto.PageResult, <span class="t">error</span>) {
+    q.Normalize()
+    list, total, err := s.repo.ListByArticle(articleID, q.Size, q.Offset())
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">return</span> dto.PageResult{}, err
+    }
+    <span class="k">return</span> dto.NewPageResult(list, total, q), <span class="k">nil</span>
+}
+
+<span class="c">// Create 顺序很讲究：先查文章（贵但能挡脏写），再清洗内容（免费的字符串活）。
+// 文章不存在时把 repository 的 ErrArticleNotFound 原样抛出去，handler 翻成 404 + 2001。</span>
+<span class="k">func</span> (s *CommentService) Create(articleID, uid <span class="t">uint</span>, content <span class="t">string</span>) (model.Comment, <span class="t">error</span>) {
+    <span class="k">if</span> _, err := s.arts.Get(articleID); err != <span class="k">nil</span> {
+        <span class="k">return</span> model.Comment{}, err
+    }
+    content = strings.<span class="t">TrimSpace</span>(content)
+    <span class="k">if</span> content == <span class="s">""</span> {
+        <span class="k">return</span> model.Comment{}, ErrCommentEmpty
+    }
+    <span class="k">if</span> utf8.<span class="t">RuneCountInString</span>(content) &gt; MaxCommentRunes {
+        <span class="k">return</span> model.Comment{}, ErrCommentLong
+    }
+    <span class="k">return</span> s.repo.Create(model.Comment{Content: content, ArticleID: articleID, AuthorID: uid})
+}
+
+<span class="c">// Delete 「作者本人 或 管理员」：RBAC 与资源所有权第一次在同一个接口里合体。
+// 这两行判定在 D4 会被抽成 internal/service/rbac.go 的纯函数 CanModerate 并补表驱动单测——
+// 今天先照抄，D4 回来替换，别自己发明第三种写法。</span>
+<span class="k">func</span> (s *CommentService) Delete(id, uid <span class="t">uint</span>, role model.Role) <span class="t">error</span> {
+    cm, err := s.repo.Get(id)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">return</span> err                       <span class="c">// ErrCommentNotFound 原样上抛</span>
+    }
+    isOwner := cm.AuthorID == uid
+    isAdmin := role == model.RoleAdmin
+    <span class="k">if</span> !isOwner &amp;&amp; !isAdmin {
+        <span class="k">return</span> ErrNotAuthor
+    }
+    <span class="k">return</span> s.repo.Delete(id)
+}</pre>
+    <div class="callout note"><p><code>utf8.RuneCountInString</code> 而不是 <code>len(content)</code>：一个汉字 3 字节，按字节数限长的话中文用户 167 字就被拒。前端 <code>maxLength={500}</code> 数的是字符，两边都按字符算才对得上——这条属于「中日韩产品必踩」的通用坑，值得进你的 BUGLOG 模板。</p></div>
+
+    <h3>9. 评论查漏（三）：handler 与路由装配</h3>
+    <p>handler 只剩三件事：取参数、调 service、把哨兵错误翻译成双层约定（HTTP 状态 + 业务码）。<b>旧版这里的 <code>c.GetInt8("role")</code> 在 Gin 里根本不存在</b>（Context 只有 Get/GetUint/GetString 那一组），D1 的 Auth 中间件塞的是 <code>model.Role</code>，所以唯一的正确读法是带 ok 的类型断言。</p>
+    <pre><span class="code-label">internal/handler/comment.go（整份复制即可编译）</span><span class="k">package</span> handler
+
+<span class="k">import</span> (
+    <span class="t">errors</span>
+    <span class="t">net/http</span>
+    <span class="t">strconv</span>
+
+    <span class="s">"github.com/gin-gonic/gin"</span>
+
+    <span class="s">"goblog/internal/dto"</span>
+    <span class="s">"goblog/internal/model"</span>
+    <span class="s">"goblog/internal/repository"</span>
+    <span class="s">"goblog/internal/service"</span>
+    <span class="s">"goblog/pkg/response"</span>
+)
+
+<span class="k">type</span> CommentHandler <span class="k">struct</span> {
+    svc *service.CommentService
+}
+
+<span class="k">func</span> NewCommentHandler(svc *service.CommentService) *CommentHandler {
+    <span class="k">return</span> &amp;CommentHandler{svc: svc}
+}
+
+<span class="c">// idParam 把路径参数转成 uint：非数字、0、负数一律 ok=false。
+// 旧版这里写的 mustUint 没给定义（编译不过），而且 must 前缀意味着 panic ——
+// 请求参数不该让进程抖一下，这里换成返回值风格。</span>
+<span class="k">func</span> idParam(c *gin.Context, name <span class="t">string</span>) (<span class="t">uint</span>, <span class="t">bool</span>) {
+    id, err := strconv.<span class="t">ParseUint</span>(c.<span class="t">Param</span>(name), <span class="n">10</span>, <span class="n">32</span>)
+    <span class="k">if</span> err != <span class="k">nil</span> || id == <span class="n">0</span> {
+        <span class="k">return</span> <span class="n">0</span>, <span class="k">false</span>
+    }
+    <span class="k">return</span> <span class="t">uint</span>(id), <span class="k">true</span>
+}
+
+<span class="c">// currentRole 读 D1 的 Auth 中间件塞进 context 的角色。
+// 全站基准只有这一处写法：键名 "role"，类型 model.Role；
+// 拿不到（忘挂 Auth / 类型不匹配）就退回最小权限 RoleUser，绝不退回零值再碰运气。</span>
+<span class="k">func</span> currentRole(c *gin.Context) model.Role {
+    raw, exists := c.<span class="t">Get</span>(<span class="s">"role"</span>)
+    <span class="k">if</span> !exists {
+        <span class="k">return</span> model.RoleUser
+    }
+    role, ok := raw.(model.Role)
+    <span class="k">if</span> !ok {
+        <span class="k">return</span> model.RoleUser
+    }
+    <span class="k">return</span> role
+}
+
+<span class="c">// List GET /api/v1/articles/:id/comments —— 公开，游客可读</span>
+<span class="k">func</span> (h *CommentHandler) List(c *gin.Context) {
+    articleID, ok := <span class="t">idParam</span>(c, <span class="s">"id"</span>)
+    <span class="k">if</span> !ok {
+        response.<span class="t">Fail</span>(c, http.StatusBadRequest, <span class="n">1004</span>, <span class="s">"id 必须是正整数"</span>)
+        <span class="k">return</span>
+    }
+    <span class="k">var</span> q dto.PageQuery
+    <span class="k">if</span> err := c.<span class="t">ShouldBindQuery</span>(&amp;q); err != <span class="k">nil</span> {   <span class="c">// ?page=abc 绑不进 int → 拒，别默默当 1</span>
+        response.<span class="t">Fail</span>(c, http.StatusBadRequest, <span class="n">1004</span>, <span class="s">"page/size 必须是整数"</span>)
+        <span class="k">return</span>
+    }
+    res, err := h.svc.<span class="t">List</span>(articleID, q)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        response.<span class="t">Fail</span>(c, http.StatusInternalServerError, <span class="n">5000</span>, <span class="s">"查询失败"</span>)
+        <span class="k">return</span>
+    }
+    response.<span class="t">OK</span>(c, res)   <span class="c">// {list,total,page,size,total_page}，第 3 周那份 PageResult</span>
+}
+
+<span class="c">// Create POST /api/v1/articles/:id/comments —— 需登录（组上挂了 Auth）</span>
+<span class="k">func</span> (h *CommentHandler) Create(c *gin.Context) {
+    articleID, ok := <span class="t">idParam</span>(c, <span class="s">"id"</span>)
+    <span class="k">if</span> !ok {
+        response.<span class="t">Fail</span>(c, http.StatusBadRequest, <span class="n">1004</span>, <span class="s">"id 必须是正整数"</span>)
+        <span class="k">return</span>
+    }
     <span class="k">var</span> req <span class="k">struct</span> {
         Content <span class="t">string</span> <span class="s">`json:"content" binding:"required,max=500"`</span>
     }
-    <span class="k">if</span> err := c.ShouldBindJSON(&amp;req); err != <span class="k">nil</span> {
-        response.Fail(c, <span class="n">400</span>, <span class="n">1004</span>, <span class="s">"评论内容 1–500 字"</span>)
+    <span class="k">if</span> err := c.<span class="t">ShouldBindJSON</span>(&amp;req); err != <span class="k">nil</span> {
+        response.<span class="t">Fail</span>(c, http.StatusBadRequest, <span class="n">1004</span>, <span class="s">"评论内容 1–500 字"</span>)
         <span class="k">return</span>
     }
-    cm := model.Comment{
-        Content: req.Content,
-        ArticleID: <span class="t">uint</span>(h.mustUint(c.Param(<span class="s">"id"</span>))),
-        AuthorID:  c.GetUint(<span class="s">"uid"</span>),
-    }
-    <span class="k">if</span> err := h.db.Create(&amp;cm).Error; err != <span class="k">nil</span> {
-        response.Fail(c, <span class="n">400</span>, <span class="n">1004</span>, <span class="s">"文章不存在或提交失败"</span>)
+    cm, err := h.svc.<span class="t">Create</span>(articleID, c.<span class="t">GetUint</span>(<span class="s">"userID"</span>), req.Content)  <span class="c">// ← 键是 userID，不是裸 "uid"</span>
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">switch</span> {
+        <span class="k">case</span> errors.<span class="t">Is</span>(err, repository.ErrArticleNotFound):
+            response.<span class="t">Fail</span>(c, http.StatusNotFound, <span class="n">2001</span>, <span class="s">"文章不存在"</span>)
+        <span class="k">case</span> errors.<span class="t">Is</span>(err, service.ErrCommentEmpty), errors.<span class="t">Is</span>(err, service.ErrCommentLong):
+            response.<span class="t">Fail</span>(c, http.StatusBadRequest, <span class="n">1004</span>, err.Error())   <span class="c">// 文案直接透给前端</span>
+        <span class="k">default</span>:
+            response.<span class="t">Fail</span>(c, http.StatusInternalServerError, <span class="n">5000</span>, <span class="s">"提交失败"</span>)
+        }
         <span class="k">return</span>
     }
-    h.db.Preload(<span class="s">"Author"</span>).First(&amp;cm, cm.ID)
-    response.Created(c, cm)
+    <span class="c">// 回读一次把 Author 带出来：刚 Create 的对象里 Author 是零值，前端拿不到「谁写的」</span>
+    full, err := h.svc.<span class="t">Get</span>(cm.ID)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        response.<span class="t">Created</span>(c, cm)   <span class="c">// 回读失败不影响「已经写进去了」这个事实，退而求其次</span>
+        <span class="k">return</span>
+    }
+    response.<span class="t">Created</span>(c, full)
 }
 
-<span class="c">// DeleteComment DELETE /api/v1/comments/:id —— 作者本人或管理员，二选一</span>
-<span class="k">func</span> (h *CommentHandler) DeleteComment(c *gin.Context) {
-    <span class="k">var</span> cm model.Comment
-    <span class="k">if</span> err := h.db.First(&amp;cm, c.Param(<span class="s">"id"</span>)).Error; err != <span class="k">nil</span> {
-        response.Fail(c, <span class="n">404</span>, <span class="n">1001</span>, <span class="s">"评论不存在"</span>)
+<span class="c">// Delete DELETE /api/v1/comments/:id —— 作者本人或管理员，二选一</span>
+<span class="k">func</span> (h *CommentHandler) Delete(c *gin.Context) {
+    id, ok := <span class="t">idParam</span>(c, <span class="s">"id"</span>)
+    <span class="k">if</span> !ok {
+        response.<span class="t">Fail</span>(c, http.StatusBadRequest, <span class="n">1004</span>, <span class="s">"id 必须是正整数"</span>)
         <span class="k">return</span>
     }
-    isOwner := cm.AuthorID == c.GetUint(<span class="s">"uid"</span>)
-    isAdmin := c.GetInt8(<span class="s">"role"</span>) == <span class="n">1</span> <span class="c">// RBAC 与所有权在同一接口合体</span>
-    <span class="k">if</span> !isOwner &amp;&amp; !isAdmin {
-        response.Fail(c, <span class="n">403</span>, <span class="n">1003</span>, <span class="s">"只能删除自己的评论"</span>)
+    <span class="k">if</span> err := h.svc.<span class="t">Delete</span>(id, c.<span class="t">GetUint</span>(<span class="s">"userID"</span>), <span class="t">currentRole</span>(c)); err != <span class="k">nil</span> {
+        <span class="k">switch</span> {
+        <span class="k">case</span> errors.<span class="t">Is</span>(err, repository.ErrCommentNotFound):
+            response.<span class="t">Fail</span>(c, http.StatusNotFound, <span class="n">1001</span>, <span class="s">"评论不存在"</span>)   <span class="c">// 1001 是通用「资源不存在」</span>
+        <span class="k">case</span> errors.<span class="t">Is</span>(err, service.ErrNotAuthor):
+            response.<span class="t">Fail</span>(c, http.StatusForbidden, <span class="n">1003</span>, <span class="s">"只能删除自己的评论"</span>)
+        <span class="k">default</span>:
+            response.<span class="t">Fail</span>(c, http.StatusInternalServerError, <span class="n">5000</span>, <span class="s">"删除失败"</span>)
+        }
         <span class="k">return</span>
     }
-    h.db.Delete(&amp;cm)
-    response.OK(c, gin.H{<span class="s">"deleted"</span>: cm.ID})
+    response.<span class="t">OK</span>(c, gin.<span class="t">H</span>{<span class="s">"deleted"</span>: id})
 }</pre>
-    <pre><span class="code-label">迁移 SQL（与 D1 同套路）</span>CREATE TABLE IF NOT EXISTS comments (
-  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  created_at DATETIME(3) NULL,
-  updated_at DATETIME(3) NULL,
-  deleted_at DATETIME(3) NULL,
-  content TEXT NOT NULL,
-  article_id BIGINT UNSIGNED NOT NULL,
-  author_id BIGINT UNSIGNED NOT NULL,
-  INDEX idx_comments_article (article_id),
-  INDEX idx_comments_deleted (deleted_at)
-);</pre>
+    <div class="callout warn"><p>上面用到 <code>h.svc.Get(id)</code>，service 里补三行（放在 <code>Delete</code> 前面）：</p>
+    <pre style="margin-top:8px"><span class="code-label">internal/service/comment.go（补一个方法）</span><span class="c">// Get 供 handler 在 Create 之后回读带 Author 的完整对象</span>
+<span class="k">func</span> (s *CommentService) Get(id <span class="t">uint</span>) (model.Comment, <span class="t">error</span>) {
+    <span class="k">return</span> s.repo.<span class="t">Get</span>(id)
+}</pre></div>
+    <pre><span class="code-label">cmd/server/main.go（装配：三行 new + 往 D1 已有的组里各加几条路由）</span><span class="c">// ① service/handler 实例：放在 D1 那段 api := r.Group(...) 之前，articleRepo 是第 3 周就有的</span>
++ commentRepo := repository.<span class="t">NewCommentRepo</span>(db)
++ commentSvc := service.<span class="t">NewCommentService</span>(commentRepo, articleRepo)
++ commentHandler := handler.<span class="t">NewCommentHandler</span>(commentSvc)
 
-    <h3>6. 评论查漏（二）：前端评论区组件</h3>
-    <pre><span class="code-label">src/components/Comments.jsx</span><span class="k">import</span> { useEffect, useState } <span class="k">from</span> <span class="s">"react"</span>
-<span class="k">import</span> { Link } <span class="k">from</span> <span class="s">"react-router-dom"</span>
-<span class="k">import</span> api <span class="k">from</span> <span class="s">"../api"</span>
-<span class="k">import</span> { useAuth } <span class="k">from</span> <span class="s">"../auth/useAuth"</span>
+<span class="c">// ② 评论的三条路由加进 D1 已有的 api / mine 组——组名早就声明过了，这里只加行，
+//    千万别再写一遍 api := r.Group("/api/v1") 或 mine := api.Group(...)：同一个函数里
+//    重复 := 同名变量，编译器直接给你 no new variables on left side of :=。</span>
+  api := r.<span class="t">Group</span>(<span class="s">"/api/v1"</span>)
+  {
+<span class="s">+     // 公开：游客能看评论（列表不挂 Auth，与文章详情一致）
++     api.GET("/articles/:id/comments", commentHandler.List)</span>
 
-<span class="k">export default function</span> Comments({ articleId }) {
+      mine := api.<span class="t">Group</span>(<span class="s">""</span>, middleware.<span class="t">Auth</span>(cfg.JWTSecret))
+      {
+          mine.POST(<span class="s">"/articles"</span>, articleHandler.Create)
+          <span class="c">// ... D1 原有的 PUT / DELETE 不动</span>
+<span class="s">+         mine.POST("/articles/:id/comments", commentHandler.Create)
++         mine.DELETE("/comments/:id", commentHandler.Delete)</span>
+      }
+
+      admin := api.<span class="t">Group</span>(<span class="s">"/admin"</span>, middleware.Auth(cfg.JWTSecret), middleware.RequireRole(model.RoleAdmin))
+      <span class="c">// D1 的 admin 组原样不动</span>
+  }
+<span class="c">// ③ 放开 D1 Stats 里那行注释掉的 Comment Count（见下方提示）</span></pre>
+    <div class="callout warn"><p>gin 的路由树在<b>同一路径段上只允许一个参数名</b>：已有 <code>/articles/:id</code>，就得写 <code>/articles/:id/comments</code>，写成 <code>/articles/:articleID/comments</code> 启动时直接 panic（<code>wildcard segment ':articleID' conflicts with existing children</code>）。另一件事：<code>/comments/:id</code> 与 <code>/articles/:id/comments</code> 是两个不同的顶层分支，别为了「好看」把它们并成一条——<b>删除评论的目标是那一条评论本身，路径里就该只有评论 id</b>。</p></div>
+    <div class="callout tip"><p>D1 的 <code>Stats</code> 里那行 <code>h.db.Model(&amp;model.Comment{}).Count(&amp;comments)</code> 现在放开注释——它是本周第一次真的用上评论表，也是「统计数字与列表是否一致」的验收点（软删除行 GORM 自动排除，不用手写 <code>deleted_at IS NULL</code>）。</p></div>
+
+    <h3>10. 评论查漏（四）：前端评论区</h3>
+    <p>两条第 6 周规矩在这里全用得上：<b>一律 <code>import { http } from '../api/http'</code>（named export）、URL 写相对路径交给 <code>baseURL: '/api/v1'</code>、拦截器已经拆过包，拿到的就是 <code>data</code> 本身。</b>第 6 周那条「组件不直接 import http」的规矩对评论同样成立：api 层单独建文件。</p>
+    <pre><span class="code-label">src/api/comment.js（新文件）</span><span class="k">import</span> { http } <span class="k">from</span> <span class="s">'../api/http'</span>
+
+<span class="c">// 拦截器已拆包：PageResult 就是 res 本身，所以调用方写 res.list，不是 res.data.data.list</span>
+<span class="k">export const</span> <span class="t">listComments</span> = (articleId, { page = <span class="n">1</span>, size = <span class="n">20</span> } = {}) =&gt;
+  http.<span class="t">get</span>(<span class="s">`/articles/${articleId}/comments`</span>, { params: { page, size } })
+
+<span class="k">export const</span> <span class="t">createComment</span> = (articleId, content) =&gt;
+  http.<span class="t">post</span>(<span class="s">`/articles/${articleId}/comments`</span>, { content })
+
+<span class="k">export const</span> <span class="t">deleteComment</span> = (id) =&gt; http.<span class="t">delete</span>(<span class="s">`/comments/${id}`</span>)</pre>
+    <pre><span class="code-label">src/components/Comments.jsx（新文件：整份复制即可跑）</span><span class="k">import</span> { useEffect, useState, useCallback } <span class="k">from</span> <span class="s">'react'</span>
+<span class="k">import</span> { <span class="t">Link</span> } <span class="k">from</span> <span class="s">'react-router-dom'</span>
+<span class="k">import</span> { <span class="t">listComments</span>, <span class="t">createComment</span>, <span class="t">deleteComment</span> } <span class="k">from</span> <span class="s">'../api/comment'</span>
+<span class="k">import</span> { <span class="t">useAuth</span> } <span class="k">from</span> <span class="s">'../hooks/useAuth'</span>
+
+<span class="k">export function</span> <span class="t">Comments</span>({ articleId }) {
   <span class="k">const</span> { user, isAdmin } = useAuth()
   <span class="k">const</span> [list, setList] = useState([])
-  <span class="k">const</span> [text, setText] = useState(<span class="s">""</span>)
+  <span class="k">const</span> [total, setTotal] = useState(<span class="n">0</span>)
+  <span class="k">const</span> [text, setText] = useState(<span class="s">''</span>)
+  <span class="k">const</span> [busy, setBusy] = useState(<span class="k">false</span>)
+  <span class="k">const</span> [err, setErr] = useState(<span class="k">null</span>)
 
-  <span class="k">const</span> load = () =&gt;
-    api.get(<span class="s">`/api/v1/articles/${articleId}/comments`</span>).then(r =&gt; setList(r.data.data))
-  useEffect(() =&gt; { load() }, [articleId])
+  <span class="k">const</span> load = useCallback(<span class="k">async</span> () =&gt; {
+    <span class="k">try</span> {
+      <span class="k">const</span> res = await <span class="t">listComments</span>(articleId)   <span class="c">// 公开接口，没带 token 也能过</span>
+      setList(res.list); setTotal(res.total)
+    } catch (e) { setErr(e.message) }
+  }, [articleId])
+
+  useEffect(() =&gt; { load() }, [load])
 
   <span class="k">async function</span> submit(e) {
     e.preventDefault()
-    <span class="k">if</span> (!text.trim()) <span class="k">return</span>
-    <span class="k">await</span> api.post(<span class="s">`/api/v1/articles/${articleId}/comments`</span>, { content: text.trim() })
-    setText(<span class="s">""</span>); load()
+    <span class="k">if</span> (!text.trim() || busy) return
+    setBusy(true); setErr(<span class="k">null</span>)
+    <span class="k">try</span> {
+      await <span class="t">createComment</span>(articleId, text.trim())
+      setText(<span class="s">''</span>)
+      await load()                              <span class="c">// 重新拉：作者名、created_at 都由服务端定稿</span>
+    } catch (e2) { setErr(e2.message) } finally { setBusy(false) }
   }
 
   <span class="k">async function</span> remove(id) {
-    <span class="k">if</span> (!confirm(<span class="s">"删除这条评论？"</span>)) <span class="k">return</span>
-    <span class="k">await</span> api.delete(<span class="s">`/api/v1/comments/${id}`</span>)   <span class="c">// 后端判断 owner 或 admin</span>
-    load()
+    <span class="k">if</span> (!confirm(<span class="s">'删除这条评论？'</span>)) return
+    <span class="k">try</span> { await <span class="t">deleteComment</span>(id); await load() } catch (e) { setErr(e.message) }
   }
 
-  <span class="k">return</span> (
-    &lt;section className=<span class="s">"comments"</span>&gt;
-      &lt;h3&gt;评论（{list.length}）&lt;/h3&gt;
+  <span class="c">// 「能不能删」这条规则后端已经实现（作者或管理员）。这里只是把不该出现的按钮藏起来：
+  // 用户改前端强显按钮去调接口，不是他的评论照样吃 403 + code 1003。
+  // 注意 id 两边都是 JSON 里的 number，可以直接 ===；别拿 useParams 那个字符串来比。</span>
+  <span class="k">const</span> canDelete = (cm) =&gt; !!user &amp;&amp; (isAdmin || cm.author_id === user.id)
+
+  return (
+    &lt;section className="comments"&gt;
+      &lt;h3&gt;评论（{total}）&lt;/h3&gt;
+      {err &amp;&amp; &lt;p className="err"&gt;{err}&lt;/p&gt;}
       {user ? (
         &lt;form onSubmit={submit}&gt;
           &lt;textarea value={text} rows={<span class="n">3</span>} maxLength={<span class="n">500</span>}
-            onChange={e =&gt; setText(e.target.value)} placeholder=<span class="s">"友善发言…"</span> /&gt;
-          &lt;button disabled={!text.trim()}&gt;发布&lt;/button&gt;
+            onChange={(e) =&gt; setText(e.target.value)} placeholder=<span class="s">"友善发言…"</span> /&gt;
+          &lt;button disabled={busy || !text.trim()}&gt;{busy ? <span class="s">'发布中…'</span> : <span class="s">'发布'</span>}&lt;/button&gt;
         &lt;/form&gt;
-      ) : &lt;p&gt;&lt;Link to=<span class="s">"/login"</span>&gt;登录&lt;/Link&gt; 后参与讨论&lt;/p&gt;}
+      ) : (
+        <span class="c">// 回跳只有一条路：?redirect=，与第 6 周守卫、拦截器完全一致</span>
+        &lt;p&gt;&lt;Link to={`/login?redirect=${encodeURIComponent(`/post/${articleId}`)}`}&gt;登录&lt;/Link&gt; 后参与讨论&lt;/p&gt;
+      )}
 
       &lt;ul&gt;
-        {list.map(cm =&gt; (
-          &lt;li key={cm.ID}&gt;
-            &lt;b&gt;{cm.author?.username}&lt;/b&gt;：{cm.content}
-            {(user?.ID === cm.author_id || isAdmin) &amp;&amp; (
-              &lt;button className=<span class="s">"link"</span> onClick={() =&gt; remove(cm.ID)}&gt;删除&lt;/button&gt;
-            )}
+        {list.map((cm) =&gt; (
+          &lt;li key={cm.id}&gt;
+            &lt;img src={cm.author?.avatar || '/avatar-default.png'} width={<span class="n">24</span>} alt=<span class="s">"头像"</span> /&gt;
+            &lt;b&gt;{cm.author?.nickname || cm.author?.username}&lt;/b&gt;：{cm.content}
+            &lt;small&gt;{new Date(cm.created_at).toLocaleString()}&lt;/small&gt;
+            {canDelete(cm) &amp;&amp; &lt;button onClick={() =&gt; remove(cm.id)}&gt;删除&lt;/button&gt;}
           &lt;/li&gt;
         ))}
+        {!list.length &amp;&amp; &lt;li&gt;还没有评论，来抢第一个&lt;/li&gt;}
       &lt;/ul&gt;
     &lt;/section&gt;
   )
 }</pre>
-    <div class="callout tip"><p>「作者能删自己的、管理员能删所有」这条规则<b>后端已经实现</b>了，前端的显示条件只是把不该出现的按钮藏起来。哪怕用户改前端强显删除按钮去调接口，不是他的评论照样吃 403。</p></div>
+    <pre><span class="code-label">src/pages/ArticleDetail.jsx（第 6 周那份的 diff：挂上评论区）</span><span class="s">+ import { Comments } from '../components/Comments'   // 组件是 named export</span>
+  const { id } = useParams()            <span class="c">// ← 永远是字符串</span>
+  ...
+  &lt;/article&gt;
+<span class="s">+ &lt;Comments articleId={Number(id)} /&gt;  {/* 第 6 周那条坑：useParams 给字符串，比较 author 前转数字 */}</span></pre>
+    <div class="callout js"><p>对比 JS 前端老思路：以前「藏路由」就完事；现在你要能说出<b>三层防御</b>，还要能说出<b>为什么删按钮用 author_id 比、而文章编辑按钮用 user.id 比</b>——因为评论的作者键是我们自己在 <code>model.Comment</code> 里定成 <code>author</code> 的，而文章沿用第 3 周的 <code>json:"user"</code>。两套键名共存是历史事实，README 里要写一句，别指望下一个读者去猜。</p></div>
   </section>
 
   <section>
     <h2>今日练习</h2>
     <div class="task">
       <div class="task-title">练习 1：核心验收——非管理员手敲 /admin URL（30 分钟）</div>
-      <p>用普通账号登录，地址栏直接输入 <code>http://localhost:5173/admin</code>。预期：不跳登录页（人已登录）、不渲染后台，而是出现你的 403 提示。再用管理员登录：正常进后台；退出后访问：被重定向到 /login。</p>
-      <p><b>参考答案</b>：三种状态分别对应 <code>ProtectedRoute</code> 的三个分支。若普通用户能进 /admin，检查两点：路由表是否传了 <code>role={1}</code>；登录后 localStorage 的 user 是否真的带 role（旧登录态是升级前存的，<b>退出重登一次</b>再看，这个坑今天必踩一次）。</p>
+      <p>用普通账号登录，地址栏直接输入 <code>http://localhost:5173/admin</code>。预期：不跳登录页（人已登录）、不渲染后台，而是出现你的 403 提示。再用管理员登录：正常进后台；退出后再访问：被弹去 <code>/login?redirect=%2Fadmin</code>，登录后<b>回到 /admin</b> 而不是首页。</p>
+      <p><b>参考答案</b>：三种状态分别对应 <code>ProtectedRoute</code> 的三个分支（无 token / 角色不够 / 通过）。若普通用户能进 /admin，检查两点：路由表是否传了 <code>role={ROLE_ADMIN}</code>；<code>(user?.role ?? 0) &lt; role</code> 那行有没有被写成 <code>user.role &lt; role</code>（老快照下 undefined 比较为 false，等于放行）。若管理员也被挡在 403 外，八成是<b>登录态是升级前存的</b>，退出重登一次再看——这个坑今天必踩一次。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 2：绕过前端直捣接口（20 分钟）</div>
-      <p>普通用户登录状态下，DevTools 把 localStorage 的 user.role 改成 1 —— 后台入口出现了！点进去、强制下架一篇文章。预期：接口返回 <code>403 / code 1003</code>，删除失败。</p>
-      <p><b>参考答案</b>：这就是「前端权限是纸糊的」实锤演示；token 里的 role 才是后端看到的身份。把这次体验写进 README 的权限设计一节，面试可直接讲。</p>
+      <p>普通用户登录状态下，DevTools 把 localStorage 里 <code>user</code> 的 role 改成 1 —— 后台入口出现了！点进去、强制下架一篇文章。预期：接口返回 <code>403 / code 1003</code>，删除失败，页面顶部显示「权限不足」。</p>
+      <p><b>参考答案</b>：这就是「前端权限是纸糊的」实锤演示；后端只认 token 里的 role（D1 的 Claims 快照）。顺手再验一条：把 <code>accessToken</code> 换成乱码 → 后端 401 + code 1005 → 第 6 周拦截器会先去 refresh，refresh 也废时清三个键并跳 <code>/login?redirect=…</code>。把这两次体验写进 README 的权限设计一节，面试可直接讲。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 3：评论闭环（60 分钟）</div>
-      <p>跑迁移建 comments 表 → 挂三个评论路由 → 详情页嵌 <code>&lt;Comments articleId={id}/&gt;</code>。验收：游客可看；A 发评论；B 看 A 的评论旁无删除按钮；A 自己和管理员有。管理员删任何评论均 200。</p>
+      <p>按第 7~10 节把评论三层抄齐并跑迁移 → 挂三条评论路由 → 详情页嵌 <code>&lt;Comments articleId={Number(id)} /&gt;</code>。验收清单：游客能看到评论列表；A 发评论成功（201 且带回 <code>author.nickname</code>）；B 看 A 的评论旁<b>没有</b>删除按钮；A 自己删成功、管理员删任何一条都成功；<code>docker compose --profile tools run --rm migrate version</code> 是 6。</p>
+      <p><b>参考答案</b>：三条 curl 定位层次。<code>curl -s localhost:8080/api/v1/articles/3/comments | jq -c '{code,total:.data.total,n:(.data.list|length)}'</code> → <code>{"code":0,"total":1,"n":1}</code>（报 <code>Unknown column 'avatar'</code> 或 <code>Table 'comments' doesn't exist</code> 就是迁移顺序倒了，回到第 7 节那三行）；<code>curl -s -X POST ... -d '{"content":"x"}'</code> 不带 token → <code>401/1005</code>；拿 B 的 token 删 A 的评论 → <code>403/1003</code>；删一个不存在的 id → <code>404/1001</code>。前端如果评论区一片空白，先看 Network 里那条 <code>/articles/3/comments</code> 的返回体形状是不是 <code>{list,total,...}</code>——是 <code>data.data</code> 就是你自己加了第二层拆包。</p>
     </div>
     <div class="task">
-      <div class="task-title">练习 4（选做）：把 D2 头像接进 Navbar（30 分钟）</div>
-      <p>个人信息页放 <code>&lt;ImageUpload kind="avatar" onDone={url =&gt; { localStorage 更新 user.avatar; 触发重渲染 }}/&gt;</code>，Navbar 右上角用 <code>&lt;img&gt;</code> 显示头像。注意 onDone 后要同步 localStorage 里的 user 快照。</p>
+      <div class="task-title">练习 4：把 D2 头像接进 Navbar + refreshUser 收口（30 分钟）</div>
+      <p>在 <code>src/pages/Profile.jsx</code> 放 <code>&lt;ImageUpload kind="avatar" onDone={() =&gt; refreshUser()} /&gt;</code>，Navbar 右上角用 <code>&lt;img src={user.avatar || '/avatar-default.png'}&gt;</code> 显示头像。验收：上传成功后<b>不刷新页面</b>，右上角头像立刻换新。</p>
+      <p><b>参考答案</b>：链路上三步缺一不可——后端 <code>UPDATE users SET avatar</code>（D2 的 Avatar handler）、<code>refreshUser()</code> 重拉 <code>/users/me</code> 并写回 localStorage、<code>broadcast()</code> 通知订阅者。头像没变就先查这三步：DevTools → Application → Local Storage 看 <code>user</code> 里的 avatar 字段有没有更新；更新了但页面不变，就是 <code>broadcast()</code> 漏了（NavBar 还在用旧的那份 state 副本，第 6 周那个「一份状态被复制成 N 份」的缺陷会原样复发）。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 5（选做）：给评论加「我自己的评论」高亮</div>
+      <p>在 <code>Comments.jsx</code> 里用 <code>cm.author_id === user.id</code> 给本人评论加个 <code>className="mine"</code>，并让列表按「我的优先」排序——<b>排序要改后端（repository 的 Order）还是纯前端 map 完再 sort？</b>想清一句话答案写进笔记：分页存在时纯前端排序只能排当前页，会撒谎。</p>
     </div>
   </section>
 
@@ -340,22 +744,26 @@
     <h2>常见坑</h2>
     <table>
       <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
-      <tr><td>升级前登录的旧 user 快照没有 role</td><td>管理员也不见后台入口，守卫判定 <code>undefined &lt; 1</code> 为 false 还处处诡异</td><td>改字段后强制重新登录；读快照时兜底 <code>user.role ?? 0</code></td></tr>
-      <tr><td>ProtectedRoute 把权限不足重定向回首页</td><td>用户以为页面坏了，问题无法暴露</td><td>渲染明确的 403 文案，别静默跳转</td></tr>
-      <tr><td>只在菜单里藏入口，不加路由守卫</td><td>手敲 /admin 直接进，接口 403 刷满页面</td><td>守卫 + 后端双保险，缺一层都不算完成</td></tr>
-      <tr><td>Comment 忘 Preload("Author")</td><td>前端 <code>cm.author.username</code> 报错白屏</td><td>接口返回带作者；前端渲染再写 <code>cm.author?.username</code></td></tr>
-      <tr><td>软删除评论后列表计数不同步</td><td>stats 里 comments 数与列表对不上</td><td>GORM Count 自动排除软删行；手写 SQL 才要加 <code>deleted_at IS NULL</code></td></tr>
+      <tr><td>升级前登录的旧 user 快照没有 role</td><td>管理员也不见后台入口；反过来 <code>user.role &lt; role</code> 里 undefined 比较为 false，等于<b>人人放行</b></td><td>读快照一律 <code>user?.role ?? 0</code> 兜底；改字段后强制退出重登一次</td></tr>
+      <tr><td>ProtectedRoute 把权限不足重定向回首页</td><td>用户以为页面坏了，问题无法暴露，你查不到日志</td><td>渲染明确的 403 文案（含当前身份），别静默跳转</td></tr>
+      <tr><td>回跳发明了第二套方案</td><td>守卫用 <code>?redirect=</code>、组件用 <code>state.from</code>，登录页只认前者，登录后永远回不到目标页</td><td>全站只有 <code>/login?redirect=编码后的 pathname+search</code> 一条，与第 6 周守卫/拦截器一致</td></tr>
+      <tr><td>前端写 <code>import api from '../api'</code> + <code>res.data.data.list</code></td><td>要么模块根本不存在，要么拿到 undefined 再白屏</td><td><code>import { http } from '../api/http'</code>、相对路径、拦截器已拆包：<code>res.list</code></td></tr>
+      <tr><td>照抄旧版路径 <code>/editor/:id?</code>、<code>/article/:id</code></td><td>点标题跳 404，写文章按钮也白屏</td><td>详情页 <code>/post/:id</code>、编辑 <code>/post/:id/edit</code>、新建 <code>/post/new</code>，本周只多一条 <code>/admin</code></td></tr>
+      <tr><td>用 <code>c.GetInt8("role")</code> / <code>c.GetUint("uid")</code></td><td>编译不过（Gin 没有 GetInt8），或永远取到 0、管理员照样 403</td><td><code>c.Get("role").(model.Role)</code> + <code>c.GetUint("userID")</code>，两处键名全站统一（D1）</td></tr>
+      <tr><td>Comment 忘 Preload("Author")</td><td>前端 <code>cm.author.username</code> 报错白屏；或作者名全是空</td><td>repository 里 Get/List 都 Preload；前端渲染再写 <code>cm.author?.nickname</code></td></tr>
+      <tr><td>000005 后补却直接 <code>migrate up</code></td><td>版本号已经是 6，小号被永久跳过，评论接口 500 报「表不存在」</td><td><code>down 1 → force 4 → up</code>（只在本地/测试库），或干净库按顺序重跑；生产另开 000007</td></tr>
+      <tr><td>软删除评论后计数对不上</td><td>stats 里 comments 数与列表条数不一致</td><td>GORM 的 Count/Find 自动排除软删行；只有手写裸 SQL 才要补 <code>deleted_at IS NULL</code></td></tr>
     </table>
   </section>
 
   <section>
     <h2>完成检查（全部勾掉才算毕业）</h2>
     <ul class="check">
-      <li><label><input type="checkbox" data-key="w8d3c1">普通用户手敲 /admin 看到 403 页、管理员能进、未登录被弹去 /login（练习 1 三状态）</label></li>
-      <li><label><input type="checkbox" data-key="w8d3c2">DevTools 篡改 role 后强进后台，强制下架被后端 403 拦截（练习 2）</label></li>
-      <li><label><input type="checkbox" data-key="w8d3c3">Navbar 的「管理后台」入口只对管理员渲染，且不影响别人被后端拦住</label></li>
-      <li><label><input type="checkbox" data-key="w8d3c4">评论三件套可用：游客看、登录发、作者/管理员删，软删除生效</label></li>
-      <li><label><input type="checkbox" data-key="w8d3c5">AdminPanel 用户表格带角色列，stats 三个数字与真实数据一致</label></li>
+      <li><label><input type="checkbox" data-key="w8d3c1">普通用户手敲 /admin 看到 403 页、管理员能进、未登录被弹去 <code>/login?redirect=%2Fadmin</code>（练习 1 三状态）</label></li>
+      <li><label><input type="checkbox" data-key="w8d3c2">DevTools 篡改 role 后强进后台，强制下架被后端 <code>403 + 1003</code> 拦截（练习 2）</label></li>
+      <li><label><input type="checkbox" data-key="w8d3c3">Navbar 的「管理后台」入口只对管理员渲染，且不影响别人被后端拦住；<code>useAuth.js</code> 与 <code>ProtectedRoute.jsx</code> 仍是第 6 周那两个文件的 named export</label></li>
+      <li><label><input type="checkbox" data-key="w8d3c4">评论三件套可用：游客看、登录发、作者/管理员删，软删除生效；<code>migrate version</code> 是 6 且 <code>comments</code> 表真的在库里</label></li>
+      <li><label><input type="checkbox" data-key="w8d3c5">AdminPanel 用户表格带角色列、键名全部蛇形（DTO 已落地），stats 三个数字与列表页真实数据一致</label></li>
     </ul>
   </section>
 

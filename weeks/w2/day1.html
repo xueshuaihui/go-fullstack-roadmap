@@ -23,7 +23,7 @@
     <span class="chip">难度 ★★☆☆☆</span>
   </div>
   <h1>Gin 路由</h1>
-  <p>上周你用 <code>net/http</code> 手写了待办服务，每一步都要自己拆。今天换上 Go 生态最流行的 Web 框架 <b>Gin</b>：路由匹配、参数解析、JSON 输出全部一行搞定。今天的成败标准只有一个——<b>8 个路由全部跑通，并能把每个参数原样打印出来。</b></p>
+  <p><b>先确认一件事：第 1 周总结的 6 条验收全勾了吗？</b>勾完就算从 <code>todo-api</code>「毕业」了——那个「一个目录、全 <code>package main</code>」的阶段到此结束，本周（W2）就是手册里承诺的<b>分包周</b>：<code>internal/{model,repository,service,handler,middleware}</code> 分层目录在<b>今天 day4 正式落地</b>，模块名也按基准换成 <code>gin-api</code>。上周你用 <code>net/http</code> 手写了待办服务，每一步都要自己拆；今天换上 Go 生态最流行的 Web 框架 <b>Gin</b>：路由匹配、参数解析、JSON 输出全部一行搞定。本周路线记在脑子里：<b>day1 摆路由（还是单个 <code>main.go</code>）→ day2 加 <code>pkg/response</code> 统一响应 → day3 中间件 <code>middleware/</code> → day4 搬进 <code>cmd/server</code> + <code>internal/</code> 三层 → day5 验收与文档</b>。今天的成败标准只有一个——<b>8 个路由全部跑通，并能把每个参数原样打印出来。</b></p>
 
   <section class="goals">
     <h2>今日目标</h2>
@@ -41,6 +41,7 @@
     <div class="callout js"><p><b>上周的痛点还记得吗？</b><code>net/http</code> 里 <code>r.URL.Path == "/todos"</code> 是最笨的字符串比较——<code>/todos/</code> 多个斜杠就匹配不上，<code>/todos/3</code> 还要自己 <code>strings.Split</code> 拆 ID。Gin 底层是 <b>httprouter</b>（基数树路由），<code>/users/:id</code> 声明一次，ID 自动进 <code>c.Param("id")</code>。</p></div>
     <div class="callout js"><p><b>给前端同学的坐标。</b>Gin 在 Go 里的地位类似前端的 Vite + React Router 组合：不是语言的一部分，但几乎是团队项目默认选型。会用 Gin 的 handler ≈ 会用路由中间件的「请求处理器」：进来一个 <code>*gin.Context</code>，出去一个 JSON。</p></div>
     <div class="callout note"><p>本周主线项目：<b>内存版用户 + 文章 REST API</b>（<code>/users</code> 全套 CRUD + <code>/articles</code>）。今天就从搭路由骨架开始，数据先用内存 map，周五收口成完整分层项目。</p></div>
+    <div class="callout warn"><p><b>今天的文件怎么放（第 1 周 day2 那条规矩的延续）：</b>今天整个页面只维护<b>一个文件</b> <code>gin-api/main.go</code>，里面只有<b>一个</b> <code>package main</code> 和<b>一个</b> <code>func main()</code>。所以看到多处标着 <code>main.go</code> 的代码块时，含义是"同一个文件的迭代"：讲义 §2 是最初版本，后面 §3–§6 的片段是<b>往那个 <code>func main()</code> 里加行</b>；§7 那份也写着 <code>func main()</code>，但它不是新增的第二个 main，而是把同一份 main 的<b>启动两行换掉</b>（开头加 <code>gin.SetMode(gin.ReleaseMode)</code>、结尾把 <code>r.Run(":8080")</code> 改成 <code>if err := r.Run(...); err != nil { panic(err) }</code>；注意它用的是 <code>gin.New()</code>，路由与中间件都要自己注册，讲义第 2 节用的才是 <code>gin.Default()</code>）；练习 1 的参考答案则是"此刻的完整终态"——抄它请<b>整份替换</b>你手上的 main.go，别存成 <code>main2.go</code>。真在同一目录放两个 <code>func main()</code>，编译会直接 <code>main redeclared in this block</code>。</p></div>
   </section>
 
   <section>
@@ -54,14 +55,14 @@ $ go get -u github.com/gin-gonic/gin        <span class="c"># ≈ npm install，
     <pre><span class="code-label">main.go</span><span class="k">package</span> main
 
 <span class="k">import</span> (
-    <span class="t">net/http</span>
+    <span class="t">"net/http"</span>
 
     <span class="t">"github.com/gin-gonic/gin"</span>
 )
 
 <span class="k">func</span> main() {
     gin.SetMode(gin.ReleaseMode) <span class="c">// 发布模式：日志更干净；开发调试可换 gin.DebugMode</span>
-    r := gin.Default()           <span class="c">// 创建引擎，自带 Logger + Recovery 两个中间件（明天细讲）</span>
+    r := gin.Default()           <span class="c">// 创建引擎，自带 Logger + Recovery 两个中间件（第 3 天细讲）</span>
 
     r.GET(<span class="s">"/ping"</span>, <span class="k">func</span>(c *gin.Context) {
         c.JSON(http.StatusOK, gin.H{<span class="s">"message"</span>: <span class="s">"pong"</span>})
@@ -79,6 +80,8 @@ $ curl localhost:8080/ping
       <tr><td><code>gin.Default()</code></td><td>Logger + Recovery</td><td>练手 / 快速起服务，今天用它</td></tr>
     </table>
     <div class="callout tip"><p><code>gin.H</code> 只是 <code>map[string]any</code> 的简写，<code>c.JSON(200, gin.H{...})</code> 会自动序列化并设置 <code>Content-Type: application/json</code>。上周手写 <code>json.Marshal</code> + <code>Header().Set</code> 那五行，现在一行。</p></div>
+    <div class="callout warn"><p><b>先停掉第 1 周的 todo-api 再起 gin-api。</b>两个项目都默认监听 <code>:8080</code>，同时启动会命中 <code>address already in use</code>（或更坑：你以为在测 Gin，其实请求打到了上周那个标准库服务上，返回的是老格式）。动手前在旧服务终端按 <code>Ctrl+C</code>，或一行清干净：<code>lsof -ti:8080 | xargs kill</code>（macOS/Linux）。确认端口空了再 <code>go run .</code>。</p></div>
+    <div class="callout note"><p><b>今天唯一的读 body 手段：<code>c.GetRawData()</code>。</b>签名是 <code>GetRawData() ([]byte, error)</code>——它把请求体整个读成原始字节切片（第二道 <code>error</code> 在读取出问题时非 nil，今天先写 <code>raw, _ := c.GetRawData()</code> 忽略它）。拿到的是 <code>[]byte</code>，要当字符串用就 <code>string(raw)</code>；<b>它会把 body 读完</b>，所以同一请求里只能调一次，第二次拿到的是空的。明天用 <code>ShouldBindJSON</code> 一步解析成结构体后，就基本不再直接碰它了。</p></div>
 
     <h3>2. 四种 HTTP 方法</h3>
     <p>引擎 <code>r</code> 上每个动词一个方法，签名全是 <code>(路径, handler)</code>，handler 统一为 <code>func(c *gin.Context)</code>：</p>
@@ -98,8 +101,7 @@ r.DELETE(<span class="s">"/users"</span>, <span class="k">func</span>(c *gin.Con
     <pre><span class="code-label">main.go</span><span class="c">// 路径参数：/users/42 里的 42</span>
 r.GET(<span class="s">"/users/:id"</span>, <span class="k">func</span>(c *gin.Context) {
     id := c.Param(<span class="s">"id"</span>)       <span class="c">// "42"，取到的是 string，别忘了 strconv.Atoi 转数字</span>
-    id2 := c.Param(<span class="s">":id"</span>)      <span class="c">// 带冒号也兼容，推荐不带</span>
-    c.JSON(http.StatusOK, gin.H{<span class="s">"id"</span>: id, <span class="s">"id2"</span>: id2})
+    c.JSON(http.StatusOK, gin.H{<span class="s">"id"</span>: id})
 })
 
 <span class="c">// 查询参数：/articles?page=2&amp;size=10&amp;keyword=go</span>
@@ -109,18 +111,23 @@ r.GET(<span class="s">"/articles"</span>, <span class="k">func</span>(c *gin.Con
     kw, ok := c.GetQuery(<span class="s">"keyword"</span>)        <span class="c">// 第二个返回值告诉你参数是否存在</span>
     c.JSON(http.StatusOK, gin.H{<span class="s">"page"</span>: page, <span class="s">"size"</span>: size, <span class="s">"kw"</span>: kw, <span class="s">"ok"</span>: ok})
 })</pre>
+    <pre><span class="code-label">shell</span>$ curl localhost:8080/users/42
+{<span class="s">"id"</span>:"42"}
+$ curl <span class="s">"localhost:8080/articles?page=2&amp;size=10"</span>
+{<span class="s">"kw"</span>:<span class="s">""</span>,<span class="s">"ok"</span>:false,<span class="s">"page"</span>:<span class="s">"2"</span>,<span class="s">"size"</span>:<span class="s">"10"</span>}   <span class="c">// 注意全是字符串，不是数字</span></pre>
+    <div class="callout warn"><p><b><code>c.Param</code> 的键名必须和注册时的占位名一字不差。</b>路由写 <code>/users/:id</code>，取值就只能 <code>c.Param("id")</code>；写成 <code>c.Param(":id")</code>（带冒号）在当前 Gin 版本里<b>取不到值，返回空串 <code>""</code></b>——早期版本兼容带冒号，现在已改成精确匹配。空串传进 <code>strconv.Atoi</code> 就是 <code>invalid syntax</code>，别把时间花在怀疑路由上。</p></div>
     <table>
       <tr><th>参数来源</th><th>URL 长相</th><th>Gin 取法</th></tr>
       <tr><td>路径参数</td><td><code>/users/42</code></td><td><code>c.Param("id")</code></td></tr>
       <tr><td>查询参数</td><td><code>?page=2&amp;size=10</code></td><td><code>c.Query</code> / <code>c.DefaultQuery</code> / <code>c.GetQuery</code></td></tr>
       <tr><td>表单字段</td><td>body: <code>name=ada</code></td><td><code>c.PostForm("name")</code></td></tr>
       <tr><td>请求头</td><td><code>Authorization: Bearer x</code></td><td><code>c.GetHeader("Authorization")</code></td></tr>
-      <tr><td>JSON body</td><td><code>{"name":"ada"}</code></td><td>明天 <code>ShouldBindJSON</code>，今天先用 <code>c.GetRawData()</code> 拿原始字节</td></tr>
+      <tr><td>JSON body</td><td><code>{"name":"ada"}</code></td><td>明天 <code>ShouldBindJSON</code>，今天先用 <code>c.GetRawData()</code>（签名 <code>([]byte, error)</code>，见讲义 1 上方讲解）拿原始字节</td></tr>
     </table>
     <div class="callout warn"><p>路径带 <code>?page=2&amp;size=10</code> 时，终端里的 <code>&amp;</code> 会被 shell 当后台符，<b>curl 的 URL 一定加引号</b>：<code>curl "localhost:8080/articles?page=2&amp;size=10"</code>。</p></div>
 
     <h3>4. 路由分组 r.Group</h3>
-    <p>接口一多，每个路径都手写 <code>/api/v1</code> 前缀既啰嗦又难改版本。分组把公共前缀（和公共中间件，明天讲）收敛到一处：</p>
+    <p>接口一多，每个路径都手写 <code>/api/v1</code> 前缀既啰嗦又难改版本。分组把公共前缀（和公共中间件，<b>第 3 天</b>讲）收敛到一处：</p>
     <pre><span class="code-label">main.go</span>api := r.Group(<span class="s">"/api/v1"</span>)
 {
     api.GET(<span class="s">"/users"</span>, <span class="k">func</span>(c *gin.Context) { c.JSON(http.StatusOK, gin.H{<span class="s">"uri"</span>: <span class="s">"/api/v1/users"</span>}) })
@@ -133,15 +140,30 @@ r.GET(<span class="s">"/articles"</span>, <span class="k">func</span>(c *gin.Con
 
     <h3>5. 404：NoRoute 与 NoMethod</h3>
     <p>默认 404 返回纯文本 <code>404 page not found</code>，前端 <code>JSON.parse</code> 会当场爆炸。约定好「所有响应都是 JSON」，就要接管兜底：</p>
-    <pre><span class="code-label">main.go</span><span class="c">// 路径完全没注册过 → NoRoute</span>
+    <pre><span class="code-label">main.go</span><span class="c">// 路径完全没注册过 → NoRoute。业务码用 1001（资源不存在），别把 HTTP 状态码当业务码写 404：
+// 全站双层约定是 HTTP 码管大类、body.code 管细分，两者不能混（明天 day2 建 pkg/response 后写成 response.CodeUserNotFound）</span>
 r.NoRoute(<span class="k">func</span>(c *gin.Context) {
-    c.JSON(http.StatusNotFound, gin.H{<span class="s">"code"</span>: <span class="n">404</span>, <span class="s">"message"</span>: <span class="s">"接口不存在: "</span> + c.Request.URL.Path, <span class="s">"data"</span>: <span class="k">nil</span>})
+    c.JSON(http.StatusNotFound, gin.H{<span class="s">"code"</span>: <span class="n">1001</span>, <span class="s">"message"</span>: <span class="s">"接口不存在: "</span> + c.Request.URL.Path, <span class="s">"data"</span>: <span class="k">nil</span>})
 })
-<span class="c">// 路径存在但方法不对（如 GET /ping 换成 POST）→ 405，Gin 自动处理，也可接管 NoMethod</span>
+
+<span class="c">// 关键开关：gin.New()/gin.Default() 里 HandleMethodNotAllowed 默认是 <span class="k">false</span>，
+// 此时「路径在、方法不对」根本不会走 NoMethod，而是当成没匹配上 → 命中上面的 NoRoute 返回 404。
+// 想拿到 405，必须先手动打开这个开关（写在注册路由之前，一行）。</span>
+r.HandleMethodNotAllowed = <span class="k">true</span>
+
+<span class="c">// 路径存在但方法不对（如 GET /ping 换成 POST）→ 405。
+// 码表里 405 没有专属业务码，本周先复用 1003（禁止）表达「这个操作不被允许」，第 4 周工程化再细化。</span>
 r.NoMethod(<span class="k">func</span>(c *gin.Context) {
-    c.JSON(http.StatusMethodNotAllowed, gin.H{<span class="s">"code"</span>: <span class="n">405</span>, <span class="s">"message"</span>: <span class="s">"方法不允许"</span>, <span class="s">"data"</span>: <span class="k">nil</span>})
+    c.JSON(http.StatusMethodNotAllowed, gin.H{<span class="s">"code"</span>: <span class="n">1003</span>, <span class="s">"message"</span>: <span class="s">"方法不允许"</span>, <span class="s">"data"</span>: <span class="k">nil</span>})
 })</pre>
-    <div class="callout note"><p>注意区分：路径 <code>/users/999</code> 能匹配到 <code>/users/:id</code> 这条路由，所以 <b>NoRoute 不会触发</b>——「用户不存在」是业务上的 404，要在 handler 里自己返回（本周五统一接入错误码 1001）。NoRoute 只兜「根本没这个接口」。</p></div>
+    <pre><span class="code-label">shell</span>$ curl -i localhost:8080/nothing | head -n 1        <span class="c"># 路径没注册 → NoRoute</span>
+HTTP/1.1 404 Not Found
+$ curl -i -X POST localhost:8080/ping | head -n 1    <span class="c"># 已开 HandleMethodNotAllowed → NoMethod</span>
+HTTP/1.1 405 Method Not Allowed
+$ curl -s -X POST localhost:8080/ping
+{<span class="s">"code"</span>:1003,<span class="s">"message"</span>:<span class="s">"方法不允许"</span>,<span class="s">"data"</span>:null}</pre>
+    <div class="callout warn"><p><b>405 是「开关型」知识点</b>：不加 <code>r.HandleMethodNotAllowed = true</code>，你的 <code>NoMethod</code> handler 一次都不会被调用，<code>curl -X POST /ping</code> 会返回 404。排查顺序记牢：方法不对却拿到 404 → 先确认这个开关；拿到 405 但 body 是纯文本 <code>405 method not allowed</code> → 说明 <code>NoMethod</code> 没注册（Gin 只有在 NoMethod 没写响应时才回退到默认纯文本）。</p></div>
+    <div class="callout note"><p>注意区分：路径 <code>/users/999</code> 能匹配到 <code>/users/:id</code> 这条路由，所以 <b>NoRoute 不会触发</b>——「用户不存在」是业务上的 404，要在 handler 里自己返回（同样是 404 + code 1001，本周 day2 建码表、day4 全链路落地）。NoRoute 只兜「根本没这个接口」。</p></div>
 
     <h3>6. 路由注册规则与限制</h3>
     <ul>
@@ -169,7 +191,7 @@ r.GET(<span class="s">"/files/*filepath"</span>, <span class="k">func</span>(c *
     <span class="c">// ... 注册路由 ...</span>
     <span class="k">if</span> err := r.Run(<span class="s">":8080"</span>); err != <span class="k">nil</span> {
         <span class="c">// Run 内部会返回 http.Server 的 error：端口被占、权限不足等</span>
-        panic(err) <span class="c">// main 里启动失败没救，panic 退出是合理的；Web 请求里的 panic 才需要 Recovery</span>
+        panic(err) <span class="c">// main 里启动失败没救，panic 退出是合理的；Web 请求里的 panic 才需要 Recovery（第 3 天讲义有 panic/recover 最小认识）</span>
     }
 }</pre>
     <div class="callout tip"><p>启动时终端会打印一份 <code>[GIN-debug] GET /users --&gt; main.main.func1 (3 handlers)</code> 的路由表——<b>每次改完路由都扫一眼它</b>，路径、方法、handler 对不上，一眼就能看出来，比 curl 试错快得多。</p></div>
@@ -181,7 +203,8 @@ r.GET(<span class="s">"/files/*filepath"</span>, <span class="k">func</span>(c *
       <div class="task-title">练习 1：跑通 8 个路由并打印参数（60 分钟，主线项目骨架）</div>
       <p><b>要求：</b>在 <code>gin-api</code> 项目里注册本周主线项目的全部 7 个接口，外加 1 个 <code>/health</code>，共 8 个路由；每个 handler 都要解析并回显收到的参数。</p>
       <ul>
-        <li>GET /health 返回 <code>{"message":"ok"}</code></li>
+        <li>GET /health 返回三键 JSON（明天起统一成 <code>{"code":0,"message":"ok","data":{"status":"ok"}}</code>）；今天手写 <code>gin.H</code> 时实际会打出 <code>{"code":0,"data":{"status":"ok"},"message":"ok"}</code>——map 被 Go 序列化成 JSON 时<b>按键名字典序</b>排，不是 bug；明天换成 <code>response.Body</code> 结构体后顺序就固定了（结构体按字段声明顺序输出）</li>
+        <li>其余 7 条今天只做「参数回显」，body 长什么样明天起统一收进 <code>{code,message,data}</code>，今天别急</li>
         <li>GET /users、GET /users/:id、POST /users、PUT /users/:id、DELETE /users/:id</li>
         <li>GET /articles（支持 page/size 查询参数）、POST /articles</li>
       </ul>
@@ -190,7 +213,7 @@ r.GET(<span class="s">"/files/*filepath"</span>, <span class="k">func</span>(c *
       <pre><span class="code-label">main.go</span><span class="k">package</span> main
 
 <span class="k">import</span> (
-    <span class="t">net/http</span>
+    <span class="t">"net/http"</span>
     <span class="t">"github.com/gin-gonic/gin"</span>
 )
 
@@ -198,7 +221,9 @@ r.GET(<span class="s">"/files/*filepath"</span>, <span class="k">func</span>(c *
     r := gin.Default()
 
     r.GET(<span class="s">"/health"</span>, <span class="k">func</span>(c *gin.Context) {
-        c.JSON(http.StatusOK, gin.H{<span class="s">"message"</span>: <span class="s">"ok"</span>})
+        <span class="c">// 健康检查按全站约定留在根路径（不进 /api/v1），但三键结构今天就要成立</span>
+        c.JSON(http.StatusOK, gin.H{<span class="s">"code"</span>: <span class="n">0</span>, <span class="s">"message"</span>: <span class="s">"ok"</span>,
+            <span class="s">"data"</span>: gin.H{<span class="s">"status"</span>: <span class="s">"ok"</span>}})
     })
 
     r.GET(<span class="s">"/users"</span>, <span class="k">func</span>(c *gin.Context) {
@@ -208,7 +233,7 @@ r.GET(<span class="s">"/files/*filepath"</span>, <span class="k">func</span>(c *
         c.JSON(http.StatusOK, gin.H{<span class="s">"id"</span>: c.Param(<span class="s">"id"</span>)})
     })
     r.POST(<span class="s">"/users"</span>, <span class="k">func</span>(c *gin.Context) {
-        raw, _ := c.GetRawData() <span class="c">// 明天换成 ShouldBindJSON</span>
+        raw, _ := c.GetRawData() <span class="c">// 签名 ([]byte, error)：把 body 整个读成字节；明天换成 ShouldBindJSON</span>
         c.JSON(http.StatusCreated, gin.H{<span class="s">"raw"</span>: <span class="t">string</span>(raw)})
     })
     r.PUT(<span class="s">"/users/:id"</span>, <span class="k">func</span>(c *gin.Context) {
@@ -235,11 +260,11 @@ r.GET(<span class="s">"/files/*filepath"</span>, <span class="k">func</span>(c *
     </div>
     <div class="task">
       <div class="task-title">练习 2：NoRoute JSON 兜底（20 分钟）</div>
-      <p><b>要求：</b>给练习 1 的服务加上 <code>NoRoute</code> 与 <code>NoMethod</code>，让 <code>curl localhost:8080/nothing</code> 和 <code>curl -X POST localhost:8080/health</code> 都返回带 <code>code/message/data</code> 三键的 JSON。<b>参考答案：</b>直接抄讲义第 5 节两段代码，挂到 <code>r</code> 上即可；用 <code>curl -i</code> 确认状态码分别是 404 与 405。</p>
+      <p><b>要求：</b>给练习 1 的服务加上 <code>NoRoute</code> 与 <code>NoMethod</code>，并记得打开 <code>r.HandleMethodNotAllowed = true</code>，让 <code>curl localhost:8080/nothing</code> 和 <code>curl -X POST localhost:8080/health</code> 分别返回带 <code>code/message/data</code> 三键的 JSON。<b>参考答案：</b>直接抄讲义第 5 节整段代码（含那一行开关），挂到 <code>r</code> 上即可；用 <code>curl -i</code> 确认状态码分别是 404 与 405，body 的业务码分别是 1001 与 1003——<b>状态码和业务码是两层，不要写成同一个数字</b>。若 <code>POST /health</code> 给你的是 404，就是那一行开关没写。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 3：分组重构（20 分钟）</div>
-      <p><b>要求：</b>把 8 个路由全部挪进 <code>api := r.Group("/api/v1")</code>，服务外的旧路径（如 <code>/users</code>）应命中 NoRoute。<b>参考答案：</b>见讲义第 4 节——只改注册处，handler 一行不用动，这正是分组价值的第一个体现；curl 换成 <code>localhost:8080/api/v1/users</code> 验证。</p>
+      <p><b>要求：</b>把 7 个业务路由全部挪进 <code>api := r.Group("/api/v1")</code>，服务外的旧路径（如 <code>/users</code>）应命中 NoRoute；<b>只有 <code>/health</code> 留在根路径不分组</b>（全站约定：健康检查不带 <code>/api/v1</code> 前缀，day4 装配和周末 summary 都是这么写的，今天先按这个口径摆好）。<b>参考答案：</b>见讲义第 4 节——只改注册处，handler 一行不用动，这正是分组价值的第一个体现；curl 换成 <code>localhost:8080/api/v1/users</code> 验证，<code>localhost:8080/health</code> 仍是 200、<code>localhost:8080/api/v1/health</code> 应该命中 NoRoute。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 4：故意触发路由 panic（15 分钟）</div>
@@ -252,7 +277,7 @@ r.GET(<span class="s">"/files/*filepath"</span>, <span class="k">func</span>(c *
     <table>
       <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
       <tr><td>同层参数名不一致</td><td>启动 panic：<code>conflicts with existing wildcard</code></td><td><code>/user/:id</code> 与 <code>/user/:name</code> 二选一；不同资源用不同段（<code>/users/:id/posts/:pid</code> 是 OK 的，层级不同）</td></tr>
-      <tr><td>方法用错去测</td><td>curl POST 一个只注册 GET 的路径，返回 405 不是 404</td><td>405 = 路径存在方法不对；404 = 路径都没注册。用 <code>curl -i</code> 看状态码再排查</td></tr>
+      <tr><td>方法用错去测</td><td>curl POST 一个只注册 GET 的路径，你以为会拿 405，实际返回 404</td><td><code>HandleMethodNotAllowed</code> 默认关闭：想区分「路径没注册（404）」和「路径在但方法不对（405）」，必须显式写 <code>r.HandleMethodNotAllowed = true</code>；开着开关还拿到 404，那就是路径真没注册</td></tr>
       <tr><td>Param 是字符串</td><td><code>id := c.Param("id")</code> 直接参与比较/运算编译失败</td><td><code>id, err := strconv.Atoi(c.Param("id"))</code>，err 非 nil 时返回 400</td></tr>
       <tr><td>URL 没加引号</td><td><code>curl ...?a=1&amp;b=2</code> 只有 a 传到了</td><td>URL 整体用双引号包住，防 shell 吃掉 <code>&amp;</code></td></tr>
       <tr><td>端口被占</td><td><code>address already in use</code></td><td><code>lsof -ti:8080 | xargs kill</code>（macOS/Linux）或换端口</td></tr>
@@ -269,6 +294,7 @@ r.GET(<span class="s">"/files/*filepath"</span>, <span class="k">func</span>(c *
       <tr><td>httprouter</td><td>Gin 底层的路由匹配库，基数树结构，比 if-else 遍历快几个数量级</td></tr>
       <tr><td>路由分组 Group</td><td>共享路径前缀（和中间件）的路由集合，可嵌套</td></tr>
       <tr><td>NoRoute / NoMethod</td><td>404 / 405 的兜底 handler，用来保证错误响应也是 JSON</td></tr>
+      <tr><td>panic / recover</td><td>Go 的运行时崩溃机制：一个未处理的 <code>panic</code> 会打挂整个进程（不像 JS 异常只死一个请求）。Web 请求里的 panic 靠中间件的 <code>defer + recover()</code> 兜成 500。<b>第 3 天讲义「panic/recover 最小认识」正式讲</b>，今天见到 <code>panic(err)</code> 先照抄</td></tr>
     </table>
   </section>
 
@@ -277,8 +303,8 @@ r.GET(<span class="s">"/files/*filepath"</span>, <span class="k">func</span>(c *
     <ul class="check">
       <li><label><input type="checkbox" data-key="w2d1c1"><code>go.mod</code> 的 require 里出现了 <code>github.com/gin-gonic/gin</code>，<code>go run .</code> 能监听 :8080</label></li>
       <li><label><input type="checkbox" data-key="w2d1c2">练习 1：8 个路由的 curl 验证命令各执行一遍，参数 echo 输出全部正确</label></li>
-      <li><label><input type="checkbox" data-key="w2d1c3">练习 2：<code>curl -i /nothing</code> 返回 404 + JSON，<code>curl -i -X POST /health</code> 返回 405 + JSON</label></li>
-      <li><label><input type="checkbox" data-key="w2d1c4">练习 3：全部路由已收入 <code>/api/v1</code> 分组，旧路径命中 NoRoute</label></li>
+      <li><label><input type="checkbox" data-key="w2d1c3">练习 2：<code>curl -i /nothing</code> 返回 404 + JSON；已写 <code>r.HandleMethodNotAllowed = true</code>，<code>curl -i -X POST /health</code> 返回 405 + JSON</label></li>
+      <li><label><input type="checkbox" data-key="w2d1c4">练习 3：7 个业务路由已收入 <code>/api/v1</code> 分组（<code>/health</code> 按约定留在根路径），旧路径 <code>/users</code> 命中 NoRoute 返回 404 + 1001</label></li>
       <li><label><input type="checkbox" data-key="w2d1c5">练习 4 的两条 panic 报错原文已记进笔记，并能说出触发原因</label></li>
     </ul>
   </section>

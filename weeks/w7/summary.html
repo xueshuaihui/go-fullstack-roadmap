@@ -4,14 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>W7 总结 · 容器化 + 部署 | Go 全栈修炼手册</title>
-<meta name="description" content="第 7 周总结：全栈容器化与云服务器上线的验收清单、知识地图、三档自评、四大卡点复盘（localhost DNS / 镜像没重建 / 安全组 / 时区）与第 8 周预告。">
+<meta name="description" content="第 7 周总结：全栈容器化与云服务器上线的验收清单、知识地图、三档自评、五大卡点复盘（终态不一致 / localhost DNS / 镜像没重建 / 安全组 / 时区）与第 8 周预告。">
 <link rel="stylesheet" href="../../assets/style.css">
 <script src="../../assets/app.js"></script>
 </head>
 <body>
 <header class="site-header">
   <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
-  <nav><a href="../../index.html">8 周路线</a><a href="day1.html">第 7 周每日</a></nav>
+  <nav><a href="../../index.html">8 周路线</a><a href="day1.html">第 7 周每日课</a></nav>
 </header>
 
 <main class="page">
@@ -32,8 +32,8 @@
       <tr><td>D1</td><td>Go 多阶段 Dockerfile</td><td><code>backend/Dockerfile</code> + <code>.dockerignore</code>，≤60MB 镜像</td><td>厨房和餐桌分开：工具链留在 builder，只有二进制进最终镜像</td></tr>
       <tr><td>D2</td><td>前端构建 + Nginx</td><td><code>frontend/Dockerfile</code> + <code>nginx.conf</code></td><td>SPA 的路由活在 JS 里，服务器要用 try_files 兜底 index.html</td></tr>
       <tr><td>D3</td><td>完整 Compose 编排</td><td><code>docker-compose.yml</code> 三服务 + override + .env</td><td>容器里的 localhost 是它自己；服务名才是彼此的门牌号</td></tr>
-      <tr><td>D4</td><td>数据库迁移</td><td><code>migrations/</code> 若干对 up/down + profile migrate 服务</td><td>表结构和代码一样要版本化：可审查、可回滚、可回答"现在是第几号"</td></tr>
-      <tr><td>D5</td><td>云服务器部署</td><td>公网可访问的 https://你的域名 + 发布/备份流程</td><td>能回滚才叫上线，有异地副本才叫备份</td></tr>
+      <tr><td>D4</td><td>数据库迁移</td><td><code>migrations/</code> 四对 up/down（000001~000004）+ <code>profiles: tools</code> 的 migrate 一次性服务</td><td>表结构和代码一样要版本化：可审查、可回滚、可回答"现在是第几号"</td></tr>
+      <tr><td>D5</td><td>云服务器部署</td><td>公网可访问的 https://你的域名 + Deploy Key 拉代码 + 发布/备份/巡检脚本</td><td>能回滚才叫上线，有异地副本才叫备份</td></tr>
     </table>
   </section>
 
@@ -41,60 +41,75 @@
     <h2>验收清单（本周的"毕业考试"）</h2>
     <p>逐条实测，不许凭印象打勾——每一条都是规划里写死的第 7 周验收标准的展开。</p>
     <ul class="check">
-      <li><label><input type="checkbox" data-key="w7sum1"><b>一键起全栈</b>：清空容器后 <code>docker compose up -d --build</code>（配合 migrate 三步曲），三服务全部 (healthy)</label></li>
-      <li><label><input type="checkbox" data-key="w7sum2"><b>本地全流程</b>：<code>http://localhost</code> 完成注册 → 登录 → 发帖 → 编辑 → 删除；子路由直接刷新不 404</label></li>
-      <li><label><input type="checkbox" data-key="w7sum3"><b>云服务器公网可访</b>：手机 4G 打开 <code>https://你的域名</code> 走通同一业务流程</label></li>
-      <li><label><input type="checkbox" data-key="w7sum4"><b>HTTPS 小绿锁</b>：证书有效、HTTP 自动 308 跳 HTTPS、<code>docker compose ps</code> 里只有 80/443 对外</label></li>
-      <li><label><input type="checkbox" data-key="w7sum5"><b>数据不丢</b>：<code>docker compose restart</code> 甚至 <code>down</code>（不带 -v！）再 up 后，账号文章原样都在；手里有一份当天导出的 mysqldump</label></li>
-      <li><label><input type="checkbox" data-key="w7sum6"><b>发布可复现</b>：独立完成过一次"git pull → up -d --build → 验证 → prune"，并演练过一次回滚</label></li>
+      <li><label><input type="checkbox" data-key="w7sum1"><b>一键起全栈（三步曲顺序不可拆）</b>：清卷后 <code>docker compose up -d mysql</code> 等到 healthy → <code>docker compose --profile tools run --rm migrate up</code> 输出 <code>4</code> 且 <code>version</code> 显示 <code>dirty: false</code> → <code>docker compose up -d --build</code>，三服务全部 (healthy)</label></li>
+      <li><label><input type="checkbox" data-key="w7sum2"><b>本地全流程</b>：<code>http://localhost</code> 完成注册 → 登录 → 发帖 → 编辑 → 删除；详情页 <code>/post/1</code> 直接刷新不 404；<code>curl -s http://localhost/health</code> 返回 <code>{"code":0,"message":"ok","data":{"status":"ok"}}</code> 而不是 <code>&lt;!doctype html&gt;</code></label></li>
+      <li><label><input type="checkbox" data-key="w7sum3"><b>云服务器公网可访</b>：手机 4G 打开 <code>https://你的域名</code> 走通同一业务流程；用 <code>admin</code> 账号（<code>000004_seed_admin</code> 种下的）走 <code>/api/v1/auth/login</code> 能拿到 <code>access_token</code>；发帖时间戳与手表一致</label></li>
+      <li><label><input type="checkbox" data-key="w7sum4"><b>HTTPS 小绿锁</b>：证书有效、HTTP 自动 308 跳 HTTPS、<code>docker compose ps</code> 里只有 80/443 对外（3306 与 8080 从公网 <code>nc -vz</code> 不通）</label></li>
+      <li><label><input type="checkbox" data-key="w7sum5"><b>数据不丢</b>：<code>docker compose restart</code> 甚至 <code>down</code>（不带 -v！）再 up 后，账号文章原样都在；手里有一份 <code>backup.sh</code> 导出的 mysqldump，并且在一次性容器里真恢复验证过一次</label></li>
+      <li><label><input type="checkbox" data-key="w7sum6"><b>发布可复现</b>：服务器上用 Deploy Key（或 PAT）clone 到 <code>/opt/goblog</code>，独立完成过一次"pull → migrate up → up -d --build → logs 验证 → prune"，并演练过一次回滚；<code>.env</code> 是 <code>600</code> 且从未进 Git</label></li>
     </ul>
-    <div class="callout tip"><p>六条全勾，第 7 周正式毕业。有一两条翻车的，先去下面的卡点复盘对号入座——本周的坑高度集中，八成能在四个经典案例里找到自己的症状。</p></div>
+    <div class="callout tip"><p>六条全勾，第 7 周正式毕业。有一两条翻车的，先去下面的卡点复盘对号入座——本周的坑高度集中，八成能在五个经典案例里找到自己的症状。</p></div>
   </section>
 
   <section>
-    <h2>知识地图：这七天往你脑子里装了什么</h2>
+    <h2>知识地图：这五天往你脑子里装了什么</h2>
     <table>
       <tr><th>板块</th><th>概念</th><th>你已经会了吗（自测问句）</th></tr>
       <tr><td rowspan="3">镜像</td><td>多阶段构建 / builder 阶段</td><td>为什么最终镜像里没有 Go？AS 和 --from 各干什么？</td></tr>
       <tr><td>层缓存 / .dockerignore</td><td>为什么 COPY go.mod 要抢在 COPY . 前面？上下文里混进 .env 会怎样？</td></tr>
       <tr><td>静态编译 / alpine 运行基座</td><td>CGO_ENABLED=0、-ldflags="-s -w"、ca-certificates、tzdata 分别防什么事故？</td></tr>
-      <tr><td rowspan="2">Nginx</td><td>try_files 与 history 路由</td><td>pushState 发了请求吗？那为什么刷新会 404？</td></tr>
+      <tr><td rowspan="3">Nginx</td><td>try_files 与 history 路由</td><td>pushState 发了请求吗？那为什么刷新会 404？</td></tr>
       <tr><td>proxy_pass / GZIP / 缓存头</td><td>结尾斜杠怎么改变转发路径？/assets 和 index.html 谁该 no-cache？</td></tr>
-      <tr><td rowspan="3">Compose</td><td>服务网络与 DNS</td><td>backend 连 MySQL 的 DSN 主机名是什么？为什么不是 localhost？</td></tr>
+      <tr><td><code>location = /health</code> 精确匹配</td><td>不加这条时 <code>/health</code> 命中了谁？为什么说它是"假绿探针"？改完 nginx.conf 为什么要 <code>up -d --build frontend</code>？</td></tr>
+      <tr><td rowspan="4">Compose</td><td>服务网络与 DNS</td><td>backend 连 MySQL 的 DSN 主机名是什么？为什么不是 localhost？</td></tr>
       <tr><td>healthcheck / depends_on 条件</td><td>容器"起了"和"能用了"差在哪？start_period 救谁的命？</td></tr>
       <tr><td>named volume / env 注入 / profiles</td><td>down 之后什么留下了？一次性 migrate 服务怎么被点名？</td></tr>
-      <tr><td rowspan="2">迁移</td><td>golang-migrate / up·down 成对</td><td>AutoMigrate 的五种生产事故说得出几种？</td></tr>
+      <tr><td>多文件合并 / 变量展开在哪一侧</td><td><code>ports: []</code> 为什么抹不掉 base 的映射？<code>${VAR}</code> 与 <code>$$VAR</code> 各被谁的 shell 展开？<code>exec mysql -p"$MYSQL_PASSWORD"</code> 为什么必然 Access denied？</td></tr>
+      <tr><td rowspan="3">迁移</td><td>golang-migrate / up·down 成对</td><td>AutoMigrate 的五种生产事故说得出几种？为什么列名必须逐字对上 model？</td></tr>
       <tr><td>schema_migrations / dirty / force</td><td>dirty=1 时 migrate 为什么拒绝一切操作？force 改的是什么？</td></tr>
-      <tr><td rowspan="2">上线</td><td>安全组 / swap / A 记录</td><td>timeout 和 refused 分别该查哪一层？</td></tr>
-      <tr><td>Caddy 自动 HTTPS / down 与 down -v</td><td>证书申请成功依赖哪三件事？-v 删掉的为什么救不回来？</td></tr>
+      <tr><td>compose 里的 migrate 服务</td><td>固定参数为什么必须写进 <code>entrypoint:</code> 而不是 <code>command:</code>？一次性容器为什么不能设 <code>container_name</code>？</td></tr>
+      <tr><td rowspan="3">上线</td><td>安全组 / swap / A 记录</td><td>timeout 和 refused 分别该查哪一层？</td></tr>
+      <tr><td>Caddy 自动 HTTPS / down 与 down -v</td><td>证书申请成功依赖哪三件事？本地预演为什么要写 <code>tls internal</code>？-v 删掉的为什么救不回来？</td></tr>
+      <tr><td>Deploy Key / PAT / 备份与巡检</td><td>仓库级 Deploy Key 和账号级 SSH key 差别在哪？<code>mysqldump --single-transaction</code> 防什么？crontab 里为什么要写绝对 PATH、为什么 <code>%</code> 要转义？</td></tr>
     </table>
 
     <h3>本周产物清点（作品集素材，第 8 周直接复用）</h3>
-    <pre><span class="code-label">仓库新增文件</span>goblog/
-├── backend/Dockerfile + .dockerignore
-├── frontend/Dockerfile + nginx.conf + .dockerignore
-├── docker-compose.yml
-├── docker-compose.override.yml + docker-compose.prod.yml
-├── .env.example                         <span class="c"># 只有键名没有真值的模板，进 Git</span>
-├── migrations/00000*_*.up.sql/.down.sql <span class="c"># 成对的版本化迁移</span>
-├── scripts/hashpw/main.go               <span class="c"># bcrypt 哈希小工具</span>
-├── Caddyfile
+    <pre><span class="code-label">仓库新增文件（W6D5 归置出的 monorepo，W7 只往里加）</span>goblog/
+├── backend/Dockerfile + .dockerignore   <span class="c"># 产出镜像 goblog-backend:local（约 28MB）</span>
+├── backend/scripts/hashpw/main.go       <span class="c"># bcrypt 哈希小工具，go run 一条命令出哈希</span>
+├── frontend/Dockerfile + nginx.conf + .dockerignore  <span class="c"># 产出 goblog-frontend:local</span>
+├── docker-compose.yml                   <span class="c"># name: goblog，mysql / backend / frontend / migrate(profiles: tools)</span>
+├── docker-compose.override.yml + docker-compose.prod.yml  <span class="c"># prod 追加 caddy，并把 frontend 的 ports 清掉</span>
+├── .env.example                         <span class="c"># 只有键名没有真值的模板，进 Git；真值在 .env（600，永不进 Git）</span>
+├── migrations/000001_init_users、000002_add_role_to_users、000003_init_articles、000004_seed_admin
+│                                        <span class="c"># 每号一对 .up.sql + .down.sql，共 8 个文件</span>
+├── Caddyfile                            <span class="c"># 生产 ACME 版 / 本地预演 tls internal 版，差别只有那两行</span>
+├── healthcheck.sh + backup.sh           <span class="c"># 30 秒健康卡 + 每周日凌晨滚动备份（crontab 一条）</span>
 └── 上线截图 × 3（首页 / 发帖 / 小绿锁）</pre>
   </section>
 
   <section>
     <h2>自评三档（诚实打分，决定周末剩余时间去哪）</h2>
     <div class="grade">
-      <div><b>A · 基础达标</b>验收清单勾满 4 条以上；compose 能起、域名能开。→ 本周目标已兑现，周末把「卡点复盘」四案例读一遍，防止带病进第 8 周。</div>
+      <div><b>A · 基础达标</b>验收清单勾满 4 条以上；compose 能起、域名能开。→ 本周目标已兑现，周末把「卡点复盘」五案例读一遍，防止带病进第 8 周。</div>
       <div><b>B · 扎实掌握</b>六条全勾 + 能向别人讲清 DNS 互访和 try_files 两个原理。→ 加餐：给 compose 加 redis 服务做缓存、把发布流程写成 deploy.sh 脚本。</div>
       <div><b>C · 表面跑通</b>能访问，但一半配置是"抄作业抄对了不知道为什么"。→ 不丢人。从 D1 的练习 3（缓存实验）和 D3 的练习 3（故意制造 localhost 故障）重做一遍，这两次"亲手搞坏再修好"最涨功力。</div>
     </div>
   </section>
 
   <section>
-    <h2>卡点复盘：本周四大经典事故</h2>
+    <h2>卡点复盘：本周五大经典事故</h2>
 
-    <h3>卡点一：backend 连不上 MySQL——localhost 之祸（发生率第一）</h3>
+    <h3>卡点一：终态与既有代码不一致——env 键名 / 表列名 / 路由前缀 / 仓库目录（发生率第一）</h3>
+    <p style="color:var(--text-dim);font-size:13px">为什么排第一：本周没有一行"新逻辑"，做的全是对第 3–6 周代码的<b>搬迁与接线</b>。搬迁不出错的前提是"名字逐字对得上"，而名字有四处必须同时成立——差一个字就是全站瘫。</p>
+    <table>
+      <tr><th>症状</th><td>① backend 起来就退出：日志里 <code>DB_PASS</code> 是空串，或 <code>Access denied for user 'goblog'@'172.18.0.3' (using password: YES)</code>；② <code>migrate up</code> 报 <code>Error 1146 Table 'goblog.users' doesn't exist</code>，或 <code>up</code> 成功但接口 500 说 <code>Unknown column 'bio'</code>；③ 前端点登录一直转圈，手动 <code>curl</code> 打 <code>/api/login</code> 是 404，改成 <code>/api/v1/auth/login</code> 才通；④ <code>docker compose build</code> 报 <code>COPY failed: file not found</code></td></tr>
+      <tr><th>病因</th><td>四张"名字表"至少错了一张：<b>compose 里的 env 键名</b> ≠ <code>config.go</code> 里 <code>getEnv</code> 读的键名（或自己造了 <code>DB_PASSWORD</code>/<code>MYSQL_DSN</code> 这类别名）；<b>迁移文件的列名</b> ≠ model 的字段映射（<code>password_hash</code> vs <code>password</code>、漏了 <code>nickname</code>/<code>article_count</code>）；<b>前端调用的前缀</b> ≠ nginx <code>location</code> 能匹配上的前缀；<b>build 上下文</b>（<code>build: ./backend</code>）≠ Dockerfile 里 <code>COPY</code> 的相对路径基准。凭记忆改写、而不是照抄已经存在的那份，是本事故的唯一成因</td></tr>
+      <tr><th>药方</th><td>① 键名以 <code>.env.example</code> 为唯一出处，改任何一处全仓库搜一遍：<code>grep -rn "DB_PASS" .</code>；② 列名以 <code>backend/internal/model</code> 为唯一出处，迁移写完立刻 <code>SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='goblog';</code> 逐行对；③ 前缀只有一套：<code>location /api/</code> 覆盖 <code>/api/v1/*</code>，后端注册 <code>r.Group("/api/v1")</code>，验收永远打完整路径；④ 凡是"照抄"的段落，从已定稿的那一页重新复制，不要从自己的记忆里复制——本周已五次三番栽在 <code>${VAR}</code> 与 <code>$$VAR</code> 的差别上，同一个道理</td></tr>
+      <tr><th>验证</th><td>三条命令连过一次，即本事故不存在：<code>dc config --quiet</code>（渲染无警告）→ <code>docker compose --profile tools run --rm migrate version</code>（<code>4</code> / <code>dirty: false</code>）→ 登录 <code>curl</code> 拿到 <code>access_token</code>。外加一条：<code>docker compose exec mysql sh -c 'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SHOW COLUMNS FROM users;"'</code> 的输出与 model 一字不差</td></tr>
+    </table>
+
+    <h3>卡点二：backend 连不上 MySQL——localhost 之祸（几乎人人中招）</h3>
     <table>
       <tr><th>症状</th><td>backend 状态 Restarting，日志 <code>dial tcp 127.0.0.1:3306: connect: connection refused</code></td></tr>
       <tr><th>病因</th><td>把宿主机视角写进了容器视角：容器里的 localhost 是它<b>自己</b>的网络命名空间，那里没有 mysqld</td></tr>
@@ -102,7 +117,7 @@
       <tr><th>验证</th><td><code>docker compose exec backend sh -c "getent hosts mysql"</code> 能解析出 IP 即网络层通</td></tr>
     </table>
 
-    <h3>卡点二：明明"部署了"，跑的还是旧代码——镜像没重建</h3>
+    <h3>卡点三：明明"部署了"，跑的还是旧代码——镜像没重建</h3>
     <table>
       <tr><th>症状</th><td>改了代码、compose up 也执行了，页面纹丝不动；或浏览器强刷才生效</td></tr>
       <tr><th>病因</th><td><code>up -d</code> 只保证"镜像存在且有容器"，<b>不会重新 build</b>；Vite 变量是构建期烧录的，改 env 不重 build 等于没改</td></tr>
@@ -110,7 +125,7 @@
       <tr><th>连带坑</th><td>浏览器缓存了旧 index.html → 永远在引用旧 JS。D2 的 <code>index.html no-cache</code> 配置就是为消灭这一层</td></tr>
     </table>
 
-    <h3>卡点三：网站打不开，转圈到超时——安全组没放行</h3>
+    <h3>卡点四：网站打不开，转圈到超时——安全组没放行</h3>
     <table>
       <tr><th>症状</th><td>服务器上 <code>docker compose ps</code> 一切正常、本机 <code>curl 127.0.0.1</code> 通，外就是不访问；浏览器 timeout</td></tr>
       <tr><th>病因</th><td>云厂商控制台的安全组（机器外面的防火墙）没开 80/443——它和机内 ufw 是<b>两层</b>，任何一层都拦</td></tr>
@@ -118,11 +133,11 @@
       <tr><th>举一反三</th><td>同法可查 22 被封锁（换网/控制台 VNC 应急）、443 通了但证书没签（回看 DNS 生效与备案）</td></tr>
     </table>
 
-    <h3>卡点四：时间全差 8 小时——时区三连</h3>
+    <h3>卡点五：时间全差 8 小时——时区三连</h3>
     <table>
       <tr><th>症状</th><td>评论/文章时间比现实早或晚 8 小时，或日志时间戳对不上</td></tr>
       <tr><th>病因</th><td>三处各管一段：① 容器默认 UTC（缺 tzdata 时连 LoadLocation 都报错）；② MySQL 服务端时区；③ GORM DSN 的 loc 参数</td></tr>
-      <tr><th>药方</th><td>本周文件里已全部配齐：D1 镜像 <code>apk add tzdata + ENV TZ</code>；D3 mysql 环境 <code>TZ=Asia/Shanghai</code>；DSN <code>parseTime=True&amp;loc=Local</code>；服务器层 <code>timedatectl set-timezone Asia/Shanghai</code></td></tr>
+      <tr><th>药方</th><td>本周文件里已全部配齐：D1 镜像 <code>apk add tzdata + ENV TZ</code>；D3 mysql 环境 <code>TZ=Asia/Shanghai</code>；DSN <code>parseTime=True&amp;loc=Local</code>；服务器层 <code>timedatectl set-timezone Asia/Shanghai</code>（D5 第 1 节里已经执行过，并且写进了 D5 完成检查与本页验收第 3 条——它是验收项，不是可选项）</td></tr>
       <tr><th>验证</th><td>发一条帖，页面时间、backend 日志时间、<code>SELECT created_at</code> 三者一致且等于手表时间</td></tr>
     </table>
   </section>
@@ -139,8 +154,8 @@
                                   ▼   （goblog_default 内网）
                     ┌───────────────────────────┐
                     │  frontend 容器（nginx）    │  静态 dist + try_files 兜底
-                    └─────────────┬─────────────┘
-                                  │ proxy_pass /api/ → backend:8080
+                    └─────────────┬─────────────┘  另两条：location = /health（精确匹配，绕开 try_files 假绿）
+                                  │ proxy_pass /api/ → backend:8080（覆盖 /api/v1/*）
                                   ▼
                     ┌───────────────────────────┐        ┌──────────────────┐
                     │  backend 容器（Gin+GORM）  │ ─────▶ │  mysql 容器       │
@@ -148,11 +163,12 @@
                     └───────────────────────────┘ tcp(   └──────────────────┘
                                           mysql:3306)      ▲
                     一次性: migrate 服务（profiles: tools）──┘ 结构版本 = schema_migrations
-   ※ 公网只开 22/80/443；8080/3306 永不对世界暴露；密钥全部来自 .env</pre>
+   ※ 三步曲顺序不可拆：up -d mysql → --profile tools run --rm migrate up → up -d --build
+   ※ 公网只开 22/80/443；8080/3306 永不对世界暴露；密钥全部来自 .env（600，不进 Git、不进镜像）</pre>
   </section>
 
   <section>
-    <h2>面试模拟：这十个问题现在都答得上来</h2>
+    <h2>面试模拟：这十二个问题现在都答得上来</h2>
     <table>
       <tr><th>问题</th><th>答题要点（本周都讲过）</th></tr>
       <tr><td>为什么 Dockerfile 要分两个 FROM？</td><td>工具链与运行时分离；最终镜像只含二进制+最小基座，体积/攻击面/速度三赢</td></tr>
@@ -165,8 +181,10 @@
       <tr><td>生产为什么禁用 AutoMigrate？</td><td>不删列/改名留残列/类型变更锁表/无版本不可回滚/多副本竞改</td></tr>
       <tr><td>schema_migrations dirty=1 怎么办？</td><td>手工善后半途 SQL → force 目标版本清标记 → 继续 up</td></tr>
       <tr><td>down 和 down -v 的区别？</td><td>前者留 named volume；后者删卷＝删库，不可恢复</td></tr>
+      <tr><td>compose 里 migrate 的固定参数为什么写 <code>entrypoint:</code> 而不是 <code>command:</code>？</td><td><code>run --rm &lt;服务&gt; &lt;子命令&gt;</code> 会<b>替换</b> command、把参数<b>追加</b>到 entrypoint；写进 command 就等于每次都要重敲连接串，还容易漏 <code>multiStatements=true</code></td></tr>
+      <tr><td><code>docker compose exec mysql -p"$MYSQL_PASSWORD"</code> 为什么必然 Access denied？</td><td>引号外的 <code>$VAR</code> 由<b>宿主机</b> shell 展开，而那个键只存在于容器环境里 → 传进去是空串；改成 <code>exec mysql sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD"'</code>，让容器自己取值</td></tr>
     </table>
-    <div class="callout tip"><p>能把这十题连珠炮般答完，你的"会部署"就已经超过了多数只会照抄 YAML 的候选人——第 8 周简历项目栏可以放心写"Docker Compose 全栈编排 + 云服务器自动化上线"。</p></div>
+    <div class="callout tip"><p>能把这十二题连珠炮般答完，你的"会部署"就已经超过了多数只会照抄 YAML 的候选人——第 8 周简历项目栏可以放心写"Docker Compose 全栈编排 + 云服务器自动化上线"。</p></div>
   </section>
 
   <section>
@@ -174,7 +192,7 @@
     <ul class="check">
       <li><label><input type="checkbox" data-key="w7sum7">把上面架构图誊画进 <code>README.md</code>，附手机截图与小绿锁截图</label></li>
       <li><label><input type="checkbox" data-key="w7sum8">Git 提交本周全部产物；确认 <code>git log -p | grep -i password</code> 无真实密钥泄露</label></li>
-      <li><label><input type="checkbox" data-key="w7sum9">口头自测十题一遍，卡壳的题回对应 Day 页重读并做笔记</label></li>
+      <li><label><input type="checkbox" data-key="w7sum9">口头自测十二题一遍，卡壳的题回对应 Day 页重读并做笔记</label></li>
     </ul>
   </section>
 
@@ -182,17 +200,19 @@
     <h2>交给第 8 周的仓库基线（缺一样就先补）</h2>
     <table>
       <tr><th>资产</th><th>验收状态</th><th>下周谁还会用到它</th></tr>
-      <tr><td>两个可构建的镜像（backend / frontend）</td><td>build 无报错，体积有数字</td><td>文件上传后给 uploads 目录加卷，只动 compose 一处</td></tr>
-      <tr><td>三服务 + caddy + migrate 的 compose 家族</td><td>一键起、healthy</td><td>RBAC 加环境变量、上传加挂载卷，全在 yml 里改</td></tr>
-      <tr><td>migrations/ 版本化表结构</td><td>version 最新且 dirty: false</td><td>D1 的"用户表加 role"你其实已经提前写好（000002）</td></tr>
-      <tr><td>.env 生产密钥组</td><td>600 权限、从未进 Git</td><td>上线新流程直接复用</td></tr>
+      <tr><td>两个可构建的镜像（<code>goblog-backend:local</code> / <code>goblog-frontend:local</code>）</td><td>build 无报错，体积有数字</td><td>D2 给 uploads 目录加卷、D3 的评论接口打进同一个后端镜像，只动 compose 一处</td></tr>
+      <tr><td>三服务 + caddy + migrate(profiles) 的 compose 家族</td><td>三步曲一键起、全部 healthy，公网只开 22/80/443</td><td>RBAC 加环境变量、上传加挂载卷，全在 yml 里改；<code>docker compose config</code> 先渲染再说</td></tr>
+      <tr><td><code>migrations/</code> 四对 up/down（000001~000004）</td><td><code>migrate version</code> = 4、<code>dirty: false</code>，<code>admin</code> 能登录且 <code>role=1</code></td><td>下周的 <code>000005_add_comments</code> / <code>000006_add_avatar_to_users</code> 就接在 000004 后面排号；D1 用的 role 列你已经提前写好了</td></tr>
+      <tr><td>发布五步 + Deploy Key + <code>/opt/goblog</code></td><td>能独立跑通一遍并回滚</td><td>D5 直接把它扩成六步流水线（前面加备份）</td></tr>
+      <tr><td><code>healthcheck.sh</code> + <code>backup.sh</code> + crontab</td><td>导出的 dump 在一次性容器里恢复验证过</td><td>D4 联调前的数据基线、D5 发布第 ① 步</td></tr>
+      <tr><td>生产 <code>.env</code> 密钥组（含 <code>AUTO_MIGRATE=false</code>）</td><td>600 权限、从未进 Git</td><td>下周加 <code>UPLOAD_DIR</code> / <code>CORS_ORIGIN</code> 两个键，同时补进 <code>.env.example</code></td></tr>
       <tr><td>公网地址 + 小绿锁</td><td>手机 4G 可访问</td><td>README 顶部链接、演示视频录制场地</td></tr>
     </table>
-    <div class="callout note"><p>给本周项目单独打一个 git tag：<code>git tag -a w7-deploy -m "dockerized & deployed" && git push origin w7-deploy</code>。第 8 周玩崩了随时 <code>git checkout w7-deploy</code> 回到"已上线"的确定状态——把安全感版本化。</p></div>
+    <div class="callout note"><p>给本周项目单独打一个 git tag：<code>git tag -a w7-deploy -m "dockerized &amp; deployed" &amp;&amp; git push origin w7-deploy</code>。第 8 周玩崩了随时 <code>git checkout w7-deploy</code> 回到"已上线"的确定状态——把安全感版本化。</p></div>
   </section>
 
   <section>
-    <h2>写进笔记的本周十条军规</h2>
+    <h2>写进笔记的本周十二条军规</h2>
     <ol>
       <li>清单先 COPY，源码后 COPY——层缓存是构建速度的全部秘密。</li>
       <li>CGO_ENABLED=0 + ca-certificates + tzdata，Go 容器三件套。</li>
@@ -200,40 +220,46 @@
       <li>容器互访用服务名；判断网络问题先问"我在哪个命名空间"。</li>
       <li>depends_on 要配 healthcheck，"起了"≠"能用"。</li>
       <li>只有需要被外部访问的服务才映射端口，80/443 之外都是内网。</li>
+      <li>变量在谁的 shell 里展开，就得在谁的环境里存在：要在容器里取 <code>$MYSQL_PASSWORD</code>，就把整条命令写进 <code>sh -c '…'</code> 交给容器，宿主机那份永远是空的。</li>
+      <li>照抄只抄"已定稿的那一页"：env 键名、表列名、路由前缀、目录层级这四个东西，一个字都不许凭记忆重写。</li>
       <li>迁移文件合入后永不修改，错误用新迁移纠正。</li>
-      <li>生产不用 AutoMigrate；上线前先在预发库跑一遍 up。</li>
-      <li>down 不带 -v；备份必须有异地副本。</li>
-      <li>发布 = pull → --build → 验证 → prune；回滚演练过才敢按按钮。</li>
+      <li>生产不用 AutoMigrate；先关 <code>AUTO_MIGRATE</code> 再 <code>migrate up</code>，上线前在预发库跑一遍 up。</li>
+      <li>down 不带 -v；备份必须有异地副本，且恢复演练过——没验过能恢复的备份不叫备份。</li>
+      <li>发布 = pull → migrate up → --build → 验证 → prune；回滚演练过才敢按按钮。</li>
     </ol>
   </section>
 
   <section>
-    <h2>排障速查卡：出事先跑这八行</h2>
+    <h2>排障速查卡：出事先跑这九行</h2>
     <pre><span class="code-label">shell（服务器 / 本机通用，从上到下逐层定位）</span>$ docker compose ps                          <span class="c"># 谁不正常：missing / Restarting / unhealthy？</span>
 $ docker compose logs <span class="k">&lt;</span>问题服务<span class="k">&gt;</span> --tail <span class="n">30</span>    <span class="c"># 它的报错原文（先读三遍再搜索）</span>
 $ docker compose exec backend sh -c <span class="s">"getent hosts mysql"</span>   <span class="c"># 网络层：服务名解析通吗</span>
 $ docker compose exec backend sh -c <span class="s">"wget -qO- :8080/health"</span>  <span class="c"># 容器内自测服务本身活着吗</span>
 $ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localhost/  <span class="c"># 宿主机层：对外入口通吗</span>
+$ docker compose exec mysql sh -c <span class="s">'exec mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" -e "SHOW TABLES; SELECT version, dirty FROM schema_migrations;"'</span>   <span class="c"># 结构层：表在不在、迁移到第几号（注意：整条交给容器里的 shell）</span>
 $ docker volume ls                           <span class="c"># 数据卷在不在（怀疑数据问题第一步）</span>
 $ df -h / <span class="k">&amp;&amp;</span> free -h                          <span class="c"># 机器层：磁盘满 / 内存OOM 是两大隐形杀手</span>
 $ docker compose <span class="c">-f</span> docker-compose.yml <span class="c">-f</span> docker-compose.prod.yml <span class="c">--env-file</span> .env config   <span class="c"># 配置层：渲染后的最终 YAML，键值一目了然</span></pre>
     <table>
-      <tr><th>卡在哪一步</th><th>最可能原因（对号入座四大卡点）</th></tr>
-      <tr><td>ps 显示 backend Restarting</td><td>卡点一 localhost 之祸 / 迁移没跑导致表不存在</td></tr>
-      <tr><td>ps 全 healthy 但页面是旧的</td><td>卡点二 镜像没重建（+ 浏览器缓存）</td></tr>
-      <tr><td>本机 curl 通、外网 timeout</td><td>卡点三 安全组/双层防火墙</td></tr>
-      <tr><td>都通了但时间不对</td><td>卡点四 时区三连，逐处核对 TZ/loc</td></tr>
+      <tr><th>卡在哪一步</th><th>最可能原因（对号入座五大卡点）</th></tr>
+      <tr><td>ps 显示 backend Restarting</td><td>卡点二 localhost 之祸 / 卡点一 的键名拼错（密码为空）/ 迁移没跑导致表不存在</td></tr>
+      <tr><td>ps 全 healthy 但页面是旧的</td><td>卡点三 镜像没重建（+ 浏览器缓存）</td></tr>
+      <tr><td>本机 curl 通、外网 timeout</td><td>卡点四 安全组/双层防火墙</td></tr>
+      <tr><td>都通了但时间不对</td><td>卡点五 时区三连，逐处核对 timedatectl / TZ / loc</td></tr>
+      <tr><td>全 healthy、页面能开，但接口 404 或 500 <code>Unknown column</code></td><td>卡点一 终态不一致：路由前缀或表列名没对上既有代码，先跑它那一节的三条验证命令</td></tr>
     </table>
     <div class="callout warn"><p>顺序有讲究：从 <code>ps</code> 到 <code>logs</code> 是"哪一层坏了"，从 <code>exec 自测</code> 到 <code>宿主机 curl</code> 是"坏在容器内还是链路外"。养成按卡排查的肌肉记忆，比任何一次灵光乍现都可靠。</p></div>
   </section>
 
   <section>
     <h2>下周预告：第 8 周 · 综合项目实战（收官）</h2>
-    <p>最后一周不再学"部署"，而是回到功能：在第 6/7 周这个<b>已经上线的博客</b>上，现学两个新模块并完整收尾——</p>
+    <p>最后一周不再学新"部署"，而是回到功能：<b>还是同一个 <code>goblog</code> monorepo、同一个 <code>/opt/goblog</code>、同一套 compose 与三步曲</b>，只做增量——加三张表/一列、加两个中间件、加一组接口，然后收尾成作品集。</p>
     <ul>
-      <li><b>RBAC 角色权限（D1）</b>：users 表加 role 字段——正好用你今天写好的 <code>000002_add_role_to_users</code> 迁移练真实场景；权限中间件按角色放行，admin 管理全站文章与用户；</li>
-      <li><b>文件上传（D2）</b>：Gin <code>SaveUploadedFile</code>、类型/大小校验、本地磁盘存储 + 静态回显，头像与文章封面——并给上传目录挂上 named volume 持久化（这周的知识立刻还债）；</li>
-      <li><b>前端权限与收尾（D3）</b>、<b>联调测试修 bug（D4）</b>、<b>部署 + README + API 文档（D5）</b>：把首页链接、截图、架构图、启动说明整理成能放进简历的作品集页面。</li>
+      <li><b>RBAC 角色权限（D1）</b>：users 表那个 <code>role</code> 列是你自己用 <code>000002</code> 建好的，下周直接 <code>WHERE role = 1</code> 用它——权限中间件按角色放行，admin 管理全站文章与用户；</li>
+      <li><b>文件上传（D2）</b>：Gin <code>FormFile</code> / <code>SaveUploadedFile</code>、扩展名 + 魔数 + 大小三件套校验、头像与封面落盘；新迁移 <code>000006_add_avatar_to_users</code> 给 users 补一列，并给 uploads 目录挂 named volume（这周的卷与 compose 知识立刻还债）；</li>
+      <li><b>评论 + 前端权限与收尾（D3）</b>：新表 <code>comments</code> 走 <code>000005_add_comments</code>，文章详情页加评论区与删除入口，前端按 <code>role</code> 控制可见性；</li>
+      <li><b>联调测试修 bug（D4）</b>：把第 4 周那条 CI workflow 升级成 <code>-race</code> 全量 + 覆盖率，发布前跑一遍真实回归；</li>
+      <li><b>部署 + README + API 文档（D5）</b>：把今天的"发布五步"补成六步（备份在前、健康检查在后），再把首页链接、手机截图、那张架构图、启动说明整理成能放进简历的作品集页面。</li>
     </ul>
     <div class="callout note"><p>带着三个问题进入下周，你的 D1 会顺畅十倍：① 权限中间件该注册在路由组的哪一层？② 上传的封面文件落在容器里，compose 重建后去哪找？③ README 里的架构图敢不敢直接用本周的 docker-compose.yml 画？</p></div>
   </section>
@@ -249,12 +275,15 @@ $ docker compose <span class="c">-f</span> docker-compose.yml <span class="c">-f
       <tr><td>named volume</td><td>Docker 托管的持久卷，down 不删、down -v 删</td></tr>
       <tr><td>try_files 兜底</td><td>SPA 刷新 404 的唯一正解</td></tr>
       <tr><td>schema_migrations</td><td>库结构的"git 版本号"，version + dirty 一行定生死</td></tr>
-      <tr><td>ACME / Let's Encrypt</td><td>自动签发续期免费证书的协议与机构</td></tr>
+      <tr><td>entrypoint vs command</td><td>compose <code>run</code> 替换后者、把参数追加到前者，所以固定 flag 必须写进 entrypoint</td></tr>
+      <tr><td><code>${VAR}</code> vs <code>$$VAR</code></td><td>前者渲染期由宿主机展开，后者留给容器内 shell——决定密码能不能被读到</td></tr>
+      <tr><td>Deploy Key / PAT</td><td>仓库级只读拉码密钥 / HTTPS 令牌照；都不等于把账号私钥拷上服务器</td></tr>
+      <tr><td>ACME / Let's Encrypt</td><td>自动签发续期免费证书的协议与机构；本地预演拿不到就写 <code>tls internal</code></td></tr>
       <tr><td>安全组</td><td>云厂商包在虚拟机外的第一层防火墙</td></tr>
       <tr><td>up -d --build</td><td>本周敲得最多的一条命令：重建变化的镜像并拉起编排</td></tr>
       <tr><td>deploy.sh（练习）</td><td>把 pull → migrate → build → up → prune 串成一条命令的自制发布脚本</td></tr>
     </table>
-    <p style="color:var(--text-dim);font-size:13px">建议把本表与「十条军规」一起誊到笔记置顶处：第 8 周冲刺与未来找工作复盘，都会回来翻它。</p>
+    <p style="color:var(--text-dim);font-size:13px">建议把本表与「十二条军规」一起誊到笔记置顶处：第 8 周冲刺与未来找工作复盘，都会回来翻它。</p>
   </section>
 
   <section>

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>W2D4 · 项目分层 | Go 全栈修炼手册</title>
-<meta name="description" content="Day 4：handler/service/repository 三层职责、cmd/server 与 internal 目录组织、map+RWMutex 内存仓库、统一响应与错误码 1001 接入、避免 import cycle。">
+<meta name="description" content="Day 4：handler/service/repository 三层职责、cmd/server 与 internal 目录组织、interface（UserRepository/ArticleRepository + MemRepo/ArticleRepo 实现，构造函数依赖接口）、map+RWMutex 内存仓库、统一响应与错误码 1001/1004/1006/5000 接入、避免 import cycle。">
 <link rel="stylesheet" href="../../assets/style.css">
 <script src="../../assets/app.js"></script>
 </head>
@@ -30,7 +30,7 @@
     <ul class="check">
       <li><label><input type="checkbox" data-key="w2d4g1">能一句话讲出三层各自职责与「数据在层间的旅行路线」</label></li>
       <li><label><input type="checkbox" data-key="w2d4g2">搭出 <code>cmd/server</code> + <code>internal/{model,repository,service,handler,middleware}</code> + <code>pkg/response</code> 目录</label></li>
-      <li><label><input type="checkbox" data-key="w2d4g3">用 <code>map + sync.RWMutex</code> 实现线程安全的内存 repository（为并发周埋伏笔）</label></li>
+      <li><label><input type="checkbox" data-key="w2d4g3">定义 <code>UserRepository</code>/<code>ArticleRepository</code> 接口，用 <code>map + sync.RWMutex</code> 的 <code>MemRepo</code>/<code>ArticleRepo</code> 隐式实现它，构造函数依赖接口而非具体类型</label></li>
       <li><label><input type="checkbox" data-key="w2d4g4">service 返回哨兵错误，handler 翻译成「HTTP 404 + code 1001」双层响应</label></li>
       <li><label><input type="checkbox" data-key="w2d4g5">能说出 import cycle 是怎么产生的、层间单向依赖如何避免它</label></li>
     </ul>
@@ -68,26 +68,27 @@ HTTP 响应 {code, message, data}</pre>
 ├── go.mod                       <span class="c"># module gin-api</span>
 ├── cmd/server/main.go           <span class="c"># 唯一入口：组装依赖 + 启动（cmd/xxx = 可执行程序的惯例位置）</span>
 ├── internal/                    <span class="c"># 私有代码：别的模块 import 不到，Go 编译器强制</span>
-│   ├── model/                   <span class="c"># User、Article、DTO</span>
-│   ├── repository/              <span class="c"># 内存仓库（map + RWMutex）</span>
-│   ├── service/                 <span class="c"># 业务规则</span>
-│   ├── handler/                 <span class="c"># gin handler + 路由注册</span>
+│   ├── model/                   <span class="c"># User、Article、CreateXxx/UpdateXxx DTO（ID 一律 uint）</span>
+│   ├── repository/              <span class="c"># 接口 UserRepository/ArticleRepository + 内存实现 MemRepo/ArticleRepo（map+RWMutex）</span>
+│   ├── service/                 <span class="c"># 业务规则：user_service.go / article_service.go</span>
+│   ├── handler/                 <span class="c"># gin handler + 路由注册：user_handler.go / article_handler.go / bind_err.go</span>
 │   └── middleware/              <span class="c"># 昨天的 CORS/Timer/Auth 搬进来</span>
 └── pkg/response/                <span class="c"># 与前两天一致的统一响应</span></pre>
     <div class="callout note"><p><b>依赖只能从上往下单向指：</b>handler → service → repository → model。箭头反了（比如 repository 想调 service）就是 import cycle。记住口诀：<b>下层不知道上层存在</b>——repository 根本不知道谁在用它，所以它才能同时被 HTTP、CLI、定时任务复用。</p></div>
 
     <h3>3. model 层</h3>
+    <div class="callout note"><p><b>本周末态把 ID 统一成 <code>uint</code></b>（对齐 CANONICAL「ID 一律 uint」，第 3 周接 GORM 的 <code>gorm.Model</code> 里 ID 也是 uint，提前适应）。W1 的 todo-api 用的是 <code>int</code>，这是本周唯一有意的类型升级；仓储/服务/处理器的 id 参数随之改成 <code>uint</code>。</p></div>
     <pre><span class="code-label">internal/model/user.go</span><span class="k">package</span> model
 
 <span class="k">import</span> <span class="t">"time"</span>
 
 <span class="c">// User 是领域模型：对外输出时 Password 因 `json:"-"` 永远不会泄漏</span>
 <span class="k">type</span> <span class="t">User</span> <span class="k">struct</span> {
-    ID        <span class="t">int</span>      `<span class="t">json</span>:<span class="s">"id"</span>`
-    Username  <span class="t">string</span>   `<span class="t">json</span>:<span class="s">"username"</span>`
-    Email     <span class="t">string</span>   `<span class="t">json</span>:<span class="s">"email"</span>`
-    Password  <span class="t">string</span>   `<span class="t">json</span>:<span class="s">"-"</span>` <span class="c">// 第 4 周换成 bcrypt 哈希后依然不输出</span>
-    Role      <span class="t">string</span>   `<span class="t">json</span>:<span class="s">"role"</span>`
+    ID        <span class="t">uint</span>      `<span class="t">json</span>:<span class="s">"id"</span>`
+    Username  <span class="t">string</span>    `<span class="t">json</span>:<span class="s">"username"</span>`
+    Email     <span class="t">string</span>    `<span class="t">json</span>:<span class="s">"email"</span>`
+    Password  <span class="t">string</span>    `<span class="t">json</span>:<span class="s">"-"</span>` <span class="c">// 第 4 周换成 bcrypt 哈希后依然不输出</span>
+    Role      <span class="t">string</span>    `<span class="t">json</span>:<span class="s">"role"</span>`
     CreatedAt time.Time `<span class="t">json</span>:<span class="s">"created_at"</span>`
 }
 
@@ -97,10 +98,39 @@ HTTP 响应 {code, message, data}</pre>
     Email    <span class="t">string</span> `<span class="t">json</span>:<span class="s">"email"</span> <span class="t">binding</span>:<span class="s">"required,email"</span>`
     Password <span class="t">string</span> `<span class="t">json</span>:<span class="s">"password"</span> binding:<span class="s">"required,min=8"</span>`
     Role     <span class="t">string</span> `<span class="t">json</span>:<span class="s">"role"</span> <span class="t">binding</span>:<span class="s">"omitempty,oneof=user admin"</span>`
+}
+
+<span class="c">// UpdateUserDTO：PUT 更新允许只传要改的字段，全部 omitempty（day2 加餐同款）</span>
+<span class="k">type</span> <span class="t">UpdateUserDTO</span> <span class="k">struct</span> {
+    Username <span class="t">string</span> `<span class="t">json</span>:<span class="s">"username"</span> binding:<span class="s">"omitempty,min=3,max=20"</span>`
+    Email    <span class="t">string</span> `<span class="t">json</span>:<span class="s">"email"</span> <span class="t">binding</span>:<span class="s">"omitempty,email"</span>`
+    Password <span class="t">string</span> `<span class="t">json</span>:<span class="s">"password"</span> binding:<span class="s">"omitempty,min=8"</span>`
+    Role     <span class="t">string</span> `<span class="t">json</span>:<span class="s">"role"</span> <span class="t">binding</span>:<span class="s">"omitempty,oneof=user admin"</span>`
+}</pre>
+    <pre><span class="code-label">internal/model/article.go</span><span class="k">package</span> model
+
+<span class="k">import</span> <span class="t">"time"</span>
+
+<span class="c">// Article ID 同样 uint；AuthorID 指向 User.ID，第 3 周换成 GORM 的外键 UserID</span>
+<span class="k">type</span> <span class="t">Article</span> <span class="k">struct</span> {
+    ID        <span class="t">uint</span>      `<span class="t">json</span>:<span class="s">"id"</span>`
+    Title     <span class="t">string</span>    `<span class="t">json</span>:<span class="s">"title"</span>`
+    Content   <span class="t">string</span>    `<span class="t">json</span>:<span class="s">"content"</span>`
+    AuthorID  <span class="t">uint</span>      `<span class="t">json</span>:<span class="s">"author_id"</span>`
+    CreatedAt time.Time `<span class="t">json</span>:<span class="s">"created_at"</span>`
+}
+
+<span class="c">// CreateArticleDTO：title 1–50、content 必填、author_id 必填且必须真实存在</span>
+<span class="k">type</span> <span class="t">CreateArticleDTO</span> <span class="k">struct</span> {
+    Title    <span class="t">string</span> `<span class="t">json</span>:<span class="s">"title"</span> <span class="t">binding</span>:<span class="s">"required,min=1,max=50"</span>`
+    Content  <span class="t">string</span> `<span class="t">json</span>:<span class="s">"content"</span> binding:<span class="s">"required"</span>`
+    AuthorID <span class="t">uint</span>   `<span class="t">json</span>:<span class="s">"author_id"</span> binding:<span class="s">"required,gt=0"</span>`
 }</pre>
 
-    <h3>4. repository 层：map + RWMutex</h3>
-    <p>Gin 每个请求跑在独立 goroutine 里，<b>map 并发读写会直接让进程崩溃</b>（fatal error: concurrent map writes，连 Recovery 都拦不住）。必须加锁；读多写少用 <code>RWMutex</code>（读读并行，写独占）：</p>
+    <h3>4. 接口（interface）+ repository 层：map + RWMutex</h3>
+    <p>W1 day4 埋的"接口"伏笔今天兑现。先给一句话定义，再落到代码：</p>
+    <div class="callout js"><p><b>interface ≈ TS 的 interface，但不用 implements。</b>Go 的接口是<b>隐式实现（duck typing）</b>：只要一个类型的方法集<b>齐了接口声明的全部方法</b>，它就自动满足该接口，不需要写 <code>implements</code>/<code>extends</code>。对照 TS：<code>interface UserRepository { list(): User[] }</code>，任何有 <code>list()</code> 的对象都能当 <code>UserRepository</code> 传——Go 同理。差别是 Go 的方法名要<b>大写开头（导出）</b>才能被别的包看见。</p></div>
+    <div class="callout warn"><p>为什么实现里到处是 <code>Lock/RLock</code>：Gin 每个请求跑在独立 goroutine 里（W1 day5 见过），<b>map 并发读写会直接让进程崩溃</b>（<code>fatal error: concurrent map writes</code>，连 Recovery 都拦不住——fatal ≠ panic，见 day3 3.5）。所以内存实现读用 <code>RLock</code>（读读并行）、写用 <code>Lock</code>（独占），并且 <code>defer Unlock</code> 紧跟在 Lock 后。第 5 周并发周会把这套讲透，今天先把锁加对。</p></div>
     <pre><span class="code-label">internal/repository/user_repo.go</span><span class="k">package</span> repository
 
 <span class="k">import</span> (
@@ -113,36 +143,51 @@ HTTP 响应 {code, message, data}</pre>
 <span class="c">// ErrUserNotFound 哨兵错误：service/handler 用 errors.Is 识别，第 3 周换成 GORM 后语义不变</span>
 <span class="k">var</span> ErrUserNotFound = errors.New(<span class="s">"用户不存在"</span>)
 
-<span class="k">type</span> <span class="t">UserRepo</span> <span class="k">struct</span> {
+<span class="c">// UserRepository 是"一个用户仓储能做什么"的契约。service 只认这个接口，不认具体实现，
+// 于是内存版（今天）和 MySQL 版（第 3 周）可以无缝替换——这就是分层的复利。</span>
+<span class="k">type</span> <span class="t">UserRepository</span> <span class="k">interface</span> {
+    List() ([]model.User, <span class="t">error</span>)
+    Get(id <span class="t">uint</span>) (model.User, <span class="t">error</span>)
+    Create(u model.User) (model.User, <span class="t">error</span>)
+    Update(u model.User) <span class="t">error</span>
+    Delete(id <span class="t">uint</span>) <span class="t">error</span>
+}
+
+<span class="c">// MemRepo 用 map 实现 UserRepository。名字沿用 W1（内存实现）；现在有了两个资源，
+// 用户这份仍叫 MemRepo，文章那份叫 ArticleRepo（见下方），命名不强行对称，读代码更顺。</span>
+<span class="k">type</span> <span class="t">MemRepo</span> <span class="k">struct</span> {
     mu     sync.RWMutex
-    nextID <span class="t">int</span>
-    users  <span class="k">map</span>[<span class="t">int</span>]model.User
+    nextID <span class="t">uint</span>
+    users  <span class="k">map</span>[<span class="t">uint</span>]model.User
 }
 
-<span class="k">func</span> NewUserRepo() *UserRepo {
-    <span class="k">return</span> &amp;UserRepo{nextID: <span class="n">1</span>, users: make(<span class="k">map</span>[<span class="t">int</span>]model.User)}
+<span class="k">func</span> NewMemRepo() *MemRepo {
+    <span class="k">return</span> &amp;MemRepo{nextID: <span class="n">1</span>, users: make(<span class="k">map</span>[<span class="t">uint</span>]model.User)}
 }
 
-<span class="k">func</span> (r *UserRepo) Create(u model.User) model.User {
+<span class="c">// 编译期契约检查：MemRepo 少实现任意一个方法，这一行就让编译失败</span>
+<span class="k">var</span> _ UserRepository = (*MemRepo)(<span class="k">nil</span>)
+
+<span class="k">func</span> (r *MemRepo) Create(u model.User) (model.User, <span class="t">error</span>) {
     r.mu.Lock()
     <span class="k">defer</span> r.mu.Unlock() <span class="c">// defer 保证任何 return 路径都解锁，比 JS 的 try/finally 更顺手</span>
     u.ID = r.nextID
     r.nextID++
     r.users[u.ID] = u
-    <span class="k">return</span> u
+    <span class="k">return</span> u, <span class="k">nil</span>
 }
 
-<span class="k">func</span> (r *UserRepo) List() []model.User {
+<span class="k">func</span> (r *MemRepo) List() ([]model.User, <span class="t">error</span>) {
     r.mu.RLock()
     <span class="k">defer</span> r.mu.RUnlock()
-    out := make([]model.User, <span class="n">0</span>, len(r.users))
+    out := make([]model.User, <span class="n">0</span>, <span class="t">len</span>(r.users))
     <span class="k">for</span> _, u := <span class="k">range</span> r.users { <span class="c">// map 遍历无序，第 3 周 ORDER BY id 解决</span>
         out = append(out, u)
     }
-    <span class="k">return</span> out
+    <span class="k">return</span> out, <span class="k">nil</span>
 }
 
-<span class="k">func</span> (r *UserRepo) Get(id <span class="t">int</span>) (model.User, <span class="t">error</span>) {
+<span class="k">func</span> (r *MemRepo) Get(id <span class="t">uint</span>) (model.User, <span class="t">error</span>) {
     r.mu.RLock()
     <span class="k">defer</span> r.mu.RUnlock()
     u, ok := r.users[id]
@@ -152,7 +197,7 @@ HTTP 响应 {code, message, data}</pre>
     <span class="k">return</span> u, <span class="k">nil</span>
 }
 
-<span class="k">func</span> (r *UserRepo) Update(u model.User) <span class="t">error</span> {
+<span class="k">func</span> (r *MemRepo) Update(u model.User) <span class="t">error</span> {
     r.mu.Lock()
     <span class="k">defer</span> r.mu.Unlock()
     <span class="k">if</span> _, ok := r.users[u.ID]; !ok {
@@ -162,7 +207,7 @@ HTTP 响应 {code, message, data}</pre>
     <span class="k">return</span> <span class="k">nil</span>
 }
 
-<span class="k">func</span> (r *UserRepo) Delete(id <span class="t">int</span>) <span class="t">error</span> {
+<span class="k">func</span> (r *MemRepo) Delete(id <span class="t">uint</span>) <span class="t">error</span> {
     r.mu.Lock()
     <span class="k">defer</span> r.mu.Unlock()
     <span class="k">if</span> _, ok := r.users[id]; !ok {
@@ -171,9 +216,113 @@ HTTP 响应 {code, message, data}</pre>
     <span class="k">delete</span>(r.users, id)
     <span class="k">return</span> <span class="k">nil</span>
 }</pre>
-    <div class="callout tip"><p>哨兵错误定义在 repository 包里、由上层 import 使用，方向仍是上层 → 下层，不产生循环。若哪天 service 想「不认识 repository」，就把错误再下沉到 model 包——依赖永远指向稳定的底层。</p></div>
+    <p>文章仓储是同一套模式的第二个实例：<b>再定义一个接口 + 再给一个内存实现</b>。第 3 周接 GORM 时，两个接口不动，只换 <code>MemRepo</code>/<code>ArticleRepo</code> 的内部实现。</p>
+    <pre><span class="code-label">internal/repository/article_repo.go</span><span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="t">"errors"</span>
+    <span class="t">"sync"</span>
+
+    <span class="s">"gin-api/internal/model"</span>
+)
+
+<span class="k">var</span> ErrArticleNotFound = errors.New(<span class="s">"文章不存在"</span>)
+
+<span class="k">type</span> <span class="t">ArticleRepository</span> <span class="k">interface</span> {
+    List() ([]model.Article, <span class="t">error</span>)
+    Get(id <span class="t">uint</span>) (model.Article, <span class="t">error</span>)
+    Create(a model.Article) (model.Article, <span class="t">error</span>)
+    Update(a model.Article) <span class="t">error</span>
+    Delete(id <span class="t">uint</span>) <span class="t">error</span>
+}
+
+<span class="k">type</span> <span class="t">ArticleRepo</span> <span class="k">struct</span> {
+    mu     sync.RWMutex
+    nextID <span class="t">uint</span>
+    items  <span class="k">map</span>[<span class="t">uint</span>]model.Article
+}
+
+<span class="k">func</span> NewArticleRepo() *ArticleRepo {
+    <span class="k">return</span> &amp;ArticleRepo{nextID: <span class="n">1</span>, items: make(<span class="k">map</span>[<span class="t">uint</span>]model.Article)}
+}
+
+<span class="k">var</span> _ ArticleRepository = (*ArticleRepo)(<span class="k">nil</span>) <span class="c">// 契约检查：漏方法就编译失败</span>
+
+<span class="k">func</span> (r *ArticleRepo) Create(a model.Article) (model.Article, <span class="t">error</span>) {
+    r.mu.Lock()
+    <span class="k">defer</span> r.mu.Unlock()
+    a.ID = r.nextID
+    r.nextID++
+    r.items[a.ID] = a
+    <span class="k">return</span> a, <span class="k">nil</span>
+}
+
+<span class="k">func</span> (r *ArticleRepo) List() ([]model.Article, <span class="t">error</span>) {
+    r.mu.RLock()
+    <span class="k">defer</span> r.mu.RUnlock()
+    out := make([]model.Article, <span class="n">0</span>, <span class="t">len</span>(r.items))
+    <span class="k">for</span> _, a := <span class="k">range</span> r.items {
+        out = append(out, a)
+    }
+    <span class="k">return</span> out, <span class="k">nil</span>
+}
+
+<span class="k">func</span> (r *ArticleRepo) Get(id <span class="t">uint</span>) (model.Article, <span class="t">error</span>) {
+    r.mu.RLock()
+    <span class="k">defer</span> r.mu.RUnlock()
+    a, ok := r.items[id]
+    <span class="k">if</span> !ok {
+        <span class="k">return</span> model.Article{}, ErrArticleNotFound
+    }
+    <span class="k">return</span> a, <span class="k">nil</span>
+}
+
+<span class="k">func</span> (r *ArticleRepo) Update(a model.Article) <span class="t">error</span> {
+    r.mu.Lock()
+    <span class="k">defer</span> r.mu.Unlock()
+    <span class="k">if</span> _, ok := r.items[a.ID]; !ok {
+        <span class="k">return</span> ErrArticleNotFound
+    }
+    r.items[a.ID] = a
+    <span class="k">return</span> <span class="k">nil</span>
+}
+
+<span class="k">func</span> (r *ArticleRepo) Delete(id <span class="t">uint</span>) <span class="t">error</span> {
+    r.mu.Lock()
+    <span class="k">defer</span> r.mu.Unlock()
+    <span class="k">if</span> _, ok := r.items[id]; !ok {
+        <span class="k">return</span> ErrArticleNotFound
+    }
+    <span class="k">delete</span>(r.items, id)
+    <span class="k">return</span> <span class="k">nil</span>
+}</pre>
+    <div class="callout tip"><p>哨兵错误定义在 repository 包里、由上层 import 使用，方向仍是上层 → 下层，不产生循环。若哪天 service 想「不认识 repository」，就把错误再下沉到 model 包——依赖永远指向稳定的底层。<b>接口也放同一个 repository 包</b>，这样 service/handler 只需 <code>import repository</code> 就能拿到 <code>UserRepository</code>/<code>ArticleRepository</code> 两个契约类型。</p></div>
+    <h4>从 struct 仓库到接口仓库：今天学 interface 只为这一件事</h4>
+    <p>第 1 周 day4 那版 service 握的是<b>具体结构体</b> <code>*MemRepo</code>；今天唯一的变化是把它换成<b>契约</b> <code>repository.UserRepository</code>，函数体一行都不用改：</p>
+    <pre><span class="code-label">对照（左边删、右边加）</span><span class="c">// W1 day4：service 认识具体实现</span>
+<span class="k">type</span> <span class="t">UserService</span> <span class="k">struct</span> {
+    repo *MemRepo
+}
+<span class="k">func</span> NewUserService(repo *MemRepo) *UserService {
+    <span class="k">return</span> &amp;UserService{repo: repo}
+}
+
+<span class="c">// W2 day4：service 只认识契约</span>
+<span class="k">type</span> <span class="t">UserService</span> <span class="k">struct</span> {
+    repo repository.UserRepository
+}
+<span class="k">func</span> NewUserService(repo repository.UserRepository) *UserService {
+    <span class="k">return</span> &amp;UserService{repo: repo}
+}</pre>
+    <p>调用处 <code>userSvc := service.NewUserService(userRepo)</code>（讲义 6 装配里就是这一行）<b>一个字都不用改</b>——因为 <code>*MemRepo</code> 方法齐了，Go 自动认它满足 <code>UserRepository</code>（隐式实现，不用写 <code>implements</code>）。第 3 周接上 MySQL 时，动的只有它上面那行 <code>var userRepo repository.UserRepository = repository.NewMemRepo()</code> 的<b>右边</b>，service 与 handler 原地不动。</p>
+    <p>代价只有一处：接口和实现分家后，<b>少实现一个方法 = 编译期就炸</b>，而不是等到运行时 <code>nil pointer</code>。把 <code>MemRepo</code> 的 <code>Update</code> 方法名手滑写成 <code>Updata</code> 试试：</p>
+    <pre><span class="code-label">shell</span>$ go build ./...
+<span class="c"># 报错指向的是那行契约检查，不是调用点——这正是它存在的意义</span>
+internal/repository/user_repo.go:26:27: cannot use (*MemRepo)(nil) (value of type *MemRepo) as UserRepository value in variable declaration: *MemRepo does not implement UserRepository (missing method Update)</pre>
+    <div class="callout js"><p>对照 TS：TS 里类型不匹配会在 <code>tsc</code> 阶段报 <code>Property 'Update' is missing</code>；Go 也有这一层，只是它<b>不检查"声明过关系"</b>，只在你把具体值交给接口类型（这里就是 <code>var _ UserRepository = (*MemRepo)(nil)</code>，或 <code>NewUserService(NewMemRepo())</code> 的实参处）才做结构匹配。所以那行 <code>var _ ...</code> 不是废话：<b>它把"检查点"提前到了定义处</b>，不写也可能到 main.go 才报错，离根因远三层。</p></div>
 
     <h3>5. service 层：业务规则的家</h3>
+    <div class="callout note"><p><b>构造函数依赖接口，不依赖具体实现。</b>上一节把契约抽成了 <code>UserRepository</code> 接口，这里 service 的字段就写成 <code>repo repository.UserRepository</code>（接口），而不是 <code>*repository.MemRepo</code>（具体类型）。这样今天传内存实现，第 3 周传 GORM 实现，service 一行不改——这正是"依赖倒置"落地的地方。</p></div>
     <pre><span class="code-label">internal/service/user_service.go</span><span class="k">package</span> service
 
 <span class="k">import</span> (
@@ -185,37 +334,115 @@ HTTP 响应 {code, message, data}</pre>
     <span class="s">"gin-api/internal/repository"</span>
 )
 
+<span class="c">// 本层的两个业务错误（重名、作者不存在），handler 用 errors.Is 翻译成对应码</span>
+<span class="k">var</span> (
+    ErrUsernameExists = errors.New(<span class="s">"用户名已被占用"</span>) <span class="c">// -&gt; HTTP 409 + code 1006</span>
+    ErrAuthorNotFound = errors.New(<span class="s">"作者不存在"</span>)       <span class="c">// -&gt; HTTP 400 + code 1004（引用完整性，是调用方传错）</span>
+)
+
 <span class="k">type</span> <span class="t">UserService</span> <span class="k">struct</span> {
-    repo *repository.UserRepo
+    repo repository.UserRepository <span class="c">// 依赖接口，不依赖 *MemRepo</span>
 }
 
-<span class="k">func</span> NewUserService(repo *repository.UserRepo) *UserService {
+<span class="k">func</span> NewUserService(repo repository.UserRepository) *UserService {
     <span class="k">return</span> &amp;UserService{repo: repo}
 }
 
 <span class="k">func</span> (s *UserService) Create(dto model.CreateUserDTO) (model.User, <span class="t">error</span>) {
-    <span class="k">for</span> _, u := <span class="k">range</span> s.repo.List() { <span class="c">// 业务规则 1：用户名不许重复</span>
+    all, err := s.repo.List() <span class="c">// 业务规则 1：用户名不许重复（第 3 周换成 WHERE username=? 一句搞定）</span>
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">return</span> model.User{}, fmt.Errorf(<span class="s">"check dup: %w"</span>, err)
+    }
+    <span class="k">for</span> _, u := <span class="k">range</span> all {
         <span class="k">if</span> u.Username == dto.Username {
-            <span class="k">return</span> model.User{}, fmt.Errorf(<span class="s">"用户名 %q 已被占用"</span>, dto.Username)
+            <span class="k">return</span> model.User{}, ErrUsernameExists
         }
     }
-    role := dto.Role          <span class="c">// 业务规则 2：角色缺省为 user</span>
+    role := dto.Role <span class="c">// 业务规则 2：角色缺省为 user</span>
     <span class="k">if</span> role == <span class="s">""</span> { role = <span class="s">"user"</span> }
     <span class="k">return</span> s.repo.Create(model.User{
         Username: dto.Username, Email: dto.Email,
         Password: dto.Password, Role: role, CreatedAt: time.Now(),
-    }), <span class="k">nil</span>
+    })
 }
 
-<span class="k">func</span> (s *UserService) Get(id <span class="t">int</span>) (model.User, <span class="t">error</span>)   { <span class="k">return</span> s.repo.Get(id) }
-<span class="k">func</span> (s *UserService) List() []model.User                 { <span class="k">return</span> s.repo.List() }
-<span class="k">func</span> (s *UserService) Update(u model.User) <span class="t">error</span>          { <span class="k">return</span> s.repo.Update(u) }
-<span class="k">func</span> (s *UserService) Delete(id <span class="t">int</span>) <span class="t">error</span>                { <span class="k">return</span> s.repo.Delete(id) }
+<span class="k">func</span> (s *UserService) Get(id <span class="t">uint</span>) (model.User, <span class="t">error</span>)        { <span class="k">return</span> s.repo.Get(id) }
+<span class="k">func</span> (s *UserService) List() ([]model.User, <span class="t">error</span>)             { <span class="k">return</span> s.repo.List() }
+<span class="k">func</span> (s *UserService) Update(u model.User) <span class="t">error</span>               { <span class="k">return</span> s.repo.Update(u) }
+<span class="k">func</span> (s *UserService) Delete(id <span class="t">uint</span>) <span class="t">error</span>                    { <span class="k">return</span> s.repo.Delete(id) }
 
-<span class="c">// IsNotFound 给 handler 用的判断助手，handler 不必直接依赖 repository</span>
-<span class="k">func</span> IsNotFound(err <span class="t">error</span>) <span class="t">bool</span> { <span class="k">return</span> errors.Is(err, repository.ErrUserNotFound) }</pre>
+<span class="c">// 给 handler 用的错误判定助手，handler 不必直接 import repository 也能识别"不存在"</span>
+<span class="k">func</span> IsNotFound(err <span class="t">error</span>) <span class="t">bool</span>        { <span class="k">return</span> errors.Is(err, repository.ErrUserNotFound) }
+<span class="k">func</span> IsUsernameExists(err <span class="t">error</span>) <span class="t">bool</span> { <span class="k">return</span> errors.Is(err, ErrUsernameExists) }</pre>
+    <pre><span class="code-label">internal/service/article_service.go</span><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="t">"errors"</span>
+    <span class="t">"fmt"</span>
+    <span class="t">"time"</span>
+
+    <span class="s">"gin-api/internal/model"</span>
+    <span class="s">"gin-api/internal/repository"</span>
+)
+
+<span class="k">type</span> <span class="t">ArticleService</span> <span class="k">struct</span> {
+    repo    repository.ArticleRepository <span class="c">// 同样是接口</span>
+    userSvc *UserService                 <span class="c">// 跨资源校验：service -&gt; service 单向，允许</span>
+}
+
+<span class="k">func</span> NewArticleService(repo repository.ArticleRepository, userSvc *UserService) *ArticleService {
+    <span class="k">return</span> &amp;ArticleService{repo: repo, userSvc: userSvc}
+}
+
+<span class="k">func</span> (s *ArticleService) Create(dto model.CreateArticleDTO) (model.Article, <span class="t">error</span>) {
+    <span class="c">// 业务规则：作者必须真实存在。查不到就是调用方传错 author_id -&gt; ErrAuthorNotFound</span>
+    <span class="k">if</span> _, err := s.userSvc.Get(dto.AuthorID); err != <span class="k">nil</span> {
+        <span class="k">if</span> IsNotFound(err) {
+            <span class="k">return</span> model.Article{}, fmt.Errorf(<span class="s">"author_id=%d: %w"</span>, dto.AuthorID, ErrAuthorNotFound)
+        }
+        <span class="k">return</span> model.Article{}, fmt.Errorf(<span class="s">"check author: %w"</span>, err)
+    }
+    <span class="k">return</span> s.repo.Create(model.Article{
+        Title: dto.Title, Content: dto.Content, AuthorID: dto.AuthorID, CreatedAt: time.Now(),
+    })
+}
+
+<span class="k">func</span> (s *ArticleService) List() ([]model.Article, <span class="t">error</span>) { <span class="k">return</span> s.repo.List() }
+
+<span class="c">// 文章层新增一个判定：作者不存在 = 400/1004（不是 404/1001）</span>
+<span class="k">func</span> IsAuthorNotFound(err <span class="t">error</span>) <span class="t">bool</span> { <span class="k">return</span> errors.Is(err, ErrAuthorNotFound) }</pre>
+    <div class="callout warn"><p>注意 <code>service → service</code>（ArticleService 依赖 UserService）必须<b>单向</b>：绝不能让 UserService 反过来 import service 包里的 ArticleService，否则 <code>import cycle not allowed</code>。跨资源校验永远"高层依赖低层"，这里文章是高层、用户是低层。</p></div>
 
     <h3>6. handler 层与 main.go 组装</h3>
+    <p>handler 只做三件事：绑参、调 service、把结果/错误写成统一响应。先补一个 day2 的 <code>bindErrMsg</code>（它跟着校验走，属于"接入层翻译"，放在 <code>handler</code> 包里；也可下沉到 <code>internal/pkg/binderr</code> 供多资源复用——今天就近放 handler 包）：</p>
+    <pre><span class="code-label">internal/handler/bind_err.go</span><span class="k">package</span> handler
+
+<span class="k">import</span> (
+    <span class="t">"errors"</span>
+    <span class="t">"strings"</span>
+
+    <span class="t">"github.com/go-playground/validator/v10"</span>
+)
+
+<span class="c">// bindErrMsg 与 day2 讲义 3 完全一致：把 validator 报错翻译成一句中文</span>
+<span class="k">func</span> bindErrMsg(err <span class="t">error</span>) <span class="t">string</span> {
+    <span class="k">var</span> ves validator.ValidationErrors
+    <span class="k">if</span> errors.As(err, &amp;ves) {
+        msgs := make([]<span class="t">string</span>, <span class="n">0</span>, <span class="t">len</span>(ves))
+        <span class="k">for</span> _, ve := <span class="k">range</span> ves {
+            <span class="k">switch</span> ve.Tag() {
+            <span class="k">case</span> <span class="s">"required"</span>: msgs = append(msgs, ve.Field()+<span class="s">" 不能为空"</span>)
+            <span class="k">case</span> <span class="s">"min"</span>:      msgs = append(msgs, ve.Field()+<span class="s">" 长度不足 "</span>+ve.Param())
+            <span class="k">case</span> <span class="s">"max"</span>:      msgs = append(msgs, ve.Field()+<span class="s">" 长度超限 "</span>+ve.Param())
+            <span class="k">case</span> <span class="s">"email"</span>:    msgs = append(msgs, ve.Field()+<span class="s">" 不是合法邮箱"</span>)
+            <span class="k">case</span> <span class="s">"oneof"</span>:    msgs = append(msgs, ve.Field()+<span class="s">" 只能是: "</span>+ve.Param())
+            <span class="k">default</span>:          msgs = append(msgs, ve.Field()+<span class="s">" 校验失败("</span>+ve.Tag()+<span class="s">")"</span>)
+            }
+        }
+        <span class="k">return</span> strings.Join(msgs, <span class="s">"；"</span>)
+    }
+    <span class="k">return</span> <span class="s">"请求体不是合法 JSON"</span>
+}</pre>
     <pre><span class="code-label">internal/handler/user_handler.go</span><span class="k">package</span> handler
 
 <span class="k">import</span> (
@@ -233,72 +460,209 @@ HTTP 响应 {code, message, data}</pre>
 
 <span class="k">func</span> NewUserHandler(svc *service.UserService) *UserHandler { <span class="k">return</span> &amp;UserHandler{svc: svc} }
 
-<span class="c">// Register 把该资源的全部路由收在 handler 自己身上，main.go 只调一行</span>
-<span class="k">func</span> (h *UserHandler) Register(r *gin.RouterGroup) {
-    r.GET(<span class="s">"/users"</span>, h.List)
-    r.POST(<span class="s">"/users"</span>, h.Create)
-    r.GET(<span class="s">"/users/:id"</span>, h.Get)
-    r.PUT(<span class="s">"/users/:id"</span>, h.Update)
-    r.DELETE(<span class="s">"/users/:id"</span>, h.Delete)
+<span class="c">// Register 把路由收在 handler 身上；public 组只放读，auth 组放全部写（POST/PUT/DELETE）。
+// 与 day3 练习 2「GET 匿名、POST/PUT/DELETE 必须带 Bearer token」的口径一致。</span>
+<span class="k">func</span> (h *UserHandler) Register(public, auth *gin.RouterGroup) {
+    public.GET(<span class="s">"/users"</span>, h.List)
+    public.GET(<span class="s">"/users/:id"</span>, h.Get)
+    auth.POST(<span class="s">"/users"</span>, h.Create)
+    auth.PUT(<span class="s">"/users/:id"</span>, h.Update)
+    auth.DELETE(<span class="s">"/users/:id"</span>, h.Delete)
 }
 
-<span class="k">func</span> (h *UserHandler) List(c *gin.Context) { response.OK(c, h.svc.List()) }
+<span class="c">// parseID：路径 :id 转 uint（CANONICAL：ID 一律 uint）。失败已写 400 响应，返回 ok=false 让调用方 return</span>
+<span class="k">func</span> parseID(c *gin.Context) (<span class="t">uint</span>, <span class="t">bool</span>) {
+    id, err := strconv.ParseUint(c.Param(<span class="s">"id"</span>), <span class="n">10</span>, <span class="n">64</span>)
+    <span class="k">if</span> err != <span class="k">nil</span> || id == <span class="n">0</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"id 必须是正整数"</span>)
+        <span class="k">return</span> <span class="n">0</span>, <span class="k">false</span>
+    }
+    <span class="k">return</span> <span class="t">uint</span>(id), <span class="t">true</span>
+}
+
+<span class="k">func</span> (h *UserHandler) List(c *gin.Context) {
+    users, err := h.svc.List() <span class="c">// 接口 List 现在返回 ([]model.User, error)</span>
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务繁忙"</span>)
+        <span class="k">return</span>
+    }
+    response.OK(c, users)
+}
 
 <span class="k">func</span> (h *UserHandler) Create(c *gin.Context) {
     <span class="k">var</span> dto model.CreateUserDTO
     <span class="k">if</span> err := c.ShouldBindJSON(&amp;dto); err != <span class="k">nil</span> {
-        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"参数不合法: "</span>+err.Error())
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, bindErrMsg(err)) <span class="c">// ← day2 版 bindErrMsg，不再直接吐 err.Error()</span>
         <span class="k">return</span>
     }
     u, err := h.svc.Create(dto)
+    <span class="k">if</span> service.IsUsernameExists(err) {
+        response.Fail(c, http.StatusConflict, response.CodeUserExists, err.Error()) <span class="c">// 重名 -&gt; HTTP 409 + 1006</span>
+        <span class="k">return</span>
+    }
     <span class="k">if</span> err != <span class="k">nil</span> {
-        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, err.Error())
+        response.Fail(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务繁忙"</span>)
         <span class="k">return</span>
     }
     response.Created(c, u)
 }
 
 <span class="k">func</span> (h *UserHandler) Get(c *gin.Context) {
-    id, err := strconv.Atoi(c.Param(<span class="s">"id"</span>))
-    <span class="k">if</span> err != <span class="k">nil</span> {
-        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"id 必须是数字"</span>)
-        <span class="k">return</span>
-    }
+    id, ok := parseID(c)
+    <span class="k">if</span> !ok { <span class="k">return</span> }
     u, err := h.svc.Get(id)
-    <span class="k">if</span> service.IsNotFound(err) { <span class="c">// ← 错误码 1001 接入点：HTTP 404 + 业务 1001 双层</span>
+    <span class="k">if</span> service.IsNotFound(err) { <span class="c">// HTTP 404 + 业务 1001</span>
         response.Fail(c, http.StatusNotFound, response.CodeUserNotFound, <span class="s">"用户不存在"</span>)
         <span class="k">return</span>
     }
     <span class="k">if</span> err != <span class="k">nil</span> {
-        response.Fail(c, http.StatusInternalServerError, <span class="n">5000</span>, <span class="s">"服务繁忙"</span>)
+        response.Fail(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务繁忙"</span>) <span class="c">// 5000 常量，别写裸数字</span>
         <span class="k">return</span>
     }
     response.OK(c, u)
+}
+
+<span class="k">func</span> (h *UserHandler) Update(c *gin.Context) {
+    id, ok := parseID(c)
+    <span class="k">if</span> !ok { <span class="k">return</span> }
+    <span class="k">var</span> dto model.UpdateUserDTO
+    <span class="k">if</span> err := c.ShouldBindJSON(&amp;dto); err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, bindErrMsg(err))
+        <span class="k">return</span>
+    }
+    cur, err := h.svc.Get(id)
+    <span class="k">if</span> service.IsNotFound(err) {
+        response.Fail(c, http.StatusNotFound, response.CodeUserNotFound, <span class="s">"用户不存在"</span>)
+        <span class="k">return</span>
+    }
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务繁忙"</span>)
+        <span class="k">return</span>
+    }
+    <span class="k">if</span> dto.Username != <span class="s">""</span> { cur.Username = dto.Username } <span class="c">// 只覆盖传了的字段</span>
+    <span class="k">if</span> dto.Email != <span class="s">""</span>    { cur.Email = dto.Email }
+    <span class="k">if</span> dto.Password != <span class="s">""</span> { cur.Password = dto.Password }
+    <span class="k">if</span> dto.Role != <span class="s">""</span>     { cur.Role = dto.Role }
+    <span class="k">if</span> err := h.svc.Update(cur); err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务繁忙"</span>)
+        <span class="k">return</span>
+    }
+    response.OK(c, cur)
+}
+
+<span class="k">func</span> (h *UserHandler) Delete(c *gin.Context) {
+    id, ok := parseID(c)
+    <span class="k">if</span> !ok { <span class="k">return</span> }
+    <span class="k">if</span> err := h.svc.Delete(id); err != <span class="k">nil</span> {
+        <span class="k">if</span> service.IsNotFound(err) {
+            response.Fail(c, http.StatusNotFound, response.CodeUserNotFound, <span class="s">"用户不存在"</span>)
+            <span class="k">return</span>
+        }
+        response.Fail(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务繁忙"</span>)
+        <span class="k">return</span>
+    }
+    response.OK(c, gin.H{<span class="s">"deleted"</span>: id}) <span class="c">// 本周统一 200 + JSON body（W1 是 204 无 body，差异原因见 summary）</span>
 }</pre>
-    <pre><span class="code-label">cmd/server/main.go</span><span class="k">package</span> main
+    <pre><span class="code-label">internal/handler/article_handler.go</span><span class="k">package</span> handler
 
 <span class="k">import</span> (
+    <span class="t">"net/http"</span>
+
+    <span class="t">"github.com/gin-gonic/gin"</span>
+
+    <span class="s">"gin-api/internal/model"</span>
+    <span class="s">"gin-api/internal/service"</span>
+    <span class="s">"gin-api/pkg/response"</span>
+)
+
+<span class="k">type</span> <span class="t">ArticleHandler</span> <span class="k">struct</span> { svc *service.ArticleService }
+
+<span class="k">func</span> NewArticleHandler(svc *service.ArticleService) *ArticleHandler {
+    <span class="k">return</span> &amp;ArticleHandler{svc: svc}
+}
+
+<span class="c">// 本周文章只开两条端点（列表匿名读 + 创建需鉴权），与 users 的读写口径一致；改删留给练习 3</span>
+<span class="k">func</span> (h *ArticleHandler) Register(public, auth *gin.RouterGroup) {
+    public.GET(<span class="s">"/articles"</span>, h.List)
+    auth.POST(<span class="s">"/articles"</span>, h.Create)
+}
+
+<span class="k">func</span> (h *ArticleHandler) List(c *gin.Context) {
+    items, err := h.svc.List()
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务繁忙"</span>)
+        <span class="k">return</span>
+    }
+    <span class="c">// 本周只做「回显 page/size + 返回全部」，真分页（OFFSET/LIMIT）第 3 周接 MySQL 时教</span>
+    response.OK(c, gin.H{
+        <span class="s">"list"</span>: items,
+        <span class="s">"page"</span>: c.DefaultQuery(<span class="s">"page"</span>, <span class="s">"1"</span>),
+        <span class="s">"size"</span>: c.DefaultQuery(<span class="s">"size"</span>, <span class="s">"10"</span>),
+    })
+}
+
+<span class="k">func</span> (h *ArticleHandler) Create(c *gin.Context) {
+    <span class="k">var</span> dto model.CreateArticleDTO
+    <span class="k">if</span> err := c.ShouldBindJSON(&amp;dto); err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, bindErrMsg(err))
+        <span class="k">return</span>
+    }
+    a, err := h.svc.Create(dto)
+    <span class="k">if</span> service.IsAuthorNotFound(err) {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"作者不存在"</span>) <span class="c">// 引用完整性错误 -&gt; 400 + 1004</span>
+        <span class="k">return</span>
+    }
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务繁忙"</span>)
+        <span class="k">return</span>
+    }
+    response.Created(c, a)
+}</pre>
+    <pre><span class="code-label">cmd/server/main.go（W2 终态装配：接口注入 + 鉴权组 + /api/v1）</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">"net/http"</span>
+
     <span class="t">"github.com/gin-gonic/gin"</span>
 
     <span class="s">"gin-api/internal/handler"</span>
+    <span class="s">"gin-api/internal/middleware"</span>
     <span class="s">"gin-api/internal/repository"</span>
     <span class="s">"gin-api/internal/service"</span>
+    <span class="s">"gin-api/pkg/response"</span>
 )
 
 <span class="k">func</span> main() {
-    <span class="c">// 组装依赖：repo → service → handler，从下往上 new（手工依赖注入，Go 圈主流做法）</span>
-    userRepo := repository.NewUserRepo()
-    userSvc := service.NewUserService(userRepo)
-    userH := handler.NewUserHandler(userSvc)
+    <span class="c">// 组装依赖：new 具体实现（*MemRepo / *ArticleRepo），但用接口类型接住，再交给上层</span>
+    <span class="k">var</span> userRepo repository.UserRepository = repository.NewMemRepo()
+    <span class="k">var</span> articleRepo repository.ArticleRepository = repository.NewArticleRepo()
+    userSvc := service.NewUserService(userRepo)              <span class="c">// service 只知道自己拿到的是 UserRepository 接口</span>
+    articleSvc := service.NewArticleService(articleRepo, userSvc)
 
     r := gin.New()
-    r.Use(gin.Logger(), gin.Recovery()) <span class="c">// 昨天的 CORS/Timer 也挂这里</span>
-    api := r.Group(<span class="s">"/api/v1"</span>)
-    userH.Register(api)
+    r.Use(gin.Logger(), gin.Recovery(), middleware.CORS(), middleware.Timer())
+    r.HandleMethodNotAllowed = <span class="k">true</span> <span class="c">// day1 讲过的开关，默认 false：不开的话「用 PUT 打只有 GET 的路」会被当成 404，
+                                      // 而不是 405。装配阶段就把它打开，day5 验收表里的 405 才复现得出来</span>
+    r.NoRoute(<span class="k">func</span>(c *gin.Context) {
+        response.Fail(c, http.StatusNotFound, response.CodeUserNotFound, <span class="s">"接口不存在: "</span>+c.Request.URL.Path) <span class="c">// 404 + 1001</span>
+    })
+    r.NoMethod(<span class="k">func</span>(c *gin.Context) { <span class="c">// 405 + 1003（day1 的两个兜底都要带上，只写 NoRoute 会漏掉方法错的用例）</span>
+        response.Fail(c, http.StatusMethodNotAllowed, response.CodeForbidden, <span class="s">"方法不允许"</span>)
+    })
+
+    <span class="c">// 健康检查按 CANONICAL 不带前缀</span>
+    r.GET(<span class="s">"/health"</span>, <span class="k">func</span>(c *gin.Context) { response.OK(c, gin.H{<span class="s">"status"</span>: <span class="s">"ok"</span>}) })
+
+    api := r.Group(<span class="s">"/api/v1"</span>)  <span class="c">// 同一个前缀开两个组：api 只挂匿名可读的 GET</span>
+    auth := r.Group(<span class="s">"/api/v1"</span>) <span class="c">// auth 同前缀，额外挂鉴权：所有写操作 POST/PUT/DELETE 都进来</span>
+    auth.Use(middleware.RequireAuth())
+
+    handler.NewUserHandler(userSvc).Register(api, auth)
+    handler.NewArticleHandler(articleSvc).Register(api, auth)
 
     r.Run(<span class="s">":8080"</span>)
 }</pre>
-    <div class="callout warn"><p>注意 main.go 在 <code>cmd/server/</code> 下，启动命令变成 <code>go run ./cmd/server</code>（或编译 <code>go build ./cmd/server</code>）。忘了路径前缀报 <code>no Go files</code> 或在错误目录执行都算新手礼。</p></div>
+    <div class="callout warn"><p>注意 main.go 在 <code>cmd/server/</code> 下，启动命令变成 <code>go run ./cmd/server</code>（或编译 <code>go build ./cmd/server</code>）。忘了路径前缀报 <code>no Go files</code> 或在错误目录执行都算新手礼。中间件（day3 的 CORS/Timer/RequireAuth）今天从仓库根的 <code>middleware/</code> 搬进 <code>internal/middleware/</code>，所以 import 路径由 <code>gin-api/middleware</code> 变成 <code>gin-api/internal/middleware</code>——搬完记得全局改 import。</p></div>
   </section>
 
   <section>
@@ -313,15 +677,34 @@ HTTP 响应 {code, message, data}</pre>
       <div class="task-title">练习 2：GET /users/:id 与 PUT/DELETE 全链路错误码（40 分钟）</div>
       <p><b>要求：</b>访问不存在的 id 返回 <code>HTTP 404 + {"code":1001,"message":"用户不存在","data":null}</code>；PUT 不存在的 id 同样 1001；DELETE 成功返回 <code>{"code":0,...}</code> 且再 GET 变 404。</p>
       <p><b>参考答案：</b>Get 见讲义第 6 节；Update/Delete 照抄其 err 分支模式——<code>if service.IsNotFound(err) { response.Fail(c, http.StatusNotFound, response.CodeUserNotFound, "用户不存在"); return }</code>。体会一下：三个接口共享同一套「错误 → 双层响应」翻译规则，这就是分层的收敛效果。</p>
+      <div class="callout warn"><p><b>PUT/DELETE 与 POST 都挂在 day3 的鉴权组上</b>（讲义 6 的 <code>auth := r.Group("/api/v1"); auth.Use(middleware.RequireAuth())</code>），测试这几条必须带 Bearer token，否则先被 401（code 1005）拦住、根本进不到"用户不存在"分支：</p>
+      <pre><span class="code-label">shell</span>$ curl -si -X PUT localhost:8080/api/v1/users/999 \
+  -H <span class="s">"Authorization: Bearer go-fullstack-2026"</span> \
+  -H <span class="s">"Content-Type: application/json"</span> -d <span class="s">'{"username":"zzz"}'</span>
+<span class="c"># 期望 404 + {"code":1001,...}；去掉 Authorization 头则是 401 + {"code":1005,...}</span></pre></div>
     </div>
     <div class="task">
-      <div class="task-title">练习 3：ArticleRepo + ArticleService + ArticleHandler（45 分钟）</div>
-      <p><b>要求：</b>为 <code>GET /articles</code>、<code>POST /articles</code>（title 必填 1–50 字、content 必填、author_id 必填且必须真实存在，否则 1001）复制今天的三层模式。</p>
-      <p><b>参考答案要点：</b><code>Article{ID int; Title, Content string; AuthorID int; CreatedAt time.Time}</code>；ArticleService 注入 <code>*ArticleRepo</code> 和 <code>*UserService</code>（跨资源校验靠依赖上层的 service，注意 service → service 单向，不许反向 import）；不存在用户时返回包了 <code>repository.ErrUserNotFound</code> 的错误：<code>fmt.Errorf("作者不存在: %w", err)</code>，handler 里 <code>errors.Is</code> 依旧命中 1001。</p>
+      <div class="task-title">练习 3：给 Article 补齐查/改/删三个端点（45 分钟）</div>
+      <p><b>背景：</b>文章的 <code>ArticleRepository</code> 接口、<code>ArticleRepo</code> 内存实现、<code>ArticleService</code>、<code>ArticleHandler</code>（含 GET 列表 + POST 创建）在讲义 4/5/6 已<b>完整给出</b>，先照抄跑通（POST 在鉴权组，必须带 Bearer token）：<code>POST /articles</code> 传不存在的 <code>author_id</code> 应返回 <b>400 + code 1004（作者不存在）</b>，传真实 id 返回 201。</p>
+      <pre><span class="code-label">shell</span>$ curl -si -X POST localhost:8080/api/v1/articles \
+  -H <span class="s">"Authorization: Bearer go-fullstack-2026"</span> \
+  -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"title":"接口不是类","content":"Go 靠隐式实现","author_id":999}'</span>
+<span class="c"># 期望 400 + {"code":1004,"message":"作者不存在","data":null}；author_id 换成已存在的用户 id 则 201</span></pre>
+      <p><b>本练习要你自己补的：</b>在 <code>ArticleService</code> 加 <code>Get(id uint)/Update/Delete</code>（直接转发 <code>repo</code> 的同名方法，接口里已有），在 <code>ArticleHandler</code> 加 <code>Get/Update/Delete</code> 三个方法，并在 <code>Register</code> 里挂 <code>public.GET("/articles/:id", h.Get)</code>、<code>auth.PUT("/articles/:id", h.Update)</code>、<code>auth.DELETE("/articles/:id", h.Delete)</code>（改删同样进鉴权组）。</p>
+      <p><b>要点：</b>复用讲义 6 的 <code>parseID</code>；文章"不存在"用 <code>repository.ErrArticleNotFound</code>（讲义 4 已定义），在 service 加一个 <code>IsArticleNotFound</code> 助手，handler 里翻译成 <b>404 + code 2001</b>（码表里 1001 是「资源不存在（通用）」，文章有专属码 2001，别混用）。跑通后你的 articles 也拥有完整五件套，与 users 对称。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 4：并发压一压锁（15 分钟）</div>
-      <p><b>要求：</b>注释掉 RWMutex 的 Lock/Unlock，用 <code>for i in $(seq 1 50); do curl -s localhost:8080/api/v1/users -o /dev/null &amp; done; wait</code> 并发 GET + 循环 POST，观察 <code>fatal error: concurrent map read and map write</code>；把锁加回来确认消失。这就是第 5 周并发周的预告片。</p>
+      <p><b>要求：</b>注释掉 RWMutex 的 Lock/Unlock，用 <code>for i in $(seq 1 50); do curl -s localhost:8080/api/v1/users -o /dev/null &amp; done; wait</code> 并发 GET，再另开一个终端跑循环 POST 制造读写并发（POST 已进鉴权组，必须带 Bearer token，否则只收到 401、根本进不到写 map 的代码）：</p>
+      <pre><span class="code-label">shell</span><span class="c"># 50 路并发 GET（匿名可读）</span>
+$ <span class="k">for</span> i <span class="k">in</span> $(seq 1 50); <span class="k">do</span> curl -s localhost:8080/api/v1/users -o /dev/null &amp; <span class="k">done</span>; wait
+<span class="c"># 另一终端：50 路并发 POST，读写的竞争才会真正打起来</span>
+$ <span class="k">for</span> i <span class="k">in</span> $(seq 1 50); <span class="k">do</span> curl -s -X POST localhost:8080/api/v1/users \
+    -H <span class="s">"Authorization: Bearer go-fullstack-2026"</span> \
+    -H <span class="s">"Content-Type: application/json"</span> \
+    -d <span class="s">"{\"username\":\"u$i\",\"email\":\"u$i@x.com\",\"password\":\"pass1234\"}"</span> -o /dev/null &amp; <span class="k">done</span>; wait</pre>
+      <p>观察 <code>fatal error: concurrent map read and map write</code>；把锁加回来确认消失。这就是第 5 周并发周的预告片。</p>
     </div>
   </section>
 
@@ -356,7 +739,7 @@ HTTP 响应 {code, message, data}</pre>
       <li><label><input type="checkbox" data-key="w2d4c1"><code>go build ./...</code> 零错误零警告，目录结构与讲义第 2 节完全一致</label></li>
       <li><label><input type="checkbox" data-key="w2d4c2">练习 1：users 五个端点迁移完毕，旧 main.go 已删除</label></li>
       <li><label><input type="checkbox" data-key="w2d4c3">练习 2：<code>curl -i .../users/999</code> 输出 <code>HTTP 404</code> 且 body 为 <code>{"code":1001,...}</code></label></li>
-      <li><label><input type="checkbox" data-key="w2d4c4">练习 3：articles 两端点可用，作者不存在时返回 1001</label></li>
+      <li><label><input type="checkbox" data-key="w2d4c4">练习 3：articles 的 GET/POST 已跑通，作者不存在返回 400 + 1004，并补齐了查/改/删三端点</label></li>
       <li><label><input type="checkbox" data-key="w2d4c5">练习 4 的 fatal error 复现并解决，能口述 fatal 与 panic 的区别</label></li>
     </ul>
   </section>

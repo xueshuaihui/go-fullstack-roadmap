@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>W4D3 · 配置管理与 .env | Go 全栈修炼手册</title>
-<meta name="description" content="Day 3：12-factor 配置理念、godotenv 加载 .env 完整代码、os.Getenv 默认值与报错、viper 何时升级、.env.example 模式、Config 结构体一次加载传参传递，告别全局变量。">
+<meta name="description" content="Day 3：12-factor 配置理念、godotenv 加载 .env 完整代码（PORT/GIN_MODE/DB_*/JWT_SECRET/JWT_REFRESH_SECRET 九个键）、DSN 用 DB_PORT 拼装、Config 结构体一次加载传参传递、公开组与保护组的挂载顺序、compose 与 MySQL 数据卷的密码真相。">
 <link rel="stylesheet" href="../../assets/style.css">
 <script src="../../assets/app.js"></script>
 </head>
@@ -32,8 +32,9 @@
       <li><label><input type="checkbox" data-key="w4d3g2">写出 godotenv 加载 + <code>os.Getenv</code> 默认值 + 必填项报错的完整代码</label></li>
       <li><label><input type="checkbox" data-key="w4d3g3">.env 进了 .gitignore，仓库里放的是 .env.example 模板</label></li>
       <li><label><input type="checkbox" data-key="w4d3g4">项目里只有一个 <code>Config</code> 结构体，一次加载、参数传递到需要的地方</label></li>
+      <li><label><input type="checkbox" data-key="w4d3g5">说清「引擎级 <code>r.Use</code> 挂 Auth」为什么不行，正确挂法是保护组 <code>Group("", Auth(...))</code></label></li>
     </ul>
-    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这五条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
   </section>
 
   <section>
@@ -50,114 +51,197 @@
     <table>
       <tr><th>层级</th><th>例子</th><th>进不进 Git</th></tr>
       <tr><td>写死在代码里的常量</td><td>AccessTTL=15min 这类几乎不变的业务常量</td><td>✅ 进</td></tr>
-      <tr><td>环境变量 / .env</td><td>PORT、DB DSN、JWT_SECRET、第三方 Key</td><td>❌ .env 不进，.env.example 进</td></tr>
+      <tr><td>环境变量 / .env</td><td>PORT、DB_HOST/DB_PORT/DB_USER/DB_PASS/DB_NAME、JWT_SECRET、JWT_REFRESH_SECRET、第三方 Key</td><td>❌ .env 不进，.env.example 进</td></tr>
       <tr><td>配置中心 / 密钥管理服务</td><td>Consul、Vault、云厂商 KMS（生产环境）</td><td>知道有这层即可，本课程不涉及</td></tr>
     </table>
     <div class="callout warn"><p>判断标准很简单：<b>会随「部署到哪儿」而变化的值都是配置</b>。数据库地址是配置，「密码最少 8 位」是代码逻辑。别把两者混在一个文件里。</p></div>
 
     <h3>2. godotenv：把 .env 装进环境变量</h3>
     <pre><span class="code-label">shell</span>$ go get github.com/joho/godotenv</pre>
-    <p>项目根目录建 <code>.env</code>（注意：<b>仅本地开发用</b>，生产容器由编排直接注入环境变量，不需要这个文件）：</p>
+    <p>项目根目录建 <code>.env</code>（注意：<b>仅本地开发用</b>，生产容器由编排直接注入环境变量，不需要这个文件）。九个键就是本项目全站统一的键名清单，第 7 周的 compose、第 8 周的上传目录都往这个清单上加：</p>
     <pre><span class="code-label">.env</span><span class="c"># 服务</span>
 PORT=<span class="n">8080</span>
 GIN_MODE=<span class="s">debug</span>
 
-<span class="c"># 数据库（第 3 周 docker-compose 里的那套账密）</span>
-DB_USER=root
-DB_PASS=devpass123
-DB_HOST=127.0.0.1
-DB_NAME=blog
+<span class="c"># 数据库：第 3 周 goblog-mysql 容器那套账密</span>
+DB_HOST=localhost
+DB_PORT=<span class="n">3306</span>
+DB_USER=goblog
+DB_PASS=goblog123
+DB_NAME=goblog
 
-<span class="c"># JWT：openssl rand -hex 32 生成，绝不提交</span>
-JWT_SECRET=9f2c74ab1e...此处省略52位随机字符...d3a80fc</pre>
+<span class="c"># JWT：两把不同的密钥，各用 openssl rand -hex 32 生成，绝不提交</span>
+JWT_SECRET=9f2c74ab1e...此处省略52位随机字符...d3a80fc
+JWT_REFRESH_SECRET=41b8d05ce7...此处省略52位随机字符...9ac3f6</pre>
+    <div class="callout warn"><p><b>两把密钥必须真的不一样。</b>用同一把，等于「拿 refresh 串去 <code>NewAccessToken</code> 也能验通过」——第 2 天讲的 <code>typ</code> 校验是第一道闸，密钥分离是第二道。生成时老老实实跑两遍 <code>openssl rand -hex 32</code>，别复制粘贴同一个值。（<code>goblog123</code> 是库的账号密码，和 JWT 密钥是两套凭证，轮换互不影响。）</p></div>
+    <div class="callout js"><p>对照 Node：这就是 <code>.env</code> + <code>require('dotenv').config()</code>。<b>唯一要记住的差异</b>是 Go 里 <code>os.Getenv</code> 拿到的一直是 <code>string</code>，没有 <code>process.env</code> 那个对象；数字要自己 <code>strconv.Atoi</code>，本项目端口直接当字符串拼 <code>":"+cfg.Port</code>，省一次转换。</p></div>
+
+    <h3>3. Config 结构体 + Load()：整个 config.go</h3>
     <pre><span class="code-label">internal/config/config.go</span><span class="k">package</span> config
 
 <span class="k">import</span> (
     <span class="s">"fmt"</span>
     <span class="s">"os"</span>
+    <span class="s">"strings"</span>
 
     <span class="s">"github.com/joho/godotenv"</span>
 )
 
-<span class="c">// Load 一次性读入全部配置：.env 文件只是"开发期便利"，
-// 已存在的系统环境变量优先级更高时可用 godotenv.Overload 反转，默认 Load 不覆盖。</span>
+<span class="c">// Config 是本项目的配置唯一出口：九个键进来，最后只对外暴露五个值
+// （DSN 由 DB_* 拼出来，调用方不需要知道有几段）</span>
+<span class="k">type</span> <span class="t">Config</span> <span class="k">struct</span> {
+    Port               <span class="t">string</span> <span class="c">// "8080"，监听时拼成 ":8080"</span>
+    GinMode            <span class="t">string</span> <span class="c">// debug / release</span>
+    DSN                <span class="t">string</span> <span class="c">// MySQL 连接串，由 DB_* 拼装</span>
+    JWTSecret          <span class="t">string</span> <span class="c">// access token 的 HS256 密钥（JWT_SECRET）</span>
+    JWTRefreshSecret   <span class="t">string</span> <span class="c">// refresh token 的 HS256 密钥（JWT_REFRESH_SECRET）</span>
+}
+
+<span class="c">// Load 一次性读入全部配置。
+// .env 只是"开发期便利"：godotenv.Load 不覆盖已存在的环境变量，
+// 所以真实环境（shell / 容器）注入的值优先级更高，想反转用 godotenv.Overload。</span>
 <span class="k">func</span> <span class="t">Load</span>() (<span class="t">Config</span>, <span class="t">error</span>) {
+    <span class="k">var</span> c <span class="t">Config</span>
+
     <span class="c">// 文件不存在不报错：生产环境本来就靠真实环境变量注入</span>
     _ = godotenv.<span class="t">Load</span>()
 
-    <span class="k">var</span> c <span class="t">Config</span>
-    c.Port = <span class="t">getEnv</span>(<span class="s">"PORT"</span>, <span class="s">"8080"</span>)          <span class="c">// 可选项：给默认值</span>
+    <span class="c">// 必填项：一次把缺的键全列出来，而不是一个一个试</span>
+    <span class="k">if</span> miss := <span class="t">missingEnv</span>(<span class="s">"DB_USER"</span>, <span class="s">"DB_PASS"</span>, <span class="s">"DB_NAME"</span>, <span class="s">"JWT_SECRET"</span>, <span class="s">"JWT_REFRESH_SECRET"</span>); <span class="t">len</span>(miss) &gt; <span class="n">0</span> {
+        <span class="k">return</span> c, fmt.<span class="t">Errorf</span>(<span class="s">"缺少环境变量：%s"</span>, strings.<span class="t">Join</span>(miss, <span class="s">"、"</span>))
+    }
+
+    <span class="c">// 可选项：给默认值</span>
+    c.Port = <span class="t">getEnv</span>(<span class="s">"PORT"</span>, <span class="s">"8080"</span>)
     c.GinMode = <span class="t">getEnv</span>(<span class="s">"GIN_MODE"</span>, <span class="s">"debug"</span>)
-    c.JWTSecret = <span class="t">requireEnv</span>(<span class="s">"JWT_SECRET"</span>)    <span class="c">// 必填项：没有就启动失败</span>
-    <span class="k">if</span> c.JWTSecret == <span class="s">""</span> {
-        <span class="k">return</span> c, fmt.<span class="t">Errorf</span>(<span class="s">"缺少环境变量 JWT_SECRET"</span>)
-    }
-    dbPass := <span class="t">requireEnv</span>(<span class="s">"DB_PASS"</span>)
-    <span class="k">if</span> dbPass == <span class="s">""</span> {
-        <span class="k">return</span> c, fmt.<span class="t">Errorf</span>(<span class="s">"缺少环境变量 DB_PASS"</span>)
-    }
-    c.DSN = fmt.<span class="t">Sprintf</span>(<span class="s">"%s:%s@tcp(%s:3306)/%s?charset=utf8mb4&amp;parseTime=True&amp;loc=Local"</span>,
-        <span class="t">getEnv</span>(<span class="s">"DB_USER"</span>, <span class="s">"root"</span>), dbPass, <span class="t">getEnv</span>(<span class="s">"DB_HOST"</span>, <span class="s">"127.0.0.1"</span>), <span class="t">getEnv</span>(<span class="s">"DB_NAME"</span>, <span class="s">"blog"</span>))
+    c.JWTSecret = os.<span class="t">Getenv</span>(<span class="s">"JWT_SECRET"</span>)
+    c.JWTRefreshSecret = os.<span class="t">Getenv</span>(<span class="s">"JWT_REFRESH_SECRET"</span>)
+
+    <span class="c">// DSN：端口一定用 DB_PORT，别写死 3306
+    // 第 7 周把容器端口映射改成 3307 时，写死的 3306 会连到另一台 MySQL 上，报的错还很难看懂</span>
+    host := <span class="t">getEnv</span>(<span class="s">"DB_HOST"</span>, <span class="s">"localhost"</span>)
+    port := <span class="t">getEnv</span>(<span class="s">"DB_PORT"</span>, <span class="s">"3306"</span>)
+    c.DSN = fmt.<span class="t">Sprintf</span>(<span class="s">"%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&amp;parseTime=True&amp;loc=Local"</span>,
+        os.<span class="t">Getenv</span>(<span class="s">"DB_USER"</span>), os.<span class="t">Getenv</span>(<span class="s">"DB_PASS"</span>), host, port, os.<span class="t">Getenv</span>(<span class="s">"DB_NAME"</span>))
+
     <span class="k">return</span> c, <span class="k">nil</span>
 }
 
+<span class="c">// getEnv 可选配置：没设就用默认值</span>
 <span class="k">func</span> <span class="t">getEnv</span>(key, fallback <span class="t">string</span>) <span class="t">string</span> {
     <span class="k">if</span> v := os.<span class="t">Getenv</span>(key); v != <span class="s">""</span> { <span class="k">return</span> v }
     <span class="k">return</span> fallback
 }
 
-<span class="k">func</span> <span class="t">requireEnv</span>(key <span class="t">string</span>) <span class="t">string</span> { <span class="k">return</span> os.<span class="t">Getenv</span>(key) }</pre>
-    <div class="callout tip"><p>「可选给默认值、必填直接报错」是配置加载的黄金分工：默认值让开箱即用，<b>fail-fast</b>（启动即挂，而不是运行到签发 token 时才 panic）让缺配置在第一秒暴露。</p></div>
-
-    <h3>3. Config 结构体：一次加载，传参传递</h3>
-    <pre><span class="code-label">internal/config/config.go</span><span class="k">type</span> <span class="t">Config</span> <span class="k">struct</span> {
-    Port      <span class="t">string</span> <span class="c">// ":8080" 监听用</span>
-    GinMode   <span class="t">string</span> <span class="c">// debug / release</span>
-    DSN       <span class="t">string</span> <span class="c">// MySQL 连接串</span>
-    JWTSecret <span class="t">string</span> <span class="c">// HS256 密钥</span>
+<span class="c">// missingEnv 变长参数（keys ...string）：把没设置到的必填键名收集起来。
+// JS 对照：const missing = (...keys) =&gt; keys.filter(k => !process.env[k])</span>
+<span class="k">func</span> <span class="t">missingEnv</span>(keys ...<span class="t">string</span>) []<span class="t">string</span> {
+    <span class="k">var</span> miss []<span class="t">string</span>
+    <span class="k">for</span> _, k := range keys {
+        <span class="k">if</span> os.<span class="t">Getenv</span>(k) == <span class="s">""</span> {
+            miss = append(miss, k)
+        }
+    }
+    <span class="k">return</span> miss
 }</pre>
-    <pre><span class="code-label">cmd/server/main.go</span><span class="k">func</span> main() {
+    <div class="callout tip"><p>「可选给默认值、必填一次报全」是配置加载的黄金分工：默认值让开箱即用，<b>fail-fast</b>（启动即挂，而不是运行到签发 token 时才 panic）让缺配置在第一秒暴露；<code>missingEnv</code> 把五个键一次列全，比「改一个报一个」省五轮重启。顺带一个 Go 细节：<code>var miss []string</code> 是 <code>nil</code> 切片，<code>append</code> 对 nil 切片照样工作（第一次 append 就地分配），所以不用写成 <code>miss := []string{}</code>。</p></div>
+    <div class="callout note"><p><code>Config</code> 里只有 <code>Port/GinMode/DSN/JWTSecret/JWTRefreshSecret</code> 五个字段，而 <code>.env</code> 有九个键——<code>DB_HOST/DB_PORT/DB_USER/DB_PASS/DB_NAME</code> 五个键在 <code>Load()</code> 内部就被拼成 DSN 消化掉了。这是有意的收口：调用方不需要知道 DSN 有几段，第 7 周换 Postgres 也只改 <code>config.go</code>。</p></div>
+    <h3>4. main.go：装配一次做完，中间件排在路由前面</h3>
+    <p>下面是今天完整可编译的 <code>cmd/server/main.go</code>（第 2 天那段「这一步的样子」正式落地）。三个要求：<b>字面量清零</b>、<b>service 收到的永远是仓储接口而不是 <code>*gorm.DB</code></b>、<b>鉴权中间件在注册受保护路由之前挂好</b>。</p>
+    <pre><span class="code-label">cmd/server/main.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"log"</span>
+
+    <span class="s">"github.com/gin-gonic/gin"</span>
+
+    <span class="s">"goblog/internal/config"</span>
+    <span class="s">"goblog/internal/handler"</span>
+    <span class="s">"goblog/internal/middleware"</span>
+    <span class="s">"goblog/internal/model"</span>
+    <span class="s">"goblog/pkg/response"</span>
+    <span class="s">"goblog/internal/repository"</span>
+    <span class="s">"goblog/internal/service"</span>
+)
+
+<span class="k">func</span> main() {
     cfg, err := config.<span class="t">Load</span>()
     <span class="k">if</span> err != <span class="k">nil</span> {
-        log.<span class="t">Fatal</span>(<span class="s">"配置加载失败: "</span> + err.<span class="t">Error</span>()) <span class="c">// fail-fast</span>
+        log.<span class="t">Fatal</span>(<span class="s">"配置加载失败: "</span> + err.<span class="t">Error</span>())  <span class="c">// fail-fast：带着坏配置启动更糟</span>
     }
 
-    db, err := gorm.<span class="t">Open</span>(mysql.<span class="t">Open</span>(cfg.DSN), <span class="k">nil</span>)
-    <span class="k">if</span> err != <span class="k">nil</span> { log.<span class="t">Fatal</span>(<span class="s">"数据库连接失败: "</span> + err.<span class="t">Error</span>()) }
-    _ = db.<span class="t">AutoMigrate</span>(&amp;model.User{}, &amp;model.Article{})
+    db, err := repository.<span class="t">New</span>(cfg.DSN)              <span class="c">// 第 3 周的封装：gorm.Open + 连接池 + Ping</span>
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        log.<span class="t">Fatal</span>(<span class="s">"数据库连接失败: "</span> + err.<span class="t">Error</span>())
+    }
+    <span class="k">if</span> err := db.<span class="t">AutoMigrate</span>(&amp;model.User{}, &amp;model.Tag{}, &amp;model.Article{}); err != <span class="k">nil</span> {
+        log.<span class="t">Fatal</span>(<span class="s">"迁移失败: "</span> + err.<span class="t">Error</span>())
+    }
 
-    gin.<span class="t">SetMode</span>(cfg.GinMode)
-    r := gin.<span class="t">Default</span>()
+    <span class="c">// 装配顺序：仓储 → service → handler。两把密钥从 cfg 递进去，谁也读不到全局</span>
+    userRepo := repository.<span class="t">NewGormUserRepo</span>(db)
+    artRepo  := repository.<span class="t">NewGormArticleRepo</span>(db)
+    userSvc  := service.<span class="t">NewUserService</span>(userRepo, artRepo)
+    artSvc   := service.<span class="t">NewArticleService</span>(artRepo, userRepo)
+    authSvc  := service.<span class="t">NewAuthService</span>(userRepo, cfg.JWTSecret, cfg.JWTRefreshSecret)
 
-    authSvc := service.<span class="t">NewAuthService</span>(db, cfg.JWTSecret)  <span class="c">// 依赖靠构造函数传进去</span>
-    authH := handler.<span class="t">NewAuthHandler</span>(authSvc, cfg.JWTSecret)
+    h     := handler.<span class="t">New</span>(userSvc, artSvc)
+    authH := handler.<span class="t">NewAuthHandler</span>(authSvc, cfg.JWTSecret, cfg.JWTRefreshSecret)
 
-    r.<span class="t">POST</span>(<span class="s">"/auth/register"</span>, authH.Register)
-    r.<span class="t">POST</span>(<span class="s">"/auth/login"</span>, authH.Login)
-    r.<span class="t">POST</span>(<span class="s">"/auth/refresh"</span>, authH.Refresh)
-    r.<span class="t">Use</span>(middleware.<span class="t">Auth</span>(cfg.JWTSecret))               <span class="c">// 中间件也从 cfg 拿，不读全局</span>
-    <span class="c">// ... 受保护路由 ...</span>
+    gin.<span class="t">SetMode</span>(cfg.GinMode)                       <span class="c">// release 模式会关掉调试日志，第 7 周部署时改这一个值</span>
+    r := gin.<span class="t">New</span>()
+    r.<span class="t">Use</span>(gin.<span class="t">Logger</span>(), gin.<span class="t">Recovery</span>())
 
-    r.<span class="t">Run</span>(<span class="s">":"</span> + cfg.Port)
+    r.<span class="t">GET</span>(<span class="s">"/health"</span>, <span class="k">func</span>(c *gin.<span class="t">Context</span>) {
+        response.<span class="t">OK</span>(c, gin.<span class="t">H</span>{<span class="s">"status"</span>: <span class="s">"ok"</span>})  <span class="c">// 统一 Body：{"code":0,"message":"ok","data":{"status":"ok"}}</span>
+    })
+
+    v1 := r.<span class="t">Group</span>(<span class="s">"/api/v1"</span>)
+    {
+        <span class="c">// 公开组：注册/登录/换发不需要登录态，文章读取游客也要能看</span>
+        pub := v1.<span class="t">Group</span>(<span class="s">"/auth"</span>)
+        pub.<span class="t">POST</span>(<span class="s">"/register"</span>, authH.Register)
+        pub.<span class="t">POST</span>(<span class="s">"/login"</span>, authH.Login)
+        pub.<span class="t">POST</span>(<span class="s">"/refresh"</span>, authH.Refresh)
+        v1.<span class="t">GET</span>(<span class="s">"/articles"</span>, h.ArticleList)
+        v1.<span class="t">GET</span>(<span class="s">"/articles/:id"</span>, h.ArticleDetail)
+
+        <span class="c">// 保护组：中间件在 Group 这一行就挂好，下面注册的路由才会过它</span>
+        priv := v1.<span class="t">Group</span>(<span class="s">""</span>, middleware.<span class="t">Auth</span>(cfg.JWTSecret))
+        priv.<span class="t">GET</span>(<span class="s">"/users/me"</span>, authH.Me)
+        priv.<span class="t">POST</span>(<span class="s">"/articles"</span>, h.ArticleCreate)
+        priv.<span class="t">PUT</span>(<span class="s">"/articles/:id"</span>, h.ArticleUpdate)
+        priv.<span class="t">DELETE</span>(<span class="s">"/articles/:id"</span>, h.ArticleDelete)
+    }
+
+    <span class="k">if</span> err := r.<span class="t">Run</span>(<span class="s">":"</span> + cfg.Port); err != <span class="k">nil</span> {
+        log.<span class="t">Fatal</span>(err)
+    }
 }</pre>
-    <div class="callout js"><p><b>反对的反模式</b>：<code>var JWTSecret string</code> 放在 config 包里当全局变量，任何函数直接引用。它编译最方便、调试最痛苦——测试想换 secret 只能改全局，并发跑测试就互相踩。传参虽要多写几行签名，换来的是依赖清晰 + 天然可测（明天写测试马上受益）。</p></div>
+    <div class="callout warn"><p><b>为什么不是 <code>r.Use(middleware.Auth(cfg.JWTSecret))</code>？</b>引擎级 <code>Use</code> 作用于「在它之后注册的所有路由」——写在装配前面，等于把 <code>/health</code>、<code>/api/v1/auth/register</code>、<code>/login</code> 一起拦了（登录接口要求先登录，是个经典死锁）；写在注册后面，前面那些路由又一条都不过鉴权。<b>本周终态的写法就是上面的分组挂法</b>：公开组不挂，保护组在 <code>Group("", Auth(...))</code> 里一次挂到位。真要给某个路由单独特判，才在 handler 里自己判断（第 8 周管理员接口会用到）。</p></div>
+    <div class="callout note"><p><code>NewAuthHandler</code> 今天是三个参数（service + 两把密钥）。<b>明天 D4 会给它再加一个 <code>*slog.Logger</code></b>，变成四个参数——这是本周最后一次改构造函数签名，第 5 天的测试就按四参数版本传。</p></div>
+    <div class="callout js"><p><b>反对的反模式</b>：<code>var JWTSecret string</code> 放在 config 包里当全局变量，任何函数直接引用。它编译最方便、调试最痛苦——测试想换 secret 只能改全局，并发跑测试就互相踩。对照 Node：很多人把 <code>config.js</code> <code>export default { jwt: process.env.JWT_SECRET }</code> 到处 import，测一个函数要连带 mock 整个模块；Go 的 <code>cfg</code> 当参数传，测试里 <code>config.Config{JWTSecret: "test-key"}</code> 直接构造一个假配置就完了，不用 mock。</p></div>
 
-    <h3>4. .env 进 .gitignore + .env.example 模式</h3>
+    <h3>5. .env 进 .gitignore + .env.example 模式</h3>
     <pre><span class="code-label">.gitignore</span><span class="c"># 本地环境配置，绝不入库</span>
 .env
 *.local</pre>
-    <p>仓库里提交一份<b>只有键没有值（或值是占位符）</b>的模板，队友 clone 后照着复制：</p>
+    <p>仓库里提交一份<b>只有键没有值（或值是占位符）</b>的模板，键名顺序和 <code>.env</code> 保持一致，队友 clone 后照着复制：</p>
     <pre><span class="code-label">.env.example</span>PORT=8080
 GIN_MODE=debug
-DB_USER=root
-DB_PASS=<span class="c">&lt;你的本地密码&gt;</span>
-DB_HOST=127.0.0.1
-DB_NAME=blog
-JWT_SECRET=<span class="c">&lt;openssl rand -hex 32&gt;</span></pre>
+
+DB_HOST=localhost
+DB_PORT=<span class="n">3306</span>
+DB_USER=goblog
+DB_PASS=<span class="c">&lt;第 3 周 compose 里 MYSQL_PASSWORD 的值&gt;</span>
+DB_NAME=goblog
+
+JWT_SECRET=<span class="c">&lt;openssl rand -hex 32&gt;</span>
+JWT_REFRESH_SECRET=<span class="c">&lt;再跑一次 openssl rand -hex 32&gt;</span></pre>
     <pre><span class="code-label">shell</span>$ cp .env.example .env <span class="c"># 新成员入场第一步，README 里写清楚</span></pre>
     <div class="callout warn"><p>如果 .env <b>已经</b>提交过：<code>git rm --cached .env</code> 移除跟踪并补 .gitignore，然后<b>立刻轮换</b>里面的所有密码和 JWT secret——已进历史提交的密钥视为永久泄露，光删文件不够（历史里还在），要重写历史或换密钥。</p></div>
 
-    <h3>5. viper：什么时候才值得升级</h3>
+    <h3>6. viper：什么时候才值得升级</h3>
     <p><code>github.com/spf13/viper</code> 支持 yaml/toml 配置文件、命令行参数、远程配置、热加载（WatchConfig）。但代价是魔法多、初始化复杂。<b>经验法则：</b></p>
     <table>
       <tr><th>场景</th><th>选择</th></tr>
@@ -173,20 +257,26 @@ v.<span class="t">ReadInConfig</span>()
 v.<span class="t">Unmarshal</span>(&amp;cfg)              <span class="c">// 一次性映射进结构体——出口仍是 Config，与今天同构</span></pre>
     <div class="callout note"><p>正因为今天的 <code>Config</code> 结构体是「唯一出口」，以后从 godotenv 换到 viper 只需要重写 <code>Load()</code> 内部，其他代码一行不动——这就是先建模后选库的好处。</p></div>
 
-    <h3>6. 今天的目标结构长这样</h3>
-    <pre><span class="code-label">tree</span>studyblog/
-├── .env              <span class="c"># 本地真值，只在你的硬盘上（.gitignore）</span>
-├── .env.example      <span class="c"># 键名清单+占位值，入库</span>
-├── cmd/server/main.go
+    <h3>7. 今天的目标结构长这样</h3>
+    <pre><span class="code-label">tree</span>goblog/                       <span class="c"># Go 模块名就叫 goblog（go.mod: module goblog）</span>
+├── .env                      <span class="c"># 本地真值，只在你的硬盘上（.gitignore）</span>
+├── .env.example              <span class="c"># 键名清单+占位值，入库</span>
+├── .gitignore
+├── cmd/server/main.go        <span class="c"># 今天重写：装配 + 分组路由，没有一处字面量</span>
 ├── internal/
-│   ├── config/config.go  <span class="c"># 今天新增：Config 结构体 + Load()</span>
-│   ├── handler/          <span class="c"># 构造函数收 svc、secret 等参数</span>
-│   ├── middleware/auth.go
-│   ├── model/  service/
-│   └── pkg/jwtutil/
-└── docker-compose.yml    <span class="c"># MySQL 密码同样改为 ${DB_PASS} 引用</span></pre>
+│   ├── config/config.go      <span class="c"># 今天新增：Config 结构体 + Load() + getEnv/missingEnv</span>
+│   ├── model/                <span class="c"># user.go / article.go / tag.go（第 3 周）</span>
+│   ├── repository/           <span class="c"># db.go(New) · user.go(UserRepository) · article.go(ArticleRepository)</span>
+│   ├── service/              <span class="c"># auth.go / user.go / article.go —— 只收接口，不见 *gorm.DB</span>
+│   ├── handler/              <span class="c"># auth.go / article.go / user.go —— 构造函数收 svc、密钥（明天加 logger）</span>
+│   ├── middleware/           <span class="c"># auth.go（Auth + CtxKeyUserID）</span>
+│   ├── dto/                  <span class="c"># 第 3 周的列表查询参数</span>
+│   └── pkg/jwtutil/jwt.go    <span class="c"># 第 2 天</span>
+├── pkg/response/             <span class="c"># 第 2 周起就在模块根（不在 internal/ 下）：Body / OK / Created / Fail + 业务码常量</span>
+└── docker-compose.yml        <span class="c"># 练习 4：MySQL 的账号密码与 .env 同一份来源</span></pre>
+    <div class="callout note"><p>和昨天的树只差两处：多了 <code>internal/config/</code>，以及 <code>docker-compose.yml</code> 的注释换了含义。<code>repository</code> 层不是今天加的（第 2、3 周一直在），但今天是它第一次「被配置救回来」——<code>service.NewAuthService(userRepo, …)</code> 之所以只收接口，明天才能把它换成内存假仓储写测试。</p></div>
 
-    <h3>7. 值的优先级：真实环境变量 &gt; .env 文件</h3>
+    <h3>8. 值的优先级：真实环境变量 &gt; .env 文件</h3>
     <p><code>godotenv.Load()</code> 的语义是「<b>不覆盖</b>已存在的环境变量」（想反转用 <code>Overload</code>）。于是天然形成三级瀑布：</p>
     <pre><span class="code-label">优先级</span>  高 ──  shell/容器注入的环境变量   PORT=9999 go run ./cmd/server   <span class="c"># 临时试验、部署平台</span>
        └──  .env 文件里的值            PORT=8080                        <span class="c"># 本地开发默认</span>
@@ -198,17 +288,21 @@ v.<span class="t">Unmarshal</span>(&amp;cfg)              <span class="c">// 一
   <section>
     <h2>今日练习</h2>
     <div class="task">
-      <div class="task-title">练习 1：把端口/DSN/JWTSecret 收进 config 包（60 分钟，主线）</div>
-      <p>重构项目：main.go 里不允许再出现任何字面量的地址、密码、secret；全部走 <code>cfg</code>。完成后连续验证两次：<code>PORT=9999 go run ./cmd/server</code> 应监听 9999；删掉 .env 里 JWT_SECRET 行应启动即报「配置加载失败」。</p>
+      <div class="task-title">练习 1：把端口/DSN/两把 JWT 密钥收进 config 包（60 分钟，主线）</div>
+      <p>重构项目：main.go 里不允许再出现任何字面量的地址、密码、secret；全部走 <code>cfg</code>。完成后连续验证两次：<code>PORT=9999 go run ./cmd/server</code> 应监听 9999；删掉 .env 里 <code>JWT_SECRET</code> 行应启动即报「配置加载失败」。</p>
       <details><summary>参考答案（要点）</summary>
-        <p><code>internal/config</code> 提供 <code>Config</code> + <code>Load()</code>；main 第一行调用并 fail-fast；<code>service.NewAuthService(db, cfg.JWTSecret)</code> 之类通过构造函数注入；DSN 在 Load 内用 Sprintf 拼装（占位符 <code>%s:%s@tcp(%s:3306)/%s?charset=utf8mb4&amp;parseTime=True&amp;loc=Local</code>）。环境变量临时覆盖 .env 之所以生效，是因为 godotenv.Load 不覆盖已存在的变量。</p>
+        <p><code>internal/config</code> 提供 <code>Config</code> + <code>Load()</code>；main 第一行调用并 fail-fast；装配全部走仓储接口——<code>authSvc := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTRefreshSecret)</code>、<code>authH := handler.NewAuthHandler(authSvc, cfg.JWTSecret, cfg.JWTRefreshSecret)</code>，<b>main.go 里不许出现 <code>gorm.Open</code></b>（第 3 周的 <code>repository.New(cfg.DSN)</code> 就是干这个的）。DSN 在 <code>Load</code> 内用 Sprintf 拼装，端口位置用 <code>%s</code> 吃 <code>DB_PORT</code>：</p>
+        <pre><span class="code-label">DSN 模板</span>%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&amp;parseTime=True&amp;loc=Local
+<span class="c"> ↑  ↑    ↑   ↑     ↑
+DB_USER DB_PASS DB_HOST DB_PORT DB_NAME     ← 渲染后：goblog:goblog123@tcp(localhost:3306)/goblog?…</span></pre>
+        <p><code>PORT=9999</code> 前缀能覆盖 .env，是因为 <code>godotenv.Load()</code> 不覆盖已存在的变量（第 8 节的瀑布）。删掉 <code>JWT_SECRET</code> 时的报错应该是<code>配置加载失败: 缺少环境变量：JWT_SECRET</code>——一次报全，不是改一个报一个。</p>
       </details>
     </div>
     <div class="task">
       <div class="task-title">练习 2：密钥轮换演练（20 分钟）</div>
-      <p><code>openssl rand -hex 32</code> 生成新 secret 替换 .env，重启服务，用旧 secret 签发的 access token 请求受保护接口。</p>
+      <p><code>openssl rand -hex 32</code> 生成新值替换 .env 里的 <code>JWT_SECRET</code>（<b>先只换这一把</b>），重启服务，用旧密钥签发的 access token 请求受保护接口；再单独换 <code>JWT_REFRESH_SECRET</code>，用旧的 refresh 串调 <code>/api/v1/auth/refresh</code>。</p>
       <details><summary>参考答案</summary>
-        <p>返回 401+1005——签名校验用的是新 secret，旧 token 全部作废。这就是「泄露即轮换」的底气：换密钥的成本只是让用户重新登录一次。</p>
+        <p>两次都是 <code>401 + 1005</code>：验签用的是新密钥，旧 token 全部作废。第二次还多证明了一件事——换 refresh 密钥不影响已签发的 access（两把密钥各管各的），这正是双密钥设计的隔离效果。这就是「泄露即轮换」的底气：换密钥的成本只是让用户重新登录一次。</p>
       </details>
     </div>
     <div class="task">
@@ -216,19 +310,40 @@ v.<span class="t">Unmarshal</span>(&amp;cfg)              <span class="c">// 一
       <p>执行 <code>git status</code> 确认 .env 未被跟踪；提交 .env.example 与 .gitignore；README 加「快速开始：cp .env.example .env → 填值 → go run」三行说明。</p>
     </div>
     <div class="task">
-      <div class="task-title">练习 4：给 docker-compose 的 MySQL 也换密码来源（20 分钟）</div>
-      <p>把 compose 文件里 MySQL 的 <code>MYSQL_ROOT_PASSWORD</code> 也改成从 shell 环境变量读（<code>${DB_PASS}</code>），与 .env 保持同一份密码。</p>
+      <div class="task-title">练习 4：让 compose 与 .env 用同一份密码（30 分钟）</div>
+      <p>把第 3 周 compose 里 MySQL 的写死密码改成 <code>${...}</code> 引用，与 Go 读的 <code>.env</code> 同源。<b>注意：这一步不会改动数据库里已经存在的账号密码</b>，先把这件事搞清楚的收益比改文件大。</p>
       <details><summary>参考答案</summary>
-        <pre><span class="code-label">docker-compose.yml</span>services:
+        <pre><span class="code-label">docker-compose.yml（第 3 周的 goblog-mysql，今天只改密码来源）</span><span class="c"># ——— 第 1 段：MySQL 官方镜像认识的变量（只在「数据卷第一次初始化」时生效）———</span>
+services:
   mysql:
-    image: mysql:<span class="n">8</span>.<span class="n">0</span>
+    image: mysql:8.0
+    container_name: goblog-mysql
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASS}   <span class="c"># compose 自己也会读项目根目录的 .env</span>
-      MYSQL_DATABASE: ${DB_NAME:-blog}</pre>
-        <p>Docker Compose 原生读取同目录 .env，<code>:-</code> 语法是 compose 层的默认值。改完 <code>docker compose up -d</code> 重建容器验证 Go 服务仍可连库。</p>
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASS:-goblogroot}  <span class="c"># root 密码：compose 变量，不是后端用的账号</span>
+      MYSQL_DATABASE:      ${DB_NAME:-goblog}           <span class="c"># 首次启动自动建库</span>
+      MYSQL_USER:          ${DB_USER:-goblog}           <span class="c"># 首次启动自动建这个业务账号</span>
+      MYSQL_PASSWORD:      ${DB_PASS:-goblog123}         <span class="c"># ↑ 它和 .env 的 DB_PASS 必须是同一个值</span>
+    ports:
+      - <span class="s">"3306:3306"</span>
+<span class="c"># ——— 第 2 段：本项目后端读的九个键（PORT / GIN_MODE / DB_* / JWT_*），由 Go 的 godotenv 读，
+#      compose 自己不认它们，只是恰好和上面共用同一个 .env 文件 ———</span></pre>
+        <p>Docker Compose 原生读取<b>项目根目录的 <code>.env</code></b> 做变量插值，<code>:-</code> 是 compose 层的默认值语法。第 3 周 compose 里写死的 <code>goblog123</code> 今天改成了 <code>${DB_PASS:-goblog123}</code>：值没变，所以现有容器和数据库账号一切照旧，重启即可。</p>
+        <div class="callout warn"><p><b>这里有个大坑，别指望改文件就能改密码。</b>MySQL 镜像只在<b>数据目录为空</b>（第一次 <code>up</code>）时读取 <code>MYSQL_ROOT_PASSWORD / MYSQL_DATABASE / MYSQL_USER / MYSQL_PASSWORD</code> 去建库建账号；卷已经存在时它直接跳过整个初始化流程（<code>docker compose logs mysql</code> 里看不到 <code>Initializing database</code> 那一段就是证据）。所以你把 <code>MYSQL_PASSWORD</code> 改成新值再 <code>docker compose up -d</code>，<b>数据库里的密码还是老的</b>，Go 服务立刻 <code>Access denied for user 'goblog'@'%'</code>。改 <code>MYSQL_ROOT_PASSWORD</code> 同理无效——它的语义是「初始化时把 root 密码设成这个」，不是「每次启动都把 root 密码改成这个」。</p>
+        <p>正确路线有两条，看这份库里有没有你要留的数据：</p>
+        <p><b>① 数据要留（推荐，日常就这么干）：直接改数据库里的账号，然后让 <code>.env</code> 跟上。</b></p>
+        <pre><span class="code-label">shell</span>$ docker exec -it goblog-mysql mysql -uroot -p<span class="s">"goblogroot"</span> \
+    -e <span class="s">"ALTER USER 'goblog'@'%' IDENTIFIED BY '新密码'; FLUSH PRIVILEGES;"</span>
+
+$ <span class="c"># 改 .env 里的 DB_PASS=新密码，同步改 compose 的默认值（或直接靠 .env 覆盖）</span>
+$ go run ./cmd/server      <span class="c"># 立刻能连上，数据一行没丢</span></pre>
+        <p><b>② 数据可以丢（学习期最省事）：连卷一起删掉重建，让镜像重新初始化。</b></p>
+        <pre><span class="code-label">shell</span>$ docker compose down -v    <span class="c"># -v = 删除命名卷，MySQL 的数据目录一起没了！</span>
+$ docker compose up -d      <span class="c"># 空目录 → 镜像读新的 MYSQL_* → 账号密码按 compose 重建</span></pre>
+        <p>后果写清楚：<code>down -v</code> 之后第 3、4 周练的那些用户和文章全部消失，要重新注册、重新 AutoMigrate；它只适合「学习期重来」或「确认无有效数据」。分不清哪种情况就用第 ① 条。</p>
+        </div>
       </details>
     </div>
-    <div class="callout tip"><p>做完四条练习后自问：明天我要给日志级别也做成可配置的（<code>LOG_LEVEL</code>），要动的文件是不是只有 <code>config.go</code> 和 main？如果是，说明收口成功——配置系统的健康标准就是「加一个配置项只改一处」。</p></div>
+    <div class="callout tip"><p>做完四条练习后自问一句：明天要把日志级别做成「跟环境走」，需要动 <code>.env</code> 吗？<b>不需要</b>——明天直接读今天已经收进 <code>cfg.GinMode</code> 的那个值（<code>debug</code> → Info、<code>release</code> → Warn），所以只新增 <code>internal/pkg/applog</code> 和 main.go 里的一行。这是刻意的设计：本周<b>不加</b> <code>LOG_LEVEL</code> 这个变量，环境变量清单就停在讲义开头那 9 个——能由 <code>GIN_MODE</code> 推导出来的东西，就别再多开一项让人记。</p></div>
   </section>
 
   <section>
@@ -239,7 +354,9 @@ v.<span class="t">Unmarshal</span>(&amp;cfg)              <span class="c">// 一
       <tr><td>godotenv 路径不对</td><td>从别的目录 <code>go run</code> 时 Load 找不到 .env，全走默认值，排查半天</td><td>约定 .env 放项目根并从根目录启动；或 Load 传绝对路径</td></tr>
       <tr><td>全局变量满天飞</td><td>config 包 <code>var Secret string</code> 人人直读，测试互相污染</td><td>Config 结构体 + 构造函数传参（今天的模式）</td></tr>
       <tr><td>secret 用弱值</td><td><code>JWT_SECRET=123456</code>，HS256 可被字典穷举伪造</td><td>≥32 字节随机串，<code>openssl rand -hex 32</code> 生成</td></tr>
-      <tr><td>必填项没做 fail-fast</td><td>启动正常，第一个登录请求 panic「secret is invalid key or message」</td><td>requireEnv + 启动即返回 error，把事故消灭在部署阶段</td></tr>
+      <tr><td>必填项没做 fail-fast</td><td>启动正常，第一个登录请求 panic「secret is invalid key or message」</td><td>missingEnv + 启动即返回 error，把事故消灭在部署阶段</td></tr>
+      <tr><td>改 compose 的 <code>MYSQL_PASSWORD</code> 想换数据库密码</td><td>容器重启了、文件也改了，Go 还是 <code>Access denied</code>——数据卷早已存在，镜像不再初始化账号</td><td>用 <code>ALTER USER 'goblog'@'%'</code> 改库里的密码（练习 4 第①条），或 <code>docker compose down -v</code> 清卷重建（第②条，数据全丢）</td></tr>
+      <tr><td>DSN 里端口写死 <code>3306</code></td><td>本地能跑；第 7 周容器映射改成 3307 后连到别的实例，报的错看不懂</td><td><code>DB_PORT</code> 进 .env，DSN 用 <code>%s</code> 占位（今天第 3 节的模板）</td></tr>
       <tr><td>.env 值带引号/空格踩解析</td><td><code>DB_PASS="p 1"</code> 或行尾多了空格，连库时密码怎么都不对</td><td>godotenv 按字面取值：值不加多余引号，编辑器关掉「行尾保留空白」，出问题时先 print 配置长度</td></tr>
     </table>
   </section>
@@ -256,6 +373,8 @@ v.<span class="t">Unmarshal</span>(&amp;cfg)              <span class="c">// 一
       <tr><td>fail-fast</td><td>配置缺失在启动瞬间报错退出，绝不带病运行到用户请求时才炸</td></tr>
       <tr><td>依赖注入（简版）</td><td>不伸手拿全局变量，而是把依赖当参数从构造函数递进去——今天 Config 的传法就是它</td></tr>
       <tr><td>密钥轮换</td><td>定期/事件性地更换 secret 或密码，使旧凭证与新环境全部失效，泄露损失有界</td></tr>
+      <tr><td>compose 变量插值</td><td><code>docker compose</code> 会读项目根目录的 .env，把 <code>${DB_PASS:-goblog123}</code> 这种写法展开成实际值再传给容器</td></tr>
+      <tr><td>初始化 vs 运行期</td><td>MySQL 镜像的 <code>MYSQL_*</code> 变量只在数据卷第一次初始化时生效；已有卷时改文件等于没改，要 <code>ALTER USER</code> 或清卷重建</td></tr>
     </table>
   </section>
 
@@ -263,7 +382,7 @@ v.<span class="t">Unmarshal</span>(&amp;cfg)              <span class="c">// 一
     <h2>完成检查（全部勾掉才算毕业）</h2>
     <ul class="check">
       <li><label><input type="checkbox" data-key="w4d3c1">main.go 里 grep 不到任何密码/secret/DSN 字面量，全部来自 cfg</label></li>
-      <li><label><input type="checkbox" data-key="w4d3c2">删掉 JWT_SECRET 后启动，进程立即退出并打印「缺少环境变量 JWT_SECRET」</label></li>
+      <li><label><input type="checkbox" data-key="w4d3c2">删掉 <code>JWT_SECRET</code> 或 <code>JWT_REFRESH_SECRET</code> 后启动，进程立即退出并打印「缺少环境变量：…」（两个键都缺时一次列全）</label></li>
       <li><label><input type="checkbox" data-key="w4d3c3">PORT=9999 前缀启动验证成功，环境变量优先级高于 .env 默认值</label></li>
       <li><label><input type="checkbox" data-key="w4d3c4"><code>git ls-files</code> 里没有 .env；仓库里有 .env.example 和 .gitignore</label></li>
       <li><label><input type="checkbox" data-key="w4d3c5">密钥轮换演练完成：旧 token 在新 secret 下返回 401+1005</label></li>

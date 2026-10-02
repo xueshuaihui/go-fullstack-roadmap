@@ -11,12 +11,17 @@
 <body>
 <header class="site-header">
   <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
-  <nav><a href="../../index.html">8 周路线</a><a href="day1.html">回到 Day 1</a></nav>
+  <nav><a href="../../index.html">8 周路线</a><a href="day1.html">第 6 周每日课</a></nav>
 </header>
 
 <main class="page">
 <article>
   <div class="crumb"><a href="../../index.html">首页</a> / <a href="day1.html">第 6 周</a> / 总结与验收</div>
+  <div class="day-meta">
+    <span class="chip">WEEK 6 · SUMMARY</span>
+    <span class="chip alt">复盘 + 验收</span>
+    <span class="chip">React + Go 博客前端</span>
+  </div>
   <h1>第 6 周总结：全栈联调（React + Go）</h1>
   <p>恭喜——这是你第一次<b>一个人吃下一整个全栈项目</b>：后端是前 5 周自己写的 Gin 博客 API，前端是这 5 天亲手接起来的 React 应用。从今天起你不再「只会前端」或「只会 Go」，你是能把两头拧在一起的人。本页做三件事：盘点交付物、硬性验收、复盘卡点。</p>
 
@@ -51,7 +56,7 @@ Editor.jsx ── updateArticle(id, form) ──▶ src/api/article.js
       <tr><td><a href="day2.html">D2</a></td><td>列表与详情</td><td>useEffect+async 取数、防抖、分页、三态渲染</td><td>删掉 ignore 守卫亲手制造一次竞态</td></tr>
       <tr><td><a href="day3.html">D3</a></td><td>创建编辑删除</td><td>Editor 双模式、回填、二次确认、作者判断</td><td>用 B 账号 curl 打到 403 的那一刻</td></tr>
       <tr><td><a href="day4.html">D4</a></td><td>守卫与拦截器</td><td>ProtectedRoute、401 静默续期、并发只刷一次</td><td>废掉 accessToken 页面却毫无波澜</td></tr>
-      <tr><td><a href="day5.html">D5</a></td><td>CORS 代理构建</td><td>报错三连、proxy 原理、build/env、排错清单</td><td>拆掉 proxy 让 CORS 炸响再修好</td></tr>
+      <tr><td><a href="day5.html">D5</a></td><td>CORS 代理构建</td><td>报错三连、proxy 原理、build/env、排错清单、仓库归置 <code>goblog/{backend,frontend}</code></td><td>拆掉 proxy 让 CORS 炸响再修好</td></tr>
     </table>
   </section>
 
@@ -62,7 +67,7 @@ Editor.jsx ── updateArticle(id, form) ──▶ src/api/article.js
       <tr><td>认证</td><td>注册 / 登录 / 退出 / 登录态恢复</td><td>D1</td><td>useAuth 同步初始化 + localStorage 三键（accessToken / refreshToken / user）</td></tr>
       <tr><td>请求层</td><td>axios 实例、自动带 token、统一拆 <code>{code,message,data}</code></td><td>D1</td><td><code>src/api/http.js</code>，页面永不直接 import axios</td></tr>
       <tr><td>浏览</td><td>文章列表（分页 + 关键词搜索防抖 300ms）、详情页</td><td>D2</td><td>useEffect + async 取数、ignore 竞态守卫、三态渲染、封面兜底</td></tr>
-      <tr><td>管理</td><td>新建 / 编辑回填 / 删除二次确认 / 作者判断</td><td>D3</td><td>Editor.jsx 一套组件双模式，<code>authorId === user.id</code> 控制按钮显隐</td></tr>
+      <tr><td>管理</td><td>新建 / 编辑回填 / 删除二次确认 / 作者判断</td><td>D3</td><td>Editor.jsx 一套组件双模式，<code>article.user.id === user.id</code> 控制按钮显隐（作者是嵌套对象 user，没有 authorId）</td></tr>
       <tr><td>安全体验</td><td>路由守卫 + redirect 回跳、401 静默续期重试、refresh 失效才跳登录</td><td>D4</td><td>ProtectedRoute；pending Promise 单例保证并发 401 只刷一次</td></tr>
       <tr><td>工程</td><td>Vite proxy、CORS 认知、生产构建、VITE_API_BASE</td><td>D5</td><td>开发走 proxy，生产走 Nginx 同源（第 7 周落地）</td></tr>
     </table>
@@ -70,57 +75,69 @@ Editor.jsx ── updateArticle(id, form) ──▶ src/api/article.js
 
   <section>
     <h2>接口契约速查卡（第 7、8 周还要用，存进笔记）</h2>
-    <pre><span class="code-label">text</span>Base:            http://localhost:8080/api/v1        开发期经 Vite proxy，前端写 /api/v1
-统一响应:        { "code": 0, "message": "success", "data": ... }   成功恒 200/201 + code 0
-错误码:          1001 用户不存在 · 1002 密码错误 · 1003 无权限(403)
-                 1004 参数错误(400) · 1005 token 无效或过期(401)
+    <pre><span class="code-label">text</span>Base:            /api/v1  （前端 baseURL：开发期 Vite proxy 转 http://localhost:8080，生产期 Nginx 同源反代）
+健康检查:        GET /health（不带 /api/v1 前缀）→ { code:0, message:"ok", data:{ status:"ok" } }
+统一响应:        { "code": 0, "message": "…", "data": … }  成功 200/201 + code 0；拦截器已拆掉这层壳
+错误码（HTTP + 业务 code，全周唯一版本）:
+  2xx/0 成功 · 400/1004 参数错误 · 401/1002 密码错误 · 401/1005 未认证或 token 无效
+  403/1003 权限不足 · 404/1001 资源不存在（通用）· 404/2001 文章不存在
+  409/1006 用户名已存在 · 500/5000 服务器内部错误 · NoRoute（未匹配路由）也回 404/1001
 
-POST /auth/register   {email, password, nickname}          → data { user }
-POST /auth/login      {email, password}                    → data { user, accessToken, refreshToken }
-POST /auth/refresh    {refreshToken}                       → data { accessToken, refreshToken }  ←滑动续期
-GET  /users/me        (Bearer)                             → data { user }
+鉴权（双 token；请求体与响应体字段一律 snake_case）:
+POST /auth/register   { username, password, nickname }  → data { user }  （注册成功后前端跳 /login）
+POST /auth/login      { username, password }            → data { user, access_token, refresh_token }  ← 是 username 不是 email
+POST /auth/refresh    { refresh_token }                 → data { access_token, refresh_token }  ← 滑动续期，双 token 都换
+GET  /users/me        (Bearer)                          → data { user }  ← 受 Auth 保护，D4 并发 401 实验用它
 
-GET  /articles?page=1&size=10&keyword=go                   → data { list: [article], total, page, size }
-GET  /articles/:id                                         → data { article }        不存在时 404/1001 思路
-POST /articles        (Bearer) {title,summary,content,coverImage} → data { article } 含新 id
-PUT  /articles/:id    (Bearer, 仅作者) 同上请求体           → data { article }；非作者 403/1003
-DELETE /articles/:id  (Bearer, 仅作者)                     → data null；非作者 403/1003
+文章（字段一律 snake_case，作者是嵌套对象 user，不是 author）:
+article = { id, title, content, summary, cover_image, views, user: { id, nickname }, created_at }
+GET    /articles?page=1&amp;size=10&amp;keyword=go   → data { list: [article], total, page, size, total_page }
+GET    /articles/:id   → data 就是文章本身（不是 data.article）；不存在时 reject(404 + code 2001) 走空态
+POST   /articles       (Bearer) { title, summary, content, cover_image }  → 201，data 即新建文章（含 id）
+PUT    /articles/:id   (Bearer, 仅作者) 同上请求体  → 200，data 可能为 null（取 id 写 data?.id ?? id）；非作者 403/1003
+DELETE /articles/:id   (Bearer, 仅作者)             → data null；非作者 403/1003
+  作者身份由后端从 token 解（c.GetUint("userID")），前端不传也传不动 user_id
 
-article 字段: { id, title, summary, content, coverImage,
-               authorId, author: { id, nickname }, createdAt, updatedAt }   —— 全小驼峰，Go 侧带 json tag
-localStorage 三键: accessToken · refreshToken · user(JSON 字符串)
+分页：列表以服务端 total_page 为准（= ceil(total/size)），前端 Pagination 直接用，不再自己 Math.ceil
+localStorage 三键（小驼峰，仅在 saveSession 里和后端 snake_case 翻译一次）:
+  accessToken · refreshToken · user(JSON 字符串)
 路由表:  / (列表)  /post/:id (详情)  /post/new ★  /post/:id/edit ★  /me ★  /login  /register   ★=ProtectedRoute</pre>
   </section>
 
   <section>
     <h2>交付物文件树（对照自查，缺哪个补哪个）</h2>
-    <pre><span class="code-label">text</span>blog-web/
-├── .env.development          <span class="c"># VITE_API_BASE=/api/v1（D5）</span>
-├── .env.local                <span class="c"># 只放本机覆写，已在 .gitignore（D5）</span>
-├── vite.config.js            <span class="c"># server.proxy: '/api' → http://localhost:8080（D5）</span>
-├── index.html
-└── src/
-    ├── main.jsx              <span class="c"># BrowserRouter 包裹 App</span>
-    ├── App.jsx               <span class="c"># 路由表终形（D3 铺路、D4 加守卫）</span>
-    ├── api/
-    │   ├── http.js           <span class="c"># ★ 实例 + 双拦截器 + refreshOnce 单例（D1 骨架 → D4 完全体）</span>
-    │   ├── auth.js           <span class="c"># register / login / refreshToken / fetchMe</span>
-    │   └── article.js        <span class="c"># listArticles / getArticle / create / update / remove</span>
-    ├── hooks/
-    │   ├── useAuth.js        <span class="c"># 登录态读写与同步恢复（D1）</span>
-    │   └── useDebounce.js    <span class="c"># 300ms 搜索防抖（D2）</span>
-    ├── components/
-    │   ├── ProtectedRoute.jsx<span class="c"># 路由守卫，redirect 参数（D4）</span>
-    │   ├── NavBar.jsx        <span class="c"># 登录态展示 / 退出 / 写文章入口</span>
-    │   ├── Pagination.jsx    <span class="c"># 页码控件（D2）</span>
-    │   └── ArticleCard.jsx   <span class="c"># 列表卡片 + 封面兜底（D2）</span>
-    └── pages/
-        ├── Login.jsx         <span class="c"># 受控表单 + 回跳 redirect（D1/D4）</span>
-        ├── Register.jsx      <span class="c"># 复用表单结构，错误文案直出后端 message（D1）</span>
-        ├── ArticleList.jsx   <span class="c"># 分页 + 防抖搜索 + ?t= 强制刷新（D2/D3）</span>
-        ├── ArticleDetail.jsx <span class="c"># 三态渲染 + 作者按钮 + 删除确认（D2/D3）</span>
-        ├── Editor.jsx        <span class="c"># 新建/编辑双模式 + 回填 + dirtyRef（D3）</span>
-        └── Profile.jsx       <span class="c"># /users/me 三态版（D1/D2）</span></pre>
+    <pre><span class="code-label">text</span>goblog/                       <span class="c"># D5 归置后的仓库根（git 只管这一层，见 day5「仓库归置」）</span>
+├── docker-compose.yml        <span class="c"># 从 backend/ 提到仓库根（第 7 周用）</span>
+├── backend/                  <span class="c"># 第 3–4 周 Go 博客 API 整体搬进来（go.mod / cmd / internal / .env）</span>
+└── frontend/                 <span class="c"># 本周 blog-web 整体搬进来，下面这棵树就是它</span>
+    ├── .env.development      <span class="c"># VITE_API_BASE=/api/v1（进 git）</span>
+    ├── .env.production       <span class="c"># 线上同源，仍是 /api/v1（进 git）</span>
+    ├── .env.local            <span class="c"># 只放本机覆写/密钥，已在 .gitignore</span>
+    ├── vite.config.js        <span class="c"># server.proxy: '/api/v1' → http://localhost:8080，不写 rewrite（D1 建 / D5 拆看）</span>
+    ├── index.html
+    └── src/
+        ├── main.jsx              <span class="c"># BrowserRouter 包裹 App</span>
+        ├── App.jsx               <span class="c"># 路由表终形（D3 铺路、D4 加守卫）</span>
+        ├── api/
+        │   ├── http.js           <span class="c"># ★ 实例 + 双拦截器 + refreshOnce 单例（D1 骨架 → D4 完全体 → D5 改读 VITE_API_BASE）</span>
+        │   ├── auth.js           <span class="c"># register / login / refreshToken / fetchMe</span>
+        │   └── article.js        <span class="c"># listArticles / getArticle / createArticle / updateArticle / deleteArticle</span>
+        ├── hooks/
+        │   ├── useAuth.js        <span class="c"># localStorage 唯一源 + auth:change 广播 + 同步恢复（D1）</span>
+        │   └── useDebounce.js    <span class="c"># 300ms 搜索防抖（D2）</span>
+        ├── components/
+        │   ├── ProtectedRoute.jsx<span class="c"># 路由守卫，redirect 参数（D4，named export）</span>
+        │   ├── NavBar.jsx        <span class="c"># 登录态展示 / 退出 / 写文章入口（named export）</span>
+        │   ├── Pagination.jsx    <span class="c"># 页码控件，直接用后端 total_page（D2）</span>
+        │   ├── ArticleCard.jsx   <span class="c"># 列表卡片 + inline SVG 封面兜底（D2）</span>
+        │   └── ConfirmDialog.jsx <span class="c"># 选做：自研受控确认框（D3 第 4.5 节）</span>
+        └── pages/
+            ├── Login.jsx         <span class="c"># 受控表单 + 回跳 redirect（D1/D4）</span>
+            ├── Register.jsx      <span class="c"># 复用表单结构，错误文案直出后端 message（D1）</span>
+            ├── ArticleList.jsx   <span class="c"># 分页 + 防抖搜索 + ?t= 强制刷新（D2/D3）</span>
+            ├── ArticleDetail.jsx <span class="c"># 三态渲染（404/2001 走空态）+ 作者按钮 + 删除（D2/D3）</span>
+            ├── Editor.jsx        <span class="c"># 新建/编辑双模式 + 回填 + dirtyRef（D3）</span>
+            └── Profile.jsx       <span class="c"># /users/me 三态版（D1/D2）</span></pre>
   </section>
 
   <section>
@@ -180,7 +197,7 @@ localStorage 三键: accessToken · refreshToken · user(JSON 字符串)
     <div class="grade">
       <div><b>基础达成度</b>验收 7 条过了几条？□ 7 条全过　□ 5–6 条　□ ≤4 条。未过的每条写一句话「卡在哪」，这就是周日补漏清单。</div>
       <div><b>核心技能自测</b>不看讲义默写：①带并发合流的 401 拦截器；②useDebounce。两块各自能独立写出的记 1 分，2 分满分。哪块写不出，周一晚回炉哪天。</div>
-      <div><b>Git 与展示</b>本周 blog-web 是否有 ≥5 个语义化 commit（feat/fix 分天提交）、README 是否写清启动方式与接口约定。作品集意识从这周开始，不是第 8 周才想起来。</div>
+      <div><b>Git 与展示</b>归置后的 <code>goblog</code> monorepo（<code>backend/</code> + <code>frontend/</code>）是否有语义化 commit（D5 首提交 + 按天 feat/fix）、根 README 是否写清启动方式与接口约定。作品集意识从这周开始，不是第 8 周才想起来。</div>
     </div>
     <table>
       <tr><th>复盘问卷（写进笔记，各一两句话即可）</th><th>为什么要问</th></tr>
@@ -205,26 +222,26 @@ localStorage 三键: accessToken · refreshToken · user(JSON 字符串)
 
   <section>
     <h2>本周沉淀的三条工程直觉</h2>
-    <div class="callout tip"><p><b>1. 契约先行。</b>一切联调问题的尽头都是「{code,message,data}、错误码、camelCase 字段、双 token」这份契约。先 curl 后前端，先对齐再 debug。</p></div>
+    <div class="callout tip"><p><b>1. 契约先行。</b>一切联调问题的尽头都是「<code>{code,message,data}</code> 壳、错误码、<b>snake_case</b> 后端字段（只有前端 localStorage 键用小驼峰，且只在 <code>saveSession</code> 里翻译一次）、双 token」这份契约。先 curl 后前端，先对齐再 debug。</p></div>
     <div class="callout tip"><p><b>2. 异步三件套常挂嘴边：竞态、三态、重试。</b>ignore 守卫、loading/error/empty、401 静默刷新——这三样写熟了，你的前端才算「接得住真实网络」。</p></div>
     <div class="callout tip"><p><b>3. 前端做的权限都是体验，后端做的才是安全。</b>守卫、按钮隐藏、redirect 校验，每一样都以「后端还会再拦一次」为前提。这句话带到第 8 周做 RBAC 依然成立。</p></div>
   </section>
 
   <section>
     <h2>Git 收尾与仓库整理（本周日必做，30 分钟）</h2>
-    <pre><span class="code-label">shell</span>$ cd blog-web
-$ git init &amp;&amp; git add . &amp;&amp; git commit -m <span class="s">"chore: init vite + react blog web"</span>
-<span class="c"># 若你按天提交（推荐），历史应类似——第 8 周写简历时全靠它讲故事：</span>
-$ git log --oneline
-a1b2c3d feat(auth): login/register with dual token and useAuth      <span class="c"># D1</span>
-b2c3d4e feat(article): list pagination, debounced search, detail    <span class="c"># D2</span>
-c3d4e5f feat(editor): create/edit/delete with author guard          <span class="c"># D3</span>
-d4e5f60 feat(auth-flow): route guard + silent refresh with dedupe   <span class="c"># D4</span>
-e5f6a7b chore(build): vite proxy, env, production build ok          <span class="c"># D5</span></pre>
+    <p>目录归置和首次提交<b>第 5 天那节「仓库归置」已经做了</b>：两个目录并成 monorepo <code>goblog/{backend,frontend}</code>，在仓库根 <code>git init</code> 并提交。周日只是复核与补细节，别再退回成 <code>blog-web</code> 单仓。</p>
+    <pre><span class="code-label">shell</span>$ cd ~/code/goblog                <span class="c"># 归置后的仓库根（不是 blog-web，也不是 backend/）</span>
+$ git log --oneline                <span class="c"># 至少应有 D5 那条 monorepo 首提交</span>
+<span class="c"># 若你按天在 frontend/ 里提交过，历史应类似——第 8 周写简历时全靠它讲故事：</span>
+feat(auth): login/register with dual token and useAuth              <span class="c"># D1</span>
+feat(article): list pagination, debounced search, detail            <span class="c"># D2</span>
+feat(editor): create/edit/delete with author guard                  <span class="c"># D3</span>
+feat(auth-flow): route guard + silent refresh with dedupe           <span class="c"># D4</span>
+chore(repo): monorepo layout (backend/ + frontend/) + prod build    <span class="c"># D5</span></pre>
     <ul>
-      <li>README 补三件事：启动方式（后端 + 前端两条命令）、接口契约速查卡（本页那份直接粘）、功能截图 1–2 张</li>
-      <li>确认 <code>node_modules/</code>、<code>dist/</code>、<code>.env.local</code> 都没进 git（<code>git status</code> 一眼活）</li>
-      <li>前端仓库与第 4 周后端仓库的分合先想好：第 7 周 Compose 编排需要<b>一个仓库装下两个服务</b>（monorepo），今天就决定目录方案</li>
+      <li>三条自检复核（D5 同款）：<code>git ls-files</code> 里匹配 <code>backend/\.env</code> 只应出现 <code>backend/.env.example</code>；<code>node_modules</code>、<code>dist</code> 计数为 0；仓库 pack 体积是 KB～小 MB 级</li>
+      <li>README（放仓库根）补三件事：启动方式（<code>backend/</code> 起 Go + <code>frontend/</code> 起 Vite 两条命令）、接口契约速查卡（本页那份直接粘）、功能截图 1–2 张</li>
+      <li>确认 <code>backend/.env</code>、<code>frontend/node_modules/</code>、<code>frontend/dist/</code>、<code>*.env.local</code> 都没进 git（<code>git status</code> 一眼活）</li>
     </ul>
   </section>
 
@@ -257,7 +274,7 @@ e5f6a7b chore(build): vite proxy, env, production build ok          <span class=
   <section>
     <h2>下周一开机前的衔接清单（10 分钟，别让周日的心血断档）</h2>
     <ul>
-      <li>后端仓库与 blog-web 前端仓库归置到一起（建议 <code>blog-fullstack/backend</code> + <code>blog-fullstack/web</code>），第 7 周 Compose 要一锅端</li>
+      <li>仓库归置 <b>D5 已做完</b>：前后端并成单一 monorepo <code>goblog/{backend,frontend}</code>，第 7 周 Compose 一锅端；周日只需确认已推到远端、README 就位</li>
       <li>把「接口契约速查卡」贴进两个仓库的 README 或 <code>docs/api.md</code>，第 7 周写 Nginx 反代规则直接照抄路径</li>
       <li>确认本机 Docker 能跑（第 3 周的 MySQL 容器 <code>docker compose up -d</code> 还活着），第 7 周第一天就要写 Dockerfile</li>
       <li>记录本周遗留 bug（哪怕一句「编辑页偶发回填慢」），带病进第 7 周的 bug 都会在部署后放大</li>
@@ -268,7 +285,7 @@ e5f6a7b chore(build): vite proxy, env, production build ok          <span class=
 
   <section>
     <h2>下周预告：第 7 周 · 容器化 + 部署</h2>
-    <p>这个项目现在只能活在你电脑的 5173 和 8080 端口里。下周三天之内让它上云：Go 多阶段 Dockerfile 压出几十 MB 的镜像、前端 dist 交给 Nginx 托管并把 <code>/api</code> 反代给 Go（今天那张「同源部署」ASCII 图变成真配置）、三服务 Compose 编排（backend + nginx + mysql）、最后域名 + HTTPS，把链接发到朋友手机上也能注册发文。<b>周日晚请给 blog-web 补一个最小 README（启动方式 + 接口表），第 7 周直接拿它写 Dockerfile 说明。</b></p>
+    <p>这个项目现在还活在你电脑的 5173 和 8080 端口里。接下来<b>五天</b>把它推上云：<b>D1</b> Go 多阶段 Dockerfile 压出几十 MB 的镜像；<b>D2</b> 前端构建产物交给 Nginx 托管、把 <code>/api/v1</code> 反代给 Go（今天那张「同源部署」ASCII 图变成真配置）；<b>D3</b> 完整 Compose 编排把 <code>mysql / backend / frontend</code>（外加 <code>migrate</code>、prod 下的 <code>caddy</code>）一锅端；<b>D4</b> golang-migrate 数据库迁移；<b>D5</b> 部署到云服务器，域名 + HTTPS，链接发到朋友手机上也能注册发文。<b>读第 7 周之前，务必先把 D5 的仓库归置做完并推到远端——Dockerfile 与 Compose 的路径全按 <code>goblog/{backend,frontend}</code> 写，没归置就得先补这一步。</b></p>
   </section>
 
   <nav class="day-nav">

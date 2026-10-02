@@ -11,7 +11,7 @@
 <body>
 <header class="site-header">
   <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
-  <nav><a href="../../index.html">8 周路线</a><a href="summary.html">第 8 周总结</a></nav>
+  <nav><a href="../../index.html">8 周路线</a><a href="day1.html">第 8 周每日课</a></nav>
 </header>
 
 <main class="page">
@@ -31,9 +31,9 @@
       <tr><th>日</th><th>主题</th><th>交付物</th></tr>
       <tr><td><a href="day1.html">D1</a></td><td>角色与权限 RBAC</td><td>role 字段 + iota 常量 + 迁移回填 + RequireRole 中间件 + /api/v1/admin 三接口，curl 双验收 403/200</td></tr>
       <tr><td><a href="day2.html">D2</a></td><td>文件上传</td><td>校验三件套 + 随机名防穿越 + 头像/封面接口 + 静态路由/Nginx 双暴露 + uploads 卷持久化</td></tr>
-      <tr><td><a href="day3.html">D3</a></td><td>前端权限与收尾</td><td>role 进 store、ProtectedRoute 加 role 参数、菜单显隐、管理后台页、评论前后端闭环</td></tr>
-      <tr><td><a href="day4.html">D4</a></td><td>联调测试修 bug</td><td>六大类测试清单、RBAC/上传/httptest 三块新测试、-race 体检、BUGLOG ≥3 条</td></tr>
-      <tr><td><a href="day5.html">D5</a></td><td>部署 README API 文档</td><td>发布六步流水线、README 成稿、api.md + Swagger 双轨文档、公网验收 + 真实反馈</td></tr>
+      <tr><td><a href="day3.html">D3</a></td><td>前端权限 + 评论闭环</td><td>useAuth / ProtectedRoute 两处 <b>diff</b> 增量（role、isAdmin、refreshUser、403 分支）、路由表补 <code>/admin</code>、Navbar 按角色显隐、评论三层（model → repository → service → handler）+ 迁移 <code>000005_add_comments</code> 成对 up/down</td></tr>
+      <tr><td><a href="day4.html">D4</a></td><td>联调测试修 bug</td><td>六大类回归清单、<code>CanModerate</code> 抽进生产代码 <code>internal/service/rbac.go</code> 再测、上传校验表驱动单测、httptest 权限矩阵、<code>-race</code> + 压测脚本、<b>把第 4 周的 CI workflow 升级成 -race + 覆盖率 + MySQL 集成测</b>、BUGLOG ≥3 条</td></tr>
+      <tr><td><a href="day5.html">D5</a></td><td>部署 README API 文档</td><td>本周版发布六步（库备份 + uploads 卷备份 + <code>--profile tools</code> 迁移 + <code>/health</code> 带 DB 探活）、<code>config.go</code> 收口 <code>UPLOAD_DIR/CORS_ORIGIN</code>、<code>frontend/nginx.conf</code> 增量、README 成稿、api.md + Swagger 双轨、公网验收 + 真实反馈</td></tr>
     </table>
   </section>
 
@@ -46,23 +46,26 @@
       <tr><td>现学</td><td>文件上传：multipart、魔数校验、路径穿越防护、静态回显、卷持久化</td><td>本周 D2</td></tr>
       <tr><td>闭环</td><td><code>iota</code> 枚举——第 1 周练习题里的 RoleUser/RoleAdmin 今天进了生产代码</td><td>W1 → W8</td></tr>
       <tr><td>复用</td><td>迁移加列与回滚成对（第 7 周）、软删除可恢复（第 3 周）、错误码 1003/1004（第 2 周）、表驱动测试与 httptest（第 4 周）、-race（第 5 周）、路由守卫与拦截器（第 6 周）</td><td>W2–W7</td></tr>
+      <tr><td>升级</td><td>第 4 周那条 CI workflow 今天被整份替换：-race 全量 + 覆盖率产物 + MySQL service 容器跑真 SQL；第 7 周的发布五步前面插了两步备份</td><td>W4D5 → W8D4、W7D5 → W8D5</td></tr>
     </table>
   </section>
 
   <section>
     <h2>本周新增接口速查（毕业时的 API 增量全景）</h2>
-    <p>八周攒下来的接口里，本周净增 8 个——记住这张表，你就掌握了整个项目的权限面与文件面：</p>
+    <p>八周攒下来的接口里，本周净增 <b>8 个端点</b>（外加一个 <code>/api/v1/admin</code> 组前缀）——记住这张表，你就掌握了整个项目的权限面与文件面：</p>
     <table>
       <tr><th>方法</th><th>路径</th><th>鉴权</th><th>诞生于</th></tr>
-      <tr><td>POST</td><td>/api/v1/admin/（组前缀）</td><td>登录 + RequireRole(admin)</td><td>D1 路由组骨架</td></tr>
-      <tr><td>GET</td><td>/api/v1/admin/users</td><td>管理员</td><td>D1 用户分页列表（size≤50 兜底）</td></tr>
+      <tr><td>—</td><td>/api/v1/admin（组前缀）</td><td>整组：Auth + RequireRole(RoleAdmin)</td><td>D1 组级双保险，组内新增端点自动受保护</td></tr>
+      <tr><td>GET</td><td>/api/v1/admin/users</td><td>管理员</td><td>D1 用户分页列表（size≤50 兜底，D4 抽成 normalizePaging 单测）</td></tr>
       <tr><td>DELETE</td><td>/api/v1/admin/articles/:id</td><td>管理员</td><td>D1 强制下架（软删除可恢复）</td></tr>
-      <tr><td>GET</td><td>/api/v1/admin/stats</td><td>管理员</td><td>D1 用户/文章/评论计数</td></tr>
+      <tr><td>GET</td><td>/api/v1/admin/stats</td><td>管理员</td><td>D1 用户/文章计数，D3 放开被注释的评论计数</td></tr>
       <tr><td>POST</td><td>/api/v1/uploads/avatar</td><td>登录</td><td>D2 头像上传（multipart 字段 file）</td></tr>
       <tr><td>POST</td><td>/api/v1/uploads/cover</td><td>登录</td><td>D2 文章封面上传</td></tr>
-      <tr><td>GET/POST</td><td>/api/v1/articles/:id/comments</td><td>公开 / 登录</td><td>D3 评论列表与发表</td></tr>
-      <tr><td>DELETE</td><td>/api/v1/comments/:id</td><td>作者本人或管理员</td><td>D3 RBAC 与所有权首次同框</td></tr>
+      <tr><td>GET</td><td>/api/v1/articles/:id/comments</td><td>公开</td><td>D3 评论分页列表（Preload 作者）</td></tr>
+      <tr><td>POST</td><td>/api/v1/articles/:id/comments</td><td>登录</td><td>D3 发评论（非空 + ≤500 字 + 文章必须存在）</td></tr>
+      <tr><td>DELETE</td><td>/api/v1/comments/:id</td><td>作者本人或管理员</td><td>D3 删评论，D4 起判据统一走 <code>service.CanModerate</code></td></tr>
     </table>
+    <div class="callout note"><p>另有两条<b>不算业务接口</b>的 GET：<code>/health</code>（第 2 周就有，D5 给它加了 DB Ping，<b>全站只有这一条健康探针路径</b>，无 <code>/api/v1</code> 前缀）和 <code>/swagger/*any</code>（D5 的文档路由，生产要么 <code>auth_basic</code> 要么不下发）。中间件顺序也别记反：<code>Auth → RequireRole → handler</code>。</p></div>
   </section>
 
   <section>
@@ -72,12 +75,12 @@
         全程在<b>公网域名</b>上完成，不是在 localhost</label></li>
       <li><label><input type="checkbox" data-key="w8sum2">非管理员访问 admin 接口：浏览器手敲 /admin 见 403 页，
         curl 直连返回 <code>403 + code:1003</code>——「前端藏入口、后端守真门」两层都能现场演示</label></li>
-      <li><label><input type="checkbox" data-key="w8sum3">部署上线且 HTTPS 公网可访问；
-        <code>docker compose restart backend</code> 后登录态、文章、图片无损（迁移与数据卷经受住了重启考验）</label></li>
+      <li><label><input type="checkbox" data-key="w8sum3">部署上线且 HTTPS 公网可访问；<code>/health</code> 返回统一 Body（不是 <code>/healthz</code>、不是 HTML）；
+        <code>docker compose restart backend</code> 后登录态、文章、评论、图片无损（迁移与 uploads 卷经受住了重启考验）</label></li>
       <li><label><input type="checkbox" data-key="w8sum4">README 含架构图（mermaid 或 ASCII）、功能清单、三步本地启动（在全新 clone 里验证过）、
-        环境变量表；API 文档有手写速查表 + 可交互 Swagger 两份</label></li>
-      <li><label><input type="checkbox" data-key="w8sum5">Git 提交记录清晰：语义化 commit、无 .env/uploads 泄密文件、
-        BUGLOG 与真实用户反馈已入档</label></li>
+        环境变量表（键名与 <code>config.go</code> 逐字一致）；API 文档有手写速查表 + 可交互 Swagger 两份</label></li>
+      <li><label><input type="checkbox" data-key="w8sum5">D4 那份 CI（gofmt + vet + <code>go test -race</code> 全量 + 覆盖率产物 + MySQL 集成测）最新一次运行<b>全绿</b>；
+        Git 提交语义化、无 .env/uploads 泄密文件、BUGLOG 与真实用户反馈已入档</label></li>
     </ul>
   </section>
 
@@ -98,13 +101,13 @@
       <li><label><input type="checkbox" data-key="w8sum11"><b>理解 goroutine、channel、context</b> —— 自测：不运行，先口答第 5 周聚合 API
         的 errgroup + WithTimeout 版本行为，再跑 <code>-race</code> 验证（第 5 周）</label></li>
       <li><label><input type="checkbox" data-key="w8sum12"><b>写单元测试和接口测试</b> —— 自测：给任意一个新函数，5 分钟写出表驱动测试；
-        说清 httptest 为什么不需要真的监听端口（第 4、8 周）</label></li>
+        说清 httptest 为什么不需要真的监听端口，并解释 CI 里 <code>-race</code> 为什么和发布镜像的 <code>CGO_ENABLED=0</code> 各管一头（第 4、8 周）</label></li>
       <li><label><input type="checkbox" data-key="w8sum13"><b>用 React 与 Go 后端联调</b> —— 自测：从浏览器发出一次登录请求开始，逐跳讲清
         Vite 代理/CORS → Nginx → Gin → MySQL 的完整链路，指出每跳的故障与排查命令（第 6 周）</label></li>
       <li><label><input type="checkbox" data-key="w8sum14"><b>用 Docker Compose 编排全栈项目</b> —— 自测：默写 backend 依赖 mysql
         健康启动的 <code>depends_on: condition: service_healthy</code> 写法，并解释多阶段构建为什么能瘦身（第 3、7 周）</label></li>
-      <li><label><input type="checkbox" data-key="w8sum15"><b>部署到云服务器</b> —— 自测：不看 D5 页面，复述发布六步
-        （备份 → migrate → build → up → 健康检查 → 回滚预案），并说出每步防的是什么事故（第 7、8 周）</label></li>
+      <li><label><input type="checkbox" data-key="w8sum15"><b>部署到云服务器</b> —— 自测：不看 D5 页面，复述本周版发布六步
+        （<code>git pull</code> → 库备份 → uploads 卷备份 → <code>--profile tools</code> 迁移 → <code>up -d --build</code> → 健康检查），并说出每步防的是什么事故（第 7、8 周）</label></li>
       <li><label><input type="checkbox" data-key="w8sum16"><b>完成一个可展示的全栈作品</b> —— 自测：把公网链接发给一位不懂技术的朋友，
         对方能顺利完成「注册 → 看文章 → 评论」；README 首屏让你自己愿意转发（第 8 周）</label></li>
     </ul>
@@ -129,35 +132,45 @@
     <div class="callout js"><p><b>Q：要不要现在就学 Kubernetes？</b>A：不要。你的 compose 单机编排正在服务真实流量之前都够用；先把「一个服务的迭代闭环」（改代码 → 迁移 → 发布 → 观测 → 回滚）跑熟，K8s 解决的是十几个服务的问题，早学等于空转。</p></div>
     <div class="callout js"><p><b>Q：简历上这个项目会不会太「教程感」？</b>A：项目本身确实常见，不常见的是你带上了它：BUGLOG 的根因分析、上传的路径穿越防护、role 进 JWT 的一致性取舍、真实用户反馈记录——面试讲这些细节，就不像教程，像工程。</p></div>
     <div class="callout js"><p><b>Q：接下来投什么岗位？</b>A：Go 后端 / 全栈向的初级岗与「前端转后端」是你的差异化叙事：简历用 D5 那句作品集描述，面试主动把「你懂前端」转成「你能独立交付端到端功能」——这是八周训练的真正产出。</p></div>
-    <div class="callout tip"><p><b>Q：项目还要继续加功能吗？</b>A：优先做「减法收尾」：删掉没验证的 README 句子、补齐空状态与错误提示、把 CI 里 <code>go test -race</code> 跑绿。功能膨胀不如工程质量闭环，一个没维护的巨型项目不如一个精悍可跑的。</p></div>
+    <div class="callout tip"><p><b>Q：项目还要继续加功能吗？</b>A：优先做「减法收尾」：删掉没验证的 README 句子、补齐空状态与错误提示、把 <a href="day4.html">D4 那份 workflow</a>（<code>go test -race</code> 全量 + 覆盖率上传 + MySQL service 容器集成测）跑到全绿并让它一直绿下去。功能膨胀不如工程质量闭环，一个没维护的巨型项目不如一个精悍可跑的。</p></div>
   </section>
 
   <section>
     <h2>毕业时的项目形态（目录树定妆照）</h2>
-    <pre><span class="code-label">goblog/</span>goblog/
+    <pre><span class="code-label">goblog/（monorepo：一仓两包，Go 命令一律在 backend/ 里跑）</span>goblog/
+├── .github/workflows/ci.yml          <span class="c"># D4 升级版：gofmt + vet + go test -race + 覆盖率产物 + MySQL service 容器</span>
 ├── backend/
-│   ├── cmd/server/main.go            <span class="c"># 路由装配：/api/v1、/uploads 静态、/healthz、/swagger</span>
+│   ├── cmd/server/main.go            <span class="c"># 路由装配：/api/v1（api/mine/admin 三组）、/uploads 静态、/health、/swagger</span>
 │   ├── internal/
-│   │   ├── model/                    <span class="c"># user.go(role+iota) article.go comment.go</span>
-│   │   ├── middleware/               <span class="c"># auth.go rbac.go audit.go</span>
-│   │   ├── handler/                  <span class="c"># auth/article/comment/upload/admin + admin_test.go</span>
-│   │   ├── service/                  <span class="c"># CanModerate 纯函数 + rbac_test.go</span>
-│   │   └── pkg/                      <span class="c"># jwtutil / response / upload(validate+save) / config</span>
-│   ├── migrations/                   <span class="c"># 000001..000004 成对 up/down</span>
-│   ├── docs/swagger/                 <span class="c"># swag init 生成物，随代码提交</span>
-│   ├── uploads/                      <span class="c"># 运行时数据：git/dockerignore 双排除，compose 挂卷</span>
-│   ├── Dockerfile                    <span class="c"># 多阶段：builder → alpine</span>
+│   │   ├── config/                   <span class="c"># config.go：含 UPLOAD_DIR / CORS_ORIGIN / AUTO_MIGRATE</span>
+│   │   ├── model/                    <span class="c"># user.go（Role int8 + iota）article.go comment.go</span>
+│   │   ├── middleware/               <span class="c"># auth.go（Auth+Claims）rbac.go（RequireRole 等级法）——本周没做审计中间件，见下方注</span>
+│   │   ├── handler/                  <span class="c"># auth/article/comment/upload/admin + admin.go 的 normalizePaging</span>
+│   │   │   └── *_test.go             <span class="c"># admin_test.go：httptest 权限矩阵（D4）</span>
+│   │   ├── repository/               <span class="c"># user.go article.go comment.go + mysql_roundtrip_test.go（//go:build mysql）</span>
+│   │   ├── service/                  <span class="c"># article/comment/auth + rbac.go（CanModerate 住这里，被三处调用）</span>
+│   │   └── pkg/                      <span class="c"># jwtutil / upload（validate.go + save.go + validate_test.go）</span>
+│   ├── pkg/response/                 <span class="c"># 第 2 周起就在模块根：import 路径是 goblog/pkg/response，不在 internal/ 下</span>
+│   ├── migrations/                   <span class="c"># 000001~000006 成对 up/down（000005 评论表、000006 头像列，都是本周）</span>
+│   ├── scripts/hammer.sh             <span class="c"># D4 压测脚本：只用 curl + sed，不依赖 jq/python3</span>
+│   ├── docs/swagger/                 <span class="c"># swag init 生成物，必须随代码提交</span>
+│   ├── uploads/                      <span class="c"># 运行时数据：.gitignore 与 .dockerignore 双排除，生产挂 named volume</span>
+│   ├── Dockerfile                    <span class="c"># 多阶段：builder（CGO_ENABLED=0）→ 精简运行镜像</span>
 │   └── .env.example
 ├── frontend/
+│   ├── nginx.conf                    <span class="c"># 唯一的 nginx 文件：被 COPY 成镜像内 /etc/nginx/conf.d/default.conf</span>
+│   ├── Dockerfile
 │   └── src/
-│       ├── auth/                     <span class="c"># useAuth.jsx(role) / ProtectedRoute.jsx(role 参数)</span>
-│       ├── components/               <span class="c"># Navbar / ImageUpload / Comments</span>
-│       └── pages/                    <span class="c"># 列表/详情/编辑器 + AdminPanel.jsx</span>
-├── nginx/conf.d/blog.conf            <span class="c"># /api 反代 + /uploads alias + /swagger + SPA 回退</span>
-├── docker-compose.yml                <span class="c"># backend / frontend(nginx) / mysql / migrate + 健康检查</span>
-├── docs/                             <span class="c"># api.md 速查表 / BUGLOG.md / TESTING.md</span>
-└── README.md                         <span class="c"># 架构图 + 三步启动 + 环境变量表 + 截图 + 公网链接</span></pre>
+│       ├── api/                      <span class="c"># http.js（named export http，已拆包）auth.js article.js comment.js admin.js</span>
+│       ├── hooks/useAuth.js          <span class="c"># 第 6 周那个文件：本周 diff 加 role / isAdmin / refreshUser()</span>
+│       ├── components/               <span class="c"># ProtectedRoute.jsx（role 参数 + 403 分支）/ NavBar.jsx / Comments.jsx / ImageUpload.jsx</span>
+│       └── pages/                    <span class="c"># 列表 / 详情 / 编辑器 / 个人中心 + AdminPanel.jsx</span>
+├── docker-compose.yml                <span class="c"># mysql / backend / frontend / migrate(profiles: tools)，本地口径</span>
+├── docker-compose.prod.yml           <span class="c"># 追加 caddy(80/443) 与生产覆盖：对外端口只有 caddy</span>
+├── docs/                             <span class="c"># api.md 速查表 / BUGLOG.md 根因档案 / TESTING.md 六类回归清单</span>
+└── README.md                         <span class="c"># 架构图 + 三步启动 + 环境变量表（与 config.go 逐字一致）+ 截图 + 公网链接</span></pre>
     <div class="callout note"><p>对照第 1 周：从单文件 <code>main.go</code> 到这张树，每一层都是在「出错疼过之后」加上的——这就是工程结构生长的真实方式，背下来不如经历过。</p></div>
+    <div class="callout warn"><p><b>关于 <code>audit.go</code>：这张树里没有它，是有意的。</b>旧版总结页在 <code>middleware/</code> 下写了 <code>audit.go</code>，但 D1–D5 没有任何一天实现过审计日志，凭空列进树里就是在教一个不存在的文件。本周的 admin 三接口只有 <code>Auth → RequireRole</code> 两道；真要留痕，正确做法是<b>新开一对 <code>000007_add_audit_logs</code> 迁移 + 一张 <code>audit_logs</code> 表 + 一个只写不读的 service 方法</b>（<code>uid / action / target / ip / created_at</code> 五列起步），等你需要「谁在什么时候删了谁的文章」这个问题真的出现时再做——那时你会感谢现在没有把它写成半截货。</p></div>
   </section>
 
   <section>
@@ -165,10 +178,12 @@
     <ul>
       <li><b>一个公网地址</b>：HTTPS + 移动端可访问，README 首屏第一条链接就是它</li>
       <li><b>一个 GitHub 仓库</b>：语义化 commit、干净 README、生成物与 .env.example 齐备，About 栏挂着公网链接</li>
-      <li><b>两份 API 文档</b>：手写 docs/api.md 速查表 + swaggo 生成的可交互 Swagger</li>
+      <li><b>两份 API 文档</b>：手写 docs/api.md 速查表 + swaggo 生成的可交互 Swagger（生产侧加 Basic Auth）</li>
+      <li><b>一份绿色 CI</b>：D4 那条 workflow——gofmt + vet + <code>go test -race</code> 全量 + 覆盖率产物 + MySQL service 容器集成测</li>
+      <li><b>四个测试文件</b>：<code>service/rbac_test.go</code>（CanModerate）、<code>pkg/upload/validate_test.go</code>（校验顺序）、<code>handler/admin_test.go</code>（分页兜底 + httptest 权限矩阵）、<code>repository/mysql_roundtrip_test.go</code>（<code>-tags=mysql</code> 才编译）</li>
       <li><b>两份过程档案</b>：TESTING.md 六大类回归清单、BUGLOG.md 带根因与 commit 的修复记录</li>
       <li><b>一条真实反馈</b>：朋友试用后写进 README 的 Known issues / Feedback</li>
-      <li><b>一段简历描述</b>：D5 那句「双 token + RBAC + 防穿越上传 + 多阶段 Docker 部署」的作品集一句话</li>
+      <li><b>一段简历描述</b>：D5 那句「双 token + RBAC + 防穿越上传 + 表驱动测试与 -race CI + 多阶段 Docker 部署」的作品集一句话</li>
     </ul>
   </section>
 
@@ -192,7 +207,7 @@
     <p>答辩最后一步：把三句话改成你自己的话，录音听一遍。能讲顺，这个八周就真赚到了。</p>
     <div class="task">
       <div class="task-title">题 1：「你的 JWT 里放了什么？被删号/提权了怎么办？」</div>
-      <p>要点：Claims 放 uid+role（D1）；access 15 分钟把风险窗口封顶；高危的 admin 接口再按 uid 查库复核 role 真值（方案 C）；封号则 Auth 中间件查 users 不存在/已软删直接 401。</p>
+      <p>要点：Claims 放 <code>uid / role / typ</code>（D1）；access 15 分钟把风险窗口封顶。<b>诚实交代边界</b>：D1 的 <code>Auth</code> 只验签名、不查库（<code>c.Set("userID" / "role")</code> 之后直接放行），所以提权或封号都要等 token 换一轮才生效；要立刻生效就是方案 C——在 <code>Parse</code> 之后按 <code>claims.UserID</code> 查一次库，取当前 role，查不到或已软删就 401。加分句：<b>「展示用快照，放行查真值」</b>，而且我在 README 里写清了自己选了哪种。</p>
     </div>
     <div class="task">
       <div class="task-title">题 2：「文件上传你们怎么防攻击？」</div>
@@ -207,20 +222,26 @@
   <section>
     <h2>上线后的运维最小日常</h2>
     <p>作品上线不是终点，是「有人替你值班」的起点。每周花 10 分钟过一遍这四条命令，项目就不会烂掉：</p>
-    <pre><span class="code-label">shell（每周一巡）</span>$ ssh your-server
-$ docker compose ps                      <span class="c"># 1) 四个容器都是 Up (healthy)？</span>
-$ docker compose logs backend --since 24h | grep -E <span class="s">'"level":"ERROR"|DATA RACE'</span>
-                                         <span class="c"># 2) 24 小时内的错误与竞态，有则记 BUGLOG</span>
-$ df -h /var/lib/docker | tail -1        <span class="c"># 3) 磁盘：uploads 和镜像会慢慢吃满 40G 小机器</span>
-$ du -sh /opt/blog/uploads               <span class="c"># 4) 上传目录体积，配 cron 定时 mysqldump + rsync 备份</span>
+    <pre><span class="code-label">shell（每周一巡：dc 是 W7D5 那条 alias = docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env）</span>$ ssh your-server
+$ cd /opt/goblog
+$ dc ps                              <span class="c"># 1) mysql / backend / frontend / caddy 四个常驻容器都 Up (healthy)？</span>
+$ dc logs backend --since 24h | grep -E <span class="s">'"level":"ERROR"|DATA RACE'</span>
+                                     <span class="c"># 2) 24 小时内的错误与竞态，有则记 BUGLOG（-race 在 CI 跑，生产镜像不带 race，见 D4）</span>
+$ df -h /var/lib/docker | tail -1    <span class="c"># 3) 磁盘：uploads 和镜像会慢慢吃满 40G 小机器</span>
+$ <span class="c"># 4) uploads 是 named volume，宿主机上只有一个软链式的挂载点：</span>
+$ du -sh <span class="s">"$(docker volume inspect -f '{{ .Mountpoint }}' goblog_uploads)"</span>
+$ dc exec -T mysql sh -c <span class="s">'exec mysqldump -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" --single-transaction "$MYSQL_DATABASE"'</span> \
+    &gt; /root/backups/goblog_$(date +%F).sql   <span class="c"># 5) 每周一次冷备，变量在容器里展开（D5 第 1 节那条引号规则）</span>
 
 <span class="c"># 发新版本永远走 D5 六步；巡完发现的小问题，当场修掉最好不超过 20 分钟。</span></pre>
     <table>
       <tr><th>症状</th><th>大概率原因（本周坑表返场）</th><th>一句话处置</th></tr>
       <tr><td>图片忽新忽旧、重建后老图复活</td><td>uploads 没挂卷或被镜像里旧内容盖回</td><td>查 compose volumes 与 .dockerignore 是否都有 uploads</td></tr>
-      <tr><td>管理员功能时灵时不灵</td><td>旧 token 的 role 快照没过期</td><td>重新登录；或 admin 接口改查库复核（方案 C）</td></tr>
-      <tr><td>admin/users 偶发 500</td><td>page/size 非法值未兜底</td><td>回到 D1 handler 补边界，加 httptest 用例锁死</td></tr>
-      <tr><td>上传大图报 413</td><td>Nginx client_max_body_size 默认 1m</td><td>改 8m 后 reload，见 D5 最终版 conf</td></tr>
+      <tr><td>管理员功能时灵时不灵</td><td>旧 token 的 role 快照没过期（D1 的方案 A）</td><td>重新登录；或按方案 C 在换发处查库取当前 role</td></tr>
+      <tr><td>admin/users 偶发 500</td><td>page/size 非法值未兜底</td><td>D4 已把兜底抽成 <code>normalizePaging</code>，补一条表驱动用例锁死，别在 handler 里再加 if</td></tr>
+      <tr><td>上传大图报 413，响应体还是 nginx 的 HTML</td><td><code>client_max_body_size</code> 默认 1m，请求没进到 Go</td><td>改 <code>frontend/nginx.conf</code>（本课没有宿主机 nginx）到 <code>12m</code>，然后 <code>dc up -d --build frontend</code>——reload 不生效，配置在镜像层里</td></tr>
+      <tr><td>评论接口 500 且报 <code>Table 'goblog.comments' doesn't exist</code></td><td>000006 先跑过、000005 被 migrate 跳过了（D3 那个编号倒置）</td><td>测试库上 <code>down 1 → force 4 → up</code>；生产直接新开一对 000007</td></tr>
+      <tr><td>把 <code>/health</code> 探到 <code>503 + code:5000</code></td><td>DB Ping 失败：mysql 没起来 / DSN 读错 / 迁移未完成</td><td>先 <code>dc ps</code> 看 mysql healthy，再 <code>dc logs backend --tail 30</code>；探针返回 503 是<b>正常工作</b>，不是 bug</td></tr>
     </table>
   </section>
 
@@ -231,7 +252,7 @@ $ du -sh /opt/blog/uploads               <span class="c"># 4) 上传目录体积
       <tr><td>API 设计（sum6）</td><td>W2D1 路由 / W2D5 接口文档</td><td>重新设计「收藏夹」5 端点并让另一个人看得懂</td></tr>
       <tr><td>Gin 三件套（sum7）</td><td>W2D2 绑定验证 / W2D3 中间件</td><td>15 分钟徒手最小服务一次编译通过</td></tr>
       <tr><td>GORM（sum8）</td><td>W3D3 关联 / W3D4 分页搜索</td><td>给博客补一个「标签多对多」并 Preload 返回</td></tr>
-      <tr><td>JWT/RBAC（sum9）</td><td>W4D2 双 token / W8D1</td><td>白板时序图讲清 refresh 全链路且无卡壳</td></tr>
+      <tr><td>JWT/RBAC（sum9）</td><td>W4D2 双 token / W8D1 / W8D3</td><td>白板时序图讲清 refresh 全链路无卡壳，并现场演示「普通用户手敲 /admin 见 403、curl 直连见 1003」</td></tr>
       <tr><td>上传（sum10）</td><td>W8D2</td><td>不看页面重写校验三件套并过单测</td></tr>
       <tr><td>并发（sum11）</td><td>W5D1–D5 全周</td><td>重跑聚合 API：串行 5s 并发 1s 且 -race 干净</td></tr>
       <tr><td>测试（sum12）</td><td>W4D5 / W8D4</td><td>TESTING.md 六大类清单每格有对应测试或 curl</td></tr>
@@ -247,7 +268,7 @@ $ du -sh /opt/blog/uploads               <span class="c"># 4) 上传目录体积
     <h3>下一步路线（每条一句话，选一条走一个月）</h3>
     <ul>
       <li><b>微服务初探</b>：把博客的「上传」拆成独立服务，用 gRPC 或内部 HTTP 打通，体会服务发现、配置中心与分布式 tracing 为什么会存在——先读一两个「单体拆到位」的实践，而不是上来就装 K8s。</li>
-      <li><b>Redis 缓存与高性能</b>：给文章列表和统计接口加 Redis 缓存 + 过期策略，用 <code>ab</code> 或 vegeta 压出前后 QPS 对比，顺手理解缓存穿透/击穿的防御——这是简历上最有说服力的一行数字。</li>
+      <li><b>Redis 缓存与高性能</b>：给文章列表和统计接口加 Redis 缓存 + 过期策略，用 D4 那只 <code>hey</code>（或 <code>scripts/hammer.sh</code>）压出缓存前后的 QPS 对比，顺手理解缓存穿透/击穿的防御——这是简历上最有说服力的一行数字。</li>
       <li><b>开源贡献</b>：给你项目用到的任意库（Gin / GORM / swaggo）提第一个 PR——从文档拼写错误修起，走完 issue → PR → review → merge 全流程，学会在公共代码库里协作。</li>
     </ul>
     <div class="callout tip"><p>三条全部做完的形态，恰好对应中后端岗位 JD 上最常见的三句话：能拆服务、能扛性能、能协作。从哪条开始都行，别从「再学一门语言」开始。</p></div>
@@ -266,12 +287,18 @@ $ du -sh /opt/blog/uploads               <span class="c"># 4) 上传目录体积
 
   <section>
     <h2>毕业检查（全部勾掉，合上这本书）</h2>
+    <p>这四条是<b>动作</b>，不是感觉——每条都要能当场演示或指着一个文件说「在这」。</p>
     <ul class="check">
-      <li><label><input type="checkbox" data-key="w8sum17">第 8 周五条验收全部勾完，公网链接在手机浏览器里打开过一次</label></li>
-      <li><label><input type="checkbox" data-key="w8sum18">11 条最终能力逐项自测完毕，诚实记录了没勾的那几条</label></li>
-      <li><label><input type="checkbox" data-key="w8sum19">给自己定了档（顺利毕业 / 还需一周 / 建议重做），并写下具体回炉周次或下一步路线三选一</label></li>
-      <li><label><input type="checkbox" data-key="w8sum20">README 首屏截图 + 公网链接 + 简历项目栏一句话已更新到求职材料里</label></li>
+      <li><label><input type="checkbox" data-key="w8sum17"><b>权限面</b>：普通用户手敲 <code>/admin</code> 见到 403 页、<code>curl</code> 直连 admin 接口拿到 <code>403 + code:1003</code>；
+        同一篇文章作者能改能删、别人改不动，评论同理（判据都走 <code>service.CanModerate</code> 这一个函数）</label></li>
+      <li><label><input type="checkbox" data-key="w8sum18"><b>功能面</b>：头像 + 封面上传后刷新仍在（卷挂对了）、评论区能发能删、
+        <code>docker compose restart backend</code> 之后登录态与图片无损；公网链接在手机浏览器里真打开过一次</label></li>
+      <li><label><input type="checkbox" data-key="w8sum19"><b>工程面</b>：四个测试文件在仓库里、<code>go test -race ./...</code> 本地绿、
+        D4 那条 workflow 在 Actions 上绿（覆盖率产物能下载、MySQL 那个 job 真跑过 SQL）；README 与 <code>docs/api.md</code> + Swagger 三份文档彼此不打架</label></li>
+      <li><label><input type="checkbox" data-key="w8sum20"><b>答辩面</b>：上面 11 条最终能力逐项自测过、诚实记录了没勾的那几条并定了档；
+        简历项目栏换成 D5 那句作品集描述，并写下下一步路线三选一（或具体回炉周次）</label></li>
     </ul>
+    <div class="callout note"><p>四条全勾，这本书就合上了。少一条也不是失败——它只是精确告诉你下一页该翻回哪一天。</p></div>
   </section>
 
   <nav class="day-nav">

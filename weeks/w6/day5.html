@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>W6D5 · CORS、代理与构建 | Go 全栈修炼手册</title>
-<meta name="description" content="Day 5：CORS 报错三连（预检 OPTIONS、Allow-Origin、credentials）与排查表、Vite proxy 配置、生产同源部署思路、npm run build 产物、VITE_API_BASE 环境变量与联调排错清单。">
+<meta name="description" content="Day 5：CORS 报错三连（预检 OPTIONS、Allow-Origin、credentials）与排查表、Vite proxy 配置与 preview.proxy 继承、npm run build 产物、VITE_API_BASE 环境变量、联调排错清单，以及为第 7 周做的仓库归置（goblog/backend + frontend、.gitignore、首次提交）。">
 <link rel="stylesheet" href="../../assets/style.css">
 <script src="../../assets/app.js"></script>
 </head>
@@ -23,7 +23,7 @@
     <span class="chip">难度 ★★★☆☆</span>
   </div>
   <h1>CORS、代理与构建</h1>
-  <p>功能齐了，今天补「工程闭环」：搞清这几天一直没裸奔的跨域问题（全被 Vite proxy 挡着）、学会生产构建与环境变量、并整理一份<b>联调排错清单</b>。收尾实验很有意思：今天故意把 proxy 拆掉让 CORS 炸一次，再修好——见过爆炸现场的人，才不怕线上冒烟。</p>
+  <p>功能齐了，今天补「工程闭环」：搞清这几天一直没裸奔的跨域问题（全被 Vite proxy 挡着）、学会生产构建与环境变量、并整理一份<b>联调排错清单</b>。中间有个实验很有意思：今天故意把 proxy 拆掉让 CORS 炸一次，再修好——见过爆炸现场的人，才不怕线上冒烟。收尾再做一件只花 20 分钟、下周省一天的事：<b>把两个目录归置成一个仓库</b>（<code>goblog/backend</code> + <code>goblog/frontend</code>）并首次提交。</p>
 
   <section class="goals">
     <h2>今日目标</h2>
@@ -32,8 +32,9 @@
       <li><label><input type="checkbox" data-key="w6d5g2">Vite proxy 配置手写出来，说清它为什么能绕开 CORS</label></li>
       <li><label><input type="checkbox" data-key="w6d5g3"><code>npm run build</code> 跑通，认识 dist 产物结构并用 preview 验证</label></li>
       <li><label><input type="checkbox" data-key="w6d5g4">排错清单过一遍：401/403/404 各查什么、字段命名怎么对齐</label></li>
+      <li><label><input type="checkbox" data-key="w6d5g5">把两个项目归置成 monorepo <code>goblog/{backend,frontend}</code>，写好 .gitignore 并完成首次提交</label></li>
     </ul>
-    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这五条是「学习目标」，学的过程中随时回来勾；页面底部还有 6 条「完成检查」，全部勾掉今天才算结束。</p>
   </section>
 
   <section>
@@ -72,25 +73,33 @@
     </table>
 
     <h3>2. Go 侧 CORS 中间件（第 2 周写过，今天温故升级版）</h3>
-    <pre><span class="code-label">go</span><span class="c">// internal/middleware/cors.go —— 开发期够用的最小实现</span>
-<span class="k">func</span> <span class="t">Cors</span>() gin.<span class="t">HandlerFunc</span> {
+    <pre><span class="code-label">go</span><span class="c">// internal/middleware/cors.go —— 开发期够用的最小实现（函数名全站统一叫 CORS，第 2 周就是它）</span>
+<span class="k">package</span> middleware
+
+<span class="k">func</span> <span class="t">CORS</span>() gin.<span class="t">HandlerFunc</span> {
     <span class="k">return</span> <span class="k">func</span> (c *gin.<span class="t">Context</span>) {
-        <span class="c">// 学习期直接 * 图方便；上生产换白名单 map 精确匹配 Origin</span>
+        <span class="c">// 学习期直接 * 图方便；上生产换白名单精确匹配 Origin</span>
         c.<span class="t">Header</span>(<span class="s">"Access-Control-Allow-Origin"</span>, <span class="s">"*"</span>)
         c.<span class="t">Header</span>(<span class="s">"Access-Control-Allow-Methods"</span>, <span class="s">"GET,POST,PUT,DELETE,OPTIONS"</span>)
         c.<span class="t">Header</span>(<span class="s">"Access-Control-Allow-Headers"</span>, <span class="s">"Content-Type,Authorization"</span>)
-        <span class="k">if</span> c.<span class="t">Request</span>.Method == <span class="s">"OPTIONS"</span> { <span class="c">// 预检到此为止，不必进业务逻辑</span>
-            c.<span class="t">AbortWithStatus</span>(<span class="n">204</span>)
+        <span class="k">if</span> c.Request.Method == <span class="s">"OPTIONS"</span> { <span class="c">// 预检到此为止，不必进业务逻辑</span>
+            c.AbortWithStatus(<span class="n">204</span>)
             <span class="k">return</span>
         }
-        c.<span class="t">Next</span>()
+        c.Next()
     }
-}
-<span class="c">// main.go 里全局挂上：r.Use(middleware.Cors())</span></pre>
-    <div class="callout warn"><p>允许 credentials 时 <code>Allow-Origin</code> 不能用 <code>*</code>（就是报错③）。如果将来上第 8 周的文件上传要走 cookie，记得同时补 <code>Access-Control-Allow-Credentials: true</code> 且 origin 写死白名单。</p></div>
+}</pre>
+    <div class="callout warn"><p><b>注册顺序：CORS 必须在 Auth 之前。</b>Gin 的 <code>Use</code> 是队列，写在哪就跑在哪。预检请求 <code>OPTIONS</code> <b>不会带 Authorization 头</b>（浏览器规范如此），要是 Auth 中间件先跑，它一看没 token 直接 401 截断——浏览器于是报「CORS 失败」，你在前端看到的现象是「跨域」，在后端日志里看到的却是 <code>401</code>，两头都像是自己的锅。正确写法是把 CORS 放在全局中间件那一行里，<b>排在分组挂载的 <code>middleware.Auth(...)</code> 前面</b>。</p></div>
+    <p>第 3/4 周的 goblog 装配里<b>没有</b>挂 CORS（那几天都用 curl 和 Postman，跨域轮不到它出场）。今天做练习 1 之前先把这一行补上，改的就是第 4 周 Day 2 那段 <code>cmd/server/main.go</code>：</p>
+    <pre><span class="code-label">cmd/server/main.go</span><span class="c">// -  r := gin.New()
+// -  r.Use(gin.Logger(), gin.Recovery())            // 全局中间件
+// +  r := gin.New()
+// +  r.Use(gin.Logger(), gin.Recovery(), middleware.CORS())  // ← CORS 在 Auth 之前，位置就是语义
+//    （import 里补一行 "goblog/internal/middleware"，第 4 周挂 Auth 时已经有了）</span></pre>
+    <div class="callout note"><p>生产上更常见的做法是<b>根本不在 Go 里配 CORS</b>，让第 7 周的 Nginx 同源反代把这个话题消灭掉（见第 4 节）。这个中间件是「前端独立域名部署」或「本地故意拆掉 proxy 做实验」时才需要。<code>Allow-Origin: *</code> 只能用于不需要 cookie 的接口——本手册用 localStorage 存 token，正好用得上；第 8 周若要 cookie 会话，得同时改成精确白名单 + <code>Access-Control-Allow-Credentials: true</code>（就是报错③）。</p></div>
 
     <h3>3. 开发环境 Vite proxy：今天正式把它拆开看</h3>
-    <pre><span class="code-label">js</span><span class="c">// vite.config.js</span>
+    <pre><span class="code-label">js</span><span class="c">// vite.config.js —— 与 day1 第 2 节那份一致，key 就用 /api/v1</span>
 <span class="k">import</span> { defineConfig } <span class="k">from</span> <span class="s">'vite'</span>
 <span class="k">import</span> react <span class="k">from</span> <span class="s">'@vitejs/plugin-react'</span>
 
@@ -98,10 +107,11 @@
   plugins: [<span class="t">react</span>()],
   server: {
     proxy: {
-      <span class="c">// 所有以 /api 开头的请求，由 Vite 开发服务器"代转"给 Go</span>
-      <span class="s">'/api'</span>: {
+      <span class="c">// 所有以 /api/v1 开头的请求，由 Vite 开发服务器"代转"给 Go</span>
+      <span class="s">'/api/v1'</span>: {
         target: <span class="s">'http://localhost:8080'</span>,
         changeOrigin: <span class="k">true</span>, <span class="c">// 把请求头里的 Host 改写成 target，模拟同源服务</span>
+        <span class="c">// 故意不写 rewrite：后端的路由组就叫 /api/v1，路径原样递过去才对</span>
       },
     },
   },
@@ -110,14 +120,14 @@
     <pre><span class="code-label">text</span>不用 proxy：  浏览器(5173) ──跨域请求──✗ 被拦 ✗──  Go(8080)
 用 proxy：    浏览器(5173) ──同源请求 /api/v1──▶  Vite(5173) ──Node 转发──▶  Go(8080)
               浏览器以为一直在跟自己说话，压根没有跨域这回事</pre>
-    <div class="callout tip"><p>这也解释了 baseURL 为什么写 <code>/api/v1</code> 而不是 <code>http://localhost:8080/api/v1</code>：写绝对地址会<b>绕开 proxy 直接跨域</b>。路径叠错（请求变成 <code>/api/api/v1</code>）则多半是 proxy key 和 baseURL 都带了 <code>/api</code>——key 只要 <code>/api</code>，baseURL 从 <code>/api/v1</code> 起写。</p></div>
+    <div class="callout tip"><p>这也解释了 baseURL 为什么写 <code>/api/v1</code> 而不是 <code>http://localhost:8080/api/v1</code>：写绝对地址会<b>绕开 proxy 直接跨域</b>（练习 1 就故意这么炸一次）。路径叠错（请求变成 <code>/api/v1/api/v1/articles</code>）的成因不是 proxy key，而是<b>baseURL 已经带了 <code>/api/v1</code>，api 函数里又把全路径写了一遍</b>——约定：<code>http.get('/articles')</code> 只写资源路径，前缀归 baseURL。</p></div>
     <p>proxy 配了不生效？按这张最小排查表走：</p>
     <table>
       <tr><th>检查点</th><th>怎么看</th><th>修复</th></tr>
       <tr><td>Vite 重启了吗</td><td>改 vite.config.js 后终端会自己重启，但改 .env 系列不会都触发</td><td>Ctrl+C 后重新 <code>npm run dev</code>，别信热更新</td></tr>
       <tr><td>请求真的走到 5173 吗</td><td>Network 里看 Request URL 的 host：是 <code>localhost:5173/api/v1/...</code> 才会被 proxy 截获</td><td>是 <code>:8080</code> 说明 baseURL 写了绝对地址，改回相对</td></tr>
       <tr><td>后端在 8080 活着吗</td><td>proxy 转发失败时 Vite 终端会打 <code>ECONNREFUSED</code>，浏览器表现为 502/504</td><td><code>curl localhost:8080/api/v1/articles</code> 先验后端</td></tr>
-      <tr><td>转发路径对不对</td><td>默认不改路径：<code>/api/v1/login</code> → <code>http://localhost:8080/api/v1/login</code>，与 Gin 路由组一致即可</td><td>后端若没挂 <code>/api/v1</code> 前缀才需要 rewrite，本项目不需要</td></tr>
+      <tr><td>转发路径对不对</td><td>默认不改路径：<code>/api/v1/auth/login</code> → <code>http://localhost:8080/api/v1/auth/login</code>，与 Gin 的 <code>v1 := r.Group("/api/v1")</code> 一致即可</td><td>后端若没挂 <code>/api/v1</code> 前缀才需要 rewrite，本项目不需要（写了反而 404）</td></tr>
     </table>
 
     <h3>4. 生产环境：同源部署，CORS 直接消失</h3>
@@ -158,8 +168,15 @@ VITE_API_BASE=/api/v1
 
 <span class="c"># .env.local（只放密钥/本机覆写，必须进 .gitignore！）</span>
 VITE_API_BASE=http://192.168.1.8:8080/api/v1</pre>
-    <pre><span class="code-label">js</span><span class="c">// src/api/http.js 里消费：</span>
-<span class="k">const</span> http = axios.<span class="t">create</span>({ baseURL: import.meta.env.VITE_API_BASE, timeout: <span class="n">10000</span> })</pre>
+    <pre><span class="code-label">js</span><span class="c">// src/api/http.js —— 只改「实例创建」这一段，其余（两个拦截器、refreshOnce、goLogin）
+// 保持 day4 那份完整实现不变；named export 的名字必须还是 http，
+// 否则 api/auth.js、api/article.js 的 import { http } 全部报错。</span>
+<span class="k">import</span> axios <span class="k">from</span> <span class="s">'axios'</span>
+
+<span class="k">export const</span> http = axios.<span class="t">create</span>({
+  baseURL: import.meta.env.VITE_API_BASE || <span class="s">'/api/v1'</span>, <span class="c">// 读不到 env 就退回开发默认</span>
+  timeout: <span class="n">10000</span>,
+})</pre>
     <pre><span class="code-label">shell</span><span class="c"># .gitignore 确认包含（Vite 模板默认已有）：</span>
 node_modules
 dist
@@ -176,15 +193,21 @@ console.<span class="t">log</span>(import.meta.env.MODE, import.meta.env.VITE_AP
       <tr><td>请求 pending / 页面转圈</td><td>Network 看状态码</td><td>后端起了吗 → proxy 配置 → baseURL 是否绕开了 proxy</td></tr>
       <tr><td>CORS 红字</td><td>看有没有成对的 OPTIONS 失败</td><td>后端 CORS 中间件 → Allow-Headers 是否含 Authorization → withCredentials 与 * 冲突</td></tr>
       <tr><td>401</td><td>看 Request Headers 有没有 Authorization</td><td>localStorage 有 accessToken 吗 → 拦截器 return config 了吗 → 是不是该走静默刷新（day4）→ 后端 JWT 密钥是否与签发端一致、时间是否过期</td></tr>
-      <tr><td>403</td><td>确认是「未登录」还是「无权限」（看 code 1003）</td><td>非作者操作 → 前端 authorId 判断 → 后端权限中间件，用 curl 换两个账号复现</td></tr>
-      <tr><td>404</td><td>Network 看完整 URL</td><td>路径叠错（/api/api、少了 /v1）→ 路由没注册 → :id 传了 "new"/"undefined"（拼 URL 前 id 没拿到）</td></tr>
-      <tr><td>200 但字段 undefined</td><td>Preview 看响应 JSON 的真实键名</td><td>Go 结构体缺 <code>json:"xxx"</code> tag 返回了大写 → 大小写不一致 → 嵌套层级理解错（data.data）</td></tr>
+      <tr><td>403</td><td>确认是「未登录」还是「无权限」（看 code 1003）</td><td>非作者操作 → 前端 <code>article.user.id === user.id</code> 判断（详见 day3 第 5 节）→ 后端权限校验，用 curl 换两个账号复现</td></tr>
+      <tr><td>404</td><td>Network 看完整 URL</td><td>路径叠错（<code>/api/v1/api/v1/…</code>、少了 <code>/v1</code>）→ 路由没注册 → :id 传了 "new"/"undefined"（拼 URL 前 id 没拿到）</td></tr>
+      <tr><td>200 但字段 undefined</td><td>Preview 看响应 JSON 的真实键名</td><td>Go 结构体缺 <code>json:"xxx"</code> tag（键名会变成大写原名）→ 后端约定是 snake_case（<code>cover_image</code> / <code>created_at</code>）→ 嵌套层级理解错（详情接口的 <code>data</code> 就是文章本身）</td></tr>
     </table>
-    <p>字段对齐的根因常在后端这几行，Go 导出字段但没 tag 时，JSON 键就是字段原名：</p>
-    <pre><span class="code-label">go</span><span class="c">// ❌ 返回 {"ID":1,"CoverImage":""} → 前端 article.coverImage 全 undefined</span>
-type Article struct {
-    ID         uint   `json:"id"`          <span class="c">// ✅ 补 tag，全周统一小驼峰</span>
-    CoverImage string `json:"coverImage"`
+    <p>字段对齐的根因常在后端这几行，Go 导出字段但没 tag 时，JSON 键就是字段原名；本手册后端一律 snake_case：</p>
+    <pre><span class="code-label">go</span><span class="c">// ❌ 无 tag：返回 {"ID":1,"CoverImage":""} → 前端 article.id / article.cover_image 全 undefined</span>
+<span class="k">type</span> Article <span class="k">struct</span> {
+    ID         <span class="t">uint</span>
+    CoverImage <span class="t">string</span>
+}
+
+<span class="c">// ✅ 补 tag：键名与前端用的完全一致（全周统一 snake_case）</span>
+<span class="k">type</span> Article <span class="k">struct</span> {
+    ID         <span class="t">uint</span>   <span class="s">`json:"id"`</span>
+    CoverImage <span class="t">string</span> <span class="s">`json:"cover_image"`</span> <span class="c">// ← 不是 coverImage，day2/day3 的页面都按这个键取</span>
 }</pre>
     <div class="callout js"><p>读响应头的习惯今天养成：DevTools → Network → 点开请求 → <b>Headers 标签看请求/响应头，Preview 标签看拆包前的原始 JSON</b>。「看请求头确认带没带 token，看 Preview 确认字段名」——排错清单的前两行全靠它。</p></div>
     <h3>7. 三套环境全景：一张表看清 5173 / dist / 4173</h3>
@@ -192,17 +215,31 @@ type Article struct {
       <tr><th>环境</th><th>命令</th><th>端口</th><th>/api 请求谁处理</th><th>CORS 需要吗</th></tr>
       <tr><td>开发</td><td><code>npm run dev</code></td><td>5173</td><td>Vite proxy → Go:8080</td><td>不需要（同源假象）</td></tr>
       <tr><td>构建产物</td><td><code>npm run build</code></td><td>—</td><td>只产出 dist/，不发请求</td><td>—</td></tr>
-      <tr><td>本地模拟线上</td><td><code>npm run preview</code></td><td>4173</td><td><b>没有 proxy！</b>需自备反代或临时开后端 CORS</td><td>联调 API 时需要</td></tr>
-      <tr><td>生产</td><td>Nginx（第 7 周）</td><td>80/443</td><td>Nginx 反代 /api → Go</td><td>不需要（同源）</td></tr>
+      <tr><td>本地模拟线上</td><td><code>npm run preview</code></td><td>4173</td><td>Vite preview 服务器：未单独配 <code>preview.proxy</code> 时<b>默认继承 <code>server.proxy</code></b>，照样转发到 Go:8080</td><td>不需要（继承来的 proxy 仍在）</td></tr>
+      <tr><td>生产</td><td>Nginx（第 7 周）</td><td>80/443</td><td>Nginx 反代 /api/v1 → Go</td><td>不需要（同源）</td></tr>
     </table>
-    <div class="callout warn"><p>最容易迷惑的是 preview：它只是静态服务器，<b>不会</b>继承 vite.config 里的 server.proxy 行为给你转发 /api 以外的期望——preview 下打接口 404 别慌，那是设计如此，等第 7 周用真 Nginx 复现完整链路。</p></div>
+    <div class="callout tip"><p><b>preview 与 dev 的 proxy 关系，一句话记牢：<code>preview.proxy</code> 没写就回落用 <code>server.proxy</code>，写了就以它为准。</b>所以 <code>npm run build &amp;&amp; npm run preview</code> 之后 <code>/api/v1</code> 依然能打通——这不是「preview 也能反代」的魔法，是继承。真正<b>没有</b>的是 dev server 的 HMR 和 history fallback 之外的开发中间件。</p></div>
+    <pre><span class="code-label">js</span><span class="c">// vite.config.js —— 覆写场景：dev 打本地 Go，preview 打另一套（例如测试服 / 容器里的后端）</span>
+<span class="k">export default</span> <span class="t">defineConfig</span>({
+  plugins: [<span class="t">react</span>()],
+  server: {
+    proxy: { <span class="s">'/api/v1'</span>: { target: <span class="s">'http://localhost:8080'</span>, changeOrigin: <span class="k">true</span> } },
+  },
+  preview: {
+    port: <span class="n">4173</span>,
+    proxy: { <span class="s">'/api/v1'</span>: { target: <span class="s">'http://localhost:9999'</span>, changeOrigin: <span class="k">true</span> } },
+    <span class="c">// ← 写了 preview.proxy，dev 那份就不再被继承（整个对象被替换，不是逐键合并）</span>
+  },
+})
+<span class="c">// import 部分与第 3 节那份相同：import { defineConfig } from 'vite' / import react from '@vitejs/plugin-react'</span></pre>
+    <div class="callout warn"><p>把这段当练习 2 的对照实验：<b>先在 9999 端口起一个第二后端</b>（<code>PORT=9999 go run ./cmd/server</code>，第 4 周 Day 3 教过 PORT 变量优先），配好 <code>preview.proxy</code> 后跑 <code>npm run preview</code>，Network 里那条请求的响应就该来自 9999 那个库；改回不写 preview.proxy 再跑一次，同样的请求回到 8080。<b>两次都要成</b>，才算真懂继承与覆写。</p></div>
   </section>
 
   <section>
     <h2>今日练习</h2>
     <div class="task">
       <div class="task-title">练习 1：拆掉 proxy，亲手引爆 CORS（40 分钟）</div>
-      <p>把 <code>.env.local</code> 写 <code>VITE_API_BASE=http://localhost:8080/api/v1</code> 并重启 dev server（绝对地址会绕开 proxy 直接跨域）。预期依次看到：登录请求报 <code>No 'Access-Control-Allow-Origin'</code>、Network 里红色 OPTIONS。然后①确认后端 CORS 中间件没挂 → 挂上 → 刷新验证通了；②把中间件里 origin 改成精确写 <code>http://localhost:5173</code> 再验一次。最后删掉 .env.local 切回 proxy，确认恢复。</p>
+      <p>把 <code>frontend/.env.local</code> 写 <code>VITE_API_BASE=http://localhost:8080/api/v1</code> 并重启 dev server（绝对地址会绕开 proxy 直接跨域）。预期依次看到：登录请求报 <code>No 'Access-Control-Allow-Origin'</code>、Network 里红色 OPTIONS。然后①确认后端 CORS 中间件没挂 → 按第 2 节那三行 diff 挂上（<b>CORS 必须在 Auth 之前</b>，否则预检被 Auth 拦成 401，你会同时看到「跨域」和「未登录」两种假象）→ 刷新验证通了；②把中间件里 origin 改成精确写 <code>http://localhost:5173</code> 再验一次。最后删掉 .env.local 切回 proxy，确认恢复。</p>
       <pre><span class="code-label">shell</span><span class="c"># 记录案发现场（把这三样贴进笔记，今天就算没白炸）：</span>
 # ① Console 红字原文        ② Network 里失败 OPTIONS 的 Request Headers 截图
 # ③ 修复后同一请求的 Response Headers（应含 Access-Control-Allow-* 三件套）
@@ -213,7 +250,7 @@ $ curl -sI -X OPTIONS localhost:8080/api/v1/auth/login \
     </div>
     <div class="task">
       <div class="task-title">练习 2：构建 + preview 全流程（30 分钟）</div>
-      <p>注释掉 proxy 走不通的绝对地址配置，恢复后执行 <code>npm run build && npm run preview</code>。检查：①dist 里 index.html 引用的资源名带 hash；②4173 端口打开网站完整走一遍登录→发文；③直接访问 <code>localhost:4173/post/1</code> 刷新不 404（preview 自带 history fallback，线上要靠 Nginx 配 try_files）。</p>
+      <p>先把练习 1 的 <code>.env.local</code> 删掉（切回 proxy），执行 <code>npm run build &amp;&amp; npm run preview</code>。检查：①dist 里 index.html 引用的资源名带 hash；②4173 端口打开网站完整走一遍登录→发文（<b>这一步 <code>/api/v1</code> 应该是通的</b>，因为 preview 默认继承 server.proxy，别误以为要另外配 CORS）；③直接访问 <code>localhost:4173/post/1</code> 刷新不 404（preview 自带 SPA fallback，线上要靠 Nginx 的 try_files）；④做第 7 节的覆写对照实验：起第二个后端 <code>PORT=9999 go run ./cmd/server</code>，配 <code>preview.proxy</code> 指向 9999，看 Network 里登录请求的响应来自哪套库；删掉 preview.proxy 再跑一次，回到 8080。</p>
       <pre><span class="code-label">shell</span>$ npm run build
 vite v7.x building for production...
 dist/index.html                 0.46 kB │ gzip:  0.30 kB
@@ -224,26 +261,131 @@ $ npm run preview               <span class="c"># Local: http://localhost:4173/<
     </div>
     <div class="task">
       <div class="task-title">练习 3：undefined 字段大搜捕（30 分钟）</div>
-      <p>给列表页每个渲染字段临时加 <code>console.assert(article.coverImage !== undefined, 'coverImage 缺')</code>，跑一圈页面。若有报缺，去后端模型找 json tag，修完再全绿。没报缺也要做一遍 curl 对照：<code>curl -s 'localhost:8080/api/v1/articles?page=1&size=1' | python3 -m json.tool</code>，逐字段核对前端用到的键名。</p>
+      <p>给列表页每个渲染字段临时加 <code>console.assert(article.cover_image !== undefined, 'cover_image 缺')</code>（<code>user.nickname</code>、<code>created_at</code>、<code>total_page</code> 同理各来一条），跑一圈页面。若有报缺，去后端模型/DTO 找 json tag，修完再全绿。没报缺也要做一遍 curl 对照：<code>curl -s 'localhost:8080/api/v1/articles?page=1&amp;size=1' | python3 -m json.tool</code>，逐字段核对前端用到的键名。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 4：把排错清单抄成自己的（20 分钟）</div>
       <p>把第 6 节那张表誊进笔记，每一行「依次排查」旁补一个你这周真实踩过的例子（如「401：day4 忘 return config」）。下次联调卡住时先对着表走，再问人。</p>
     </div>
+    <div class="task">
+      <div class="task-title">练习 5：仓库归置 + 首次提交（30 分钟，今天必做）</div>
+      <p>照下一节「仓库归置：为第 7 周做准备」从头执行：挪目录 → 两个 <code>.gitignore</code> → <code>git init / add / commit</code> → 三条自检命令全绿 →（可选）推到 GitHub。做完这件事，第 7 周的 Dockerfile 和 Nginx 配置才有地方写。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>仓库归置：为第 7 周做准备</h2>
+    <p>现在是两个互不相干的目录：后端 <code>~/code/goblog</code>（第 3–4 周，Go 模块名 <code>goblog</code>）、前端 <code>~/code/blog-web</code>（今天建的）。第 7 周要做 Docker 化 + Nginx + 迁移脚本，<b>所有路径都按「一个仓库、两个子目录」写</b>：构建上下文必须能精确圈定后端，否则 <code>docker build</code> 会把 <code>node_modules</code>（四五百 MB）塞进镜像。今天花 20 分钟挪一次，下周省一天。</p>
+    <pre><span class="code-label">text</span>归置前：                          归置后（第 7 周起点，也是本周验收项）：
+~/code/goblog     ← Go 后端        ~/code/goblog/            ← 仓库根（git 只管这一层）
+~/code/blog-web   ← React 前端     ├── backend/              ← 原 goblog 整体搬进来
+                                   │   ├── go.mod cmd/ internal/ .env .env.example
+                                   │   └── …
+                                   ├── frontend/             ← 原 blog-web 整体搬进来
+                                   │   ├── package.json vite.config.js src/ index.html
+                                   │   └── …
+                                   └── docker-compose.yml     ← 从 backend/ 提到根（它管的是整套服务）</pre>
+
+    <h3>1. 挪目录（四条命令）</h3>
+    <pre><span class="code-label">shell</span>$ cd ~/code                                  <span class="c"># 换成你放这两个项目的父目录</span>
+$ ls -d goblog blog-web                      <span class="c"># 两个都在才继续；名字不同就换成你的实际名字</span>
+$ mkdir goblog.tmp                           <span class="c"># 先建临时壳，避免 mv 时目标名和源名同名打架</span>
+$ mv goblog goblog.tmp/backend               <span class="c"># 后端整体变成 backend/（go.mod、cmd、internal、.env 全跟着走）</span>
+$ mv blog-web goblog.tmp/frontend            <span class="c"># 前端整体变成 frontend/（node_modules 也一起搬，不用重装）</span>
+$ mv goblog.tmp/backend/docker-compose.yml goblog.tmp/   <span class="c"># compose 提到仓库根</span>
+$ mv goblog.tmp goblog                       <span class="c"># 改名回正式位置，归置完成</span>
+
+$ cd goblog &amp;&amp; ls                            <span class="c"># 期望看到：backend  frontend  docker-compose.yml</span></pre>
+    <div class="callout note"><p>为什么要绕一个 <code>goblog.tmp</code>：<code>mv goblog goblog/backend</code> 会把目录往<b>自己里面</b>塞，直接报错或套娃。先建临时壳再改名，是唯一不用动脑子的安全走法。<b>Go 模块名仍是 <code>goblog</code>，import 路径一行都不用改</b>——搬目录改的是文件系统位置，不是包路径。</p></div>
+
+    <h3>2. 挪完立刻验两侧都还活着</h3>
+    <pre><span class="code-label">shell</span><span class="c"># 终端 1：后端（从现在起 go 命令都在 backend/ 里执行，.env 也是按当前目录读的）</span>
+$ cd ~/code/goblog/backend
+$ docker compose -f ../docker-compose.yml up -d      <span class="c"># compose 在仓库根，用 -f 指过去（或直接 cd .. 再 up）</span>
+$ go build ./... &amp;&amp; go run ./cmd/server              <span class="c"># 监听 :8080</span>
+$ curl -s localhost:8080/health                      <span class="c"># {"code":0,"message":"ok","data":{"status":"ok"}}</span>
+
+<span class="c"># 终端 2：前端</span>
+$ cd ~/code/goblog/frontend
+$ npm run dev                                        <span class="c"># 仍旧 5173，proxy 配置没动</span>
+$ curl -s <span class="s">'http://localhost:5173/api/v1/articles?page=1&amp;size=1'</span> | head -c <span class="n">80</span></pre>
+    <p>Day 1 顶部那三条启动命令里的路径<b>从今天起按这张卡替换</b>：仓库根 <code>~/code/goblog</code>，后端进 <code>backend/</code>、前端进 <code>frontend/</code>。若 Vite 报 <code>Failed to resolve import</code> 或白屏，是它的依赖缓存记着旧绝对路径——删掉缓存重启即可：<code>rm -rf node_modules/.vite &amp;&amp; npm run dev</code>。</p>
+
+    <h3>3. 两个 .gitignore：一份根规，一份前端自带</h3>
+    <pre><span class="code-label">goblog/.gitignore</span><span class="c"># ---- 环境变量：真实值绝不进仓库，模板（.env.example）进 ----</span>
+backend/.env                       <span class="c"># DB_PASS / JWT_SECRET / JWT_REFRESH_SECRET 都在这里（第 4 周 Day 3）</span>
+backend/.env.*.local
+frontend/.env.local                <span class="c"># 第 5 节练习 1 用来临时指后端的那份</span>
+frontend/.env.*.local
+<span class="c"># 注意：.env.development / .env.production 只写 /api/v1 这种公开相对路径，不含密钥，是要进 git 的</span>
+
+<span class="c"># ---- Go：编译产物与测试产物 ----</span>
+backend/server
+backend/goblog
+*.exe
+*.test
+*.out
+coverage.out
+
+<span class="c"># ---- Node / Vite ----</span>
+node_modules/
+dist/
+.vite/
+
+<span class="c"># ---- 编辑器与系统 ----</span>
+.DS_Store
+.idea/
+.vscode/
+*.log</pre>
+    <pre><span class="code-label">goblog/frontend/.gitignore</span><span class="c"># Vite 模板生成时就带了这一份，打开确认有三行就够（根规已覆盖，留着是为了单看 frontend 也自解释）</span>
+node_modules
+dist
+*.local
+<span class="c"># 两处规则冲突时，就近的那份（frontend/ 里的）赢——所以别在这里放开根规挡掉的 .env.local</span></pre>
+    <div class="callout warn"><p><code>backend/.env</code> 里躺着 MySQL 密码和两把 JWT 密钥（第 4 周 Day 3 配的）。<b>一旦 commit 就等于公开</b>——即使下次 commit 删掉，历史里还在，只能重建仓库并<b>换掉所有密钥</b>。同理别写 <code>.env</code> 这种裸模式配上 <code>!.env.example</code> 的负向放行：git 里后写的规则覆盖先写的，顺序一错等于没挡，而且它会顺手把要提交的 <code>.env.development</code> 一起吞掉。<b>最稳的写法就是现在这样：按「具体文件路径」逐条列出来</b>。验一下：<code>git check-ignore -v backend/.env</code> 有输出（被挡住了），<code>git check-ignore -v backend/.env.example frontend/.env.development</code> 无输出（会正常进仓库）。</p></div>
+
+    <h3>4. 首次提交（命令与第 1 周 Day 5 完全一样）</h3>
+    <pre><span class="code-label">shell</span>$ cd ~/code/goblog
+$ git init
+$ git add .
+$ git status --short | head -20              <span class="c"># 先看都进了什么：不该有 node_modules、.env、dist</span>
+$ git commit -m <span class="s">"chore: monorepo layout (backend/ + frontend/) with week-6 frontend"</span></pre>
+    <p>三条自检命令，全绿才算过关：</p>
+    <pre><span class="code-label">shell</span>$ git ls-files | grep -E <span class="s">'^backend/\.env'</span>
+backend/.env.example        <span class="c"># ← 只应有这一行；出现 backend/.env 就 git rm --cached backend/.env 再提交</span>
+
+$ git ls-files | grep -c <span class="s">'node_modules\|^dist/'</span>
+0                           <span class="c"># ← 期望 0</span>
+
+$ git count-objects -vH | grep size-pack
+size-pack: 240.00 KiB       <span class="c"># ← 学习项目该是 KB～小 MB 级；几十 MB 说明有东西混进来了</span></pre>
+    <div class="callout tip"><p>提交信息写成一句「为什么」而不是「改了哪些文件」，第 8 周整理作品集 README 时会感谢现在的自己。</p></div>
+
+    <h3>5. 可选：推到 GitHub（私有仓库）</h3>
+    <pre><span class="code-label">shell</span>$ git branch -M main                         <span class="c"># 默认分支名统一成 main</span>
+$ gh repo create goblog --private --source=. --remote=origin --push
+<span class="c"># 没装 GitHub CLI 就网页建空仓库，再手动两枪：</span>
+$ git remote add origin git@github.com:<span class="n">你的用户名</span>/goblog.git
+$ git push -u origin main</pre>
+    <div class="callout note"><p>第 1 周的 <code>todo-api</code> 是另一个仓库，本周不用管它；这里的 <code>goblog</code> 才是第 7、8 周要一路推到底的主仓库。推之前<b>务必先跑一遍第 4 节的三条自检</b>——公网仓库里的一份 <code>.env</code>，删掉也要换密钥。</p></div>
+    <p>归置完成后，第 7 周 Day 1 会在 <code>backend/</code> 里写 Dockerfile、在仓库根写 <code>docker-compose.yml</code> 的 backend/frontend 服务，路径全部对得上，不需要再挪第二次。</p>
   </section>
 
   <section>
     <h2>常见坑</h2>
     <table>
       <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
-      <tr><td>proxy key 与 baseURL 叠 /api</td><td>请求变 <code>/api/api/v1/...</code>，本地也 404</td><td>key 写 <code>/api</code>，baseURL 从 <code>/api/v1</code> 起</td></tr>
+      <tr><td>baseURL 与函数路径各带一次前缀</td><td>请求变 <code>/api/v1/api/v1/articles</code>，proxy 照转不误，后端 404</td><td>前缀只在 baseURL 出现一次：api 函数写 <code>http.get('/articles')</code>；proxy key 与 baseURL 都写 <code>/api/v1</code> 是正常搭配</td></tr>
       <tr><td>env 变量没加 VITE_ 前缀</td><td><code>import.meta.env.XXX</code> 是 undefined，baseURL 变 "undefined/auth/login"</td><td>必须 <code>VITE_</code> 前缀；改完重启 dev server</td></tr>
       <tr><td>.env.local 提交了 git</td><td>本机专属地址/密钥泄漏给协作者</td><td>.gitignore 里必须有 <code>.env.local</code>、<code>.env.*.local</code></td></tr>
       <tr><td>以为 curl 通前端也该通</td><td>对着「接口没问题」四个大字怀疑人生</td><td>curl 无 CORS 约束；「curl 通、浏览器挂」先查 CORS</td></tr>
       <tr><td>把预检 OPTIONS 当重复请求</td><td>Network 两枪同 URL，误以为代码发了两次</td><td>非简单请求浏览器自动先发 OPTIONS 探路，属正常</td></tr>
       <tr><td>Go 字段缺 json tag</td><td>前端字段 undefined，Preview 里全是大写键</td><td>结构体每个对外字段都写 <code>`json:"camelCase"`</code></td></tr>
-      <tr><td>preview 下 API 全挂</td><td>dev 好好的，preview 里请求 404/跨域</td><td>preview 不带 proxy（见第 7 节表），要么后端开 CORS，要么等第 7 周 Nginx</td></tr>
+      <tr><td>以为 preview 一定跨域 / 改了 preview.proxy 没反应</td><td>在 preview 里请求照样 200，就下结论「Vite 偷偷反代了」；或配了 preview.proxy 却发现两个 target 都像是生效了</td><td>事实是 <b>preview.proxy 未配置时默认继承 server.proxy</b>，显式写了就整份替换（不是逐键合并）。改 vite.config 后重新跑 <code>npm run preview</code> 再看</td></tr>
       <tr><td>改了 vite.config 没重启</td><td>proxy「配了没反应」</td><td>config 与 .env 变更都以重启为准，终端日志里看 re-start 提示</td></tr>
+      <tr><td>挪目录时 <code>mv goblog goblog/backend</code></td><td>报 <code>cannot move a directory to its own subdirectory</code>，或者真的套娃进去</td><td>先 <code>mkdir goblog.tmp</code> 当临时壳，搬完再 <code>mv goblog.tmp goblog</code> 改名</td></tr>
+      <tr><td>归置后 <code>.env</code> 没跟着进 backend/</td><td>启动即 <code>配置加载失败</code>（第 4 周的 config 读不到 JWT_SECRET）</td><td><code>.env</code> 按<b>当前工作目录</b>读取：它必须和 <code>go run ./cmd/server</code> 同在 <code>backend/</code>；<code>.env.example</code> 也一起放那边</td></tr>
+      <tr><td>归置后首次提交前没看 <code>git status</code></td><td><code>backend/.env</code> 或 <code>frontend/node_modules</code> 进了仓库，仓库体积爆掉、密钥上公网</td><td><code>git add .</code> 之前先 <code>git status --short | head</code>；已进的用 <code>git rm --cached &lt;路径&gt;</code> 撤下再提交（W1D5 讲过），并<b>立刻换掉那把密钥</b></td></tr>
     </table>
   </section>
 
@@ -256,6 +398,8 @@ $ npm run preview               <span class="c"># Local: http://localhost:4173/<
       <tr><td>预检请求（preflight）</td><td>非简单请求前浏览器自动发的 OPTIONS 探路枪，问「待会用这方法这头允许吗」</td></tr>
       <tr><td>反向代理</td><td>Nginx/Vite 在服务端代收请求转给后端，对浏览器伪装成同一个源；绕 CORS 的正统姿势</td></tr>
       <tr><td>内容 hash 文件名</td><td>构建产物名里的 <code>-a1b2c3</code>：内容变名字变，让 CDN/浏览器缓存自动失效更新</td></tr>
+      <tr><td>monorepo（单仓多包）</td><td>前后端放同一个 Git 仓库的两个子目录（<code>goblog/{backend,frontend}</code>）：一次 clone 就能跑全套，Docker/Nginx 的路径也只需写一份</td></tr>
+      <tr><td>构建上下文（build context）</td><td><code>docker build</code> 交给守护进程的那个目录；上下文圈多大，镜像就背多大——这就是第 7 周要求后端单独成目录的原因</td></tr>
     </table>
   </section>
 
@@ -263,10 +407,11 @@ $ npm run preview               <span class="c"># Local: http://localhost:4173/<
     <h2>完成检查（全部勾掉才算毕业）</h2>
     <ul class="check">
       <li><label><input type="checkbox" data-key="w6d5c1">练习 1 完成：亲眼见过缺 Allow-Origin 报错和红色 OPTIONS，并靠中间件修好、切回 proxy</label></li>
-      <li><label><input type="checkbox" data-key="w6d5c2">vite.config.js 的 proxy 能默写并讲出 changeOrigin 与「Node 转发不受同源限制」两条原理</label></li>
-      <li><label><input type="checkbox" data-key="w6d5c3"><code>npm run build</code> 成功，dist 结构看懂，preview 里走完注册→登录→发文全流程</label></li>
+      <li><label><input type="checkbox" data-key="w6d5c2">vite.config.js 的 proxy 能默写（key 是 <code>/api/v1</code>、不写 rewrite）并讲出 changeOrigin 与「Node 转发不受同源限制」两条原理</label></li>
+      <li><label><input type="checkbox" data-key="w6d5c3"><code>npm run build</code> 成功，dist 结构看懂，preview 里走完注册→登录→发文全流程，并做通 preview.proxy 继承/覆写那个对照实验</label></li>
       <li><label><input type="checkbox" data-key="w6d5c4">.env 三件套与 .gitignore 检查无误，能口述「构建时内联所以不放密钥」</label></li>
       <li><label><input type="checkbox" data-key="w6d5c5">排错清单已誊入笔记并各配了一个自己踩过的实例；全周功能回归测试通过（day1–4 的检查项重挑 3 条抽测）</label></li>
+      <li><label><input type="checkbox" data-key="w6d5c6">目录已归置成 <code>goblog/backend</code> + <code>goblog/frontend</code>，两边都能启动并跑通 <code>/health</code> 与 proxy；<code>git log --oneline</code> 有首次提交，且 <code>git ls-files</code> 里没有 <code>backend/.env</code> 和 <code>node_modules</code></label></li>
     </ul>
   </section>
 

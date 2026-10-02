@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>W4D1 · 密码哈希与注册登录 | Go 全栈修炼手册</title>
-<meta name="description" content="Day 1：为什么不能存明文与 md5、bcrypt 原理与 GenerateFromPassword/ComparePassword、注册接口（强度校验 + 1062 唯一冲突）、登录接口（统一提示防枚举），全部含可运行代码。">
+<meta name="description" content="Day 1：为什么不能存明文与 md5、bcrypt 原理与 GenerateFromPassword/CompareHashAndPassword、goblog 完整 User 模型与 AuthService 全定义、注册接口（强度校验 + 1062 唯一冲突）、登录接口（统一提示防枚举）、GET /api/v1/users/me，全部含可运行代码。">
 <link rel="stylesheet" href="../../assets/style.css">
 <script src="../../assets/app.js"></script>
 </head>
@@ -23,22 +23,24 @@
     <span class="chip">难度 ★★★☆☆</span>
   </div>
   <h1>密码哈希与注册登录</h1>
-  <p>前三周你的用户接口是「裸奔」的：谁都能改任何人的资料。从今天起给项目装上锁。第一步不是 JWT，而是<b>把密码安全地存进数据库</b>——这一步做错，后面所有认证都是空中楼阁。今天结束时要能跑通 <code>/auth/register</code> 和 <code>/auth/login</code> 两个接口。</p>
+  <p>前三周你的用户接口是「裸奔」的：谁都能改任何人的资料。从今天起给项目装上锁。第一步不是 JWT，而是<b>把密码安全地存进数据库</b>——这一步做错，后面所有认证都是空中楼阁。今天结束时要能跑通 <code>POST /api/v1/auth/register</code> 和 <code>POST /api/v1/auth/login</code> 两个接口。</p>
+  <div class="callout note"><p><b>今天是「goblog 原地延续」的第一天</b>：不新建仓库、不换模块名，就在第 3 周的 <code>goblog</code> 模块里加 <code>internal/service/auth.go</code>、<code>internal/handler/auth.go</code>。路由前缀沿用第 3 周已确立的 <code>/api/v1</code>，健康检查 <code>/health</code> 仍不带前缀——这两条口径全站统一，后面几周都按它写。</p></div>
 
   <section class="goals">
     <h2>今日目标</h2>
     <ul class="check">
       <li><label><input type="checkbox" data-key="w4d1g1">能向别人解释为什么明文和纯 md5 存密码都会出事</label></li>
-      <li><label><input type="checkbox" data-key="w4d1g2">会用 bcrypt 的 <code>GenerateFromPassword</code> / <code>ComparePassword</code> 并说清参数顺序</label></li>
-      <li><label><input type="checkbox" data-key="w4d1g3">注册接口完成密码强度校验，并把 MySQL 1062 冲突翻译成业务码</label></li>
+      <li><label><input type="checkbox" data-key="w4d1g2">会用 bcrypt 的 <code>GenerateFromPassword</code> / <code>CompareHashAndPassword</code> 并说清参数顺序</label></li>
+      <li><label><input type="checkbox" data-key="w4d1g3">注册接口完成密码强度校验，并把 MySQL 1062 冲突翻译成业务码 1006</label></li>
       <li><label><input type="checkbox" data-key="w4d1g4">登录接口对「用户不存在」和「密码错」返回同一句话，防用户名枚举</label></li>
+      <li><label><input type="checkbox" data-key="w4d1g5">能把 <code>AuthService</code> 的完整定义（依赖 <code>repository.UserRepository</code> + 两把 JWT 密钥）默写出来，并知道 <code>Login</code> 返回的是 <code>uint</code></label></li>
     </ul>
-    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这五条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
   </section>
 
   <section>
     <h2>课前须知：给 JS 开发者的两句话</h2>
-    <div class="callout js"><p><b>1. 哈希不是加密。</b>加密可以解密，哈希是单向的：<code>bcrypt.Hash("123456")</code> 永远还原不出 <code>"123456"</code>。所以登录校验不能「解密比对」，只能把用户输入的密码用同样算法<b>再算一次</b>去比对。</p></div>
+    <div class="callout js"><p><b>1. 哈希不是加密。</b>加密可以解密，哈希是单向的：<code>bcrypt.GenerateFromPassword([]byte("123456"), ...)</code> 出来的那串永远还原不出 <code>"123456"</code>。所以登录校验不能「解密比对」，只能把用户输入的密码用同样算法<b>再算一次</b>去比对。</p></div>
     <div class="callout js"><p><b>2. 数据库泄露是常态不是意外。</b>设计存储方案时要假设「有一天拖库了」：只要库里没有明文、也没有可逆的密文，用户就是安全的。这就是只存哈希的理由。</p></div>
   </section>
 
@@ -77,26 +79,81 @@
     <span class="c">// $2a$10$N9qo8uLOickgx2ZMRZoMye...  前缀里就带着算法版本和 cost</span>
 
     <span class="c">// 登录时：注意参数顺序是 (哈希, 明文)，返回 error 而不是 bool！</span>
-    err = bcrypt.<span class="t">ComparePassword</span>(hashed, []<span class="t">byte</span>(<span class="s">"MyPassw0rd!"</span>))
+    err = bcrypt.<span class="t">CompareHashAndPassword</span>(hashed, []<span class="t">byte</span>(<span class="s">"MyPassw0rd!"</span>))
     fmt.<span class="t">Println</span>(<span class="s">"对了:"</span>, err == <span class="k">nil</span>)       <span class="c">// true</span>
 
-    err = bcrypt.<span class="t">ComparePassword</span>(hashed, []<span class="t">byte</span>(<span class="s">"wrong"</span>))
+    err = bcrypt.<span class="t">CompareHashAndPassword</span>(hashed, []<span class="t">byte</span>(<span class="s">"wrong"</span>))
     fmt.<span class="t">Println</span>(<span class="s">"错了:"</span>, err != <span class="k">nil</span>)       <span class="c">// true，err 为 bcrypt.ErrMismatchedHashAndPassword</span>
 }</pre>
-    <div class="callout warn"><p>两处最容易翻车的细节：① <code>ComparePassword(hashedPassword, password)</code> <b>哈希在前、明文在后</b>，写反了永远比不中且报错；② 它用 error 表达「不匹配」，判断要写 <code>err == nil</code> 表示密码正确，别 <code>if err != nil { 登录成功 }</code> 把逻辑整个反了。</p></div>
+    <div class="callout warn"><p>两处最容易翻车的细节：① <code>CompareHashAndPassword(hashedPassword, password)</code> <b>哈希在前、明文在后</b>，写反了永远比不中且报错；② 它用 error 表达「不匹配」，判断要写 <code>err == nil</code> 表示密码正确，别 <code>if err != nil { 登录成功 }</code> 把逻辑整个反了。</p></div>
 
-    <h3>3. 注册接口：强度校验 + 唯一索引冲突</h3>
-    <p>模型上给 username 加唯一索引（第 3 周 GORM 的 <code>uniqueIndex</code>），密码列存 bcrypt 结果，注意长度至少 varchar(60)：</p>
+    <h3>3. 先把 User 模型补齐（顺便治一治 struct tag）</h3>
+    <p>第 3 周建好的 <code>users</code> 表本周继续沿用，今天是「加字段语义」而不是「换表」。密码列存 bcrypt 结果，长度按算法上限 72 给；username 用 <code>uniqueIndex</code>（第 3 周 GORM 的老朋友）：</p>
     <pre><span class="code-label">internal/model/user.go</span><span class="k">package</span> model
 
 <span class="k">import</span> <span class="s">"gorm.io/gorm"</span>
 
-<span class="k">type</span> <span class="t">User</span> <span class="k">struct</span> {
+<span class="c">// gorm.Model = ID uint + CreatedAt + UpdatedAt + DeletedAt（自带软删除）
+// 所以下面不用再手写 ID 字段，user.ID 的类型是 uint——这点第 6 节登录返回值会用到</span>
+<span class="k">type</span> User <span class="k">struct</span> {
     gorm.<span class="t">Model</span>
-    Username   <span class="t">string</span> <span class="t">gorm</span>:<span class="s">"uniqueIndex;size:32"</span> <span class="t">json</span>:<span class="s">"username"</span>
-    Password   <span class="t">string</span> <span class="t">gorm</span>:<span class="s">"size:72;not null"</span>    <span class="t">json</span>:<span class="s">"-"</span> <span class="c">// json:"-" 永远不把哈希序列化出去</span>
-    Nickname   <span class="t">string</span> <span class="t">gorm</span>:<span class="s">"size:32"</span>             <span class="t">json</span>:<span class="s">"nickname"</span>
+
+    Username <span class="t">string</span> <span class="s">`gorm:"type:varchar(32);uniqueIndex;not null" json:"username"`</span>
+    Nickname <span class="t">string</span> <span class="s">`gorm:"type:varchar(32)" json:"nickname"`</span>
+    Email    <span class="t">string</span> <span class="s">`gorm:"type:varchar(128);uniqueIndex" json:"email"`</span>
+    Password <span class="t">string</span> <span class="s">`gorm:"type:varchar(72);not null" json:"-"`</span> <span class="c">// json:"-" 永远不把哈希序列化出去</span>
+
+    Articles []Article <span class="s">`gorm:"foreignKey:UserID" json:"articles,omitempty"`</span>
 }</pre>
+    <div class="callout warn"><p><b>struct tag 前后必须是一对反引号（ <code>`</code> ），不是双引号。</b>写成 <code>Username string gorm:"uniqueIndex" json:"username"</code>（少了两个反引号）会当场编译失败：<code>syntax error: unexpected name gorm in struct type; possibly missing semicolon or newline or }</code>。Go 的反引号是「原始字符串」——里面的 <code>"</code> 不用转义，正好适合装 tag；JS 模板字符串也用反引号，但那是能插值的另一回事，别混。</p></div>
+    <pre><span class="code-label">shell</span>$ go build ./...        <span class="c"># 没有任何输出 = 编译通过（Go 的"沉默即成功"）</span>
+$ <span class="c"># 若报 unexpected name gorm，就逐行检查上面四条 tag 的反引号</span></pre>
+    <div class="callout js"><p>字段 tag 的作用≈<b>装饰器</b>：TS/JS 里你写 <code>@Column({ length: 32 })</code>（TypeORM）或给 zod 传 schema；Go 没有装饰器，语言把「给结构体字段挂元数据」做成了语法的一部分——两个紧跟类型之后的字符串字面量，GORM 读 <code>gorm:</code>、<code>encoding/json</code> 读 <code>json:</code>。同一份 tag，两个不同的库各自解析自己那一段。</p></div>
+    <div class="callout note"><p><b>两个刻意的取舍：</b>① <code>Role</code> 字段本周<b>没有</b>，它是第 7 周迁移 <code>000002_add_role_to_users</code> 才加进来的列，第 8 周才正式讲 RBAC——提前加只会让今天的 token 里出现没人消费的字段。② 注册接口收 <code>username + password</code>（必填）外加<b>选填</b>的 <code>email</code> 与 <code>nickname</code>。<b>不填 email 时</b> GORM 的 <code>Create</code> 会<b>跳过零值字段</b>，于是 <code>email</code> 列写进去是 <code>NULL</code>；MySQL 的唯一索引允许多行 <code>NULL</code>（但不允许多行空字符串 <code>''</code>），所以现在多注册几个不带邮箱的用户不会撞 <code>users.email</code> 索引——第 6 周前端注册页开始收 email 之后，这条索引才真正开始起作用（真填了重复邮箱会撞它，第 5 节把这件事也翻译成了业务码）。</p></div>
+
+    <h3>4. response 包：本周新增的三个业务码</h3>
+    <p>统一响应壳（<code>pkg/response</code>，第 2 周就有）今天补三个常量，全站码表以此为准：</p>
+    <pre><span class="code-label">pkg/response/response.go（节选：常量块扩到本周用量）</span><span class="k">const</span> (
+    CodeOK           = <span class="n">0</span>    <span class="c">// 成功</span>
+    CodeUserNotFound = <span class="n">1001</span> <span class="c">// 资源不存在（通用；文章请用 2001）</span>
+    CodeBadPassword  = <span class="n">1002</span> <span class="c">// 密码错误</span>
+    CodeForbidden    = <span class="n">1003</span> <span class="c">// 权限不足 / 禁止</span>
+    CodeInvalidParam = <span class="n">1004</span> <span class="c">// 参数错误</span>
+    CodeTokenInvalid = <span class="n">1005</span> <span class="c">// 未认证 / token 无效或过期</span>
+
+    CodeUsernameTaken = <span class="n">1006</span> <span class="c">// ← 今天新加：用户名已存在（409）</span>
+    CodeArticleNotFound = <span class="n">2001</span> <span class="c">// ← 今天新加：文章不存在（404，第 2 天「仅作者可改删」要用）</span>
+    CodeInternal        = <span class="n">5000</span> <span class="c">// ← 今天新加：服务器内部错误（500）</span>
+)</pre>
+    <div class="callout tip"><p>函数签名维持第 2 周那三件：<code>response.OK(c, data)</code>（200）、<code>response.Created(c, data)</code>（201）、<code>response.Fail(c, httpStatus, code, msg)</code>（<b>四个参数</b>：先 HTTP 状态码，再业务码）。<code>OK</code> 没有第三个「状态码」参数——想返回 201 请用 <code>Created</code>，别给 OK 硬塞数字。</p></div>
+
+    <h3>5. 注册接口：service 层完整定义</h3>
+    <p>先把 <code>AuthService</code> 这个类型本身立起来——它依赖<b>repository 接口</b>而不是 <code>*gorm.DB</code>（第 3 周的分层纪律：<b>service 层不出现 *gorm.DB</b>，否则接口白设计了），另外收两把 JWT 密钥（明天签发 token 用，今天先占好位）：</p>
+    <pre><span class="code-label">internal/repository/user.go（W3 已有这个文件，今天动两处）</span><span class="c">// ① 接口：前六个方法是第 3 周那份契约，签名一个字节都不改，今天只加最后这一行</span>
+<span class="k">type</span> UserRepository <span class="k">interface</span> {
+    List() ([]model.<span class="t">User</span>, <span class="t">error</span>)
+    Get(id <span class="t">uint</span>) (model.<span class="t">User</span>, <span class="t">error</span>)
+    Create(u model.<span class="t">User</span>) (model.<span class="t">User</span>, <span class="t">error</span>)
+    Update(u model.<span class="t">User</span>) <span class="t">error</span>
+    Delete(id <span class="t">uint</span>) <span class="t">error</span>
+    ExistsUsername(username <span class="t">string</span>) (<span class="t">bool</span>, <span class="t">error</span>)
+
+    ByUsername(username <span class="t">string</span>) (model.<span class="t">User</span>, <span class="t">error</span>) <span class="c">// ← ② 今天新加：登录按用户名找人</span>
+}
+
+<span class="c">// 实现补十行，形状照抄第 3 周的 Get（返回 W3 就有的 ErrUserNotFound，handler 才分得清 404 与 500）</span>
+<span class="k">func</span> (r *gormUserRepo) ByUsername(username <span class="t">string</span>) (model.<span class="t">User</span>, <span class="t">error</span>) {
+    <span class="k">var</span> u model.<span class="t">User</span>
+    err := r.db.<span class="t">Where</span>(<span class="s">"username = ?"</span>, username).<span class="t">First</span>(&amp;u).<span class="t">Error</span>
+    <span class="k">if</span> errors.<span class="t">Is</span>(err, gorm.ErrRecordNotFound) {
+        <span class="k">return</span> model.<span class="t">User</span>{}, ErrUserNotFound
+    }
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">return</span> model.<span class="t">User</span>{}, err
+    }
+    <span class="k">return</span> u, <span class="k">nil</span>
+}</pre>
+    <div class="callout js"><p><b>为什么新方法跟着返回 <code>model.User</code> 而不是 <code>*model.User</code></b>：第 3 周整条契约用的都是<b>值语义</b>（<code>Get(id uint) (model.User, error)</code>、<code>Create(u model.User) (model.User, error)</code>），<code>ByUsername</code> 只要风格不一致，接口里就出现两套取对象的写法，第 5 天的假仓储还得跟着写两份。JS 里传对象天然是引用，没有值/指针这层区别；最接近的心智模型是 <code>structuredClone()</code>——<code>Get</code> 还你的是<b>一份拷贝</b>，改它不会碰到库里的数据；只有 <code>Create</code> 内部把 <code>&amp;u</code> 交给 GORM，为的是让数据库把自增 ID 回填进这个对象，再由返回值带出来。</p></div>
     <pre><span class="code-label">internal/service/auth.go</span><span class="k">package</span> service
 
 <span class="k">import</span> (
@@ -105,28 +162,70 @@
     <span class="s">"strings"</span>
 
     <span class="s">"golang.org/x/crypto/bcrypt"</span>
-    <span class="s">"gorm.io/gorm"</span>
 
-    <span class="s">"studyblog/internal/model"</span>
+    <span class="s">"goblog/internal/model"</span>
+    <span class="s">"goblog/internal/repository"</span>
 )
 
-<span class="k">var</span> ErrWeakPassword = errors.<span class="t">New</span>(<span class="s">"密码至少 8 位，且包含字母和数字"</span>)
+<span class="c">// 四个哨兵错误：handler 用 errors.Is 把它们翻译成 400 / 409 / 409 / 401
+// 变量名 Err + 名词，是 Go 社区给「业务错误」的固定命名法</span>
+<span class="k">var</span> (
+    ErrWeakPassword  = errors.<span class="t">New</span>(<span class="s">"密码至少 8 位，且包含字母和数字"</span>)
+    ErrUsernameTaken = errors.<span class="t">New</span>(<span class="s">"用户名已存在"</span>)
+    ErrEmailTaken    = errors.<span class="t">New</span>(<span class="s">"该邮箱已被注册"</span>) <span class="c">// email 是选填，但填了就要吃 users.email 唯一索引</span>
+    ErrBadCredential = errors.<span class="t">New</span>(<span class="s">"用户名或密码错误"</span>)
+)
 
-<span class="c">// Register 校验 -&gt; 哈希 -&gt; 落库；用户名重复交给数据库唯一索引兜底</span>
-<span class="k">func</span> (s *<span class="t">AuthService</span>) <span class="t">Register</span>(username, password <span class="t">string</span>) <span class="t">error</span> {
+<span class="c">// AuthService 只依赖仓储接口 + 两把 JWT 密钥（第 2 天签发 token 用）
+// 两把密钥：access 与 refresh 各用一把不同的，泄露一把不等于两把全废</span>
+<span class="k">type</span> <span class="t">AuthService</span> <span class="k">struct</span> {
+    users         repository.<span class="t">UserRepository</span>
+    accessSecret  <span class="t">string</span>
+    refreshSecret <span class="t">string</span>
+}
+
+<span class="k">func</span> <span class="t">NewAuthService</span>(users repository.<span class="t">UserRepository</span>, accessSecret, refreshSecret <span class="t">string</span>) *<span class="t">AuthService</span> {
+    <span class="k">return</span> &amp;<span class="t">AuthService</span>{users: users, accessSecret: accessSecret, refreshSecret: refreshSecret}
+}
+
+<span class="c">// Register 校验 -&gt; 哈希 -&gt; 落库；用户名/邮箱重复交给数据库唯一索引兜底
+// email、nickname 是选填：handler 里不 binding:"required"，空串传进来照样能注册</span>
+<span class="k">func</span> (s *<span class="t">AuthService</span>) <span class="t">Register</span>(username, password, email, nickname <span class="t">string</span>) (*model.<span class="t">User</span>, <span class="t">error</span>) {
     <span class="k">if</span> !passwordStrong(password) {
-        <span class="k">return</span> ErrWeakPassword
+        <span class="k">return</span> <span class="k">nil</span>, ErrWeakPassword
     }
     hashed, err := bcrypt.<span class="t">GenerateFromPassword</span>([]<span class="t">byte</span>(password), bcrypt.DefaultCost)
     <span class="k">if</span> err != <span class="k">nil</span> {
-        <span class="k">return</span> err
+        <span class="k">return</span> <span class="k">nil</span>, err
     }
-    err = s.db.<span class="t">Create</span>(&amp;model.<span class="t">User</span>{Username: username, Password: <span class="t">string</span>(hashed)}).<span class="t">Error</span>
-    <span class="k">if</span> err != <span class="k">nil</span> &amp;&amp; <span class="t">strings</span>.<span class="t">Contains</span>(err.<span class="t">Error</span>(), <span class="s">"1062"</span>) {
-        <span class="c">// MySQL: Error 1062 (23000): Duplicate entry 'xxx' for key 'users.username'</span>
-        <span class="k">return</span> ErrUsernameTaken
+    u := model.<span class="t">User</span>{Username: username, Password: <span class="t">string</span>(hashed), Email: email, Nickname: nickname}
+    created, err := s.users.<span class="t">Create</span>(u)      <span class="c">// 第 3 周的 Create 收值、返值：自增 ID 从这个返回值里出来，最后一行 &amp;created 交出去</span>
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">switch</span> {
+        <span class="k">case</span> isDuplicateOn(err, <span class="s">"username"</span>):
+            <span class="c">// MySQL: Error 1062 (23000): Duplicate entry 'xxx' for key 'users.username'</span>
+            <span class="k">return</span> <span class="k">nil</span>, ErrUsernameTaken
+        <span class="k">case</span> isDuplicateOn(err, <span class="s">"email"</span>):
+            <span class="k">return</span> <span class="k">nil</span>, ErrEmailTaken
+        }
+        <span class="k">return</span> <span class="k">nil</span>, err
     }
-    <span class="k">return</span> err
+    <span class="k">return</span> &amp;created, <span class="k">nil</span> <span class="c">// created.ID 已被 GORM 回填（uint），第 9 节的 /users/me 与明天的 token 都吃它</span>
+}
+
+<span class="c">// isDuplicateOn：把「撞了哪个唯一索引」这件事从数据库方言里抽出来。
+// MySQL 报 1062 时原文形如 Duplicate entry 'x' for key 'users.username'；
+// 第 5 天测试用的 sqlite 报 UNIQUE constraint failed: users.username——两种文案都含 users.username，
+// 所以一次 Contains 同时认下两种方言</span>
+<span class="k">func</span> isDuplicateOn(err <span class="t">error</span>, index <span class="t">string</span>) <span class="t">bool</span> {
+    <span class="k">if</span> err == <span class="k">nil</span> {
+        <span class="k">return</span> <span class="k">false</span>
+    }
+    msg := err.<span class="t">Error</span>()
+    <span class="k">if</span> !strings.<span class="t">Contains</span>(msg, <span class="s">"1062"</span>) &amp;&amp; !strings.<span class="t">Contains</span>(msg, <span class="s">"UNIQUE constraint failed"</span>) {
+        <span class="k">return</span> <span class="k">false</span>
+    }
+    <span class="k">return</span> strings.<span class="t">Contains</span>(msg, <span class="s">"users."</span>+index)
 }
 
 <span class="k">var</span> (
@@ -137,66 +236,182 @@
 <span class="k">func</span> passwordStrong(p <span class="t">string</span>) <span class="t">bool</span> {
     <span class="k">return</span> <span class="t">len</span>(p) &gt;= <span class="n">8</span> &amp;&amp; hasLetter.<span class="t">MatchString</span>(p) &amp;&amp; hasDigit.<span class="t">MatchString</span>(p)
 }</pre>
+    <p><b>这条策略为什么长这样（全站唯一的密码口径）</b>：只卡长度，<code>12345678</code> 会过；只卡「含字母」，<code>password</code> 会过。<code>len(p) &gt;= 8</code> + <code>hasLetter</code> + <code>hasDigit</code> 三个条件同时命中才算强，是「撞库脚本第一轮字典」的最低门槛。两个细节：① <code>len()</code> 数的是<b>字节</b>，一个中文字 3 字节，所以中文密码在长度上天然占便宜——本周不为此加复杂度；② 正则字面量 <code>`[A-Za-z]`</code> 用反引号包，和 struct tag 一样是原始字符串，不需要写 <code>"[A-Za-z]"</code> 再转义。</p>
+    <pre><span class="code-label">shell</span>$ <span class="c"># 四个用户名各测一条，验证策略真的在拦（注册成功是 201，被拦是 400 + 1004）</span>
+$ <span class="c"># 用户名一律 ≥3 个字符：DTO 那条 binding:"required,min=3,max=32" 会先拦短名字，别让它替密码规则背锅</span>
+$ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> -X POST localhost:8080/api/v1/auth/register -H <span class="s">"Content-Type: application/json"</span> -d <span class="s">'{"username":"user1","password":"goodpass123"}'</span>
+201
+$ curl -s -X POST localhost:8080/api/v1/auth/register -H <span class="s">"Content-Type: application/json"</span> -d <span class="s">'{"username":"user2","password":"abc1"}'</span>
+{<span class="s">"code"</span>:1004,<span class="s">"message"</span>:<span class="s">"密码至少 8 位，且包含字母和数字"</span>,<span class="s">"data"</span>:<span class="k">null</span>}  <span class="c"># 太短</span>
+$ curl -s -X POST localhost:8080/api/v1/auth/register -H <span class="s">"Content-Type: application/json"</span> -d <span class="s">'{"username":"user3","password":"abcdefghij"}'</span>
+{<span class="s">"code"</span>:1004,<span class="s">"message"</span>:<span class="s">"密码至少 8 位，且包含字母和数字"</span>,<span class="s">"data"</span>:<span class="k">null</span>}  <span class="c"># 无数字</span>
+$ curl -s -X POST localhost:8080/api/v1/auth/register -H <span class="s">"Content-Type: application/json"</span> -d <span class="s">'{"username":"user4","password":"12345678"}'</span>
+{<span class="s">"code"</span>:1004,<span class="s">"message"</span>:<span class="s">"密码至少 8 位，且包含字母和数字"</span>,<span class="s">"data"</span>:<span class="k">null</span>}  <span class="c"># 无字母</span></pre>
+    <div class="callout warn"><p><b>四个同为 <code>string</code> 的参数是个体力活</b>：<code>Register(username, password, email, nickname string)</code> 里把后两个写反，编译器一声不吭，只有肉眼能查。今天靠「调用点只有 handler 一处 + 参数名与 JSON 键同名」压住风险；等第 6 周注册页再加字段（验证码、昵称必填），就把它收进 <code>dto.RegisterReq</code> 结构体——第 3 周的 <code>dto</code> 包就是为这种时刻准备的。</p></div>
+    <div class="callout js"><p><b>构造函数返回指针</b>（<code>*AuthService</code>）是 Go 后端的常规姿势：结构体是「对象」，指针是「引用」，方法挂在指针接收者上才不会每次调用都拷贝一份。对照 JS：你 <code>new AuthService(...)</code> 拿到的一直是引用，Go 得把「引用」显式写成 <code>*</code>。</p></div>
     <div class="callout tip"><p>为什么靠数据库而不是先 <code>SELECT</code> 查一次再插入？「先查后插」在并发下两个请求可能同时通过检查。<b>唯一索引是最后一道也最可靠的一道防线</b>，应用层只需把 1062 翻译成 <code>code:1006 用户名已存在</code> 这样的业务码。</p></div>
 
-    <h3>4. 登录接口：统一提示防枚举</h3>
-    <pre><span class="code-label">internal/service/auth.go</span><span class="k">var</span> ErrBadCredential = errors.<span class="t">New</span>(<span class="s">"用户名或密码错误"</span>)
-
-<span class="c">// 一个固定的假哈希，仅用于"用户不存在"时空跑一次 bcrypt 拉齐耗时</span>
+    <h3>6. 登录接口：统一提示防枚举</h3>
+    <pre><span class="code-label">internal/service/auth.go（接上一段，同一个文件）</span><span class="c">// 一个固定的假哈希，仅用于"用户不存在"时空跑一次 bcrypt 拉齐耗时</span>
 <span class="k">var</span> fakeHash = []<span class="t">byte</span>(<span class="s">"$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"</span>)
 
-<span class="c">// Login 校验通过返回用户（明天再发 token，今天先返回 nil error）</span>
-<span class="k">func</span> (s *<span class="t">AuthService</span>) <span class="t">Login</span>(username, password <span class="t">string</span>) (<span class="t">int64</span>, <span class="t">error</span>) {
-    <span class="k">var</span> user model.<span class="t">User</span>
-    err := s.db.<span class="t">Where</span>(<span class="s">"username = ?"</span>, username).<span class="t">First</span>(&amp;user).<span class="t">Error</span>
+<span class="c">// Login 校验通过返回用户 ID（明天再发 token，今天先返回 nil error）
+// 返回类型是 uint：和 model.User 的 ID（gorm.Model 给的 uint）严格一致，
+// 写成 int64 会在明天签发 token 时被迫到处转换</span>
+<span class="k">func</span> (s *<span class="t">AuthService</span>) <span class="t">Login</span>(username, password <span class="t">string</span>) (<span class="t">uint</span>, <span class="t">error</span>) {
+    user, err := s.users.<span class="t">ByUsername</span>(username)
     <span class="k">if</span> err != <span class="k">nil</span> {
-        <span class="k">if</span> errors.<span class="t">Is</span>(err, gorm.ErrRecordNotFound) {
+        <span class="k">if</span> errors.<span class="t">Is</span>(err, repository.ErrUserNotFound) {
             <span class="c">// 故意不暴露"用户不存在"——否则攻击者拿它当用户名探测仪</span>
-            bcrypt.<span class="t">ComparePassword</span>(fakeHash, []<span class="t">byte</span>(password)) <span class="c">// 空跑一次，耗时对齐</span>
+            bcrypt.<span class="t">CompareHashAndPassword</span>(fakeHash, []<span class="t">byte</span>(password)) <span class="c">// 空跑一次拉齐耗时，返回的 error 故意不用</span>
             <span class="k">return</span> <span class="n">0</span>, ErrBadCredential
         }
         <span class="k">return</span> <span class="n">0</span>, err <span class="c">// 数据库真挂了，走 500</span>
     }
-    <span class="k">if</span> bcrypt.<span class="t">ComparePassword</span>([]<span class="t">byte</span>(user.Password), []<span class="t">byte</span>(password)) != <span class="k">nil</span> {
+    <span class="k">if</span> bcrypt.<span class="t">CompareHashAndPassword</span>([]<span class="t">byte</span>(user.Password), []<span class="t">byte</span>(password)) != <span class="k">nil</span> {
         <span class="k">return</span> <span class="n">0</span>, ErrBadCredential <span class="c">// 同样的话术，同样的 error</span>
     }
-    <span class="k">return</span> user.ID, <span class="k">nil</span>
+    <span class="k">return</span> user.ID, <span class="k">nil</span> <span class="c">// user.ID 类型 uint，与返回值一致</span>
 }</pre>
     <div class="callout js"><p><b>防枚举</b>：「用户不存在」和「密码错误」如果返回不同提示（甚至不同响应时间），攻击者就能批量探测哪些用户名注册过。统一成一句「用户名或密码错误」，进阶做法如上——用户不存在时也拿一个假哈希空跑一次 bcrypt，把两条路径耗时拉齐。今天做到提示统一即可，耗时对齐了解原理就行。</p></div>
+    <div class="callout note"><p><b>为什么 <code>service</code> 里不出现 <code>gorm.ErrRecordNotFound</code></b>：数据库方言的「没查到」应该在 repository 层翻译成业务错误 <code>ErrUserNotFound</code>（第 3 周 D2 就是这个分工）。service 只认业务错误，第 5 天换成内存假仓储时这段逻辑一行都不用改。</p></div>
 
-    <h3>5. handler 层接线</h3>
-    <pre><span class="code-label">internal/handler/auth.go</span><span class="k">func</span> (h *<span class="t">AuthHandler</span>) <span class="t">Register</span>(c *gin.<span class="t">Context</span>) {
+    <h3>7. handler 层接线</h3>
+    <p>先把 <code>AuthHandler</code> 这个类型立起来。<b>构造函数参数今天定型、后面几天不再改</b>：service + 两把密钥（第 4 天再加 logger，第 5 天的测试就照这个签名传参）：</p>
+    <pre><span class="code-label">internal/handler/auth.go</span><span class="k">package</span> handler
+
+<span class="k">import</span> (
+    <span class="s">"errors"</span>
+    <span class="s">"net/http"</span>
+
+    <span class="s">"github.com/gin-gonic/gin"</span>
+
+    <span class="s">"goblog/pkg/response"</span>
+    <span class="s">"goblog/internal/repository"</span>
+    <span class="s">"goblog/internal/service"</span>
+)
+
+<span class="c">// AuthHandler 收 service + 两把 JWT 密钥。
+// 今天两把密钥还用不上（明天签发 token 才用），但签名先定下来，后面几天不用改调用方</span>
+<span class="k">type</span> <span class="t">AuthHandler</span> <span class="k">struct</span> {
+    svc           *service.<span class="t">AuthService</span>
+    accessSecret  <span class="t">string</span>
+    refreshSecret <span class="t">string</span>
+}
+
+<span class="k">func</span> <span class="t">NewAuthHandler</span>(svc *service.<span class="t">AuthService</span>, accessSecret, refreshSecret <span class="t">string</span>) *<span class="t">AuthHandler</span> {
+    <span class="k">return</span> &amp;<span class="t">AuthHandler</span>{svc: svc, accessSecret: accessSecret, refreshSecret: refreshSecret}
+}
+
+<span class="k">func</span> (h *<span class="t">AuthHandler</span>) <span class="t">Register</span>(c *gin.<span class="t">Context</span>) {
     <span class="k">var</span> req <span class="k">struct</span> {
-        Username <span class="t">string</span> <span class="t">json</span>:<span class="s">"username"</span> binding:<span class="s">"required,min=3,max=32"</span>
-        Password <span class="t">string</span> <span class="t">json</span>:<span class="s">"password"</span> binding:<span class="s">"required"</span>
+        Username <span class="t">string</span> <span class="s">`json:"username" binding:"required,min=3,max=32"`</span>
+        Password <span class="t">string</span> <span class="s">`json:"password" binding:"required,max=64"`</span>   <span class="c">// max=64 兜住 bcrypt 的 72 字节上限（第 10 节小题①）；强度规则留给 service</span>
+        Email    <span class="t">string</span> <span class="s">`json:"email" binding:"omitempty,email,max=128"`</span>  <span class="c">// 选填：不传也照样注册</span>
+        Nickname <span class="t">string</span> <span class="s">`json:"nickname" binding:"omitempty,max=32"`</span>
     }
     <span class="k">if</span> err := c.<span class="t">ShouldBindJSON</span>(&amp;req); err != <span class="k">nil</span> {
-        resp.<span class="t">Fail</span>(c, <span class="n">400</span>, <span class="n">1004</span>, <span class="s">"参数错误"</span>)
+        response.<span class="t">Fail</span>(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"参数错误"</span>)
         <span class="k">return</span>
     }
-    <span class="k">if</span> err := h.svc.<span class="t">Register</span>(req.Username, req.Password); err != <span class="k">nil</span> {
+    u, err := h.svc.<span class="t">Register</span>(req.Username, req.Password, req.Email, req.Nickname)
+    <span class="k">if</span> err != <span class="k">nil</span> {
         <span class="k">switch</span> {
         <span class="k">case</span> errors.<span class="t">Is</span>(err, service.ErrWeakPassword):
-            resp.<span class="t">Fail</span>(c, <span class="n">400</span>, <span class="n">1004</span>, err.<span class="t">Error</span>())
+            response.<span class="t">Fail</span>(c, http.StatusBadRequest, response.CodeInvalidParam, err.<span class="t">Error</span>())
         <span class="k">case</span> errors.<span class="t">Is</span>(err, service.ErrUsernameTaken):
-            resp.<span class="t">Fail</span>(c, <span class="n">409</span>, <span class="n">1006</span>, <span class="s">"用户名已存在"</span>)
+            response.<span class="t">Fail</span>(c, http.StatusConflict, response.CodeUsernameTaken, <span class="s">"用户名已存在"</span>)
+        <span class="k">case</span> errors.<span class="t">Is</span>(err, service.ErrEmailTaken):
+            response.<span class="t">Fail</span>(c, http.StatusConflict, response.CodeUsernameTaken, err.<span class="t">Error</span>())
         <span class="k">default</span>:
-            resp.<span class="t">Fail</span>(c, <span class="n">500</span>, <span class="n">5000</span>, <span class="s">"服务器开小差了"</span>)
+            response.<span class="t">Fail</span>(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务器开小差了"</span>)
         }
         <span class="k">return</span>
     }
-    resp.<span class="t">OK</span>(c, <span class="n">201</span>, gin.<span class="t">H</span>{<span class="s">"username"</span>: req.Username})
+    response.<span class="t">Created</span>(c, gin.<span class="t">H</span>{<span class="s">"user"</span>: u}) <span class="c">// 201；data.user 里没有 password（json:"-"）</span>
 }</pre>
-    <p>路由注册（登录复用同样的 <code>ShouldBindJSON</code> 套路，成功今天先返回 <code>{"user_id":1}</code>，明天换成 token）：</p>
-    <pre><span class="code-label">cmd/server/main.go</span>    r := gin.<span class="t">Default</span>()
-    auth := r.<span class="t">Group</span>(<span class="s">"/auth"</span>)
-    {
-        auth.<span class="t">POST</span>(<span class="s">"/register"</span>, authHandler.Register)
-        auth.<span class="t">POST</span>(<span class="s">"/login"</span>, authHandler.Login)
-    }</pre>
+    <div class="callout note"><p><b>为什么 <code>binding:"required"</code> 之外还要在 service 里再校验一次密码强度？</b>binding 管「字段在不在、格式粗不粗」（这里 <code>max=64</code> 就是粗筛），业务规则（长度 + 字母 + 数字的组合）写在 service。这样第 5 天直接调 <code>svc.Register(...)</code> 的单元测试不用起 HTTP 也能覆盖强度分支。<b>选填字段的正确写法是 <code>omitempty</code></b>：只写 <code>binding:"email"</code> 的话，不传邮箱的请求会被判成格式错；加 <code>omitempty,</code> 才是「没填就跳过这条规则」。邮箱撞车与用户名撞车是<b>两个不同的唯一索引</b>，所以分开报：同一个 409 里 <code>ErrUsernameTaken</code> 给「用户名已存在」、<code>ErrEmailTaken</code> 给「该邮箱已被注册」——全站码表没有「邮箱重复」这一项，就复用 1006 这个「唯一冲突」码、只把 message 换成邮箱口径，前端按 message 展示即可（第 6 周 <code>http.js</code> 只判 <code>code !== 0</code>，不受影响）。</p></div>
+    <pre><span class="code-label">internal/handler/auth.go（接上，Login）</span><span class="k">func</span> (h *<span class="t">AuthHandler</span>) <span class="t">Login</span>(c *gin.<span class="t">Context</span>) {
+    <span class="k">var</span> req <span class="k">struct</span> {
+        Username <span class="t">string</span> <span class="s">`json:"username" binding:"required"`</span>
+        Password <span class="t">string</span> <span class="s">`json:"password" binding:"required"`</span>
+    }
+    <span class="k">if</span> err := c.<span class="t">ShouldBindJSON</span>(&amp;req); err != <span class="k">nil</span> {
+        response.<span class="t">Fail</span>(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"参数错误"</span>)
+        <span class="k">return</span>
+    }
+    userID, err := h.svc.<span class="t">Login</span>(req.Username, req.Password)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">if</span> errors.<span class="t">Is</span>(err, service.ErrBadCredential) {
+            response.<span class="t">Fail</span>(c, http.StatusUnauthorized, response.CodeBadPassword, <span class="s">"用户名或密码错误"</span>)
+            <span class="k">return</span>
+        }
+        response.<span class="t">Fail</span>(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务器开小差了"</span>)
+        <span class="k">return</span>
+    }
+    <span class="c">// 今天只回 user_id；明天在这里换成 access_token + refresh_token</span>
+    response.<span class="t">OK</span>(c, gin.<span class="t">H</span>{<span class="s">"user_id"</span>: userID})
+}</pre>
 
-    <h3>6. 延伸两个必答小题</h3>
-    <p><b>① 为什么 bcrypt 密码上限是 72 字节？</b>算法内部把口令按 72 字节分块进 Expensive Key Setup，超出的部分<b>被静默丢弃</b>——意味着「前 72 字节相同、后段不同」的两个密码会被判为同一个。实践：注册校验限制最大长度（如 64），超长直接拒绝而不是截断。</p>
+    <h3>8. 路由注册：挂到 /api/v1 下</h3>
+    <pre><span class="code-label">cmd/server/main.go（新增这一段，其余保持第 3 周原样）</span>    <span class="c">// 装配：仓储 -&gt; service -&gt; handler（两把密钥今天先用字面量，第 3 天收进 .env）</span>
+    userRepo := repository.<span class="t">NewGormUserRepo</span>(db)              <span class="c">// 第 3 周就有，今天只给它补了 ByUsername。构造函数本周统一叫 NewGorm*Repo；如果你留的是第 3 周 D2 的 NewUserRepo/NewArticleRepo，照你仓库里的名字改这一行即可，本周不再改名</span>
+    authSvc  := service.<span class="t">NewAuthService</span>(userRepo, <span class="s">"dev-access-secret-change-me-32"</span>, <span class="s">"dev-refresh-secret-change-me-32"</span>)
+    authH    := handler.<span class="t">NewAuthHandler</span>(authSvc, <span class="s">"dev-access-secret-change-me-32"</span>, <span class="s">"dev-refresh-secret-change-me-32"</span>)
+
+    v1 := r.<span class="t">Group</span>(<span class="s">"/api/v1"</span>)                              <span class="c">// 全站前缀（第 3 周的 articles/users 已挂这里）</span>
+    {
+        auth := v1.<span class="t">Group</span>(<span class="s">"/auth"</span>)                          <span class="c">// 公开组：今天只有 register / login</span>
+        auth.<span class="t">POST</span>(<span class="s">"/register"</span>, authH.Register)
+        auth.<span class="t">POST</span>(<span class="s">"/login"</span>, authH.Login)
+    }
+    <span class="c">// GET /users/me 的路由注册在第 9 节末尾（要等明天的 Auth 中间件才有意义）</span></pre>
+    <div class="callout js"><p><b>那对大括号 <code>{ }</code> 不是语法需要</b>——gin 的 <code>Group</code> 返回新对象，包一层裸块只是让「这一组路由属于哪个组」在视觉上收拢，社区常见写法。JS 里没有对应习惯，第一次见别当成必须的语法。</p></div>
+
+    <h3>9. 顺路把「我是谁」写好：GET /api/v1/users/me</h3>
+    <p>第 6 周前端的个人页、第 4 天的权限判断都要吃这个接口，今天先把 service 与 handler 写好；<b>路由注册要等明天的 Auth 中间件</b>，所以下面给了一个「今天就能验证」的临时挂法。</p>
+    <pre><span class="code-label">internal/service/auth.go（再接一段）</span><span class="c">// Me：拿 token 里解出来的 userID 去查当前用户（Get 是第 3 周的老方法，不用新写）</span>
+<span class="k">func</span> (s *<span class="t">AuthService</span>) <span class="t">Me</span>(userID <span class="t">uint</span>) (*model.<span class="t">User</span>, <span class="t">error</span>) {
+    <span class="k">if</span> userID == <span class="n">0</span> {
+        <span class="k">return</span> <span class="k">nil</span>, ErrBadCredential <span class="c">// 没有身份，交给 handler 统一走 401</span>
+    }
+    u, err := s.users.<span class="t">Get</span>(userID)     <span class="c">// Get 返值，所以这里要落到局部变量再取地址</span>
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, err           <span class="c">// ErrUserNotFound 原样上抛，handler 翻成 404 + 1001</span>
+    }
+    <span class="k">return</span> &amp;u, <span class="k">nil</span>
+}</pre>
+    <pre><span class="code-label">internal/handler/auth.go（再接一段）</span><span class="k">func</span> (h *<span class="t">AuthHandler</span>) <span class="t">Me</span>(c *gin.<span class="t">Context</span>) {
+    userID := c.<span class="t">GetUint</span>(<span class="s">"userID"</span>)   <span class="c">// ← 明天 Auth 中间件里 c.Set("userID", claims.UserID) 之后才有值</span>
+    <span class="k">if</span> userID == <span class="n">0</span> {                <span class="c">// 没挂中间件 / 没登录：GetUint 返回零值 0，而不是 panic</span>
+        response.<span class="t">Fail</span>(c, http.StatusUnauthorized, response.CodeTokenInvalid, <span class="s">"未登录"</span>)
+        <span class="k">return</span>
+    }
+    u, err := h.svc.<span class="t">Me</span>(userID)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">if</span> errors.<span class="t">Is</span>(err, repository.ErrUserNotFound) {
+            response.<span class="t">Fail</span>(c, http.StatusNotFound, response.CodeUserNotFound, <span class="s">"用户不存在"</span>)
+            <span class="k">return</span>
+        }
+        response.<span class="t">Fail</span>(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务器开小差了"</span>)
+        <span class="k">return</span>
+    }
+    response.<span class="t">OK</span>(c, gin.<span class="t">H</span>{<span class="s">"user"</span>: u})  <span class="c">// 第 6 周前端 fetchMe() 就吃 data.user</span>
+}</pre>
+    <div class="callout warn"><p><b>context 键名全站统一</b>：<code>c.Set("userID", uint)</code> + <code>c.GetUint("userID")</code>。不要写 <code>"uid"</code> 裸键，也不要用 <code>GetInt64</code>——ID 类型是 <code>uint</code>，键名大小写差一个字母（<code>"userId"</code>）在 Go 里是另一个键，取出来静默变 0，排查起来非常费眼。用常量固定键名的做法明天给出。</p></div>
+    <pre><span class="code-label">cmd/server/main.go（今天的临时挂法）</span>    v1.<span class="t">GET</span>(<span class="s">"/users/me"</span>, authH.Me)   <span class="c">// 临时挂公开组，只为验证代码能跑；明天挪进保护组</span></pre>
+    <pre><span class="code-label">shell</span>$ curl -s localhost:8080/api/v1/users/me
+{<span class="s">"code"</span>:1005,<span class="s">"message"</span>:<span class="s">"未登录"</span>,<span class="s">"data"</span>:<span class="k">null</span>}     <span class="c"># HTTP/1.1 401 —— 今天它只能到这里</span>
+
+$ <span class="c"># 明天挂上 middleware.Auth 后，同一个请求带 Bearer token：</span>
+$ curl -s localhost:8080/api/v1/users/me -H <span class="s">"Authorization: Bearer &lt;access_token&gt;"</span>
+{<span class="s">"code"</span>:0,<span class="s">"message"</span>:<span class="s">"ok"</span>,<span class="s">"data"</span>:
+  {<span class="s">"user"</span>:{<span class="s">"ID"</span>:<span class="n">1</span>,<span class="s">"CreatedAt"</span>:<span class="s">"2026-09-28T10:11:02+08:00"</span>,<span class="s">"UpdatedAt"</span>:<span class="s">"2026-09-28T10:11:02+08:00"</span>,<span class="s">"DeletedAt"</span>:<span class="k">null</span>,
+    <span class="s">"username"</span>:<span class="s">"alice"</span>,<span class="s">"nickname"</span>:<span class="s">"爱丽丝"</span>,<span class="s">"email"</span>:<span class="s">"alice@example.com"</span>}}}
+<span class="c"># 没有 password 键——json:"-" 生效。前三个大写键是内嵌 gorm.Model 带的（它没打 json 标签，第 3 周 D1 那条注），第 6 周再用 DTO 统一成 id/created_at</span></pre>
+
+    <h3>10. 延伸两个必答小题</h3>
+    <p><b>① 为什么 bcrypt 密码上限是 72 字节？</b>算法内部把口令按 72 字节分块进 Expensive Key Setup，超出的部分<b>被静默丢弃</b>——意味着「前 72 字节相同、后段不同」的两个密码会被判为同一个。实践：注册校验限制最大长度（如 64），超长直接拒绝而不是截断——第 7 节 DTO 里那句 <code>binding:"required,max=64"</code> 就是它，超长请求会拿到 <code>400 + {"code":1004,"message":"参数错误"}</code>。</p>
     <p><b>② 为什么今天登录成功还只回 user_id、不发 token？</b>凭证方案是明天的主角。今天把「密码对不对」这一步做扎实，明天只需在 Login 成功后追加两行签发调用——分层推进，每天只炸一个新变量。</p>
     <div class="callout tip"><p>顺手成本对比一下：bcrypt cost=10 单次哈希约 60–100ms。注册/登录是低频操作，用户无感；但如果你有「每秒几百次校验密码」的内部接口，就要换 argon2 或降低 cost 并重新评估威胁模型——慢是武器，也是负载，知道自己在权衡什么。</p></div>
   </section>
@@ -204,35 +419,61 @@
   <section>
     <h2>今日练习</h2>
     <div class="task">
-      <div class="task-title">练习 1：完成 /auth/register 与 /auth/login（60 分钟，主线）</div>
-      <p>在第 3 周的 MySQL 版博客项目上：给 <code>users</code> 表的 username 补唯一索引并 AutoMigrate，实现上面两个接口。</p>
+      <div class="task-title">练习 1：完成 /api/v1/auth/register 与 /api/v1/auth/login（60 分钟，主线）</div>
+      <p>在第 3 周的 goblog（MySQL 版博客）项目上：给 <code>users</code> 表的 username 补唯一索引并 AutoMigrate，按讲义第 3、5、6、7、8 节把 <code>UserRepository.ByUsername</code>、<code>AuthService</code>、<code>AuthHandler</code> 与两条路由补齐。</p>
       <details><summary>参考答案（要点）</summary>
-        <p>模型 <code>Username string `gorm:"uniqueIndex;size:32"`</code>，密码 <code>`gorm:"size:72" json:"-"`</code>；service 层 bcrypt 哈希 + 强度校验 + <code>strings.Contains(err.Error(), "1062")</code> 翻译业务码；handler 用 <code>errors.Is</code> 分发 400/409/500。登录两条失败路径都返回 <code>401 + {"code":1002,"message":"用户名或密码错误"}</code>。</p>
+        <p>模型 <code>Username string `gorm:"type:varchar(32);uniqueIndex;not null" json:"username"`</code>，密码 <code>`gorm:"type:varchar(72);not null" json:"-"`</code>（tag 两侧是反引号）；<code>NewAuthService(users repository.UserRepository, accessSecret, refreshSecret string)</code>，service 里不出现 <code>*gorm.DB</code>；注册用 bcrypt 哈希 + 强度校验 + <code>isDuplicateOn(err, "username")</code>／<code>isDuplicateOn(err, "email")</code> 把唯一冲突翻译成 <code>ErrUsernameTaken</code>／<code>ErrEmailTaken</code>；DTO 四个字段（<code>username</code>、<code>password</code> 必填，<code>email</code>、<code>nickname</code> 用 <code>omitempty</code> 选填），handler 用 <code>errors.Is</code> 分发 400/409/409/500，成功走 <code>response.Created(c, gin.H{"user": u})</code>。登录两条失败路径都返回 <code>401 + {"code":1002,"message":"用户名或密码错误"}</code>，<code>Login</code> 的返回值类型是 <code>(uint, error)</code>。</p>
+        <p style="margin-top:6px">自查三行：<code>go build ./...</code> 无输出；<code>go vet ./...</code> 无输出；<code>SHOW INDEX FROM users;</code> 里能看到 <code>username</code> 的 UNIQUE 索引。</p>
       </details>
     </div>
     <div class="task">
       <div class="task-title">练习 2：肉眼验证「同密码不同哈希」（15 分钟）</div>
       <p>写个小 main：对同一字符串调两次 <code>GenerateFromPassword</code>，打印结果。</p>
       <details><summary>参考答案</summary>
-        <p>两个哈希串完全不同——因为每次自动生成了不同的随机盐。但 <code>ComparePassword</code> 对两者输入同一明文都返回 <code>nil</code>，因为盐就编码在哈希串内部（<code>$2a$10$盐22字符+哈希31字符</code>），比对时从串里取出盐重算。</p>
+        <p>两个哈希串完全不同——因为每次自动生成了不同的随机盐。但 <code>CompareHashAndPassword</code> 对两者输入同一明文都返回 <code>nil</code>，因为盐就编码在哈希串内部（<code>$2a$10$盐22字符+哈希31字符</code>），比对时从串里取出盐重算。</p>
       </details>
     </div>
     <div class="task">
       <div class="task-title">练习 3：curl 验收注册登录（20 分钟）</div>
-      <p>注册成功 201、重复注册 409+1006、弱密码 <code>123</code> 得 400+1004、登录成功 200、错密码 401+1002 且提示与「用户不存在」一字不差。</p>
+      <p>注册成功 201、重复注册 409+1006、<b>换一个新用户名但邮箱和 alice 相同</b>也是 409+1006（message 换成「该邮箱已被注册」）、弱密码 <code>123</code> 得 400+1004、登录成功 200、错密码 401+1002 且提示与「用户不存在」一字不差；最后按第 9 节的临时挂法确认 <code>/users/me</code> 今天返回 401+1005。</p>
       <details><summary>参考答案</summary>
-        <pre><span class="code-label">shell</span>$ curl -s -X POST localhost:8080/auth/register -H <span class="s">"Content-Type: application/json"</span> \
-  -d <span class="s">'{"username":"alice","password":"goodpass123"}'</span>
-{<span class="s">"code"</span>:0,<span class="s">"message"</span>:<span class="s">"success"</span>,<span class="s">"data"</span>:{<span class="s">"username"</span>:<span class="s">"alice"</span>}}
+        <pre><span class="code-label">shell</span>$ curl -si -X POST localhost:8080/api/v1/auth/register -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"alice","password":"goodpass123","email":"alice@example.com","nickname":"爱丽丝"}'</span>
+HTTP/1.1 201 Created
+Content-Type: application/json; charset=utf-8
+Date: Mon, 28 Sep 2026 10:11:02 GMT
+Content-Length: 166
 
-$ curl -s -X POST localhost:8080/auth/login -H <span class="s">"Content-Type: application/json"</span> \
+{<span class="s">"code"</span>:0,<span class="s">"message"</span>:<span class="s">"ok"</span>,<span class="s">"data"</span>:{<span class="s">"user"</span>:{<span class="s">"ID"</span>:<span class="n">1</span>,<span class="s">"CreatedAt"</span>:<span class="s">"2026-09-28T10:11:02+08:00"</span>,<span class="s">"UpdatedAt"</span>:<span class="s">"2026-09-28T10:11:02+08:00"</span>,<span class="s">"DeletedAt"</span>:<span class="k">null</span>,<span class="s">"username"</span>:<span class="s">"alice"</span>,<span class="s">"nickname"</span>:<span class="s">"爱丽丝"</span>,<span class="s">"email"</span>:<span class="s">"alice@example.com"</span>}}}
+<span class="c"># 没有 password 键——json:"-" 生效；ID / CreatedAt / UpdatedAt / DeletedAt 四个大写键是 gorm.Model 内嵌带出来的（它没打 json 标签）</span>
+
+$ curl -s -X POST localhost:8080/api/v1/auth/register -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"alice","password":"goodpass123"}'</span>     <span class="c"># 同名再来一次</span>
+{<span class="s">"code"</span>:1006,<span class="s">"message"</span>:<span class="s">"用户名已存在"</span>,<span class="s">"data"</span>:<span class="k">null</span>}                 <span class="c"># 409</span>
+
+$ curl -s -X POST localhost:8080/api/v1/auth/register -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"carol","password":"goodpass789","email":"alice@example.com"}'</span>   <span class="c"># 用户名是新的，邮箱撞了</span>
+{<span class="s">"code"</span>:1006,<span class="s">"message"</span>:<span class="s">"该邮箱已被注册"</span>,<span class="s">"data"</span>:<span class="k">null</span>}              <span class="c"># 409，同一个码另一种话术</span>
+
+$ curl -s -X POST localhost:8080/api/v1/auth/register -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"bob","password":"123"}'</span>
+{<span class="s">"code"</span>:1004,<span class="s">"message"</span>:<span class="s">"密码至少 8 位，且包含字母和数字"</span>,<span class="s">"data"</span>:<span class="k">null</span>} <span class="c"># 400</span>
+
+$ curl -s -X POST localhost:8080/api/v1/auth/login -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"alice","password":"goodpass123"}'</span>
+{<span class="s">"code"</span>:0,<span class="s">"message"</span>:<span class="s">"ok"</span>,<span class="s">"data"</span>:{<span class="s">"user_id"</span>:<span class="n">1</span>}}   <span class="c"># 明天这里换成双 token</span>
+
+$ curl -s -X POST localhost:8080/api/v1/auth/login -H <span class="s">"Content-Type: application/json"</span> \
   -d <span class="s">'{"username":"alice","password":"bad"}'</span>
-{<span class="s">"code"</span>:1002,<span class="s">"message"</span>:<span class="s">"用户名或密码错误"</span>,<span class="s">"data"</span>:<span class="k">null</span>} <span class="c"># HTTP/1.1 401</span></pre>
+{<span class="s">"code"</span>:1002,<span class="s">"message"</span>:<span class="s">"用户名或密码错误"</span>,<span class="s">"data"</span>:<span class="k">null</span>} <span class="c"># HTTP/1.1 401</span>
+$ curl -s -X POST localhost:8080/api/v1/auth/login -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"nobody","password":"bad"}'</span>
+{<span class="s">"code"</span>:1002,<span class="s">"message"</span>:<span class="s">"用户名或密码错误"</span>,<span class="s">"data"</span>:<span class="k">null</span>} <span class="c"># 与上一行一字不差 → 防枚举到位</span></pre>
       </details>
     </div>
     <div class="task">
       <div class="task-title">练习 4：Git 提交 + README 补一节（15 分钟）</div>
-      <p>提交信息 <code>feat: bcrypt password + register/login API</code>；README 记录统一响应约定里新增的业务码 1002/1006。</p>
+      <p>提交信息 <code>feat(auth): bcrypt password + register/login API on /api/v1</code>；README 的统一响应约定表里补上今天新增的三个码：<b>1006</b>（用户名已存在 / 409）、<b>2001</b>（文章不存在 / 404）、<b>5000</b>（服务器内部错误 / 500），并注明「登录入参是 username + password，不是 email」。</p>
     </div>
   </section>
 
@@ -240,11 +481,14 @@ $ curl -s -X POST localhost:8080/auth/login -H <span class="s">"Content-Type: ap
     <h2>常见坑（新手 100% 会踩）</h2>
     <table>
       <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
-      <tr><td>ComparePassword 参数写反</td><td>密码明明正确却返回 error，甚至 panic 日志里出现 <code>illegal hash format</code></td><td>顺序是 <code>(hashedPassword, password)</code>——库里存的在前，用户输入的在后</td></tr>
-      <tr><td>把哈希结果当 bool 用</td><td><code>if bcrypt.ComparePassword(...)</code> 编译不过或逻辑反</td><td>它返回 error：<code>err == nil</code> 才是密码正确</td></tr>
-      <tr><td>password 列只给 varchar(20)</td><td>插入 <code>$2a$10$...</code> 60 字符哈希时被截断，之后永远比对失败</td><td>列长度 ≥ 60（推荐 72），bcrypt 输入上限也恰好是 72 字节</td></tr>
+      <tr><td>struct tag 忘了反引号</td><td><code>syntax error: unexpected name gorm in struct type</code>，一行报错连带整包编译失败</td><td>tag 是<b>反引号包起来的原始字符串</b>：<code>`gorm:"..." json:"..."`</code>；从讲义复制时别被编辑器把反引号替换成中文引号</td></tr>
+      <tr><td>CompareHashAndPassword 参数写反</td><td>密码明明正确却返回 error，甚至 panic 日志里出现 <code>illegal hash format</code></td><td>顺序是 <code>(hashedPassword, password)</code>——库里存的在前，用户输入的在后</td></tr>
+      <tr><td>把哈希结果当 bool 用</td><td><code>if bcrypt.CompareHashAndPassword(...)</code> 编译不过或逻辑反</td><td>它返回 error：<code>err == nil</code> 才是密码正确</td></tr>
+      <tr><td>password 列只给 varchar(20)</td><td>插入 <code>$2a$10$...</code> 60 字符哈希时被截断，之后永远比对失败</td><td>列长度 ≥ 60（本项目给 72），bcrypt 输入上限也恰好是 72 字节</td></tr>
+      <tr><td>Login 返回 int64、ID 是 uint</td><td>明天签发 token 时 <code>jwtutil.NewAccessToken(secret, user.ID)</code> 报 <code>cannot use user.ID (variable of type uint) as int64 value</code></td><td>全站 ID 统一 <code>uint</code>：<code>Login(username, password string) (uint, error)</code></td></tr>
       <tr><td>json 序列化带出密码字段</td><td>接口返回里出现 <code>"password":"$2a$10$..."</code></td><td>模型 tag 写 <code>json:"-"</code>，或单独定义不含密码的 UserOut DTO</td></tr>
       <tr><td>登录失败提示区分太细</td><td>「该用户不存在」+「密码错误」两种话术</td><td>统一「用户名或密码错误」，防枚举</td></tr>
+      <tr><td>给 service 直接传 <code>*gorm.DB</code></td><td>编译能过、当天能跑，但第 5 天写测试时无法替换成假仓储，分层前功尽弃</td><td><code>NewAuthService(users repository.UserRepository, accessSecret, refreshSecret string)</code>——只收接口</td></tr>
     </table>
   </section>
 
@@ -258,6 +502,8 @@ $ curl -s -X POST localhost:8080/auth/login -H <span class="s">"Content-Type: ap
       <tr><td>撞库</td><td>拿 A 站泄露的账号密码去 B 站批量尝试，密码复用的最大风险</td></tr>
       <tr><td>cost</td><td>bcrypt 的工作因子，实际轮数为 2^cost，越大越慢越安全</td></tr>
       <tr><td>用户名枚举</td><td>攻击者通过差异化报错探测某账号是否注册过，统一提示即可缓解</td></tr>
+      <tr><td>哨兵错误（sentinel error）</td><td>service 包里 <code>var ErrXxx = errors.New(...)</code> 导出的固定错误值，handler 用 <code>errors.Is</code> 认它</td></tr>
+      <tr><td>值语义仓储</td><td>第 3 周的 <code>Get/Create</code> 收的是值、返的也是值：「没这个人」由 <code>ErrUserNotFound</code> 表达，<code>nil</code> 不属于仓储层；<code>*model.User</code> 只出现在 service 层的返回值里，为的是失败时能同时交出 <code>nil</code> + error，handler 只判 <code>err != nil</code> 就够</td></tr>
     </table>
   </section>
 
@@ -265,10 +511,10 @@ $ curl -s -X POST localhost:8080/auth/login -H <span class="s">"Content-Type: ap
     <h2>完成检查（全部勾掉才算毕业）</h2>
     <ul class="check">
       <li><label><input type="checkbox" data-key="w4d1c1">能口述「明文/md5/加盐 md5/bcrypt」四级对比及各自死法</label></li>
-      <li><label><input type="checkbox" data-key="w4d1c2"><code>/auth/register</code> 弱密码 400+1004、重复用户名 409+1006、成功 201</label></li>
-      <li><label><input type="checkbox" data-key="w4d1c3"><code>/auth/login</code> 成功 200，两种失败都是 401+1002 且提示完全一致</label></li>
-      <li><label><input type="checkbox" data-key="w4d1c4">数据库里 SELECT 出来密码是 <code>$2a$10$</code> 开头，接口返回里看不到 password 字段</label></li>
-      <li><label><input type="checkbox" data-key="w4d1c5">练习 2 的同密码双哈希已亲眼验证，并能在 Git 里看到今天的提交</label></li>
+      <li><label><input type="checkbox" data-key="w4d1c2"><code>/api/v1/auth/register</code> 弱密码 400+1004、重复用户名 409+1006、成功 201 且 <code>data.user</code> 里带 id</label></li>
+      <li><label><input type="checkbox" data-key="w4d1c3"><code>/api/v1/auth/login</code> 成功 200，两种失败都是 401+1002 且提示完全一致；service 的 <code>Login</code> 签名是 <code>(uint, error)</code></label></li>
+      <li><label><input type="checkbox" data-key="w4d1c4">数据库里 SELECT 出来密码是 <code>$2a$10$</code> 开头，接口返回里看不到 password 字段；User 模型四处 struct tag 都是反引号包裹</label></li>
+      <li><label><input type="checkbox" data-key="w4d1c5">练习 2 的同密码双哈希已亲眼验证；<code>/api/v1/users/me</code> 临时挂公开组时返回 401+1005；今天的提交已在 Git 里</label></li>
     </ul>
   </section>
 

@@ -31,14 +31,15 @@
       <li><label><input type="checkbox" data-key="w7d1g1">能解释"把源码和 node_modules 全拷进镜像"错在哪，说清多阶段构建的核心思想</label></li>
       <li><label><input type="checkbox" data-key="w7d1g2">能逐行讲出 10 行 Go 多阶段 Dockerfile：为什么 <code>COPY go.mod</code> 要放最前面、<code>CGO_ENABLED=0</code> 和 <code>-ldflags="-s -w"</code> 各管什么</label></li>
       <li><label><input type="checkbox" data-key="w7d1g3">知道 alpine 运行阶段为什么必须装 <code>ca-certificates</code> 和 <code>tzdata</code>，缺了各出什么事故</label></li>
-      <li><label><input type="checkbox" data-key="w7d1g4">把第 6 周后端容器化，<code>docker images</code> 显示最终镜像 ≤ 60MB，<code>curl /health</code> 返回 200</label></li>
+      <li><label><input type="checkbox" data-key="w7d1g4">把后端服务（第 3–4 周写的 goblog API）容器化，<code>docker images</code> 显示最终镜像 ≤ 60MB，并且用 <code>docker logs</code> + <code>curl /health</code> 两步亲眼确认它活着</label></li>
     </ul>
     <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
   </section>
 
   <section>
     <h2>课前须知</h2>
-    <div class="callout note"><p>本篇假设你的仓库结构和第 4/6 周一致：<code>backend/</code> 目录含 <code>go.mod</code>、<code>go.sum</code>、<code>cmd/server/main.go</code>，服务监听 <code>8080</code> 端口，并提供一个<b>不查数据库</b>的 <code>GET /health</code>（第 4 周写的）。今天所有命令都在 <code>backend/</code> 目录下执行。</p></div>
+    <div class="callout note"><p><b>本周起点（承接 W6D5）：</b>仓库归置在第 6 周 Day 5 已经做完，现在是 monorepo：<code>goblog/</code> 下 <code>backend/</code>（第 3–4 周的 Go 服务：gin + gorm，含 <code>go.mod</code>/<code>go.sum</code>/<code>cmd/server/main.go</code>/<code>internal/</code>，监听 <code>8080</code>，业务路由挂 <code>/api/v1</code>，另有一个<b>不查数据库</b>的 <code>GET /health</code>）和 <code>frontend/</code>（第 6 周的 React + Vite 项目，<code>VITE_API_BASE=/api/v1</code>）。<b>本周不需要再挪一次目录</b>。今天所有命令都在 <code>backend/</code> 里执行，明天换 <code>frontend/</code>，后天起回仓库根 <code>goblog/</code>。</p></div>
+    <div class="callout warn"><p>还有一件事今天就要用上：第 4 周写的 <code>internal/config</code> 是 <b>fail-fast</b> 的——<code>JWT_SECRET</code>、<code>DB_PASS</code> 这类必填项缺失，进程直接 <code>log.Fatal</code> 退出。所以今天不能只 <code>docker run 镜像</code> 就完事，必须把环境变量注进容器，否则容器<b>秒退</b>（第 5 节给了带 <code>--env-file</code> 的完整命令和 <code>docker logs</code> 验证输出）。镜像里<b>故意不带</b> <code>.env</code>——它被 <code>.dockerignore</code> 挡在门外，密钥进镜像等于进公网。</p></div>
     <div class="callout js"><p><b>给前端同学的一句话类比：</b>你从来不会把 <code>node_modules</code> 和 TS 源码部署到 CDN，只上传 <code>dist</code> 产物。Docker 多阶段构建就是这个思路的容器版——第一阶段是"厨房"（装满编译工具），第二阶段是"餐桌"（只端上最终那道菜：一个二进制文件）。</p></div>
   </section>
 
@@ -49,9 +50,9 @@
     <p>最"省事"的 Dockerfile 长这样，它能跑，但错得离谱：</p>
     <pre><span class="code-label">Dockerfile（反面教材）</span><span class="k">FROM</span> golang:<span class="n">1.24</span>            <span class="c"># 完整 Debian 环境 + Go 工具链，基座就 850MB</span>
 <span class="k">WORKDIR</span> /app
-<span class="k">COPY</span> . .                <span class="c"># 整个仓库进镜像：源码、.git、连 frontend/node_modules 都拷</span>
+<span class="k">COPY</span> . .                <span class="c"># 整个构建上下文进镜像：源码、.git、本地编译出的 server、连 backend/.env 都拷</span>
 <span class="k">ENTRYPOINT</span> [<span class="s">"go"</span>, <span class="s">"run"</span>, <span class="s">"./cmd/server"</span>] <span class="c"># 每次启动都现场编译，冷启动几十秒</span></pre>
-    <p>构建完执行 <code>docker images</code>，你会看到 <b>1.2GB+</b>：node_modules 动辄四五百 MB，全被塞了进去；而运行这个容器真正需要的东西只有一个 15MB 的二进制。对比各种基座镜像的裸体积：</p>
+    <p>构建完执行 <code>docker images</code>，你会看到 <b>1.2GB+</b>：如果偷懒在项目根跑 <code>docker build -f backend/Dockerfile .</code>，上下文就是整个 monorepo，<code>frontend/node_modules</code>（动辄四五百 MB）全被塞了进去；而运行这个容器真正需要的东西只有一个 15MB 左右的二进制。对比各种基座镜像的裸体积：</p>
     <table>
       <tr><th>镜像</th><th>裸体积（约）</th><th>里面有什么</th><th>适合当</th></tr>
       <tr><td><code>golang:1.24</code></td><td>850 MB</td><td>Debian + 完整 Go 工具链 + gcc</td><td>builder 阶段</td></tr>
@@ -118,12 +119,12 @@
     <p><code>COPY . .</code> 拷的是"构建上下文"——Docker 会先把整个目录打包发给守护进程，再按 .dockerignore 过滤。不过滤的代价：每次构建白传几百 MB、.git 历史进缓存、<b>.env 密钥进镜像层（镜像是会 push 到公网仓库的！）</b>。保存为 <code>backend/.dockerignore</code>：</p>
     <pre><span class="code-label">backend/.dockerignore</span>.git
 .gitignore
-<span class="c"># 前端目录整体与依赖：后端镜像不需要</span>
+<span class="c"># 构建上下文是 backend/，本不该有这些东西；写上是为了防"在项目根跑 build -f backend/Dockerfile ." 时手滑</span>
 node_modules
 frontend/node_modules
 frontend/dist
 dist
-<span class="c"># 密钥绝不入镜像：运行时由 compose 的 environment/--env-file 注入</span>
+<span class="c"># 密钥绝不入镜像：运行时由 docker run --env-file 或 compose 的 environment 注入</span>
 .env
 .env.*
 <span class="c"># 杂项</span>
@@ -136,44 +137,122 @@ Dockerfile
 docker-compose*.yml</pre>
     <div class="callout js"><p>对比前端认知：.dockerignore ≈ .gitignore，但控制的是"哪些文件进入构建上下文"。两者建议都配上，内容高度重合。</p></div>
 
-    <h3>5. 构建、运行与体积观察</h3>
-    <pre><span class="code-label">shell（在 backend/ 目录）</span><span class="c"># 1) 构建最终镜像（默认执行到最后一个 FROM）</span>
+    <h3>5. 构建、运行与体积观察（每条命令都带输出，可以整块抄）</h3>
+    <p><b>先做一件第 4 周就埋好的事：给容器准备环境变量。</b>镜像里没有 <code>.env</code>（被 .dockerignore 挡住了），而后端启动时 <code>JWT_SECRET</code>、<code>DB_PASS</code> 缺失就 <code>log.Fatal</code> 退出——所以 <code>docker run</code> 必须显式注入。下面这段在项目目录 <code>backend/</code> 里从上往下连着执行：</p>
+    <pre><span class="code-label">shell（第 0 步：造一份容器用的环境变量文件）</span><span class="c"># 用 shell 变量现生成两个不同的 JWT 密钥，写进 .env.docker</span>
+$ JWT=$(openssl rand -base64 32)
+$ JWTREFRESH=$(openssl rand -base64 32)
+$ cat &gt; .env.docker &lt;&lt;EOF
+PORT=8080
+GIN_MODE=debug
+DB_HOST=host.docker.internal
+DB_PORT=3306
+DB_USER=goblog
+DB_PASS=goblog123
+DB_NAME=goblog
+JWT_SECRET=${JWT}
+JWT_REFRESH_SECRET=${JWTREFRESH}
+EOF
+$ cat .env.docker                     <span class="c"># 注意：这里 ${JWT} 已经被替换成一串随机字符了</span>
+PORT=8080
+GIN_MODE=debug
+DB_HOST=host.docker.internal
+DB_PORT=3306
+DB_USER=goblog
+DB_PASS=goblog123
+DB_NAME=goblog
+JWT_SECRET=TrM5x0pQlK9wZc3vB7nHa2yE6dR8sF4uJi0oPkLaNm=
+JWT_REFRESH_SECRET=9cHa7YtRe5QwErTyUiOpAsDfGhJkLzXcVbNmQweRtZy=
+
+<span class="c"># 确认本机有个从宿主机 3306 端口就能访问的 MySQL（第 3 周那个容器就叫 goblog-mysql）</span>
+$ docker start goblog-mysql
+$ docker ps --filter name=goblog-mysql --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+NAMES          STATUS                    PORTS
+goblog-mysql   Up 2 minutes (healthy)    0.0.0.0:3306-&gt;3306/tcp, 33060/tcp
+
+<span class="c"># 如果它早被你删了，就现起一个一次性的（账号密码与上面 .env.docker 对齐，明后天还要用）</span>
+$ docker run -d --name goblog-mysql -p <span class="n">3306</span>:<span class="n">3306</span> <span class="c">\</span>
+    -e MYSQL_ROOT_PASSWORD=goblogroot -e MYSQL_DATABASE=goblog <span class="c">\</span>
+    -e MYSQL_USER=goblog -e MYSQL_PASSWORD=goblog123 mysql:<span class="n">8.0</span> --default-time-zone=+<span class="n">08</span>:<span class="n">00</span>
+$ sleep <span class="n">25</span>
+$ docker logs goblog-mysql --tail <span class="n">1</span>
+<span class="n">2026</span>-<span class="n">09</span>-<span class="n">28</span>T<span class="n">20</span>:<span class="n">12</span>:<span class="n">31</span>.<span class="n">554427</span>Z <span class="n">0</span> [System] [MY-010931] [Server] /usr/sbin/mysqld: ready for connections. Version: <span class="s">'8.0.40'</span>  socket: <span class="s">'/var/run/mysqld/mysqld.sock'</span>  port: <span class="n">3306</span></pre>
+    <div class="callout note"><p>三个易错点先说清：① <code>DB_HOST=host.docker.internal</code> 是"容器眼中的宿主机"——Docker Desktop（macOS/Windows）天然支持，<b>Linux 上没有这个名字</b>，后面 <code>docker run</code> 要加 <code>--add-host=host.docker.internal:host-gateway</code>；② <code>cat &gt; … &lt;&lt;EOF</code>（EOF <b>不带引号</b>）时，<code>${JWT}</code> 由<b>当前这台机器的 shell</b> 在写入那一刻展开；写成 <code>&lt;&lt;'EOF'</code> 才会把字面量 <code>${JWT}</code> 存进文件——这个"变量在哪一层展开"的问题明天、后天还会各出现一次，遇到"值怎么是空的"先回来翻这里；③ <code>docker run --env-file</code> 读文件时<b>不剥引号、不做变量展开</b>，所以值后面直接写裸串，别加引号。另外 <code>.env.docker</code> 匹配 .dockerignore 里的 <code>.env.*</code>，仍然不会进镜像 ✔。</p></div>
+    <pre><span class="code-label">shell（第 1–4 步：构建 → 看体积 → 看层 → 跑起来验证）</span><span class="c"># 1) 构建最终镜像（默认执行到最后一个 FROM）</span>
 $ docker build -t goblog-api:<span class="n">0.1</span> .
 $ docker images goblog-api
-REPOSITORY   TAG    SIZE
-goblog-api   <span class="n">0.1</span>    <span class="n">28</span>.4MB      <span class="c"># ← 记下这个数字</span>
+REPOSITORY   TAG       SIZE
+goblog-api   <span class="n">0.1</span>       <span class="n">28</span>.4MB      <span class="c"># ← 记下这个数字</span>
 
 <span class="c"># 2) 单独看 builder 阶段有多大：--target 指定停在哪个阶段</span>
 $ docker build --target builder -t goblog-api:builder-tmp .
 $ docker images goblog-api:builder-tmp
-goblog-api   builder-tmp   <span class="n">310</span>MB      <span class="c"># 工具链 + 依赖缓存 + 源码，但它不会成为交付物</span>
+REPOSITORY   TAG            SIZE
+goblog-api   builder-tmp    <span class="n">310</span>MB     <span class="c"># 工具链 + 依赖缓存 + 源码，但它不会成为交付物</span>
 
-<span class="c"># 3) 逐层查看每层贡献了多少体积</span>
+<span class="c"># 3) 逐层查看每层贡献了多少体积（层大小相加 ≈ docker images 那个数字）</span>
 $ docker history goblog-api:<span class="n">0.1</span> | head -<span class="n">8</span>
+IMAGE          CREATED          CREATED BY                                       SIZE      COMMENT
+9f2c74ab1e01   <span class="n">2</span> minutes ago    ENTRYPOINT [<span class="s">"/server"</span>]                           0B        buildkit.dockerfile.v0
+&lt;missing&gt;      <span class="n">2</span> minutes ago    EXPOSE map[8080/tcp:{}]                          0B        buildkit.dockerfile.v0
+7c1f3e59a8b2   <span class="n">2</span> minutes ago    COPY /out/server /server # buildkit              <span class="n">15.2</span>MB    buildkit.dockerfile.v0
+d4a91c6f0b33   <span class="n">3</span> minutes ago    RUN /bin/sh -c apk add --no-cache ca-certifi…    <span class="n">5.9</span>MB     buildkit.dockerfile.v0
+b7e2f0a9c511   <span class="n">3</span> minutes ago    ENV TZ=Asia/Shanghai                             0B        buildkit.dockerfile.v0
+0a1b2c3d4e5f   <span class="n">4</span> weeks ago      /bin/sh -c #(nop)  CMD [<span class="s">"/bin/sh"</span>]               0B
+&lt;missing&gt;      <span class="n">4</span> weeks ago      ADD alpine-minirootfs-3.20.3-x86_64.tar.gz /…    <span class="n">7.8</span>MB     buildkit.dockerfile.v0
+<span class="c"># 读法：15.2MB 是我们的二进制，5.9MB 是 ca-certificates+tzdata，7.8MB 是 alpine 基座；</span>
+<span class="c"># 那个 310MB 的 builder 阶段在表里一行都没有——多阶段构建的收益全部写在这张表上。</span>
 
-<span class="c"># 4) 跑起来验证</span>
-$ docker run -d --name api-dev -p <span class="n">8080</span>:<span class="n">8080</span> goblog-api:<span class="n">0.1</span>
+<span class="c"># 4) 跑起来验证：--env-file 把第 0 步那份文件注入容器</span>
+$ docker run -d --name api-dev -p <span class="n">8080</span>:<span class="n">8080</span> --env-file .env.docker goblog-api:<span class="n">0.1</span>
+<span class="n">7f3a1c9d2b4e5c8a1f6d3b7e9c2a4f8d</span>0e1b3c5a7d9f2e4c6a8b0d1f3e5a7c9b   <span class="c"># 返回容器 ID 长串</span>
+$ docker ps --filter name=api-dev --format <span class="s">"table {{.Names}}\t{{.Status}}\t{{.Ports}}"</span>
+NAMES     STATUS         PORTS
+api-dev   Up <span class="n">4</span> seconds   <span class="n">0.0</span>.<span class="n">0</span>.<span class="n">0</span>:<span class="n">8080</span>-&gt;<span class="n">8080</span>/tcp
+$ docker logs api-dev
+[GIN-debug] [WARNING] Running in <span class="s">"debug"</span> mode. Switch to <span class="s">"release"</span> mode in production.
+[GIN-debug] GET    /health                  --&gt; main.main.func1 (<span class="n">3</span> handlers)
+[GIN-debug] POST   /api/v1/auth/login       --&gt; goblog/internal/handler.(*AuthHandler).Login-fm (<span class="n">4</span> handlers)
+[GIN-debug] Listening and serving HTTP on :<span class="n">8080</span>
 $ curl -i http://localhost:<span class="n">8080</span>/health
 HTTP/<span class="n">1.1</span> <span class="n">200</span> OK
-{"code":<span class="n">0</span>,<span class="s">"message"</span>:<span class="s">"ok"</span>}
-$ docker rm -f api-dev            <span class="c"># 清理，明天用 compose 统一管</span></pre>
-    <p>典型结果对比：<b>反面教材 1.2GB+ → 多阶段 alpine 约 28MB → scratch 约 15MB</b>，缩小了 40 倍以上。把这三个数字记进笔记，第 8 周 README 里"我为什么这样设计部署"的素材就是它。</p>
-    <div class="callout note"><p>如果你的 <code>/health</code> 处理函数里带了 <code>SELECT 1</code> 探库：今天容器里的后端连不到你宿主机的 MySQL（DSN 写 localhost 会指向容器自己，这是明天起的高频坑，今天先预习）。两个办法：把 DSN 主机临时改成 <code>host.docker.internal:3306</code>（macOS/Windows 的 Docker Desktop 天然可用；Linux 云服务器需在 docker run 加 <code>--add-host=host.docker.internal:host-gateway</code>）；或者确认 /health 是第 4 周那种不碰数据库的轻量版。</p></div>
+Content-Type: application/json; charset=utf-8
+Date: Mon, <span class="n">28</span> Sep <span class="n">2026</span> <span class="n">12</span>:<span class="n">41</span>:<span class="n">07</span> GMT
+Content-Length: <span class="n">51</span>
+
+{<span class="s">"code"</span>:<span class="n">0</span>,<span class="s">"message"</span>:<span class="s">"ok"</span>,<span class="s">"data"</span>:{<span class="s">"status"</span>:<span class="s">"ok"</span>}}
+
+<span class="c"># 5) 反例：不带 --env-file 会怎样（这就是今天最容易被略过的一步）</span>
+$ docker run -d --name api-noenv goblog-api:<span class="n">0.1</span>
+$ docker ps -a --filter name=api-noenv --format <span class="s">"table {{.Names}}\t{{.Status}}"</span>
+NAMES        STATUS
+api-noenv    Exited (<span class="n">1</span>) <span class="n">3</span> seconds ago          <span class="c"># 起了又秒退 = 进程自己报错退出，不是 Docker 坏了</span>
+$ docker logs api-noenv
+<span class="n">2026</span>/<span class="n">09</span>/<span class="n">28</span> <span class="n">20</span>:<span class="n">41</span>:<span class="n">33</span> 配置加载失败: 缺少环境变量 JWT_SECRET
+$ docker rm api-noenv
+$ docker rm -f api-dev                          <span class="c"># 验证完清掉，练习 2 会另起容器；明天起统一交给 compose 管</span></pre>
+    <p>典型结果对比：<b>反面教材 1.2GB+ → 多阶段 alpine 约 28MB → 只放二进制的 scratch 约 15MB</b>（把证书和时区库塞回去后约 20MB），缩小了 40 倍以上。把这几个数字记进笔记，第 8 周 README 里"我为什么这样设计部署"的素材就是它。</p>
+    <div class="callout note"><p>如果你的 <code>/health</code> 处理函数里带了 <code>SELECT 1</code> 探库：今天 <code>DB_HOST=host.docker.internal</code> 已经能让你宿主机上那个 3306 的 MySQL 被容器访问到，正常应该直接 200。真连不上就按顺序查三件事：<code>docker ps</code> 里 goblog-mysql 是不是 Up、<code>DB_PASS</code> 是不是和 MySQL 容器里那个 <code>goblog</code> 账号一致、你用的是不是 Docker Desktop（Linux 要加 <code>--add-host</code>）。<b>容器里写 <code>localhost</code>/<code>127.0.0.1</code> 指向的是容器自己</b>，那是明天 compose 网络要彻底解决的高频坑。</p></div>
 
     <h3>6. 体检：一个健康的 /health 长什么样</h3>
-    <p>整周的健康检查都靠它，确认你的后端有这样一个<b>不依赖数据库</b>的探针（第 4 周应已写过，没有就补上）：</p>
+    <p>整周的健康检查都靠它，确认你的后端有这样一个<b>不依赖数据库</b>的探针（第 4 周应已写过，没有就补上；注意它<b>不带 <code>/api/v1</code> 前缀</b>，全站统一）：</p>
     <pre><span class="code-label">backend/cmd/server/main.go（节选）</span>r := gin.Default()
 r.GET(<span class="s">"/health"</span>, <span class="k">func</span>(c *gin.Context) {
-    c.JSON(<span class="n">200</span>, gin.H{<span class="s">"code"</span>: <span class="n">0</span>, <span class="s">"message"</span>: <span class="s">"ok"</span>})
+    response.OK(c, gin.H{<span class="s">"status"</span>: <span class="s">"ok"</span>})   <span class="c">// W2 起的统一 Body：{code, message, data}</span>
 })
-<span class="c">// 依赖型检查（查 DB）另开 /readyz，探针与就绪分开是行业惯例</span></pre>
-    <p>探针不查库的原因：healthcheck 如果依赖 MySQL，那么"数据库挂了"会让<b>每个</b>容器的状态都变红，还容易在启动依赖链里造成死锁式的循环等待。</p>
+<span class="c">// 探针只证明"进程活着"。依赖型检查（查 DB）另开一个 /readyz，探针与就绪分开是行业惯例</span></pre>
+    <p>响应体就是第 5 节 <code>curl</code> 打出来的那行：<code>{"code":0,"message":"ok","data":{"status":"ok"}}</code>。探针不查库的原因：healthcheck 如果依赖 MySQL，那么"数据库挂了"会让<b>每个</b>容器的状态都变红，还容易在启动依赖链里造成死锁式的循环等待。</p>
 
-    <h3>7. 两个实用约定：镜像标签与构建平台</h3>
+    <h3>7. 三个实用约定：镜像标签、构建平台、非 root 用户</h3>
     <ul>
       <li><b>标签（tag）</b>：<code>goblog-api:0.1</code> 里的冒号后就是 tag，不写默认 <code>latest</code>——生产大忌（你永远不知道 latest 是哪版）。练习阶段用日期或 git 短哈希：<code>docker build -t goblog-api:$(git rev-parse --short HEAD) .</code>，出问题能精确追回某次构建。</li>
       <li><b>平台（platform）</b>：M 系列 Mac 构建出的镜像是 <code>linux/arm64</code>，直接推到 x86 云服务器会报 <code>exec format error</code>。本手册的路线是<b>代码上服务器现构</b>（W7D5），天然规避；将来若走镜像仓库，构建命令加 <code>--platform linux/amd64</code> 即可，今天先知道有这回事。</li>
+      <li><b>运行用户（USER）</b>：容器默认用 root 跑进程，严格的生产镜像会再压一层权限，在 <code>COPY</code> 之后、<code>ENTRYPOINT</code> 之前加：</li>
     </ul>
+    <pre><span class="c"># alpine 里先建一个没有家目录、没有登录 shell 的低权限用户，再切过去运行进程</span>
+<span class="k">RUN</span> adduser -D -u <span class="n">10001</span> app
+<span class="k">USER</span> app</pre>
+    <p>好处是：万一有人通过你的接口打进容器，他也只是个 <code>uid=10001</code>，改不动 <code>/etc</code>、绑不了 <code>80</code> 端口。<b>本课从简，不加这两行</b>（体积和排错都比不上"先跑通"重要），但你得知道有这一层防御，第 8 周之后可以自行补上。</p>
     <h3>8. 构建机制速览：一次 docker build 到底发生了什么</h3>
     <pre><span class="code-label">shell（观察一次构建的完整动线）</span>$ docker build -t goblog-api:<span class="n">0.2</span> .
 <span class="c"># ① 打包当前目录（扣除 .dockerignore）→ 发送给 Docker daemon（"transferring context"）</span>
@@ -191,19 +270,24 @@ r.GET(<span class="s">"/health"</span>, <span class="k">func</span>(c *gin.Conte
   <section>
     <h2>今日练习</h2>
     <div class="task">
-      <div class="task-title">练习 1：把第 6 周后端容器化（必做，45 分钟）</div>
-      <p>按讲义写 <code>backend/Dockerfile</code> + <code>backend/.dockerignore</code>，构建出 <code>goblog-api:0.1</code>，要求最终镜像 ≤ 60MB 且 <code>curl /health</code> 返回 200。</p>
+      <div class="task-title">练习 1：把后端服务容器化（必做，45 分钟）</div>
+      <p>按讲义写 <code>backend/Dockerfile</code> + <code>backend/.dockerignore</code>，构建出 <code>goblog-api:0.1</code>，要求最终镜像 ≤ 60MB，并用第 5 节的 <code>--env-file</code> 跑起来、<code>curl /health</code> 返回 200。</p>
       <p><b>参考答案（验收动作）：</b></p>
       <pre><span class="code-label">shell</span>$ docker build -t goblog-api:<span class="n">0.1</span> .
 $ docker images --format <span class="s">"table {{.Repository}}\t{{.Tag}}\t{{.Size}}"</span> goblog-api
-$ docker run -d --name api-dev -p <span class="n">8080</span>:<span class="n">8080</span> goblog-api:<span class="n">0.1</span>
+REPOSITORY    TAG       SIZE
+goblog-api    <span class="n">0.1</span>       <span class="n">28</span>.4MB
+$ docker run -d --name api-dev -p <span class="n">8080</span>:<span class="n">8080</span> --env-file .env.docker goblog-api:<span class="n">0.1</span>
+$ docker logs api-dev --tail <span class="n">3</span>                       <span class="c"># 必须看到 Listening and serving HTTP on :8080，且没有"配置加载失败"</span>
+[GIN-debug] GET    /health      --&gt; main.main.func1 (<span class="n">3</span> handlers)
+[GIN-debug] Listening and serving HTTP on :<span class="n">8080</span>
 $ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localhost:<span class="n">8080</span>/health
 <span class="n">200</span></pre>
-      <p>构建阶段最常见的报错是 <code>go: downloading ...</code> 卡住（网络问题，给 Docker Desktop 配代理或换镜像源）与 <code>pattern ./cmd/server: directory not found</code>（入口路径不对，按你实际 main 包位置改，比如 <code>go build -o /out/server .</code>）。</p>
+      <p>构建阶段最常见的报错是 <code>go: downloading ...</code> 卡住（网络问题，给 Docker Desktop 配代理或换镜像源）与 <code>pattern ./cmd/server: directory not found</code>（入口路径不对，按你实际 main 包位置改，比如 <code>go build -o /out/server .</code>）。运行阶段最常见的两个：<code>Exited (1)</code> + <code>配置加载失败: 缺少环境变量 JWT_SECRET</code>（忘带 <code>--env-file</code>，见第 5 节反例）；<code>数据库连接失败: dial tcp 127.0.0.1:3306: connect: connection refused</code>（<code>DB_HOST</code> 写成了 localhost，改成 <code>host.docker.internal</code>）。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 2：scratch vs alpine 体积对比（20 分钟）</div>
-      <p>把运行阶段整段替换为 scratch 版本，重新构建为 <code>goblog-api:scratch</code>，对比 <code>docker images</code> 两个体积；再试着 <code>docker exec -it api-dev sh</code> 进容器，观察现象。</p>
+      <p>把运行阶段整段替换为 scratch 版本，重新构建为 <code>goblog-api:scratch</code>，对比 <code>docker images</code> 两个体积；再另起一个容器试着 <code>docker exec -it … sh</code> 进去，观察现象（<code>api-dev</code> 在第 5 节末尾已经被你删掉了，这里重新 run 一个即可）。</p>
       <pre><span class="code-label">Dockerfile（scratch 运行阶段）</span><span class="k">FROM</span> scratch
 
 <span class="c"># scratch 连证书和时区文件都没有，从 builder 阶段（golang:alpine 里自带）抠出来</span>
@@ -212,7 +296,12 @@ $ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localho
 <span class="k">COPY</span> --from=builder /out/server /server
 
 <span class="k">ENTRYPOINT</span> [<span class="s">"/server"</span>]</pre>
-      <p><b>预期：</b>体积再小 12MB 左右（约等于 alpine 基座大小）；<code>docker exec</code> 报 <code>OCI runtime exec failed: exec: "sh": executable file not found</code>——这就是"不能调试"的实感。验证完换回 alpine 方案。</p>
+      <p><b>预期：</b>体积再小 <b>8MB 左右</b>（正好省掉 <code>alpine</code> 基座那 <b>7.8MB</b>，与第 1 节表格同一口径；但你自己 <code>COPY</code> 进去的证书 + 全量时区库仍占 4–5MB，所以 scratch 版仍有一层"必需文件"的体积）。实测数字大致是 <code>0.1</code> → 28.4MB、<code>scratch</code> → 20.1MB。然后：</p>
+      <pre><span class="code-label">shell</span>$ docker run -d --name api-scratch --env-file .env.docker -p <span class="n">8081</span>:<span class="n">8080</span> goblog-api:scratch
+$ docker exec -it api-scratch sh
+OCI runtime exec failed: exec: <span class="s">"sh"</span>: executable file not found     <span class="c"># ← "不能调试"的实感</span>
+$ docker rm -f api-scratch</pre>
+      <p>验证完把 <code>Dockerfile</code> 换回 alpine 方案（scratch 只作为对照实验，本周交付物用 alpine）。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 3：分层缓存实验（15 分钟）</div>
@@ -233,10 +322,11 @@ $ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localho
       <tr><td>忘了 <code>CGO_ENABLED=0</code></td><td>镜像构建"成功"，容器一起就 <code>exit code 127</code>、日志报 <code>/lib64/ld-linux-x86-64.so.2 not found</code></td><td>静态编译；用 <code>file server</code> 确认 <code>statically linked</code></td></tr>
       <tr><td>alpine 忘装 ca-certificates</td><td>本地开发一切正常，容器里调任何 HTTPS 接口报 <code>x509: certificate signed by unknown authority</code></td><td><code>apk add --no-cache ca-certificates</code></td></tr>
       <tr><td>把 EXPOSE 当端口映射</td><td><code>curl localhost:8080</code> 拒绝连接</td><td>EXPOSE 只是声明，必须 <code>-p 8080:8080</code>（或 compose 的 ports）</td></tr>
+      <tr><td>docker run 忘了 <code>--env-file</code>／<code>-e</code></td><td>容器 <code>Exited (1) 3 seconds ago</code>，<code>docker logs</code> 里是 <code>配置加载失败: 缺少环境变量 JWT_SECRET</code>；<code>/health</code> 永远连不上</td><td>镜像里不带 .env 是纪律，运行时必须注入：<code>--env-file .env.docker</code>（键名见第 0 步）或逐个 <code>-e KEY=值</code></td></tr>
       <tr><td>builder 用了 debian 基座</td><td>最终镜像莫名 900MB——多半是把 <code>golang:1.24</code> 当了两阶段的基座</td><td>builder 用 golang:1.24-alpine；最终镜像大小 ≈ alpine 基座 + 二进制，超纲即有诈</td></tr>
       <tr><td>没有 .dockerignore</td><td>构建巨慢、镜像虚胖，<code>docker history</code> 里赫然一行 <code>COPY . .</code> 几百 MB，.env 密钥躺在层里</td><td>今天这份 .dockerignore 直接抄走，纳入 Git</td></tr>
       <tr><td>go.sum 未同步就构建</td><td><code>missing go.sum entry</code>，本地 <code>go run</code> 却正常</td><td>提交前永远 <code>go mod tidy</code>，go.mod/go.sum 成对进 Git</td></tr>
-      <tr><td>容器里 DSN 写 localhost</td><td>日志刷 <code>dial tcp 127.0.0.1:3306: connect: connection refused</code></td><td>容器内的 localhost 是容器自己。今天临时用 host.docker.internal，明天 compose 网络彻底解决</td></tr>
+      <tr><td>容器里 DSN 写 localhost</td><td>日志刷 <code>dial tcp 127.0.0.1:3306: connect: connection refused</code></td><td>容器内的 localhost 是容器自己。今天临时用 <code>DB_HOST=host.docker.internal</code>，明天 compose 网络彻底解决</td></tr>
     </table>
   </section>
 

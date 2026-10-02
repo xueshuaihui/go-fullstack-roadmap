@@ -38,9 +38,11 @@
 
   <section>
     <h2>课前须知：先对齐列表接口的返回形状</h2>
-    <div class="callout js"><p><b>1. 列表接口。</b><code>GET /api/v1/articles?page=1&amp;size=10&amp;keyword=go</code>，成功返回 <code>data: { list: [article], total, page, size }</code>。经过昨天的响应拦截器，你的函数拿到的就是这个 data。</p></div>
-    <div class="callout js"><p><b>2. article 的字段（全周统一）。</b><code>id, title, summary, content, coverImage, authorId, author: { id, nickname }, createdAt, updatedAt</code>。后端 Go 结构体都带了对应的小驼峰 json tag，前端发现哪个字段是 <code>undefined</code> 先去 curl 核对。</p></div>
-    <div class="callout js"><p><b>3. 列表接口不需要登录。</b>第 4 周定的规矩：读公开、写要 token。所以今天所有请求带不带 Authorization 都能过——这也是好事，页面能在未登录状态下先写完再测。</p></div>
+    <div class="callout js"><p><b>1. 列表接口。</b><code>GET /api/v1/articles?page=1&amp;size=10&amp;keyword=go</code>，成功返回 <code>data: { list: [article], total, page, size, total_page }</code>。经过昨天的响应拦截器（拆掉 <code>code/message/data</code> 外壳），你的函数拿到的就是这个 <code>data</code>。</p></div>
+    <div class="callout js"><p><b>2. article 的字段（全周统一，后端是 snake_case）。</b><code>id, title, content, summary, cover_image, views, user: { id, nickname }, created_at</code>。注意三点：<b>封面键是 <code>cover_image</code> 不是 <code>coverImage</code></b>；<b>作者是嵌套对象 <code>user</code> 不是 <code>author</code></b>；<b>时间是 <code>created_at</code></b>。前端取到 <code>undefined</code> 先 curl 核对，别改后端字段名迁就直觉。</p></div>
+    <div class="callout js"><p><b>3. 详情接口的 <code>data</code> 就是文章本身</b>：不是 <code>data.article</code>，直接 <code>article.id</code> 取。列表页才有多余的一层 <code>list</code>。</p></div>
+    <div class="callout warn"><p><b>4. id 不存在时后端不是返回 <code>data:null</code>，而是 HTTP 404 + <code>code:2001</code>（文章不存在）。</b>昨天第 4 节的拦截器会把这种响应 <code>reject</code> 掉，并把 <code>status/code/response</code> 挂到 Error 对象上——所以「空态」要写在 <b>catch 分支</b>里判状态码，写在 then 里永远走不到。第 6 节给修正版代码。</p></div>
+    <div class="callout js"><p><b>5. 列表接口不需要登录。</b>第 4 周定的规矩：读公开、写要 token。所以今天所有请求带不带 Authorization 都能过——这也是好事，页面能在未登录状态下先写完再测。</p></div>
   </section>
 
   <section>
@@ -68,15 +70,16 @@
     <div class="callout note"><p>React 18 开发模式下 <code>StrictMode</code> 会让 useEffect 连跑两次，你会在 Network 里看到<b>重复请求</b>——这不是 bug，是 React 故意检查你的 effect 可否重入；生产构建只会发一次。别为此加防重逻辑。</p></div>
 
     <h3>2. 列表页：状态设计一次到位</h3>
-    <p>一个列表页需要 5 个 state：<code>list / total / page / keyword / loading+error</code>。先把 api 函数建好，再写页面：</p>
+    <p>一个列表页需要 6 个 state：<code>list / total / totalPage / page / keyword / loading+error</code>。后端在 <code>PageResult</code> 里已经算好了 <code>total_page</code>，前端就别再用 <code>Math.ceil</code> 重算一遍（两边算法不一致时会出现「后端说 3 页、前端渲染 4 个按钮」）。先把 api 函数建好，再写页面：</p>
     <pre><span class="code-label">js</span><span class="c">// src/api/article.js —— 本周文章 CRUD 全在这</span>
 <span class="k">import</span> { http } <span class="k">from</span> <span class="s">'./http'</span>
 
 <span class="k">export const</span> <span class="t">listArticles</span> = ({ page = <span class="n">1</span>, size = <span class="n">10</span>, keyword = <span class="s">''</span> }) =&gt;
   http.<span class="t">get</span>(<span class="s">'/articles'</span>, { params: { page, size, keyword } })
-  <span class="c">// 返回 { list, total, page, size }</span>
+  <span class="c">// 返回 { list, total, page, size, total_page }</span>
 
-<span class="k">export const</span> <span class="t">getArticle</span> = (id) =&gt; http.<span class="t">get</span>(<span class="s">`/articles/${id}`</span>)</pre>
+<span class="k">export const</span> <span class="t">getArticle</span> = (id) =&gt; http.<span class="t">get</span>(<span class="s">`/articles/${id}`</span>)
+<span class="c">// data 就是文章本身；id 不存在时这条 Promise 以 404+code 2001 被 reject</span></pre>
     <pre><span class="code-label">jsx</span><span class="c">// src/pages/ArticleList.jsx</span>
 <span class="k">import</span> { useEffect, useState } <span class="k">from</span> <span class="s">'react'</span>
 <span class="k">import</span> { <span class="t">Link</span> } <span class="k">from</span> <span class="s">'react-router-dom'</span>
@@ -85,9 +88,12 @@
 <span class="k">import</span> { <span class="t">Pagination</span> } <span class="k">from</span> <span class="s">'../components/Pagination'</span>
 <span class="k">import</span> { <span class="t">ArticleCard</span> } <span class="k">from</span> <span class="s">'../components/ArticleCard'</span>
 
+<span class="k">const</span> SIZE = <span class="n">10</span> <span class="c">// 每页几条，组件外常量，翻页和请求共用同一个值</span>
+
 <span class="k">export default function</span> <span class="t">ArticleList</span>() {
   <span class="k">const</span> [list, setList] = useState([])
   <span class="k">const</span> [total, setTotal] = useState(<span class="n">0</span>)
+  <span class="k">const</span> [totalPage, setTotalPage] = useState(<span class="n">1</span>) <span class="c">// 后端 total_page 直接拿来用</span>
   <span class="k">const</span> [page, setPage] = useState(<span class="n">1</span>)
   <span class="k">const</span> [keyword, setKeyword] = useState(<span class="s">''</span>)
   <span class="k">const</span> [loading, setLoading] = useState(<span class="k">false</span>)
@@ -99,8 +105,10 @@
     ;(async () =&gt; {
       setLoading(<span class="k">true</span>); setError(<span class="k">null</span>)
       <span class="k">try</span> {
-        <span class="k">const</span> data = <span class="k">await</span> <span class="t">listArticles</span>({ page, keyword: debouncedKeyword })
-        <span class="k">if</span> (!ignore) { setList(data.list); setTotal(data.total) }
+        <span class="k">const</span> data = <span class="k">await</span> <span class="t">listArticles</span>({ page, size: SIZE, keyword: debouncedKeyword })
+        <span class="k">if</span> (!ignore) {
+          setList(data.list); setTotal(data.total); setTotalPage(data.total_page)
+        }
       } <span class="k">catch</span> (e) {
         <span class="k">if</span> (!ignore) setError(e)
       } <span class="k">finally</span> {
@@ -124,15 +132,15 @@
       {list.length === <span class="n">0</span>
         ? &lt;<span class="t">p</span> style={{ color: <span class="s">'#999'</span> }}&gt;暂无文章，去写一篇？&lt;/<span class="t">p</span>&gt;
         : list.<span class="t">map</span>((a) =&gt; &lt;<span class="t">ArticleCard</span> key={a.id} article={a} /&gt;)}
-      &lt;<span class="t">Pagination</span> page={page} total={total} size={<span class="n">10</span>} onChange={setPage} /&gt;
+      &lt;<span class="t">Pagination</span> page={page} total={total} totalPage={totalPage} onChange={setPage} /&gt;
     &lt;/<span class="t">div</span>&gt;
   )
 }</pre>
 
-    <h3>3. 分页控件：从 total 算页数</h3>
+    <h3>3. 分页控件：用后端给的 total_page</h3>
     <pre><span class="code-label">jsx</span><span class="c">// src/components/Pagination.jsx</span>
-<span class="k">export function</span> <span class="t">Pagination</span>({ page, total, size, onChange }) {
-  <span class="k">const</span> pages = Math.<span class="t">ceil</span>(total / size) || <span class="n">1</span>
+<span class="k">export function</span> <span class="t">Pagination</span>({ page, total, totalPage, onChange }) {
+  <span class="k">const</span> pages = totalPage || <span class="n">1</span> <span class="c">// 后端已算好：total_page = ceil(total / size)</span>
   <span class="k">if</span> (pages &lt;= <span class="n">1</span>) <span class="k">return</span> <span class="k">null</span>
   <span class="k">return</span> (
     &lt;<span class="t">div</span> style={{ display: <span class="s">'flex'</span>, gap: <span class="n">8</span>, margin: <span class="s">'16px 0'</span> }}&gt;
@@ -145,7 +153,7 @@
     &lt;/<span class="t">div</span>&gt;
   )
 }</pre>
-    <div class="callout tip"><p>学习项目文章总量小，直接列全部页码没问题；真实项目超过 10 页要换成「首/尾 + 当前页 ±2 + 省略号」的窗口算法，思路一样，先不做。</p></div>
+    <div class="callout note"><p>前端自己 <code>Math.ceil(total / size)</code> 也能算，但两边各有算法时（后端 size 上限 50、前端写死 10）页码就会打脸。<b>结论以服务端 <code>total_page</code> 为准</b>；<code>|| 1</code> 兜住后端偶发返回 0 的情况，避免渲染出「第 1/0 页」。学习项目文章总量小，直接列全部页码没问题；真实项目超过 10 页要换成「首/尾 + 当前页 ±2 + 省略号」的窗口算法，思路一样，先不做。</p></div>
 
     <h3>4. 搜索防抖 300ms：一个 hook 讲清楚</h3>
     <p>防抖 = 停止输入 N 毫秒后才把「最新值」放出去。没有它，搜「goroutine」会依次请求 <code>g / go / gor / gorou…</code> 打后端 10 枪：</p>
@@ -177,74 +185,99 @@
 }, [page])</pre>
     <div class="callout warn"><p>不处理竞态，症状是「偶发的数据错页」，测试时极难复现、上线后用户天天骂。今天写列表页就把它焊死，不要等出事再补。</p></div>
 
-    <h3>6. 详情页：useParams + 三态渲染</h3>
+    <h3>6. 详情页：useParams + 三态渲染（404 该走空态，不是错误态）</h3>
+    <p>先看清后端对「不存在的 id」的真实响应，这决定了代码怎么写：</p>
+    <pre><span class="code-label">shell</span>$ curl -s -i localhost:8080/api/v1/articles/99999 | head -1
+HTTP/1.1 404 Not Found
+
+$ curl -s localhost:8080/api/v1/articles/99999
+{<span class="s">"code"</span>:<span class="n">2001</span>,<span class="s">"message"</span>:<span class="s">"文章不存在"</span>,<span class="s">"data"</span>:<span class="k">null</span>}</pre>
+    <p>HTTP 状态码是 404，axios 默认只把 <b>2xx 当成功</b>，所以这个响应根本不会进 <code>then</code>，而是被昨天的响应拦截器 <code>reject</code> 成 Error（上面那份 <code>data:null</code> 只是给人看的，代码里拿不到）。<b>空态判断必须写在 catch 里按状态码分流</b>：</p>
     <pre><span class="code-label">jsx</span><span class="c">// src/pages/ArticleDetail.jsx —— 路由 path="/post/:id"</span>
 <span class="k">import</span> { useEffect, useState } <span class="k">from</span> <span class="s">'react'</span>
-<span class="k">import</span> { useParams } <span class="k">from</span> <span class="s">'react-router-dom'</span>
+<span class="k">import</span> { <span class="t">Link</span>, useParams } <span class="k">from</span> <span class="s">'react-router-dom'</span>
 <span class="k">import</span> { getArticle } <span class="k">from</span> <span class="s">'../api/article'</span>
 
 <span class="k">export default function</span> <span class="t">ArticleDetail</span>() {
-  <span class="k">const</span> { id } = useParams() <span class="c">// 永远是字符串！后端 id 是数字，比较记得 Number(id)</span>
+  <span class="k">const</span> { id } = <span class="t">useParams</span>() <span class="c">// 永远是字符串！后端 id 是数字，比较记得 Number(id)</span>
   <span class="k">const</span> [article, setArticle] = useState(<span class="k">null</span>)
   <span class="k">const</span> [error, setError] = useState(<span class="k">null</span>)
-  <span class="k">const</span> [status, setStatus] = useState(<span class="s">'loading'</span>) <span class="c">// loading | error | ok | empty</span>
+  <span class="k">const</span> [status, setStatus] = useState(<span class="s">'loading'</span>) <span class="c">// loading | error | empty | ok</span>
 
   useEffect(() =&gt; {
     <span class="k">let</span> ignore = <span class="k">false</span>
-    setStatus(<span class="s">'loading'</span>); setError(<span class="k">null</span>)
-    <span class="t">getArticle</span>(id)
-      .<span class="t">then</span>((data) =&gt; {
+    setStatus(<span class="s">'loading'</span>); setError(<span class="k">null</span>); setArticle(<span class="k">null</span>) <span class="c">// 换 id 先清空，避免闪出上一篇</span>
+    ;(<span class="k">async</span> () =&gt; {
+      <span class="k">try</span> {
+        <span class="k">const</span> data = <span class="k">await</span> <span class="t">getArticle</span>(id) <span class="c">// 拦截器已拆包，data 就是文章本身</span>
+        <span class="k">if</span> (!ignore) { setArticle(data); setStatus(<span class="s">'ok'</span>) }
+      } <span class="k">catch</span> (e) {
         <span class="k">if</span> (ignore) <span class="k">return</span>
-        setArticle(data)
-        setStatus(data ? <span class="s">'ok'</span> : <span class="s">'empty'</span>) <span class="c">// 后端对不存在 id 返回 data:null 时也走空态</span>
-      })
-      .<span class="t">catch</span>((e) =&gt; { <span class="k">if</span> (!ignore) { setError(e); setStatus(<span class="s">'error'</span>) } })
+        <span class="k">if</span> (e.status === <span class="n">404</span>) { setStatus(<span class="s">'empty'</span>); <span class="k">return</span> } <span class="c">// code 2001：内容没了，不是服务坏了</span>
+        setError(e); setStatus(<span class="s">'error'</span>) <span class="c">// 500 / 断网 / 超时才叫「加载失败」</span>
+      }
+    })()
     <span class="k">return</span> () =&gt; { ignore = <span class="k">true</span> }
   }, [id])
 
   <span class="k">if</span> (status === <span class="s">'loading'</span>) <span class="k">return</span> &lt;<span class="t">p</span>&gt;加载中…&lt;/<span class="t">p</span>&gt;
-  <span class="k">if</span> (status === <span class="s">'error'</span>) <span class="k">return</span> &lt;<span class="t">p</span> style={{ color: <span class="s">'#f87171'</span> }}&gt;加载失败：{error?.message}&lt;/<span class="t">p</span>&gt;
-  <span class="k">if</span> (status === <span class="s">'empty'</span>) <span class="k">return</span> &lt;<span class="t">p</span>&gt;文章不存在或被删除&lt;/<span class="t">p</span>&gt;
+  <span class="k">if</span> (status === <span class="s">'empty'</span>) <span class="k">return</span> (
+    &lt;<span class="t">p</span>&gt;文章不存在或已被删除。&lt;<span class="t">Link</span> to=<span class="s">"/"</span>&gt;返回列表&lt;/<span class="t">Link</span>&gt;&lt;/<span class="t">p</span>&gt;
+  )
+  <span class="k">if</span> (status === <span class="s">'error'</span>) <span class="k">return</span> (
+    &lt;<span class="t">p</span> style={{ color: <span class="s">'#f87171'</span> }}&gt;加载失败：{error?.message}（HTTP {error?.status}）&lt;/<span class="t">p</span>&gt;
+  )
 
   <span class="k">return</span> (
     &lt;<span class="t">article</span> style={{ maxWidth: <span class="n">720</span>, margin: <span class="s">'24px auto'</span> }}&gt;
       &lt;<span class="t">h1</span>&gt;{article.title}&lt;/<span class="t">h1</span>&gt;
       &lt;<span class="t">p</span> style={{ color: <span class="s">'#888'</span> }}&gt;
-        {article.author?.nickname} · <span class="t">new</span> Date(article.createdAt).<span class="t">toLocaleString</span>()
+        {article.user?.nickname} · {article.views} 次浏览 ·
+        <span class="k">new</span> Date(article.created_at).<span class="t">toLocaleString</span>()
       &lt;/<span class="t">p</span>&gt;
-      &lt;<span class="t">pre</span> style={{ whiteSpace: <span class="s">'pre-wrap'</span> }}&gt;{article.content}&lt;/<span class="t">pre</span>&gt; <span class="c">/* Markdown 原文，明天再渲染 */</span>
+      &lt;<span class="t">pre</span> style={{ whiteSpace: <span class="s">'pre-wrap'</span> }}&gt;{article.content}&lt;/<span class="t">pre</span>&gt;
+      <span class="c">{/* content 是 Markdown 原文，这里先用 pre 保留换行直出；本手册三天内不引 markdown 渲染库 */</span>}
     &lt;/<span class="t">article</span>&gt;
   )
 }</pre>
-    <p><b>三态渲染</b>是联调页的底线：loading 给反馈、error 给原因（来自拦截器抛出的后端 message）、空态给下一步指引。只写成功分支的页面，一旦后端慢一点或数据为空，用户看到的就是白屏。</p>
+    <div class="callout warn"><p>如果第 4 节你的拦截器只保留了 axios 原生 <code>error</code>（没挂 <code>status</code>），这里就换成 <code>e.response?.status === 404</code>——两种写法等价，<b>但必须先确认拦截器到底透出了哪个字段</b>，这是联调里最费时间的一类「看代码觉得没问题、跑起来就是进不了分支」。基准是 <b>Day 1 第 4 节</b>那份挂了 <code>e.status / e.code / e.response</code> 的拦截器实现，今天这段代码按它写。</p></div>
+    <p><b>三态渲染</b>是联调页的底线：loading 给反馈、error 给原因（来自拦截器抛出的后端 message）、空态给下一步指引（这里顺手放了「返回列表」链接）。只写成功分支的页面，一旦后端慢一点或数据为空，用户看到的就是白屏。</p>
 
     <h3>7. 封面图兜底</h3>
-    <p><code>coverImage</code> 可能是空字符串，也可能指向一个 404 的旧地址，两种情况都要接住：</p>
+    <p><code>cover_image</code> 可能是空字符串，也可能指向一个 404 的旧地址，两种情况都要接住。占位图用<b>本地 inline SVG（data URI）</b>，不依赖任何外网服务：</p>
     <pre><span class="code-label">jsx</span><span class="c">// src/components/ArticleCard.jsx</span>
-<span class="k">const</span> FALLBACK = <span class="s">'https://placehold.co/600x300?text=Go+Blog'</span>
+<span class="k">import</span> { <span class="t">Link</span> } <span class="k">from</span> <span class="s">'react-router-dom'</span>
+
+<span class="c">// 本地占位图：一张 600x300 的 SVG，encodeURIComponent 后当 src 用，断网也显示</span>
+<span class="k">const</span> FALLBACK = <span class="s">'data:image/svg+xml,'</span> + <span class="t">encodeURIComponent</span>(
+  <span class="s">`&lt;svg xmlns="http://www.w3.org/2000/svg" width="600" height="300"&gt;
+     &lt;rect width="100%" height="100%" fill="#eef2ff"/&gt;
+     &lt;text x="300" y="160" fill="#6366f1" font-size="28" text-anchor="middle"&gt;Go 博客&lt;/text&gt;
+   &lt;/svg&gt;`</span>)
 
 <span class="k">export function</span> <span class="t">ArticleCard</span>({ article }) {
   <span class="k">return</span> (
     &lt;<span class="t">Link</span> to={<span class="s">`/post/${article.id}`</span>} style={{ display: <span class="s">'block'</span>, marginBottom: <span class="n">16</span>, color: <span class="s">'inherit'</span>, textDecoration: <span class="s">'none'</span> }}&gt;
       &lt;<span class="t">img</span>
-        src={article.coverImage || FALLBACK}
-        onError={(e) =&gt; { e.currentTarget.src = FALLBACK }} <span class="c">// 404 时换占位图</span>
+        src={article.cover_image || FALLBACK}
+        onError={(e) =&gt; { e.currentTarget.src = FALLBACK }} <span class="c">// 有 URL 但挂了：换占位图</span>
         alt={article.title} width={<span class="n">600</span>} height={<span class="n">300</span>}
         style={{ objectFit: <span class="s">'cover'</span>, borderRadius: <span class="n">8</span> }}
       /&gt;
       &lt;<span class="t">h3</span>&gt;{article.title}&lt;/<span class="t">h3</span>&gt;
-      &lt;<span class="t">p</span>&gt;{article.summary} · {article.author?.nickname}&lt;/<span class="t">p</span>&gt;
+      &lt;<span class="t">p</span>&gt;{article.summary} · {article.user?.nickname} · {article.views} 浏览&lt;/<span class="t">p</span>&gt;
     &lt;/<span class="t">Link</span>&gt;
   )
 }</pre>
-    <div class="callout tip"><p><code>src={空值 || FALLBACK}</code> 管住「压根没传图」；<code>onError</code> 管住「有 URL 但挂了」。两道保险都上，破图才会绝迹。别忘了给占位图写 alt 之外用文章标题，无障碍分+1。</p></div>
+    <div class="callout tip"><p><code>src={空值 || FALLBACK}</code> 管住「压根没传图」；<code>onError</code> 管住「有 URL 但挂了」。两道保险都上，破图才会绝迹。别忘了 <code>alt</code> 用文章标题，无障碍分+1。</p></div>
+    <div class="callout note"><p><b>为什么不用 <code>https://placehold.co/600x300?text=Go+Blog</code> 这类在线占位图服务</b>：它要外网 DNS + HTTPS，公司内网、离线演示、CI 里都会变成一片破图，反而把「兜底」这件事本身搞挂。inline SVG 的代价只是一行字符串。<b>变体</b>：把 <code>Go 博客</code> 换成 <code>${article.title}</code> 就能生成带标题的占位图——中文和尖括号都会被 <code>encodeURIComponent</code> 转成 <code>%XX</code>，不用自己转义。</p></div>
   </section>
 
   <section>
     <h2>今日练习</h2>
     <div class="task">
       <div class="task-title">练习 1：列表点击进详情（30 分钟）</div>
-      <p>把 <code>ArticleList</code>、<code>ArticleDetail</code> 挂进 App.jsx 路由（<code>/</code> 和 <code>/post/:id</code>），点卡片跳转、地址栏手动改 <code>/post/99999</code> 能看到空态。参考第 6 节代码，确认你在详情页 Network 里看到 <code>GET /api/v1/articles/3</code> 这种带数字 id 的请求。</p>
+      <p>把 <code>ArticleList</code>、<code>ArticleDetail</code> 挂进 App.jsx 路由（<code>/</code> 和 <code>/post/:id</code>），点卡片跳转、地址栏手动改 <code>/post/99999</code> 能看到<b>空态</b>文案「文章不存在或已被删除」（不是「加载失败」）。参考第 6 节代码，确认你在详情页 Network 里看到 <code>GET /api/v1/articles/3</code> 这种带数字 id 的请求，并且 99999 那条的状态码是 <code>404</code>、返回体 <code>code:2001</code>。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 2：翻页 + 搜索联动可用（40 分钟）</div>
@@ -252,7 +285,7 @@
     </div>
     <div class="task">
       <div class="task-title">练习 3：亲手制造一次竞态并修掉（30 分钟）</div>
-      <p>先把第 2 节代码里的 <code>ignore</code> 守卫删掉，然后在 Go 后端列表 handler 临时加 <code>time.Sleep(2 * time.Second)</code> 重启。快速连点「下一页→上一页」，观察列表停在错误页码的数据上；再把守卫加回来，同样的操作恢复正常。体感一次「偶发错数据」是怎么来的。</p>
+      <p>先把第 2 节代码里的 <code>ignore</code> 守卫删掉，然后在 Go 后端列表 handler 临时加 <code>time.Sleep(2 * time.Second)</code> 再重启（第 4 周项目在 <code>internal/handler/article.go</code> 的 <code>List</code> 方法开头加一行，实验完删掉，别忘了 import <code>"time"</code>）。快速连点「下一页→上一页」，观察列表停在错误页码的数据上；再把守卫加回来，同样的操作恢复正常。体感一次「偶发错数据」是怎么来的。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 4：三态补全到个人页（20 分钟）</div>
@@ -267,7 +300,10 @@
       <tr><td>useEffect 依赖数组漏写</td><td>搜索词改了列表却不刷新（闭包捕获旧 keyword），或 eslint 一直 warning</td><td>发请求用到的 state 全部进依赖：<code>[page, debouncedKeyword]</code></td></tr>
       <tr><td>把 async 函数直接传给 useEffect</td><td>控制台警告「Effect callbacks must not return anything but a function」</td><td>内部声明 <code>run</code> 再调用，回调本身保持同步</td></tr>
       <tr><td>keyword 直接进依赖</td><td>每敲一个字请求一次，后端日志刷屏</td><td>防抖值进依赖，输入框绑原始值</td></tr>
-      <tr><td>useParams 拿到的是字符串</td><td><code>article.authorId === user.id</code> 恒为 false（number ≠ string）</td><td>比较前统一 <code>Number(id)</code>，或全用 <code>String()</code></td></tr>
+      <tr><td>useParams 拿到的是字符串</td><td><code>id === article.id</code> 恒为 false（<code>'3' !== 3</code>），比较作者/比当前页时对不上</td><td>比较前统一 <code>Number(id)</code>，或全用 <code>String()</code>；只有拼 URL 时不用转</td></tr>
+      <tr><td>按小驼峰取后端字段</td><td>封面全变占位图、作者昵称空白、时间显示 <code>Invalid Date</code>，但没有任何报错</td><td>后端是 snake_case + 嵌套作者：<code>cover_image</code> / <code>user.nickname</code> / <code>created_at</code>。取到 undefined 先 curl 核对键名</td></tr>
+      <tr><td>404 当「错误态」渲染</td><td>访问 <code>/post/99999</code> 显示「加载失败」，用户以为服务挂了</td><td>后端对不存在 id 回 <b>HTTP 404 + code 2001</b>，会被拦截器 reject；在 <b>catch</b> 里按 <code>e.status === 404</code> 分到空态</td></tr>
+      <tr><td>前端自己 ceil 算页数</td><td>后端 <code>size</code> 有上限（如 50），前端写死 10 → 页码按钮数量和实际可翻页数不一致</td><td>直接用返回的 <code>total_page</code>，服务端算</td></tr>
       <tr><td>换词不回第一页</td><td>在第 3 页搜「go」，结果只有 1 页 → 空列表</td><td>onChange 里 <code>setKeyword</code> + <code>setPage(1)</code> 一起干</td></tr>
       <tr><td>StrictMode 双请求慌了</td><td>以为 bug，给 hook 加各种防重</td><td>开发模式专属行为，生产只发一次，接受它</td></tr>
     </table>
@@ -282,16 +318,17 @@
       <tr><td>节流（throttle）</td><td>对比概念：无论多忙，N 毫秒内最多执行一次。搜索用防抖，滚动用节流</td></tr>
       <tr><td>竞态（race condition）</td><td>多个异步响应到达顺序不确定，后发先至的旧数据覆盖新数据；用 ignore 标志或取消请求防御</td></tr>
       <tr><td>三态渲染</td><td>loading / error / empty 与成功态一起写才算页面完成，缺一个都是线上事故</td></tr>
+      <tr><td>空态 vs 错误态</td><td>「资源不存在」（404 + code 2001）走空态给引导；「服务不可用」（5xx、断网、超时）才走错误态给原因。两者混在一个分支里，用户就分不清是没内容还是崩了</td></tr>
     </table>
   </section>
 
   <section>
     <h2>完成检查（全部勾掉才算毕业）</h2>
     <ul class="check">
-      <li><label><input type="checkbox" data-key="w6d2c1">列表页真实展示后端文章，卡片含封面、摘要、作者昵称</label></li>
-      <li><label><input type="checkbox" data-key="w6d2c2">翻页控件工作正常，第 2 页内容与第 1 页不同且 total 数字正确</label></li>
+      <li><label><input type="checkbox" data-key="w6d2c1">列表页真实展示后端文章，卡片含封面（<code>cover_image</code>）、摘要、作者昵称（<code>user.nickname</code>）</label></li>
+      <li><label><input type="checkbox" data-key="w6d2c2">翻页控件工作正常，第 2 页内容与第 1 页不同，页码数量取自后端 <code>total_page</code></label></li>
       <li><label><input type="checkbox" data-key="w6d2c3">搜索连续打字只发一枪（Network 验证），且自动回到第 1 页</label></li>
-      <li><label><input type="checkbox" data-key="w6d2c4">详情页三态齐全：正常 URL 看内容、<code>/post/99999</code> 看空态、关掉后端看错误态</label></li>
+      <li><label><input type="checkbox" data-key="w6d2c4">详情页三态齐全：正常 URL 看内容、<code>/post/99999</code> 看<b>空态</b>（那条请求应是 404 + code 2001）、关掉后端看错误态</label></li>
       <li><label><input type="checkbox" data-key="w6d2c5">封面图为空和为坏链两种情况都不显示破图</label></li>
     </ul>
   </section>

@@ -38,9 +38,10 @@
 
   <section>
     <h2>课前须知：三个写接口的契约</h2>
-    <div class="callout js"><p><b>1. 全部需要登录。</b>请求头带 <code>Authorization: Bearer &lt;accessToken&gt;</code>（昨天的拦截器已自动做）。不带或过期返回 401——今天先手动保证 localStorage 里有有效 token，静默刷新明天补。</p></div>
-    <div class="callout js"><p><b>2. 创建与编辑的请求体一致。</b><code>{ title, summary, content, coverImage }</code>；<code>authorId</code> 由后端从 token 里取，前端不传也不能传——这是权限的第一道设计。</p></div>
-    <div class="callout js"><p><b>3. 权限后端说了算。</b>非作者 PUT/DELETE 会收到 <code>403 + code:1003（无权限）</code>。前端做作者判断只是「不让用户点了挨揍」，真正的守门员永远是后端。</p></div>
+    <div class="callout js"><p><b>1. 全部需要登录。</b>请求头带 <code>Authorization: Bearer &lt;accessToken&gt;</code>（昨天的拦截器已自动做）。不带或 token 过期返回 <b>HTTP 401 + code 1005</b>。第 4 周签发的 access token 只有 15 分钟寿命，写到中途突然 401 是<b>设计内的行为</b>，先重新登录顶过去，静默刷新明天做。</p></div>
+    <div class="callout js"><p><b>2. 创建与编辑的请求体一致，键名跟后端 JSON tag 对齐（snake_case）：</b><code>{ title, summary, content, cover_image }</code>。作者身份由后端从 token 里解（<code>c.GetUint("userID")</code>），前端不传也传不动——这是权限的第一道设计。</p></div>
+    <div class="callout js"><p><b>3. 权限后端说了算。</b>非作者 PUT/DELETE 会收到 <code>403 + code 1003（无权限）</code>。前端做作者判断只是「不让用户点了挨揍」，真正的守门员永远是后端。</p></div>
+    <div class="callout warn"><p><b>4. 创建成功是 201 不是 200。</b>后端走 <code>response.Created(c, article)</code>：HTTP 201，<code>data</code> 就是刚建好的那篇（含 <code>id</code>），所以前端能直接跳详情页 <code>navigate(`/post/${data.id}`)</code>。编辑成功是 200，<code>data</code> 可能是更新后的文章、也可能是 <code>null</code>——取 id 写 <code>data?.id ?? id</code> 兜住。</p></div>
   </section>
 
   <section>
@@ -66,13 +67,41 @@
 <span class="k">export const</span> <span class="t">updateArticle</span> = (id, data) =&gt; http.<span class="t">put</span>(<span class="s">`/articles/${id}`</span>, data)
 <span class="k">export const</span> <span class="t">deleteArticle</span> = (id) =&gt; http.<span class="t">delete</span>(<span class="s">`/articles/${id}`</span>)</pre>
 
+    <h3>2.5 先确认后端收不收 summary / cover_image（3 分钟，只做一次）</h3>
+    <p><code>model.Article</code> 里 <code>summary</code> / <code>cover_image</code> 两列<b>第 3 周就定义好了</b>（前端列表页的摘要和封面靠它），所以<b>不用改 model、不用手写迁移</b>。但创建/更新的 DTO 有可能只绑了 <code>title</code> 和 <code>content</code>——那样 Gin 会<b>静默丢掉</b>多余字段：请求 201 成功、后端不报错，回来的 <code>summary</code> 和 <code>cover_image</code> 却是空的。先用一条 curl 判定：</p>
+    <pre><span class="code-label">shell</span>$ curl -s -X POST localhost:8080/api/v1/articles \
+  -H <span class="s">"Authorization: Bearer <span class="n">$TOKEN</span>"</span> -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"title":"探针","content":"x","summary":"该出现","cover_image":"https://x/1.png"}'</span> \
+  | grep -o <span class="s">'"summary":"[^"]*"'</span>
+
+<span class="c"># 打印 "summary":"该出现" → 后端已支持，跳过本节直接往下写
+# 打印 "summary":""      → 按下面两处补字段</span></pre>
+    <pre><span class="code-label">internal/dto/article.go</span><span class="c">// ① DTO 结构体补两行（键名必须是 snake_case，和前端发的 JSON 完全一致）</span>
+<span class="k">type</span> CreateArticleReq <span class="k">struct</span> {
+    Title      <span class="t">string</span>   <span class="s">`json:"title" binding:"required,max=120"`</span>
+    Content    <span class="t">string</span>   <span class="s">`json:"content" binding:"required"`</span>
+    Summary    <span class="t">string</span>   <span class="s">`json:"summary"`</span>      <span class="c">// ← 补</span>
+    CoverImage <span class="t">string</span>   <span class="s">`json:"cover_image"`</span>  <span class="c">// ← 补</span>
+    Tags       []<span class="t">string</span> <span class="s">`json:"tags"`</span>
+    UserID     <span class="t">uint</span>     <span class="s">`json:"-"`</span> <span class="c">// 从 token 解出来塞进去，前端传了也不认</span>
+}</pre>
+    <pre><span class="code-label">internal/handler/article.go（Create 与 Update 各一行）</span><span class="c">// ② 构造 / 更新模型时把两个字段带上，否则绑到了也没落库</span>
+a = model.Article{Title: req.Title, Content: req.Content,
+    Summary: req.Summary, CoverImage: req.CoverImage, UserID: req.UserID}
+
+<span class="c">// Update 用 map 的写法同理补两个键：</span>
+updates := <span class="t">map</span>[<span class="t">string</span>]<span class="t">any</span>{<span class="s">"title"</span>: req.Title, <span class="s">"content"</span>: req.Content,
+    <span class="s">"summary"</span>: req.Summary, <span class="s">"cover_image"</span>: req.CoverImage}</pre>
+    <div class="callout note"><p>改完 <code>go run ./cmd/server</code> 重启，把上面那条 curl 再跑一遍确认。<b>这类「前端发了、后端默默丢掉」的 bug 不会有任何报错</b>，靠的就是发请求前先用 curl 把契约钉住——本周已经第三次这么干了。</p></div>
+
     <h3>3. Editor.jsx：模式判断 + 回填 + 提交（核心 90 行）</h3>
     <pre><span class="code-label">jsx</span><span class="c">// src/pages/Editor.jsx</span>
 <span class="k">import</span> { useEffect, useRef, useState } <span class="k">from</span> <span class="s">'react'</span>
 <span class="k">import</span> { useNavigate, useParams } <span class="k">from</span> <span class="s">'react-router-dom'</span>
 <span class="k">import</span> { getArticle, createArticle, updateArticle } <span class="k">from</span> <span class="s">'../api/article'</span>
 
-<span class="k">const</span> EMPTY = { title: <span class="s">''</span>, summary: <span class="s">''</span>, content: <span class="s">''</span>, coverImage: <span class="s">''</span> }
+<span class="k">const</span> EMPTY = { title: <span class="s">''</span>, summary: <span class="s">''</span>, content: <span class="s">''</span>, cover_image: <span class="s">''</span> }
+<span class="c">// ↑ 键名 = 后端 JSON 键名，表单直接整份当请求体发出去，省一次字段翻译</span>
 
 <span class="k">export default function</span> <span class="t">Editor</span>() {
   <span class="k">const</span> { id } = useParams()          <span class="c">// /post/new 时 id 是 undefined</span>
@@ -90,9 +119,10 @@
     <span class="k">let</span> ignore = <span class="k">false</span>
     <span class="t">getArticle</span>(id)
       .<span class="t">then</span>((a) =&gt; {
-        <span class="k">if</span> (ignore || dirtyRef.current) <span class="k">return</span> <span class="c">// 回填要认用户已输入的吗？不认，但 ignore 防卸载后 setState</span>
-        setForm({ title: a.title, summary: a.summary, content: a.content, coverImage: a.coverImage })
+        <span class="k">if</span> (ignore) <span class="k">return</span> <span class="c">// 组件已卸载 / id 已变：这次响应作废</span>
         setLoading(<span class="k">false</span>)
+        <span class="k">if</span> (dirtyRef.current) <span class="k">return</span> <span class="c">// 用户已经打字：保留他的输入，别让晚到的回填吃掉</span>
+        setForm({ title: a.title, summary: a.summary, content: a.content, cover_image: a.cover_image })
       })
       .<span class="t">catch</span>((e) =&gt; { <span class="k">if</span> (!ignore) { setErr(e.message); setLoading(<span class="k">false</span>) } })
     <span class="k">return</span> () =&gt; { ignore = <span class="k">true</span> }
@@ -109,10 +139,12 @@
     <span class="k">if</span> (!form.title.<span class="t">trim</span>() || !form.content.<span class="t">trim</span>()) <span class="k">return</span> setErr(<span class="s">'标题和内容不能为空'</span>)
     setBusy(<span class="k">true</span>)
     <span class="k">try</span> {
+      <span class="c">// form 的键就是后端要的 title / summary / content / cover_image，整份直接发</span>
       <span class="k">const</span> data = isEdit ? <span class="k">await</span> <span class="t">updateArticle</span>(id, form) : <span class="k">await</span> <span class="t">createArticle</span>(form)
-      <span class="t">navigate</span>(<span class="s">`/post/${data.id || id}`</span>) <span class="c">// 成功后跳详情，跳转策略见第 6 节</span>
+      <span class="c">// 新建：201 的 data 里带新文章 id；编辑：200 的 data 可能是 null → ?? 兜回路由上的 id</span>
+      <span class="t">navigate</span>(<span class="s">`/post/${data?.id ?? id}`</span>)
     } <span class="k">catch</span> (e2) {
-      setErr(e2.message) <span class="c">// 「标题长度超限」等后端校验原样展示</span>
+      setErr(e2.message) <span class="c">// 「标题长度超限」(400+1004)、「无权限」(403+1003) 等后端校验原样展示</span>
     } <span class="k">finally</span> {
       setBusy(<span class="k">false</span>)
     }
@@ -125,7 +157,7 @@
       &lt;<span class="t">h2</span>&gt;{isEdit ? <span class="s">'编辑文章'</span> : <span class="s">'写新文章'</span>}&lt;/<span class="t">h2</span>&gt;
       &lt;<span class="t">input</span> name=<span class="s">"title"</span> placeholder=<span class="s">"标题"</span> value={form.title} onChange={onChange} /&gt;
       &lt;<span class="t">input</span> name=<span class="s">"summary"</span> placeholder=<span class="s">"一句话摘要"</span> value={form.summary} onChange={onChange} /&gt;
-      &lt;<span class="t">input</span> name=<span class="s">"coverImage"</span> placeholder=<span class="s">"封面图 URL（可空）"</span> value={form.coverImage} onChange={onChange} /&gt;
+      &lt;<span class="t">input</span> name=<span class="s">"cover_image"</span> placeholder=<span class="s">"封面图 URL（可空）"</span> value={form.cover_image} onChange={onChange} /&gt;
       &lt;<span class="t">textarea</span> name=<span class="s">"content"</span> rows={<span class="n">15</span>} placeholder=<span class="s">"支持 Markdown 原文"</span> value={form.content} onChange={onChange} /&gt;
       {err &amp;&amp; &lt;<span class="t">p</span> style={{ color: <span class="s">'#f87171'</span> }}&gt;{err}&lt;/<span class="t">p</span>&gt;}
       &lt;<span class="t">button</span> disabled={busy}&gt;{busy ? <span class="s">'提交中…'</span> : isEdit ? <span class="s">'保存修改'</span> : <span class="s">'发布'</span>}&lt;/<span class="t">button</span>&gt;
@@ -136,14 +168,20 @@
 
     <h3>4. 删除：二次确认从 window.confirm 起步</h3>
     <pre><span class="code-label">jsx</span><span class="c">// src/pages/ArticleDetail.jsx 里加一个处理函数</span>
+<span class="c">// 从今天起这个文件的 import 清单（第 5 节的作者判断要用到 useAuth）：</span>
+<span class="c">//   import { Link, useNavigate, useParams } from 'react-router-dom'</span>
+<span class="c">//   import { deleteArticle, getArticle } from '../api/article'</span>
+<span class="c">//   import { useAuth } from '../hooks/useAuth'</span>
+<span class="k">const</span> navigate = <span class="t">useNavigate</span>()   <span class="c">// 组件顶部，和 useParams 放一起</span>
+
 <span class="k">const</span> onDelete = <span class="k">async</span> () =&gt; {
   <span class="k">const</span> ok = window.<span class="t">confirm</span>(<span class="s">`确定删除《${article.title}》？此操作不可撤销`</span>)
   <span class="k">if</span> (!ok) <span class="k">return</span>              <span class="c">// 取消：什么都不发生</span>
   <span class="k">try</span> {
     <span class="k">await</span> <span class="t">deleteArticle</span>(article.id)
-    <span class="t">navigate</span>(<span class="s">'/'</span>)             <span class="c">// 删除后详情页已不存在，回列表</span>
+    <span class="t">navigate</span>(<span class="s">'/?t='</span> + Date.<span class="t">now</span>()) <span class="c">// 删除后详情页已不存在，回列表并强制重拉（见第 6 节方案 B）</span>
   } <span class="k">catch</span> (e) {
-    <span class="t">alert</span>(<span class="s">'删除失败：'</span> + e.message) <span class="c">// 比如 token 过期、并发被作者本人先删了</span>
+    <span class="t">alert</span>(<span class="s">'删除失败：'</span> + e.message) <span class="c">// 401+1005 token 过期 / 403+1003 不是作者 / 404+2001 已被删</span>
   }
 }</pre>
     <div class="callout note"><p><code>window.confirm</code> 丑但零成本，学习项目完全够用。想要样式可控、可测试，就自己写一个受控弹窗组件——下面第 4.5 节给你一个最小可用版，列进本周选做。</p></div>
@@ -180,10 +218,13 @@
 <span class="c">// 用法：&lt;ConfirmDialog title={`确定删除《${article.title}》？`} onOk={() =&gt; deleteArticle(article.id)} /&gt;</span></pre>
 
     <h3>5. 作者判断：按钮给谁看</h3>
-    <pre><span class="code-label">jsx</span><span class="c">// ArticleDetail.jsx 头部操作区
-// 注意：useParams 的 id 是字符串，后端 authorId 是数字，必须 Number() 对齐</span>
-<span class="k">const</span> { user } = <span class="t">useAuth</span>()
-<span class="k">const</span> isAuthor = user &amp;&amp; article.authorId === user.id
+    <pre><span class="code-label">jsx</span><span class="c">// ArticleDetail.jsx 头部操作区（放在第 6 节 return 里 h1 的下面）</span>
+<span class="k">const</span> { user } = <span class="t">useAuth</span>() <span class="c">// user 来自 localStorage，就是后端登录返回的那个 user 对象</span>
+
+<span class="c">// 后端把作者放在【嵌套对象】里：article.user = { id, nickname }，没有 authorId 这个平铺字段</span>
+<span class="k">const</span> isAuthor = Boolean(article.user &amp;&amp; user &amp;&amp; article.user.id === user.id)
+<span class="c">// 两个 id 都来自 JSON，都是 number，比大小不用 Number() 转；
+// 要转的是 useParams 那个 id（字符串），别拿它去和 user.id 比。</span>
 
 <span class="k">return</span> (
   ...
@@ -195,6 +236,7 @@
   )}
 )</pre>
     <div class="callout warn"><p><b>前端隐藏 ≠ 权限控制。</b>懂 DevTools 的人手敲 <code>/post/123/edit</code> 照样能进编辑页、照样能发 PUT 请求——但后端会回 403。所以两层都要：前端判断给正常用户顺畅体验，后端判断给恶意请求兜底。今天的验收之一就是替别人验证他 403。</p></div>
+    <div class="callout note"><p><b>按钮死活不出现？先 curl 看 data 里有没有 <code>user</code> 这个键。</b>后端的 <code>User</code> 字段带了 <code>json:"user,omitempty"</code>，列表/详情 handler 必须 <code>Preload("User")</code> 才会把作者嵌进返回体；没 Preload 时 <code>article.user</code> 是 undefined，前端判断永远是 false——这属于后端漏了关联加载，不是前端的锅（第 4 周那侧补一行 <code>Preload</code>）。</p></div>
 
     <h3>6. 成功之后：跳转与「列表为什么要刷新」</h3>
     <p>提交/删除成功后跳回哪里？跳回去列表还是旧数据怎么办？三个方案摆平了选：</p>
@@ -204,11 +246,13 @@
       <tr><td>B. 跳固定路由 + 列表自己重新拉</td><td><code>navigate('/?t=' + Date.now())</code>，列表把 <code>searchParams</code> 里的 <code>t</code> 加进 useEffect 依赖</td><td>数据必新，URL 可分享</td><td>多一个时间戳参数，略脏；<b>本周推荐</b>，简单可靠</td></tr>
       <tr><td>C. 状态提升 / 全局 store</td><td>列表数据提到 App 或引 Zustand / React Query，写操作直接改缓存（乐观更新）</td><td>体验最好，业界正解</td><td>学习成本最高；第 8 周或以后换 React Query 再做</td></tr>
     </table>
-    <pre><span class="code-label">jsx</span><span class="c">// 方案 B 的列表端配套改动（ArticleList.jsx 加两行）</span>
-<span class="k">const</span> [searchParams] = <span class="t">useSearchParams</span>()
-<span class="k">const</span> stamp = searchParams.<span class="t">get</span>(<span class="s">'t'</span>) <span class="c">// 编辑器成功后 navigate('/?t=...') 带来的</span>
+    <pre><span class="code-label">jsx</span><span class="c">// 方案 B 的列表端配套改动（ArticleList.jsx 加三行）</span>
+<span class="k">import</span> { useSearchParams } <span class="k">from</span> <span class="s">'react-router-dom'</span> <span class="c">// ← 新 import，别漏</span>
 
-<span class="t">useEffect</span>(() =&gt; { <span class="c">/* …原来的取数… */</span> }, [page, debouncedKeyword, stamp])
+<span class="k">const</span> [searchParams] = <span class="t">useSearchParams</span>()
+<span class="k">const</span> stamp = searchParams.<span class="t">get</span>(<span class="s">'t'</span>) <span class="c">// 编辑器/删除成功后 navigate('/?t=...') 带来的</span>
+
+<span class="t">useEffect</span>(() =&gt; { <span class="c">/* …第 2 节那段取数原样留着… */</span> }, [page, debouncedKeyword, stamp])
 <span class="c">// stamp 一变 = 强制重新拉取，新发的文章立刻出现在第一页</span></pre>
     <pre><span class="code-label">jsx</span><span class="c">// 方案 A 现场复现「为什么不够用」（花 2 分钟体验一次胜过读十遍）：</span>
 <span class="c">// 1) 从列表第 2 页点进文章 → 编辑 → 保存 → navigate(-1) 回列表：</span>
@@ -227,17 +271,24 @@
     <div class="task">
       <div class="task-title">练习 2：验证前端隐藏不是安全（30 分钟）</div>
       <p>注册第二个账号 B。用 B 登录访问你（账号 A）的文章详情页，确认看不到编辑/删除按钮；然后<b>手动敲 URL</b> 进入 <code>/post/&lt;A的文章id&gt;/edit</code>，强行提交，观察后端返回。参考断言：</p>
-      <pre><span class="code-label">shell</span>$ curl -s -X PUT localhost:8080/api/v1/articles/1 \
-  -H <span class="s">"Authorization: Bearer &lt;B的accessToken&gt;"</span> -H <span class="s">"Content-Type: application/json"</span> \
-  -d <span class="s">'{"title":"劫持","summary":"x","content":"x","coverImage":""}'</span>
-{<span class="s">"code"</span>:<span class="n">1003</span>,<span class="s">"message"</span>:<span class="s">"无权限"</span>,<span class="s">"data"</span>:<span class="k">null</span>}   <span class="c"># HTTP 403</span></pre>
+      <pre><span class="code-label">shell</span>$ curl -s -i -X PUT localhost:8080/api/v1/articles/1 \
+  -H <span class="s">"Authorization: Bearer &lt;B 的 accessToken&gt;"</span> -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"title":"劫持","summary":"x","content":"x","cover_image":""}'</span>
+HTTP/1.1 403 Forbidden
+{<span class="s">"code"</span>:<span class="n">1003</span>,<span class="s">"message"</span>:<span class="s">"无权限"</span>,<span class="s">"data"</span>:<span class="k">null</span>}
+
+<span class="c"># DELETE 同理；换回 A 的 token 再发一次，应该 200/204 成功。
+# 前端这边：把 B 的 token 塞进 localStorage，手敲 /post/1/edit，点「保存修改」，
+# 页面上应当显示出「无权限」这行红字（拦截器把后端 message 透出来了）。</span></pre>
     </div>
     <div class="task">
       <div class="task-title">练习 3：给编辑器加一个「预览」双栏（30 分钟）</div>
       <p>不引 Markdown 库的极简预览：textarea 右边放一个 <code>&lt;pre&gt;</code> 实时镜像 content，再加按钮切换 编辑/预览 两个视图。目标是理解「受控 textarea 的值同时驱动两个视图」，为第 8 周接真正的 markdown 渲染留感觉。</p>
       <pre><span class="code-label">jsx</span><span class="c">// 双栏核心：同一个 form.content 驱动输入与展示</span>
+<span class="k">const</span> [preview, setPreview] = useState(<span class="k">false</span>) <span class="c">// ← 组件顶部声明，别漏这两个标识符</span>
+
 &lt;<span class="t">div</span> style={{ display: <span class="s">'grid'</span>, gridTemplateColumns: <span class="s">'1fr 1fr'</span>, gap: <span class="n">12</span> }}&gt;
-  &lt;<span class="t">textarea</span> value={form.content} onChange={onChange} rows={<span class="n">15</span>} /&gt;
+  &lt;<span class="t">textarea</span> name=<span class="s">"content"</span> value={form.content} onChange={onChange} rows={<span class="n">15</span>} /&gt;
   {preview
     ? &lt;<span class="t">pre</span> style={{ whiteSpace: <span class="s">'pre-wrap'</span>, background: <span class="s">'#f6f7f9'</span>, padding: <span class="n">12</span> }}&gt;
         {form.content}
@@ -246,11 +297,34 @@
 &lt;/<span class="t">div</span>&gt;
 &lt;<span class="t">button</span> type=<span class="s">"button"</span> onClick={() =&gt; setPreview((p) =&gt; !p)}&gt;
   {preview ? <span class="s">'返回编辑'</span> : <span class="s">'预览原文'</span>}
-&lt;/<span class="t">button</span>&gt;</pre>
+&lt;/<span class="t">button</span>&gt;
+<span class="c">// type="button" 必须写：它在 form 里，默认 type=submit，点一下就走提交流程了</span></pre>
     </div>
     <div class="task">
-      <div class="task-title">练习 4：删前检查未保存修改（20 分钟）</div>
-      <p>利用第 3 节的 <code>dirtyRef</code>：在编辑页点浏览器返回或站内离开前，如果 <code>dirtyRef.current</code> 为 true 弹 <code>confirm('有未保存修改，确定离开？')</code>。做不动就先只在删除按钮旁加「重置草稿」二次确认，效果等价。</p>
+      <div class="task-title">练习 4：未保存修改的离开拦截（20 分钟）</div>
+      <p>利用第 3 节的 <code>dirtyRef</code>，离开编辑页时如果 <code>dirtyRef.current</code> 为 true 就拦一道。<b>react-router 的 <code>useBlocker</code> 是实验性 API</b>，而且只在 <code>createBrowserRouter</code> + <code>RouterProvider</code> 的数据路由模式下才生效——本周的 <code>App.jsx</code> 用的是 <code>&lt;BrowserRouter&gt;</code> + <code>&lt;Routes&gt;</code>，硬 import 会拿到 undefined。所以下面给两个<b>今天就能跑</b>的替代方案，两个都要做：</p>
+      <pre><span class="code-label">jsx</span><span class="c">// ① 浏览器级拦截：拦得住刷新 / 关标签页 / 手改地址栏，拦不住站内跳转
+// Editor.jsx 组件内，和 useEffect 放一起</span>
+<span class="t">useEffect</span>(() =&gt; {
+  <span class="k">const</span> onBeforeUnload = (e) =&gt; {
+    <span class="k">if</span> (!dirtyRef.current) <span class="k">return</span> <span class="c">// 没动过就别拦人</span>
+    e.<span class="t">preventDefault</span>()          <span class="c">// Chrome/Firefox 要求显式调用才弹框</span>
+    e.returnValue = <span class="s">''</span>          <span class="c">// 自定义文案早被浏览器禁了，留空用原生提示</span>
+  }
+  window.<span class="t">addEventListener</span>(<span class="s">'beforeunload'</span>, onBeforeUnload)
+  <span class="k">return</span> () =&gt; window.<span class="t">removeEventListener</span>(<span class="s">'beforeunload'</span>, onBeforeUnload)
+}, []) <span class="c">// 空依赖：只订阅一次；dirtyRef 是 ref，不需要进依赖数组</span></pre>
+      <pre><span class="code-label">jsx</span><span class="c">// ② 站内导航：包一层自己的导航函数，「取消编辑」按钮走它</span>
+<span class="k">const</span> guardedNavigate = (to) =&gt; {
+  <span class="k">if</span> (!dirtyRef.current || window.<span class="t">confirm</span>(<span class="s">'有未保存修改，确定离开？'</span>)) {
+    dirtyRef.current = <span class="k">false</span> <span class="c">// 放行前清脏标记，否则 ① 会在下一跳再拦一次</span>
+    <span class="t">navigate</span>(to)
+  }
+}
+<span class="c">// 用法：&lt;button type="button" onClick={() =&gt; guardedNavigate(`/post/${id}`)}&gt;取消编辑&lt;/button&gt;
+// 顶栏链接（NavBar 的「首页」）这类全局导航想一起拦，就得把脏状态下沉到共享 hook 里，
+// 本周不做——真实项目普遍也只做「表单自己的取消/提交按钮 + beforeunload」这一层。</span></pre>
+      <div class="callout note"><p>真要把「站内所有导航」都拦住，第 8 周把路由换成数据路由后用 <code>useBlocker</code>：<code>const blocker = useBlocker(() =&gt; dirtyRef.current)</code>，再在 UI 上根据 <code>blocker.state === 'blocked'</code> 渲染确认框，用户点确定调 <code>blocker.proceed()</code>、点取消调 <code>blocker.reset()</code>。为了它把整份路由表重写成 <code>createBrowserRouter</code>，本周的收益不值当，先知道有这条路。</p></div>
     </div>
   </section>
 
@@ -259,11 +333,13 @@
     <table>
       <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
       <tr><td>回填竞态覆盖用户输入</td><td>编辑页打开瞬间开始打字，详情响应回来后打的字没了</td><td>回填完成前渲染「回填中…」不显示表单；或 dirtyRef 拦截晚到的回填</td></tr>
-      <tr><td>authorId 类型不对齐</td><td>自己是作者却看不到按钮</td><td>useParams/部分接口返回字符串，比较统一 <code>Number()</code>；或 <code>String(a) === String(b)</code></td></tr>
+      <tr><td>id 类型不对齐</td><td>自己是作者却看不到按钮；或「当前页是不是我的」永远判错</td><td>用 <code>article.user.id === user.id</code>（都是 JSON 里的 number）；<b>别</b>拿 <code>useParams</code> 的字符串 id 去比，要比先 <code>Number()</code></td></tr>
+      <tr><td>后端 DTO 没接 summary / cover_image</td><td>提交 201 成功、无报错，但摘要和封面永远是空，列表页只剩占位图</td><td>Gin 静默丢弃未绑定字段。按第 2.5 节补 DTO 的 json tag + 构造赋值两处，重启后 curl 复验</td></tr>
+      <tr><td><code>article.user</code> 是 undefined</td><td>作者按钮死活不出现，前端逻辑看着没问题</td><td>后端 <code>User</code> 字段带 <code>omitempty</code>，列表/详情 handler 要 <code>Preload("User")</code>；先 curl 确认返回体里有 user 键</td></tr>
       <tr><td>PUT 忘拼路径 id</td><td><code>http.put('/articles', ...)</code> → 404 或打到创建接口</td><td>update 必须 <code>put(`/articles/${id}`)</code>，Network 里先看 URL 再看 body</td></tr>
       <tr><td>confirm 的返回值当布尔强校验</td><td><code>if (confirm(...) === true)</code> 在某些 polyfill 环境行为怪异</td><td>confirm 返回布尔，直接 <code>if (!ok) return</code> 即可</td></tr>
       <tr><td>成功后 navigate(-1) 数据是旧的</td><td>回列表看不到刚发的文章，怀疑后端没存</td><td>列表挂载时 useEffect 才跑；用方案 B 的 <code>?t=</code> 强制刷新，或跳详情页</td></tr>
-      <tr><td>新建时把 user.id 塞进请求体</td><td>后端忽略还好，若后端「信任前端 authorId」就是越权漏洞</td><td>身份永远从 token 解，前端不传 authorId</td></tr>
+      <tr><td>新建时把 <code>user_id</code> 塞进请求体</td><td>后端忽略还好，若后端「信任前端传的 user_id」就是越权漏洞</td><td>身份永远从 token 解（<code>c.GetUint("userID")</code>），DTO 里那行写 <code>`json:"-"`</code></td></tr>
     </table>
   </section>
 
@@ -278,16 +354,18 @@
       <tr><td>受控弹窗</td><td>显隐由组件 state 决定的自研确认框，替代 window.confirm，可样式化可测试</td></tr>
       <tr><td>草稿保护（dirtyRef）</td><td>用 ref 记录「用户是否已输入」，晚到的回填/离开动作据此让路，防覆盖打字内容</td></tr>
       <tr><td>越权（IDOR）</td><td>改别人的资源：前端藏按钮是体验，后端校验 token 身份才是安全</td></tr>
+      <tr><td>静默丢字段</td><td>请求体里带了后端 DTO 没声明的键，Gin 不报错、直接丢弃；201 成功但字段是空值——只能用 curl 提前钉契约</td></tr>
+      <tr><td>实验性 API（useBlocker）</td><td>react-router 尚未稳定的导航拦截钩子，只在数据路由（createBrowserRouter + RouterProvider）下生效；本周用 beforeunload + 手动 confirm 代替</td></tr>
     </table>
   </section>
 
   <section>
     <h2>完成检查（全部勾掉才算毕业）</h2>
     <ul class="check">
-      <li><label><input type="checkbox" data-key="w6d3c1">发布一篇带封面与 Markdown 原文的新文章，成功后自动跳到它的详情页</label></li>
-      <li><label><input type="checkbox" data-key="w6d3c2">编辑页打开即回填完整，改标题保存后详情页展示新值</label></li>
+      <li><label><input type="checkbox" data-key="w6d3c1">发布一篇带摘要、封面与 Markdown 原文的新文章，成功后自动跳到它的详情页，<b>详情页/列表页真能读出你填的 <code>summary</code> 与 <code>cover_image</code></b>（读不出就回第 2.5 节补后端 DTO）</label></li>
+      <li><label><input type="checkbox" data-key="w6d3c2">编辑页打开即回填完整，改标题保存后详情页展示新值；「取消编辑」在有未保存内容时会弹确认</label></li>
       <li><label><input type="checkbox" data-key="w6d3c3">删除弹二次确认，取消后文章还在，确定后列表（带 <code>?t=</code>）不再显示</label></li>
-      <li><label><input type="checkbox" data-key="w6d3c4">作者视角看得到编辑/删除按钮；换账号 B 看不到，且 curl 强行 PUT 返回 403/1003</label></li>
+      <li><label><input type="checkbox" data-key="w6d3c4">作者视角看得到编辑/删除按钮（靠 <code>article.user.id === user.id</code>）；换账号 B 看不到，且 curl 强行 PUT 返回 403/1003</label></li>
       <li><label><input type="checkbox" data-key="w6d3c5">口述三种「成功后跳转与刷新」方案的取舍，并说出你项目里选的是哪种、为什么</label></li>
     </ul>
   </section>

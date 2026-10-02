@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>W8D4 · 联调测试修 bug | Go 全栈修炼手册</title>
-<meta name="description" content="Day 4：发布前六大类测试清单逐格验证、补全第 4 周测试（RBAC 判定单测 + 上传校验单测 + httptest 测 admin 403）、-race 全量跑、边界清单（超长标题/0 字节文件/伪 PNG/SQL 注入/并发同名上传）与 bug 记录表模板，至少修 3 个真 bug。">
+<meta name="description" content="Day 4：发布前六大类测试清单逐格验证、把 RBAC 判定抽成生产代码里的纯函数 CanModerate（internal/service/rbac.go）并补表驱动单测、给 D2 的 upload.Check 补六例可跑测试、httptest 测 admin 403、-race 全量跑 + scripts/hammer.sh 并发轰炸、边界清单六连，以及把第 4 周那份 ci.yml 升级成 -race 全量 + 覆盖率上传 + MySQL service 容器。">
 <link rel="stylesheet" href="../../assets/style.css">
 <script src="../../assets/app.js"></script>
 </head>
@@ -23,17 +23,24 @@
     <span class="chip">难度 ★★★★☆</span>
   </div>
   <h1>联调测试修 bug：发布前的压力日</h1>
-  <p>功能做完了 ≠ 能上线。今天的任务只有一个：<b>像一个带着恶意的用户 + 一个较真的面试官那样，把你的博客锤一遍</b>。先系统化（测试清单）、再自动化（补齐单测与 httptest）、最后边界轰炸（超长输入、假文件、注入、并发）。目标产出：至少 3 个真 bug 的修复记录。</p>
+  <p>功能做完了 ≠ 能上线。今天的任务只有一个：<b>像一个带着恶意的用户 + 一个较真的面试官那样，把你的博客锤一遍</b>。先系统化（测试清单）、再自动化（把判定抽成生产代码里的纯函数并补测试）、最后边界轰炸（超长输入、假文件、注入、并发）。产出四样东西：<b>至少 3 个真 bug 的修复记录、三个可跑的测试文件、一份能轰 20 并发的脚本、一份升级后的 workflow</b>。</p>
 
   <section class="goals">
     <h2>今日目标</h2>
     <ul class="check">
-      <li><label><input type="checkbox" data-key="w8d4g1">拿着六大类测试清单逐格过一遍全站，任何一格失败都记进 bug 表</label></li>
-      <li><label><input type="checkbox" data-key="w8d4g2">补写 service 层 RBAC 判定单测 + 上传校验单测，<code>go test ./...</code> 全绿</label></li>
-      <li><label><input type="checkbox" data-key="w8d4g3">用 httptest 测通「普通用户访问 admin 接口返回 403」这条核心安全断言</label></li>
-      <li><label><input type="checkbox" data-key="w8d4g4">跑完 <code>-race</code> 与边界清单，修掉至少 3 个真 bug 并按模板留档</label></li>
+      <li><label><input type="checkbox" data-key="w8d4g1">拿着六大类测试清单逐格过一遍全站，任何一格与预期不符都当场记进 bug 表</label></li>
+      <li><label><input type="checkbox" data-key="w8d4g2">把 RBAC 判定抽成<b>生产代码</b>里的纯函数 <code>internal/service/rbac.go:CanModerate</code>，三处调用点全换掉，测试文件只引用不定义它</label></li>
+      <li><label><input type="checkbox" data-key="w8d4g3">给 D2 的 <code>upload.Check</code> 与 admin 的分页兜底各写一份表驱动测试，再用 httptest 钉住「普通用户进 admin 得 403+1003」</label></li>
+      <li><label><input type="checkbox" data-key="w8d4g4">跑通 <code>go test -race ./...</code> 与 <code>scripts/hammer.sh</code>，把 W4D5 那份 <code>ci.yml</code> 升级（-race 全量 + 覆盖率上传 + MySQL service 容器）并推绿</label></li>
     </ul>
     <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+  </section>
+
+  <section>
+    <h2>课前须知：今天的三条纪律</h2>
+    <div class="callout note"><p><b>1. 所有 <code>go</code> 命令都在 <code>backend/</code> 目录下跑。</b>第 6 周仓库归置后模块根是 <code>goblog/backend/</code>（<code>go.mod</code> 在那儿），在仓库根敲 <code>go test ./...</code> 只会得到 <code>go.mod file not found</code>。import 前缀一律 <code>goblog/internal/...</code>——本课从来没有一个叫 <code>blog</code> 的模块。</p></div>
+    <div class="callout warn"><p><b>2. 被测函数必须活在生产代码里。</b>今天最容易犯的错是把 <code>CanModerate</code> 写在 <code>rbac_test.go</code> 里：测试全绿，但线上跑的仍是 handler 里那行手写的 <code>if a.UserID != userID</code>——你保护的是一个只存在于测试文件里的副本。判定逻辑放进 <code>internal/service/rbac.go</code>，调用点换成它，测试只 import 被测包。</p></div>
+    <div class="callout tip"><p><b>3. 测试永远不连开发库。</b>第 4 周立的规矩今天继续生效：单测用 sqlite 内存库（<code>file:名字?mode=memory&amp;cache=shared</code>），要跑 MySQL 就走独立的 <code>TEST_DB_DSN</code> 指向 <code>goblog_test</code>，并且复用 W4D5 那个 <code>assertTestDSN</code> 先验一遍串里是不是 <code>/goblog_test?</code>。</p></div>
   </section>
 
   <section>
@@ -43,30 +50,75 @@
     <p>别漫无目的地乱点。把功能切成六个格子，每格写清「操作 → 预期」，手动过一遍（浏览器 + curl 各半），这就是小团队最低成本的发布回归。第 8 周新增的 RBAC 与上传务必占格。</p>
     <table>
       <tr><th>类别</th><th>验证项（操作 → 预期）</th><th>常用工具</th></tr>
-      <tr><td>① 接口</td><td>每个端点正常调用 → 200/201 + code:0；必填缺失 → 400 + code:1004；不存在资源 → 404 + code:1001</td><td>curl + jq</td></tr>
-      <tr><td>② 权限</td><td>未登录写操作 → 401；非作者改文 → 403；普通用户进 admin → 403；管理员全通 → 200</td><td>curl（三种 token 各备一份）</td></tr>
-      <tr><td>③ 上传</td><td>真图 → 成功且重启后仍可访问；伪 PNG → 400；0 字节 → 400；6MB → 400；前端无 Content-Type 手设 → 正常</td><td>curl -F + 手工改名的文本文件</td></tr>
-      <tr><td>④ 登录</td><td>错误密码 → code:1002；access 过期 → 前端静默 refresh 无感；refresh 过期 → 跳登录；退出后 localStorage 清空</td><td>浏览器 DevTools（把 JWT_SECRET 改了重启可人造过期）</td></tr>
-      <tr><td>⑤ 分页</td><td>page 超界 → 空 list 不报错；size=0/负数/999 → 兜底为默认值；总数 total 恒正确</td><td>curl 拼参数</td></tr>
+      <tr><td>① 接口</td><td><code>GET /health</code> → <code>{"code":0,"message":"ok","data":{"status":"ok"}}</code>；每个端点正常调用 → 200/201 + code:0；必填缺失 → 400 + 1004；不存在的资源 → 404 + 1001（文章专属 2001）</td><td>curl + jq</td></tr>
+      <tr><td>② 权限</td><td>未登录写操作 → 401+1005；非作者改别人的文 → 403+1003；普通用户进 <code>/admin/*</code> → 403+1003；管理员全通 → 200；<b>refresh token 冒充 access</b> → 401+1005</td><td>curl（三种 token 各备一份）</td></tr>
+      <tr><td>③ 上传</td><td>真图 → 成功且重启容器后仍可访问；伪 PNG（文本改名）→ 400「文件真实类型不是图片」；0 字节 → 400「文件为空」；6MB → 400「文件超过 5MB 限制」；<code>.svg</code> → 400「仅支持 jpg/png/gif/webp」</td><td><code>curl -F</code> + 手工改名的文本文件</td></tr>
+      <tr><td>④ 登录</td><td>错误密码 → 401 + code:1002；access 过期 → 前端静默 refresh 无感；refresh 过期 → 跳 <code>/login?redirect=…</code>；退出后 localStorage 三个键全空</td><td>浏览器 DevTools（改 <code>JWT_SECRET</code> 重启可人造「过期」）</td></tr>
+      <tr><td>⑤ 分页</td><td><code>page</code> 超界 → 空 list 不报错；<code>size=0</code>／负数／非数字 → 兜底默认值；admin 的 <code>size=999</code> → 回落到 10；<code>total</code> 恒正确</td><td>curl 拼参数</td></tr>
       <tr><td>⑥ 搜索</td><td>关键词命中 → 只出匹配项；特殊字符 <code>% _ '</code> → 不报 500；空串 → 返回全量列表</td><td>浏览器搜索框 + curl</td></tr>
     </table>
-    <div class="callout tip"><p>把这张表原样贴进项目 <code>TESTING.md</code>，每格后面加「通过 ✅ / bug 编号」。上线前任何人（包括下个月的你）都能按表回归，这就是「可展示的工程素养」。</p></div>
+    <div class="callout tip"><p>把这张表原样贴进项目 <code>TESTING.md</code>，每格后面加「通过 ✅ / bug 编号」。上线前任何人（包括下个月的你）都能按表回归，这就是「可展示的工程素养」。第 5 天的 README 会直接引用这份 <code>TESTING.md</code>。</p></div>
 
-    <h3>2. 把第 4 周的测试债补上（一）：纯逻辑单测</h3>
-    <p>第 4 周学了 <code>testing</code>，但只给老接口写了零星测试。本周新增的两块逻辑恰好都<b>不依赖数据库</b>，是绝佳的可测代码——RBAC 判定抽成纯函数、上传校验只吃 <code>FileHeader</code>。表驱动（第 4 周口径）：</p>
-    <pre><span class="code-label">internal/service/rbac_test.go</span><span class="k">package</span> service
+    <h3>2. 测试债（一）：把 RBAC 判定抽进生产代码，再测它</h3>
+    <p>D1 的路由表里那句注释 <code>// 仅作者，D4 抽出的 CanModerate</code> 就是今天还的债。<b>先建文件、再换调用点、最后写测试</b>——顺序反过来测试就没东西可测。</p>
+    <pre><span class="code-label">internal/service/rbac.go（新文件，整份复制即可编译）</span><span class="k">package</span> service
+
+<span class="k">import</span> <span class="s">"goblog/internal/model"</span>
+
+<span class="c">// CanModerate 回答「当前用户能不能处置这条资源」：
+// 等级够 RoleAdmin 的能处置任何人的；否则只有作者本人。
+// 用 &gt;= 而不是 ==，和 D1 的 RequireRole 同一个「等级」口径，将来加 RoleSuperAdmin 不用回来改。
+// 它是纯函数：不查库、不碰 gin.Context，所以能脱离数据库被完整测试（今天第 2 节末尾）。</span>
+<span class="k">func</span> CanModerate(role model.Role, uid, ownerID <span class="t">uint</span>) <span class="t">bool</span> {
+    <span class="k">if</span> uid == <span class="n">0</span> {
+        <span class="k">return</span> <span class="k">false</span>   <span class="c">// 拿不到身份就一律拒绝：0 不是合法用户 ID，别让它和脏数据的 owner 撞上</span>
+    }
+    <span class="k">if</span> role &gt;= model.RoleAdmin {
+        <span class="k">return</span> <span class="k">true</span>
+    }
+    <span class="k">return</span> uid == ownerID
+}</pre>
+    <p>然后是三处调用点。前两处是第 4 周写的文章改删（当时只有「仅作者」，没有角色概念），第三处是 D3 评论里那两行临时判定：</p>
+    <pre><span class="code-label">internal/service/article.go（Update 与 Delete 各改两行）</span><span class="c">// 签名尾部加一个 role：service 从此需要知道「谁」和「什么等级」，不再只靠 uid 相等</span>
+- <span class="k">func</span> (s *<span class="t">ArticleService</span>) <span class="t">Update</span>(id, userID <span class="t">uint</span>, title, content <span class="t">string</span>) (*model.Article, <span class="t">error</span>) {
++ <span class="k">func</span> (s *<span class="t">ArticleService</span>) <span class="t">Update</span>(id, userID <span class="t">uint</span>, role model.Role, title, content <span class="t">string</span>) (*model.Article, <span class="t">error</span>) {
+      a, err := s.arts.<span class="t">Get</span>(id)
+      <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="k">nil</span>, err }
+-     <span class="k">if</span> a.UserID != userID {
++     <span class="k">if</span> !CanModerate(role, userID, a.UserID) {
+          <span class="k">return</span> <span class="k">nil</span>, ErrNotOwner   <span class="c">// → handler 403 + 1003（哨兵不变，翻错的还是 handler）</span>
+      }
+
+- <span class="k">func</span> (s *<span class="t">ArticleService</span>) <span class="t">Delete</span>(id, userID <span class="t">uint</span>) <span class="t">error</span> {
++ <span class="k">func</span> (s *<span class="t">ArticleService</span>) <span class="t">Delete</span>(id, userID <span class="t">uint</span>, role model.Role) <span class="t">error</span> {
+      a, err := s.arts.<span class="t">Get</span>(id)
+      <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> err }
+-     <span class="k">if</span> a.UserID != userID { <span class="k">return</span> ErrNotOwner }
++     <span class="k">if</span> !CanModerate(role, userID, a.UserID) { <span class="k">return</span> ErrNotOwner }
+      <span class="k">return</span> s.arts.<span class="t">SoftDelete</span>(id)</pre>
+    <pre><span class="code-label">internal/handler/article.go（两处调用补第三个实参）</span><span class="c">// currentRole 是 D3 写在 internal/handler/comment.go 里的小工具（同一个 package handler，直接用）：
+// 内部就是 role, ok := c.Get("role").(model.Role)；断言失败返回 RoleUser，宁少给权限不误放行</span>
+- a, err := h.arts.<span class="t">Update</span>(<span class="t">uint</span>(id), c.<span class="t">GetUint</span>(<span class="s">"userID"</span>), req.Title, req.Content)
++ a, err := h.arts.<span class="t">Update</span>(<span class="t">uint</span>(id), c.<span class="t">GetUint</span>(<span class="s">"userID"</span>), currentRole(c), req.Title, req.Content)
+
+- <span class="k">if</span> err := h.arts.<span class="t">Delete</span>(<span class="t">uint</span>(id), c.<span class="t">GetUint</span>(<span class="s">"userID"</span>)); err != <span class="k">nil</span> {
++ <span class="k">if</span> err := h.arts.<span class="t">Delete</span>(<span class="t">uint</span>(id), c.<span class="t">GetUint</span>(<span class="s">"userID"</span>), currentRole(c)); err != <span class="k">nil</span> {</pre>
+    <pre><span class="code-label">internal/service/comment.go（D3 留的那两行，现在替换）</span>  cm, err := s.repo.<span class="t">Get</span>(id)
+  <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> err }
+- isOwner := cm.AuthorID == uid
+- isAdmin := role == model.RoleAdmin
+- <span class="k">if</span> !isOwner &amp;&amp; !isAdmin {
++ <span class="k">if</span> !CanModerate(role, uid, cm.AuthorID) {
+      <span class="k">return</span> ErrNotAuthor
+  }</pre>
+    <div class="callout warn"><p>改完签名，编译器会替你把所有漏改的调用点全列出来——这是今天最省事的一刻：<b>先改函数再改调用，不要反过来</b>。反过来写你会发现 <code>h.arts.Delete(a, b, c)</code> 报「too many arguments」，然后顺手把第三个参数删掉，判定就又退回手工比较了。改完跑一句 <code>grep -rn 'UserID != ' internal/</code> 做自检：结果应该是<b>空</b>（权限判定全站只剩 <code>CanModerate</code> 一处）。</p></div>
+    <pre><span class="code-label">internal/service/rbac_test.go（只引用被测函数，不在这里定义它）</span><span class="k">package</span> service
 
 <span class="k">import</span> (
     <span class="s">"testing"</span>
-    <span class="s">"blog/internal/model"</span>
-)
 
-<span class="c">// CanModerate 是 RBAC+所有权判定的纯函数版本（从 handler 里抽出来的）：
-// 管理员可处置任何文章；否则只有作者本人可改删自己的。</span>
-<span class="k">func</span> CanModerate(role model.Role, uid, articleAuthorID <span class="t">uint</span>) <span class="t">bool</span> {
-    <span class="k">if</span> role == model.RoleAdmin { <span class="k">return</span> <span class="k">true</span> }
-    <span class="k">return</span> uid == articleAuthorID
-}
+    <span class="s">"goblog/internal/model"</span>
+)
 
 <span class="k">func</span> TestCanModerate(t *<span class="t">testing</span>.T) {
     cases := []<span class="k">struct</span> {
@@ -78,7 +130,9 @@
         {<span class="s">"管理员处置他人文章"</span>, model.RoleAdmin, <span class="n">9</span>, <span class="n">1</span>, <span class="k">true</span>},
         {<span class="s">"作者处置自己文章"</span>, model.RoleUser, <span class="n">1</span>, <span class="n">1</span>, <span class="k">true</span>},
         {<span class="s">"普通用户碰他人文章"</span>, model.RoleUser, <span class="n">2</span>, <span class="n">1</span>, <span class="k">false</span>},
-        {<span class="s">"零值用户碰零值文章"</span>, model.RoleUser, <span class="n">0</span>, <span class="n">0</span>, <span class="k">false</span>}, <span class="c">// ← 特意测 uid=0：真实用户 ID 从 1 起，0 必须拒绝</span>
+        {<span class="s">"零值用户碰零值文章"</span>, model.RoleUser, <span class="n">0</span>, <span class="n">0</span>, <span class="k">false</span>}, <span class="c">// ← 脏 context 的兜底分支，就是 rbac.go 里那句 uid == 0</span>
+        {<span class="s">"零值用户冒充管理员"</span>, model.RoleAdmin, <span class="n">0</span>, <span class="n">1</span>, <span class="k">false</span>}, <span class="c">// uid 检查排在角色之前：提权也救不了空身份</span>
+        {<span class="s">"等级法的副作用：未定义角色"</span>, model.Role(<span class="n">7</span>), <span class="n">1</span>, <span class="n">1</span>, <span class="k">true</span>}, <span class="c">// 7 &gt;= 1 → 被当管理员，见下方那条权衡</span>
     }
     <span class="k">for</span> _, tc := <span class="k">range</span> cases {
         t.Run(tc.name, <span class="k">func</span>(t *<span class="t">testing</span>.T) {
@@ -88,25 +142,47 @@
         })
     }
 }</pre>
-    <div class="callout warn"><p>上面第 4 个用例暴露了一个<b>真实 bug 候选</b>：若 Auth 中间件异常导致 <code>uid=0</code> 透传下来，而某篇文章的 author_id 恰好为 0（脏数据），判定会误放行。修法：<code>CanModerate</code> 开头加 <code>if uid == 0 { return false }</code>——今天的 3 个 bug 名额，这可能就是第一个。</p></div>
-    <p>上传校验单测：先把 D2 的 <code>ValidateImage</code> 内核抽成纯函数 <code>Check(ext string, size int64, head []byte) error</code>（<code>ValidateImage</code> 只负责从 FileHeader 里取这三样再调它）——「为了可测而重构」的日常，测试从此不需要构造 FileHeader：</p>
-    <pre><span class="code-label">internal/pkg/upload/validate_test.go</span><span class="k">func</span> TestCheck(t *<span class="t">testing</span>.T) {
-    <span class="c">// 最小合法 PNG 头：8 字节签名，够 DetectContentType 认出 image/png</span>
-    png := append([]<span class="t">byte</span>{<span class="s">0x89</span>, <span class="s">'P'</span>, <span class="s">'N'</span>, <span class="s">'G'</span>, <span class="s">'\r'</span>, <span class="s">'\n'</span>, <span class="s">0x1a</span>, <span class="s">'\n'</span>}, <span class="k">make</span>([]<span class="t">byte</span>, <span class="n">512</span>)...)
+    <pre><span class="code-label">shell</span>$ cd backend
+$ go test -run TestCanModerate ./internal/service/ -v
+=== RUN   TestCanModerate
+=== RUN   TestCanModerate/管理员处置他人文章
+--- PASS: TestCanModerate/管理员处置他人文章 (0.00s)
+...
+PASS    goblog/internal/service   0.31s</pre>
+    <div class="callout note"><p>最后一条用例值得停一下：<code>Role(7) &gt;= RoleAdmin</code> 为真，所以一个不存在的角色会被当成管理员放行。这是「用等级而不是枚举」的代价，两种写法都成立——想更严就把 <code>role &gt;= model.RoleAdmin</code> 换成 <code>role == model.RoleAdmin</code>，那条用例的期望值随之从 <code>true</code> 变 <code>false</code>。<b>关键是这个取舍要写在注释里并且有一条测试盯着</b>，而不是等某天有人往 const 块里插了个 <code>RoleModerator</code> 才发现。</p></div>
+
+    <h3>3. 测试债（二）：上传校验的六例——D2 那份 Check 直接拿来测</h3>
+    <p>D2 交付的 <code>internal/pkg/upload/validate.go</code> 里，<b>纯函数 <code>Check(ext string, size int64, head []byte) error</code> 已经写完了</b>（0 字节 → 超限 → 扩展名白名单 → 魔数嗅探，便宜的检查放前面），<code>ValidateImage</code> 只是从 <code>FileHeader</code> 里凑齐三个入参的壳。所以今天的活只剩写测试——不需要再「为了可测而重构」。</p>
+    <pre><span class="code-label">internal/pkg/upload/validate_test.go（整份复制即可编译，与被测代码同包）</span><span class="k">package</span> upload
+
+<span class="k">import</span> (
+    <span class="s">"strings"</span>
+    <span class="s">"testing"</span>
+)
+
+<span class="c">// pngHead 造一个够 DetectContentType 认出 image/png 的头部：8 字节 PNG 签名 + 一堆零
+// 真文件不需要，Check 只看传入的前 512 字节，这就是把它抽成纯函数的回报。</span>
+<span class="k">func</span> pngHead() []<span class="t">byte</span> {
+    <span class="k">return</span> append([]<span class="t">byte</span>{<span class="s">0x89</span>, <span class="s">'P'</span>, <span class="s">'N'</span>, <span class="s">'G'</span>, <span class="s">'\r'</span>, <span class="s">'\n'</span>, <span class="s">0x1a</span>, <span class="s">'\n'</span>}, <span class="k">make</span>([]<span class="t">byte</span>, <span class="n">512</span>)...)
+}
+
+<span class="k">func</span> TestCheck(t *<span class="t">testing</span>.T) {
+    png := pngHead()
 
     cases := []<span class="k">struct</span> {
-        name             <span class="t">string</span>
-        ext              <span class="t">string</span>
-        size             <span class="t">int64</span>
-        head             []<span class="t">byte</span>
-        wantErr          <span class="t">bool</span>
+        name    <span class="t">string</span>
+        ext     <span class="t">string</span>
+        size    <span class="t">int64</span>
+        head    []<span class="t">byte</span>
+        wantErr <span class="t">bool</span>
+        msg     <span class="t">string</span>   <span class="c">// 可选：顺手断言文案，防止「拒是拒了，但用户看不懂」</span>
     }{
-        {<span class="s">"真 PNG"</span>, <span class="s">".png"</span>, <span class="t">int64</span>(<span class="t">len</span>(png)), png[:<span class="n">512</span>], <span class="k">false</span>},
-        {<span class="s">"0 字节"</span>, <span class="s">".png"</span>, <span class="n">0</span>, <span class="k">nil</span>, <span class="k">true</span>},
-        {<span class="s">"文本改名 .png"</span>, <span class="s">".png"</span>, <span class="n">9</span>, []<span class="t">byte</span>(<span class="s">"just text"</span>), <span class="k">true</span>},
-        {<span class="s">"脚本改名 .png"</span>, <span class="s">".png"</span>, <span class="n">19</span>, []<span class="t">byte</span>(<span class="s">"#!/bin/sh\nexit 1"</span>), <span class="k">true</span>},
-        {<span class="s">"合法内容坏后缀 .svg"</span>, <span class="s">".svg"</span>, <span class="t">int64</span>(<span class="t">len</span>(png)), png[:<span class="n">512</span>], <span class="k">true</span>},
-        {<span class="s">"超 5MB"</span>, <span class="s">".png"</span>, <span class="n">6</span> &lt;&lt; <span class="n">20</span>, png[:<span class="n">512</span>], <span class="k">true</span>},
+        {<span class="s">"真 PNG"</span>, <span class="s">".png"</span>, <span class="t">int64</span>(<span class="t">len</span>(png)), png[:<span class="n">512</span>], <span class="k">false</span>, <span class="s">""</span>},
+        {<span class="s">"0 字节"</span>, <span class="s">".png"</span>, <span class="n">0</span>, <span class="k">nil</span>, <span class="k">true</span>, <span class="s">"文件为空"</span>},
+        {<span class="s">"文本改名 .png"</span>, <span class="s">".png"</span>, <span class="n">9</span>, []<span class="t">byte</span>(<span class="s">"just text"</span>), <span class="k">true</span>, <span class="s">"文件真实类型不是图片"</span>},
+        {<span class="s">"脚本改名 .png"</span>, <span class="s">".png"</span>, <span class="n">19</span>, []<span class="t">byte</span>(<span class="s">"#!/bin/sh\nexit 1"</span>), <span class="k">true</span>, <span class="s">"文件真实类型不是图片"</span>},
+        {<span class="s">"合法内容坏后缀 .svg"</span>, <span class="s">".svg"</span>, <span class="t">int64</span>(<span class="t">len</span>(png)), png[:<span class="n">512</span>], <span class="k">true</span>, <span class="s">"仅支持"</span>},
+        {<span class="s">"超 5MB"</span>, <span class="s">".png"</span>, <span class="n">6</span> &lt;&lt; <span class="n">20</span>, png[:<span class="n">512</span>], <span class="k">true</span>, <span class="s">"超过"</span>},
     }
     <span class="k">for</span> _, tc := <span class="k">range</span> cases {
         t.Run(tc.name, <span class="k">func</span>(t *<span class="t">testing</span>.T) {
@@ -114,13 +190,40 @@
             <span class="k">if</span> (err != <span class="k">nil</span>) != tc.wantErr {
                 t.Fatalf(<span class="s">"Check(%q, %d) err = %v, wantErr = %v"</span>, tc.ext, tc.size, err, tc.wantErr)
             }
+            <span class="k">if</span> tc.msg != <span class="s">""</span> &amp;&amp; !strings.<span class="t">Contains</span>(err.Error(), tc.msg) {
+                t.Errorf(<span class="s">"错误文案 = %q，想包含 %q"</span>, err.Error(), tc.msg)
+            }
         })
     }
 }</pre>
+    <div class="callout warn"><p>两条「用例之间互相打脸」的坑先说清。① <b>「超 5MB」那条不会去嗅探魔数</b>：<code>Check</code> 的顺序是 size 先于扩展名先于魔数，所以给它一张合法 PNG 头也照样拒——这正好证明「便宜的检查在前」这条设计成立。② <b>「坏后缀 .svg」和「文本改名 .png」期望的是两句不同的文案</b>：前者栽在白名单、后者栽在魔数。如果你把 <code>Check</code> 的顺序改成「先嗅探再验后缀」，这两条会同时变红——<b>不要改测试期望，去问自己哪个顺序才是你要的</b>。</p></div>
+    <div class="callout tip"><p>这个文件为什么写 <code>package upload</code> 而不是 <code>package upload_test</code>？因为要测的 <code>Check</code> 是导出的、但 <code>allowedExt / allowedMIME</code> 是包内私有的，同包测试可以顺手加白名单相关的用例。代价是测试和被测代码绑在一起；想强制「只用公开 API」就换 <code>package upload_test</code> + <code>upload.Check(...)</code>，两种都是正统写法，别混着用（同一个目录只能有一个包名，混了编译不过）。</p></div>
 
-    <h3>3. 把第 4 周的测试债补上（二）：httptest 测 admin 403</h3>
-    <p>第 4 周用 httptest 测过「非作者改文 403」，今天加上「非管理员进 admin 403」——这是全站最重要的安全断言，值得一个常驻测试保护：</p>
-    <pre><span class="code-label">internal/handler/admin_test.go</span><span class="k">package</span> handler
+    <h3>4. 测试债（三）：admin 的分页兜底，先抽出来才能测</h3>
+    <p>D1 的 <code>ListUsers</code> 里那四行兜底散在 handler 中间，想测它就得连 DB。老规矩：<b>把纯逻辑抠出来变成函数，测试喂字符串就够了</b>。</p>
+    <pre><span class="code-label">internal/handler/admin.go（抽函数，行为一个字节都没变）</span>  <span class="k">func</span> (h *AdminHandler) ListUsers(c *gin.Context) {
+-     page, _ := strconv.Atoi(c.DefaultQuery(<span class="s">"page"</span>, <span class="s">"1"</span>))
+-     size, _ := strconv.Atoi(c.DefaultQuery(<span class="s">"size"</span>, <span class="s">"10"</span>))
+-     <span class="k">if</span> page &lt; <span class="n">1</span> { page = <span class="n">1</span> }
+-     <span class="k">if</span> size &lt; <span class="n">1</span> || size &gt; <span class="n">50</span> { size = <span class="n">10</span> }
++     page, size := normalizePaging(c.DefaultQuery(<span class="s">"page"</span>), c.DefaultQuery(<span class="s">"size"</span>))
+
+<span class="c">// normalizePaging 是从 ListUsers 抠出来的纯函数：不碰 gin、不碰 DB，喂字符串就行。
+// 入参用 c.DefaultQuery 的返回值，所以「缺参数」这件事也变成字符串（"1" / "10"）。
+// 上限 50 是管理员接口的私有约定，比 dto.maxSize 的 100 更严：这里一行 = 一次全表风险。</span>
+<span class="k">func</span> normalizePaging(rawPage, rawSize <span class="t">string</span>) (page, size <span class="t">int</span>) {
+    page, err := strconv.Atoi(rawPage)
+    <span class="k">if</span> err != <span class="k">nil</span> || page &lt; <span class="n">1</span> {
+        page = <span class="n">1</span>
+    }
+    size, err = strconv.Atoi(rawSize)
+    <span class="k">if</span> err != <span class="k">nil</span> || size &lt; <span class="n">1</span> || size &gt; <span class="n">50</span> {
+        size = <span class="n">10</span>
+    }
+    <span class="k">return</span> page, size
+}</pre>
+    <p><code>DefaultQuery("page")</code> 只给一个参数时默认值是空串，<code>strconv.Atoi("")</code> 报错 → 落回 1，正好把「缺参数」和「参数是垃圾」用同一条分支处理掉了——这是抽函数顺手捡到的第二个好处。</p>
+    <pre><span class="code-label">internal/handler/admin_test.go（第一部分：分页兜底表驱动）</span><span class="k">package</span> handler
 
 <span class="k">import</span> (
     <span class="s">"net/http"</span>
@@ -129,117 +232,364 @@
     <span class="s">"testing"</span>
 
     <span class="s">"github.com/gin-gonic/gin"</span>
-    <span class="s">"blog/internal/middleware"</span>
-    <span class="s">"blog/internal/model"</span>
+
+    <span class="s">"goblog/internal/middleware"</span>
+    <span class="s">"goblog/internal/model"</span>
 )
 
-<span class="k">func</span> init() { gin.SetMode(gin.TestMode) }
+<span class="c">// 第 4 周那批 handler 测试里已经有个 init() 设了 TestMode；一个包里多个 init 合法，
+// 但既然已经有了，这里就别再写第二个，读代码的人会被误导。</span>
+<span class="k">func</span> TestNormalizePaging(t *<span class="t">testing</span>.T) {
+    cases := []<span class="k">struct</span> { rawPage, rawSize <span class="t">string</span>; wantPage, wantSize <span class="t">int</span> }{
+        {<span class="s">"2"</span>, <span class="s">"20"</span>, <span class="n">2</span>, <span class="n">20</span>},        <span class="c">// 正常</span>
+        {<span class="s">""</span>, <span class="s">""</span>, <span class="n">1</span>, <span class="n">10</span>},          <span class="c">// 缺参数（DefaultQuery 无默认值时给的是空串）</span>
+        {<span class="s">"abc"</span>, <span class="s">"1e3"</span>, <span class="n">1</span>, <span class="n">10</span>},    <span class="c">// 非数字：Atoi 报错，同样兜底，绝不带着 0 去算 Offset</span>
+        {<span class="s">"0"</span>, <span class="s">"-5"</span>, <span class="n">1</span>, <span class="n">10</span>},       <span class="c">// 负数与 0</span>
+        {<span class="s">"1"</span>, <span class="s">"999"</span>, <span class="n">1</span>, <span class="n">10</span>},      <span class="c">// ← 今天的主角：超限拖库那条，回落到 10 而不是 100</span>
+    }
+    <span class="k">for</span> _, tc := <span class="k">range</span> cases {
+        p, s := <span class="t">normalizePaging</span>(tc.rawPage, tc.rawSize)
+        <span class="k">if</span> p != tc.wantPage || s != tc.wantSize {
+            t.Errorf(<span class="s">"normalizePaging(%q, %q) = (%d, %d), want (%d, %d)"</span>,
+                tc.rawPage, tc.rawSize, p, s, tc.wantPage, tc.wantSize)
+        }
+    }
+}</pre>
 
-<span class="c">// fakeAuth 模拟 Auth 中间件：塞入指定角色，跳过真 token 解析，专测 RBAC 段</span>
+    <h3>5. httptest 测「普通用户进 admin 得 403」：全站最重要的一条断言</h3>
+    <p>第 4 周用 httptest 测过「非作者改文 403」，今天加上「非管理员进 admin 403」。它不需要 DB：<b>用一个假 Auth 塞身份，只测 RequireRole 这一段中间件链</b>——真 token 解析是第 4 周测过的，重复测它只会让 CI 变慢。</p>
+    <pre><span class="code-label">internal/handler/admin_test.go（第二部分：httptest 打中间件链）</span><span class="c">// fakeAuth 模拟 D1 的 Auth：塞进 context 的两个键必须与生产代码逐字一致——
+// "userID" 存 uint、"role" 存 model.Role（W4 讲义里那个 middleware.CtxKeyUserID 常量就是这个串的别名，
+// 两种写法取值相同，但键名写成 "uid" 或把角色塞成 int8，RequireRole 会一路走 !exists / !ok 分支，
+// 测试「假装」通过了，线上却是另一套）。</span>
 <span class="k">func</span> fakeAuth(role model.Role) gin.HandlerFunc {
     <span class="k">return func</span>(c *gin.Context) {
-        c.Set(<span class="s">"uid"</span>, <span class="t">uint</span>(<span class="n">2</span>))
+        c.Set(<span class="s">"userID"</span>, <span class="t">uint</span>(<span class="n">2</span>))
         c.Set(<span class="s">"role"</span>, role)
         c.Next()
     }
 }
 
 <span class="k">func</span> TestAdminUsers_RequiresAdmin(t *<span class="t">testing</span>.T) {
-    setup := <span class="k">func</span>(role model.Role) *gin.Engine {
+    newRouter := <span class="k">func</span>(role model.Role) *gin.Engine {
         r := gin.New()
         g := r.Group(<span class="s">"/api/v1/admin"</span>, fakeAuth(role), middleware.RequireRole(model.RoleAdmin))
-        g.GET(<span class="s">"/users"</span>, <span class="k">func</span>(c *gin.Context) { c.JSON(<span class="n">200</span>, gin.H{<span class="s">"code"</span>: <span class="n">0</span>}) })
+        <span class="c">// 探针 handler：它跑没跑，就是「中间件放行没有」的证据，不需要真查库</span>
+        g.GET(<span class="s">"/users"</span>, <span class="k">func</span>(c *gin.Context) { c.String(http.StatusOK, <span class="s">"HANDLER RAN"</span>) })
         <span class="k">return</span> r
     }
+    const url = <span class="s">"/api/v1/admin/users"</span>
 
-    <span class="c">// 场景一：普通用户 → 403 且业务码 1003</span>
-    w := httptest.NewRecorder()
-    req := httptest.NewRequest(http.MethodGet, <span class="s">"/api/v1/admin/users"</span>, <span class="k">nil</span>)
-    setup(model.RoleUser).ServeHTTP(w, req)
-    <span class="k">if</span> w.Code != http.StatusForbidden {
-        t.Fatalf(<span class="s">"status = %d, want 403"</span>, w.Code)
+    cases := []<span class="k">struct</span> {
+        name     <span class="t">string</span>
+        role     model.Role
+        wantCode <span class="t">int</span>
+        wantBody <span class="t">string</span>   <span class="c">// "" = 不断言响应体</span>
+    }{
+        {<span class="s">"普通用户进 admin"</span>, model.RoleUser, http.StatusForbidden, <span class="s">`"code":1003`</span>},
+        {<span class="s">"管理员进 admin"</span>, model.RoleAdmin, http.StatusOK, <span class="s">"HANDLER RAN"</span>},
     }
-    <span class="k">if</span> !strings.Contains(w.Body.String(), <span class="s">`"code":1003`</span>) {
-        t.Errorf(<span class="s">"body = %s, want code 1003"</span>, w.Body.String())
-    }
-
-    <span class="c">// 场景二：管理员 → 200</span>
-    w2 := httptest.NewRecorder()
-    setup(model.RoleAdmin).ServeHTTP(w2, httptest.NewRequest(http.MethodGet, <span class="s">"/api/v1/admin/users"</span>, <span class="k">nil</span>))
-    <span class="k">if</span> w2.Code != http.StatusOK {
-        t.Fatalf(<span class="s">"admin status = %d, want 200"</span>, w2.Code)
+    <span class="k">for</span> _, tc := <span class="k">range</span> cases {
+        t.Run(tc.name, <span class="k">func</span>(t *<span class="t">testing</span>.T) {
+            w := httptest.NewRecorder()
+            newRouter(tc.role).ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, <span class="k">nil</span>))
+            <span class="k">if</span> w.Code != tc.wantCode {
+                t.Fatalf(<span class="s">"status = %d, want %d"</span>, w.Code, tc.wantCode)
+            }
+            <span class="k">if</span> tc.wantBody != <span class="s">""</span> &amp;&amp; !strings.Contains(w.Body.String(), tc.wantBody) {
+                t.Errorf(<span class="s">"body = %s，想包含 %s"</span>, w.Body.String(), tc.wantBody)
+            }
+            <span class="c">// 反向断言：403 那条绝不能出现探针输出，否则「Abort 之后没 return」又混过去了</span>
+            <span class="k">if</span> tc.wantCode == http.StatusForbidden &amp;&amp; strings.Contains(w.Body.String(), <span class="s">"HANDLER RAN"</span>) {
+                t.Fatal(<span class="s">"被拒的请求居然执行了 handler"</span>)
+            }
+        })
     }
 }</pre>
-    <div class="callout js"><p>httptest 的思维方式与 JS 里的 supertest 一致：<b>不起端口，直接把请求"灌"进路由函数</b>，拿 Recorder 断响应。快（毫秒级）、稳（不占端口不依赖 DB）、适合 CI。</p></div>
+    <div class="callout warn"><p>两个细节决定这份测试有没有价值。① <b>403 那条要断业务码 <code>1003</code>，而不是只断 HTTP 状态</b>——前端拦截器看的是 <code>code</code>（第 6 周那条链），只断 403 的话，哪天有人把 <code>Fail</code> 的 code 写成 <code>1005</code>，测试还是一片绿。② <b>顺手断「handler 没跑」</b>：RequireRole 里少了 <code>return</code>、或者 <code>AbortWithStatusJSON</code> 后面继续执行，是最典型的「403 和 200 同时发生」事故。</p></div>
+    <div class="callout js"><p>httptest 的思维方式与 JS 里的 supertest 一致：<b>不起端口，直接把请求「灌」进路由函数</b>，拿 Recorder 断响应。快（毫秒级）、稳（不占端口不依赖 DB）、适合 CI。要真实 URL（比如测 http.Client 那类）才用 <code>httptest.NewServer</code>——那是第 5 周的分工。</p></div>
 
-    <h3>4. -race 全量跑一遍</h3>
-    <p>第 5 周学的竞态检测今天做全站体检。重点怀疑对象：上传写盘、登录计数、以及任何你用了包级变量/map 的地方。</p>
-    <pre><span class="code-label">shell</span>$ go vet ./...                      <span class="c"># 先静态检查，白捡的低级错误</span>
-$ go test -race ./... -count=1      <span class="c"># 所有测试带竞态检测跑一遍</span>
-ok      blog/internal/service   1.4s
-ok      blog/internal/handler   2.1s
-$ go build -race -o /tmp/blog-race . <span class="c"># 再编一个带 race 的调试二进制</span>
-$ /tmp/blog-race &amp;
-$ ab -n 200 -c 20 http://localhost:8080/api/v1/articles   <span class="c"># 或手写并发 curl 脚本轰炸</span>
-<span class="c"># 无 WARNING: DATA RACE 输出 = 通过；有则把栈贴进 bug 表</span></pre>
-    <p>没有 ab 也可以用一段纯 curl 的并发轰炸脚本，顺便当作回归入口：</p>
-    <pre><span class="code-label">scripts/hammer.sh</span><span class="c">#!/usr/bin/env bash</span>
-<span class="c"># 用法：TOKEN=xxx ./scripts/hammer.sh  # 对登录/发文/上传三连轰 20 并发</span>
+    <h3>6. -race 全量跑一遍，再上并发轰炸</h3>
+    <p>第 5 周学的竞态检测今天做全站体检。重点怀疑对象：上传写盘、浏览量自增、以及任何你用了包级变量 / map 的地方。</p>
+    <pre><span class="code-label">shell</span>$ cd backend
+$ go vet ./...                        <span class="c"># 先静态检查，白捡的低级错误</span>
+$ go test -race ./... -count=1        <span class="c"># 所有包的测试都带竞态检测（-count=1 禁用结果缓存）</span>
+ok      goblog/internal/service   1.4s
+ok      goblog/internal/handler   2.1s
+ok      goblog/internal/pkg/upload    1.1s
+
+$ CGO_ENABLED=1 go build -race -o /tmp/goblog-race ./cmd/server
+$ GIN_MODE=debug UPLOAD_DIR=./uploads /tmp/goblog-race &gt; /tmp/race.log 2&gt;&amp;1 &amp;
+$ ./scripts/hammer.sh                <span class="c"># 下面这份脚本，边轰边看 /tmp/race.log</span>
+$ grep -n <span class="s">'DATA RACE'</span> /tmp/race.log || echo <span class="s">'干净'</span></pre>
+    <div class="callout warn"><p><b><code>-race</code> 需要 CGO</b>（它靠 C 的运行库做内存影子），所以本地得有 C 工具链：macOS 装过 Xcode Command Line Tools 就有；Debian/Ubuntu <code>apt install build-essential</code>；Windows 得配 mingw-w64，装不动就直接在容器里跑——官方 golang 镜像自带 gcc：<code>docker run --rm -v "$PWD":/src -w /src golang:1.24 go test -race ./...</code>。另外别担心它和第 7 周那个静态镜像冲突：<b>发布镜像是 <code>CGO_ENABLED=0</code> 编的二进制，压根不带 race，今天这些只跑在本地和 CI 里，产物一行都不用改。</b></p></div>
+    <p>没有 <code>ab</code>（本课也没教过它，别为这个去装 apache-utils）。两条路：<b>要么用下面这份自包含脚本</b>（自己登录、自己并发、自己汇总，只依赖 curl），<b>要么一行装 <code>hey</code></b>。</p>
+    <pre><span class="code-label">backend/scripts/hammer.sh（整份复制即可跑；用法 ./scripts/hammer.sh）</span>#!/usr/bin/env bash
+<span class="c"># 并发轰炸本地服务：登录 / 发文 /（可选）上传，各 CONC 个请求同时打。
+# 用法：
+#   ./scripts/hammer.sh                         # 默认打 http://localhost:8080
+#   CONC=50 IMG=~/me.png ./scripts/hammer.sh     # 连上传一起轰
+#   BASE=http://1.2.3.4:8080 ./scripts/hammer.sh
+# ⚠ 它会真的写数据：只对本地或测试实例跑，永远别对着生产按回车。</span>
 <span class="k">set</span> -euo pipefail
-BASE=<span class="s">"http://localhost:8080/api/v1"</span>
 
-<span class="k">for</span> i in $(seq 1 20); <span class="k">do</span>
-  curl -s -o /dev/null -w <span class="s">"login %{http_code}\n"</span> -X POST <span class="s">"$BASE/auth/login"</span> \
-    -H <span class="s">"Content-Type: application/json"</span> \
-    -d <span class="s">'{"username":"xiaoming","password":"123456"}'</span> &amp;
-  curl -s -o /dev/null -w <span class="s">"create %{http_code}\n"</span> -X POST <span class="s">"$BASE/articles"</span> \
-    -H <span class="s">"Authorization: Bearer $TOKEN"</span> -H <span class="s">"Content-Type: application/json"</span> \
-    -d <span class="s">"{\"title\":\"并发文章 $i\",\"content\":\"x\"}"</span> &amp;
+BASE=<span class="s">"${BASE:-http://localhost:8080}"</span>
+API=<span class="s">"$BASE/api/v1"</span>
+USER=<span class="s">"${HAMMER_USER:-xiaoming}"</span>       <span class="c"># D2 建的那个账号</span>
+PASS=<span class="s">"${HAMMER_PASS:-xiaoming123}"</span>     <span class="c"># 8 位以上，注册时的强度校验才放行</span>
+CONC=<span class="s">"${CONC:-20}"</span>
+IMG=<span class="s">"${IMG:-}"</span>
+
+<span class="c"># 取 access_token 只靠 sed：不装 jq、不装 python3 也能跑（本课脚本一律这么写）。
+# 响应是 {"code":0,…,"data":{"access_token":"eyJ….middle.sig",…}}，
+# JWT 的字符集只有字母数字和 . _ -，这条正则够用。</span>
+
+LOGIN=$(curl -s -X POST <span class="s">"$API/auth/login"</span> \
+  -H <span class="s">'Content-Type: application/json'</span> \
+  -d <span class="s">"{\"username\":\"$USER\",\"password\":\"$PASS\"}"</span>)
+TOKEN=$(printf <span class="s">'%s'</span> <span class="s">"$LOGIN"</span> | sed -n <span class="s">'s/.*"access_token":"\([^"]*\)".*/\1/p'</span>)
+[ -n <span class="s">"$TOKEN"</span> ] || { echo <span class="s">"登录失败，先手动跑这条 curl 看返回：$LOGIN"</span>; exit 1; }
+
+codes=$(mktemp); trap <span class="s">'rm -f "$codes"'</span> EXIT
+hit() { curl -s -o /dev/null -w <span class="s">'%{http_code}\n'</span> <span class="s">"$@"</span> &gt;&gt;<span class="s">"$codes"</span> &amp; }
+
+echo <span class="s">"== 并发登录 ×$CONC =="</span>
+<span class="k">for</span> i in $(seq 1 <span class="s">"$CONC"</span>); <span class="k">do</span>
+  hit -X POST <span class="s">"$API/auth/login"</span> -H <span class="s">'Content-Type: application/json'</span> \
+      -d <span class="s">"{\"username\":\"$USER\",\"password\":\"$PASS\"}"</span>
 <span class="k">done</span>
+
+echo <span class="s">"== 并发发文 ×$CONC（标题带序号，验并发写与唯一索引）=="</span>
+<span class="k">for</span> i in $(seq 1 <span class="s">"$CONC"</span>); <span class="k">do</span>
+  hit -X POST <span class="s">"$API/articles"</span> -H <span class="s">"Authorization: Bearer $TOKEN"</span> \
+      -H <span class="s">'Content-Type: application/json'</span> \
+      -d <span class="s">"{\"title\":\"并发文章 $i\",\"content\":\"race detector 盯着你呢\"}"</span>
+<span class="k">done</span>
+
+<span class="k">if</span> [ -n <span class="s">"$IMG"</span> ] &amp;&amp; [ -f <span class="s">"$IMG"</span> ]; <span class="k">then</span>
+  echo <span class="s">"== 并发上传同一张图 ×$CONC（验随机文件名不互相覆盖）=="</span>
+  <span class="k">for</span> i in $(seq 1 <span class="s">"$CONC"</span>); <span class="k">do</span>
+    hit -X POST <span class="s">"$API/uploads/avatar"</span> -H <span class="s">"Authorization: Bearer $TOKEN"</span> -F <span class="s">"file=@$IMG"</span>
+  <span class="k">done</span>
+<span class="k">fi</span>
 wait
-<span class="c"># 预期：全部 200/201，race 二进制日志无 DATA RACE；</span>
-<span class="c"># 出现 500 = 有共享状态没上锁，或 DB 连接池配置过小</span></pre>
-    <div class="callout js"><p>用 JS 思维类比：这相当于给你的 API 跑一次 <code>Promise.allSettled</code> 并发压测——只不过 Go 这边还要额外开 race detector，才能抓到「单请求永远撞不出来」的共享变量竞态。</p></div>
 
-    <h3>5. 边界清单：六连轰炸（各给预期与复现）</h3>
+total=$(wc -l &lt;<span class="s">"$codes"</span> | tr -d <span class="s">' '</span>)
+bad=$(grep -vc <span class="s">'^2[0-9][0-9]$'</span> <span class="s">"$codes"</span> || true)   <span class="c"># grep -c 零匹配时退出码非 0，|| true 拦住 set -e</span>
+echo <span class="s">"---- 请求 $total 个，非 2xx $bad 个"</span>
+[ <span class="s">"$bad"</span> -gt <span class="n">0</span> ] &amp;&amp; { sort <span class="s">"$codes"</span> | uniq -c | sort -rn; echo <span class="s">"有非 2xx：先看 /tmp/race.log 再记 BUGLOG"</span>; exit 1; }
+echo <span class="s">"全 2xx。记得跑完清掉这批测试文章（admin 强制下架或 DELETE），别让列表页长满垃圾"</span></pre>
+    <div class="callout warn"><p>脚本里<b>唯一的硬依赖是 curl 和 bash</b>。取 token 用的是 <code>sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p'</code>——不装 jq、不装 python3 也能跑（第 6 周那条 <code>python3 -c 'import json…'</code> 属于「装了就用」的便利工具，本课每次出现都会附一条不用它的写法）。如果你的 access_token 里出现了转义字符（不会，JWT 只有 <code>._-</code>），这个 sed 依然够用。</p></div>
+    <pre><span class="code-label">shell（想要真正的「定时长 / 定并发」压测：一行装 hey）</span>$ go install github.com/rakyll/hey@latest   <span class="c"># 二进制落在 $(go env GOPATH)/bin，PATH 里没有它</span>
+$ <span class="k">export</span> PATH=<span class="s">"$(go env GOPATH)/bin:$PATH"</span>   <span class="c"># 加进 PATH 才不用每次写全路径（第 5 天装 swag 也是这一句）</span>
+$ hey -z 15s -c 20 <span class="s">"http://localhost:8080/api/v1/articles"</span>
+<span class="c"># Mac 也可以用 brew install hey；Debian/Ubuntu 源里一般没这个包，go install 最省心。
+# hey 只会打它自己发的请求：拿来轰只读接口最合适。写接口（发文/上传）要用上面那份
+# hammer.sh，因为它得先登录拿 token；hey 想带 Authorization 就加 -H "Authorization: Bearer $TOKEN"。</span></pre>
+    <div class="callout js"><p>用 JS 思维类比：<code>hammer.sh</code> 就是 <code>Promise.allSettled</code> 版的并发压测——只不过 Go 这边还要额外开 race detector，才抓得到「单请求永远撞不出来」的共享变量竞态。</p></div>
+
+    <h3>7. 边界清单：六连轰炸（各给预期与复现）</h3>
+    <p>下面六条直接抄进终端（<code>TOKEN</code> 就是第 6 节脚本里那个）。写超长串那行不用 python，用 POSIX 就够。</p>
     <table>
-      <tr><th>攻击项</th><th>curl 复现</th><th>预期结果（不是这样就是 bug）</th></tr>
-      <tr><td>超长标题</td><td><code>curl -X POST .../articles -H "Authorization: Bearer $T" -d '{"title":"'$(python3 -c "print('a'*5000)")'","content":"x"}'</code></td><td>400 + code:1004（binding:"max=200" 挡住）；<b>绝不是</b> 500（MySQL Data too long 冒到响应里）</td></tr>
-      <tr><td>空内容文章</td><td><code>-d '{"title":"t","content":""}'</code></td><td>400 + code:1004；若允许空文则必须显式产品决策</td></tr>
-      <tr><td>0 字节文件</td><td><code>: &gt; empty.png; curl -F "file=@empty.png" .../uploads/avatar</code></td><td>400 +「文件为空」；不能落一个 0 字节文件进 uploads</td></tr>
-      <tr><td>伪 PNG（文本改名）</td><td><code>echo hi &gt; fake.png; curl -F "file=@fake.png" ...</code></td><td>400 +「真实类型不是图片」（D2 的 DetectContentType 生效）</td></tr>
-      <tr><td>SQL 注入尝试</td><td><code>curl ".../articles?keyword=%27%20OR%201%3D1%20--%20"</code>（即 <code>' OR 1=1 -- </code>）</td><td>当普通字符串处理：返回空列表 200；出现全量数据/报错 500 说明有人手写了字符串拼 SQL</td></tr>
-      <tr><td>并发同名上传</td><td><code>for i in {1..10}; do curl -F "file=@me.png" .../uploads/avatar &amp; done; wait</code></td><td>10 个请求全部成功、落 10 个互不相同的文件名（随机名机制）；出现覆盖或 500 即失败</td></tr>
+      <tr><th>攻击项</th><th>复现命令</th><th>预期结果（不是这样就是 bug）</th></tr>
+      <tr><td>超长标题</td><td><code>curl -s -o- -w '\n%{http_code}\n' -X POST "$API/articles" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "{\"title\":\"$(printf '%*s' 5000 '' | tr ' ' 'a')\",\"content\":\"x\"}"</code></td><td>400 + code:1004（<code>binding:"required,min=2,max=120"</code> 与 <code>title varchar(120)</code> 同值挡住）；<b>绝不是</b> 500（MySQL「Data too long」冒进响应体）</td></tr>
+      <tr><td>空内容文章</td><td><code>-d '{"title":"t","content":""}'</code></td><td>400 + code:1004；若产品上允许空正文，那就是一次显式决策，别让它「碰巧」通过</td></tr>
+      <tr><td>0 字节文件</td><td><code>: &gt; empty.png; curl -F "file=@empty.png" "$API/uploads/avatar" -H "Authorization: Bearer $TOKEN"</code></td><td>400 +「文件为空」；uploads 目录里不能落进一个 0 字节文件（<code>ls uploads/avatar</code> 复查）</td></tr>
+      <tr><td>伪 PNG（文本改名）</td><td><code>echo hi &gt; fake.png; curl -F "file=@fake.png" …</code></td><td>400 +「文件真实类型不是图片」（D2 的 <code>DetectContentType</code> 那一分支）</td></tr>
+      <tr><td>SQL 注入尝试</td><td><code>curl -s "$API/articles?keyword=%27%20OR%201%3D1%20--%20"</code>（即 <code>' OR 1=1 -- </code>）</td><td>当普通字符串处理：200 + 空列表。出现全量数据或 500，说明有人手写了字符串拼 SQL（GORM 的 <code>Where("title LIKE ?", …)</code> 是参数化的，别自己拆了）</td></tr>
+      <tr><td>并发同名上传</td><td><code>for i in {1..10}; do curl -s -o/dev/null -w '%{http_code}\n' -F "file=@me.png" "$API/uploads/avatar" -H "Authorization: Bearer $TOKEN" &amp; done; wait</code></td><td>10 个请求全部成功、落 10 个互不相同的文件名（D2 的 <code>RandomName</code>）；出现覆盖或 500 即失败</td></tr>
     </table>
-    <div class="callout tip"><p>注意每一项的「预期」都写的是<b>用户可理解的行为</b>而不是「不报错」：0 字节文件要拒、注入串要当字符串——这列清单本身就能钓出 3 个以上真 bug。</p></div>
+    <div class="callout tip"><p>注意每一项的「预期」都写的是<b>用户可理解的行为</b>而不是「不报错」：0 字节要拒、注入串要当字符串——这列清单本身就能钓出 3 个以上真 bug。</p></div>
 
-    <h3>6. bug 记录表模板</h3>
+    <h3>8. CI：把第 4 周那份 workflow 升级</h3>
+    <p>W4D5 埋的话今天兑现：<b>「-race 铺到全量、加覆盖率上传、再挂一个 MySQL service 容器」</b>。第 4 周那份 <code>ci.yml</code> 只有 Vet + <code>go test -race -cover ./...</code>，而且假设 <code>go.mod</code> 在仓库根——第 6 周归置成 monorepo 之后它在 <code>backend/</code>，所以<b>今天第一件事是补 <code>working-directory</code></b>，否则 CI 会直接报「go.mod file not found」而你的本地一切正常。整份覆盖式替换：</p>
+    <pre><span class="code-label">.github/workflows/ci.yml（仓库根，和 go.mod 不同级了：go.mod 在 backend/）</span><span class="t">name</span>: CI
+
+<span class="t">on</span>:
+  <span class="t">push</span>:
+    <span class="t">branches</span>: [ main, dev ]
+  <span class="t">pull_request</span>:
+    <span class="t">branches</span>: [ main ]
+
+<span class="t">jobs</span>:
+  <span class="c"># ── ① 单测 + 覆盖率：sqlite 是进程内库，这一段不需要任何 service 容器 ──</span>
+  <span class="t">test</span>:
+    <span class="t">runs-on</span>: ubuntu-latest
+    <span class="t">defaults</span>:
+      <span class="t">run</span>:
+        <span class="t">working-directory</span>: backend   <span class="c"># 第 6 周起 go.mod 在这儿；漏了这行 = CI 红、本地绿</span>
+    <span class="t">steps</span>:
+      - <span class="t">uses</span>: actions/checkout@v4
+
+      - <span class="t">uses</span>: actions/setup-go@v5
+        <span class="t">with</span>:
+          <span class="t">go-version</span>: <span class="s">"1.24"</span>
+          <span class="t">cache</span>: true                <span class="c"># 缓存 module，省掉每次重装依赖的几十秒</span>
+
+      - <span class="t">name</span>: gofmt
+        <span class="t">run</span>: test -z <span class="s">"$(gofmt -l .)"</span>   <span class="c"># 格式不统一先拦一道，省掉 review 时的口水仗</span>
+
+      - <span class="t">name</span>: Vet
+        <span class="t">run</span>: go vet ./...
+
+      <span class="c"># -race 铺到 ./... 全量（第 4 周只在 handler 上试水）；
+      # -coverpkg=./... 把跨包调用也算进覆盖率（W4D5 那条 no test files 的坑）；
+      # 开了 -race，covermode 会自动是 atomic，不用手写。</span>
+      - <span class="t">name</span>: Test (-race, all packages)
+        <span class="t">run</span>: go test -race -coverpkg=./... -coverprofile=coverage.out ./...
+
+      - <span class="t">name</span>: Coverage total
+        <span class="t">run</span>: go tool cover -func=coverage.out
+
+      - <span class="t">name</span>: Upload coverage
+        <span class="t">uses</span>: actions/upload-artifact@v4
+        <span class="t">with</span>:
+          <span class="t">name</span>: goblog-coverage
+          <span class="t">path</span>: backend/coverage.out   <span class="c"># ← artifact 路径相对「仓库根」，不受 working-directory 影响</span>
+
+  <span class="c"># ── ② 集成测：这一段才真的起容器。needs 让单测不过就别浪费这 3 分钟 ──</span>
+  <span class="t">mysql-itest</span>:
+    <span class="t">needs</span>: test
+    <span class="t">runs-on</span>: ubuntu-latest
+    <span class="t">defaults</span>:
+      <span class="t">run</span>:
+        <span class="t">working-directory</span>: backend
+    <span class="t">services</span>:
+      <span class="t">mysql</span>:
+        <span class="t">image</span>: mysql:8.0
+        <span class="t">env</span>:
+          <span class="t">MYSQL_ROOT_PASSWORD</span>: <span class="s">"ciroot"</span>      <span class="c"># CI 用的假密码，进 Git 没关系，别复用生产密钥</span>
+          <span class="t">MYSQL_DATABASE</span>: <span class="s">"goblog_test"</span>
+          <span class="t">MYSQL_USER</span>: <span class="s">"goblog"</span>
+          <span class="t">MYSQL_PASSWORD</span>: <span class="s">"goblog123"</span>
+        <span class="t">ports</span>:
+          - <span class="s">"3306:3306"</span>
+        <span class="t">options</span>: &gt;-
+          --health-cmd=<span class="s">"mysqladmin ping -h 127.0.0.1 -uroot -pciroot"</span>
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    <span class="t">steps</span>:
+      - <span class="t">uses</span>: actions/checkout@v4
+      - <span class="t">uses</span>: actions/setup-go@v5
+        <span class="t">with</span>:
+          <span class="t">go-version</span>: <span class="s">"1.24"</span>
+          <span class="t">cache</span>: true
+
+      <span class="c"># 先跑迁移，再跑测试：MySQL 不会像 sqlite 那样 AutoMigrate 帮你建表。
+      # 这一步顺带验证了本周的 000005 / 000006 在干净的 MySQL 上真的能 up。</span>
+      - <span class="t">name</span>: Migrate up
+        <span class="t">run</span>: |
+          <span class="c"># 迁移先跑：MySQL 不会像 sqlite 那样帮你把表建好。
+          # 用 go run pkg@latest 而不是 go install —— 后者装进 $(go env GOPATH)/bin，
+          # 而 PATH 里没有它，下一行 migrate 就会 command not found（和 D5 装 swag 同一个坑）。</span>
+          go run github.com/golang-migrate/migrate/v4/cmd/migrate@latest \
+            -path migrations \
+            -database <span class="s">"mysql://goblog:goblog123@tcp(127.0.0.1:3306)/goblog_test?multiStatements=true"</span> up
+
+      - <span class="t">name</span>: Repository tests on MySQL
+        <span class="t">run</span>: go test -race -tags=mysql ./internal/repository/...
+        <span class="t">env</span>:
+          <span class="t">TEST_DB_DSN</span>: <span class="s">"goblog:goblog123@tcp(127.0.0.1:3306)/goblog_test?charset=utf8mb4&amp;parseTime=True&amp;loc=Local"</span></pre>
+    <div class="callout warn"><p><b>service 容器要用 <code>127.0.0.1:3306</code> 连，不是服务名 <code>mysql</code>。</b>GitHub Actions 的 <code>services:</code> 是跑在<b>同一台 runner 宿主机</b>上的端口映射容器（不是同 pod），所以 <code>mysql:3306</code> 这种 Docker Compose 写法在这儿连不通——这一点和 D3 本地 compose 里的 <code>DB_HOST=mysql</code> 正好相反，混用是这份 CI 最常见的红法。<code>--health-*</code> 那几行也不是装饰：MySQL 镜像冷启动要十几秒，没有健康检查时第一条测试会撞上 <code>connection refused</code>，你会误以为代码坏了。</p></div>
+    <p><code>-tags=mysql</code> 是 Go 的<b>构建标签</b>：文件第一行写了 <code>//go:build mysql</code> 的，只有 <code>go test -tags=mysql</code> 时才会被编译进去。默认那趟 <code>go test ./...</code> 永远碰不到它，所以本地没装 MySQL 也照样全绿。</p>
+    <pre><span class="code-label">internal/repository/mysql_roundtrip_test.go（新文件，整份复制；只在 -tags=mysql 时编译）</span><span class="c">//go:build mysql</span>
+<span class="c">// ↑ 必须顶格、必须在 package 之前，且下面要空一行。老写法 // +build mysql 已淘汰。</span>
+
+<span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="s">"os"</span>
+    <span class="s">"strings"</span>
+    <span class="s">"testing"</span>
+
+    <span class="s">"gorm.io/driver/mysql"</span>
+    <span class="s">"gorm.io/gorm"</span>
+
+    <span class="s">"goblog/internal/model"</span>
+)
+
+<span class="c">// mustTestDB：DSN 只从 TEST_DB_DSN 来，并复用 W4D5 那条 /goblog_test? 硬校验——
+// 防止某天你手滑把生产 DSN 贴进 CI，测试跑完顺手清了真数据。</span>
+<span class="k">func</span> mustTestDB(t *<span class="t">testing</span>.T) *gorm.DB {
+    t.<span class="t">Helper</span>()
+    dsn := os.<span class="t">Getenv</span>(<span class="s">"TEST_DB_DSN"</span>)
+    <span class="k">if</span> !strings.<span class="t">Contains</span>(dsn, <span class="s">"/goblog_test?"</span>) {
+        t.<span class="t">Fatalf</span>(<span class="s">"TEST_DB_DSN 必须指向 goblog_test，当前 = %q"</span>, dsn)
+    }
+    db, err := gorm.<span class="t">Open</span>(mysql.<span class="t">Open</span>(dsn), &amp;gorm.Config{})
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"连接测试库失败: %v"</span>, err)
+    }
+    <span class="k">return</span> db
+}
+
+<span class="c">// 这一条的价值不在「能读写」，而在把「迁移文件与 Go 模型是否对齐」钉住：
+// 漏了 000006 的 avatar 列，这里就是第一个红的（GORM 写不进去 / 读出来是空）。</span>
+<span class="k">func</span> TestUserRoundtripOnMySQL(t *<span class="t">testing</span>.T) {
+    db := mustTestDB(t)
+    u := model.User{Username: <span class="s">"ci_roundtrip"</span>, Nickname: <span class="s">"ci"</span>, Email: <span class="s">"ci@example.com"</span>, Password: <span class="s">"x"</span>}
+    <span class="k">if</span> err := db.<span class="t">Create</span>(&amp;u).Error; err != <span class="k">nil</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"create: %v"</span>, err)
+    }
+    t.<span class="t">Cleanup</span>(<span class="k">func</span>() { db.<span class="t">Unscoped</span>().Delete(&amp;model.User{}, u.ID) })
+
+    <span class="k">var</span> got model.User
+    <span class="k">if</span> err := db.<span class="t">First</span>(&amp;got, u.ID).Error; err != <span class="k">nil</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"read: %v"</span>, err)
+    }
+    <span class="k">if</span> got.Role != model.RoleUser {
+        t.Errorf(<span class="s">"默认角色应为 RoleUser，实得 %v（role 列的 DEFAULT 0 生效了吗？）"</span>, got.Role)
+    }
+}</pre>
+    <pre><span class="code-label">shell</span>$ git add .github/workflows/ci.yml internal/repository/mysql_roundtrip_test.go internal/service/rbac.go \
+        internal/service/rbac_test.go internal/pkg/upload/validate_test.go internal/handler/admin_test.go
+$ git commit -m <span class="s">"test: extract CanModerate, cover upload+admin, upgrade CI with -race/coverage/mysql service"</span>
+$ git push
+# 打开仓库 Actions 页：test 约 1 分半（-race 会慢一倍），mysql-itest 约 2 分钟（等 MySQL 健康检查）
+# 绿了以后点 test → Artifacts → 下载 goblog-coverage，本地执行：
+$ go tool cover -html=coverage.out     <span class="c"># 浏览器里逐行绿红着色，0% 的分支一眼看见</span></pre>
+    <div class="callout note"><p>两个诚实的说明。<b>①「sqlite service 容器」这件事不存在</b>：sqlite 是进程内库，没有服务可起，W4D5 那句「本周测试用内存 sqlite，CI 里不需要 MySQL」到今天仍然成立——今天加 MySQL 容器是为了<b>补一段真库集成</b>，不是替换。<b>②前端的 CI 本课不加</b>（<code>working-directory: frontend</code> + <code>npm ci &amp;&amp; npm run build</code> 三行就能拼上，算你自己给作品集加的加分项，不影响任何验收）。</p></div>
+
+    <h3>9. bug 记录表模板</h3>
     <pre><span class="code-label">BUGLOG.md</span>| # | 现象 | 复现步骤 | 根因 | 修复 | commit |
 |---|------|----------|------|------|--------|
-| 1 | 普通用户 token 过期后调 admin 接口返回 500 | 把系统时间调快 20 分钟后 curl /admin/users | Auth 中间件 err 分支直接 panic 在类型断言上 | 断言全部加 ok；err 分支统一 401 | a1b2c3d |
-| 2 | 上传 6MB 图返回 500 | curl -F file=@big.png | 只限了 MaxMultipartMemory，超限请求 gin 抛错未处理 | ValidateImage 查 file.Size + 全局错误中间件兜底 | e4f5g6h |
-| 3 | 删除文章后其评论仍出现在接口返回 | DELETE /admin/articles/1 后 GET /articles/1/comments | 评论没随文章级联软删，路由也没判文章存在性 | DeleteComment/ListComments 先校验文章未删 | i7j8k9l |
+| 1 | 普通用户 token 过期后调 admin 接口返回 500 | 把 `JWT_SECRET` 改了重启，再 curl `/admin/users` | Auth 的 err 分支里对 `c.Get("role")` 做了不带 ok 的类型断言，断言 panic | 断言全部加 ok；err 分支统一 401+1005 并 return | a1b2c3d |
+| 2 | 上传 6MB 图返回 500 | `curl -F file=@big.png …/uploads/avatar` | 只限了 `MaxMultipartMemory`，超限后 gin 的 err 没接住 | `Check` 先判 `file.Size &gt; MaxSize`；全局错误中间件兜底 5000 | e4f5g6h |
+| 3 | 删文章后它的评论仍出现在接口里 | `DELETE /admin/articles/1` 后 `GET /articles/1/comments` | 评论没随文章软删，列表也没判文章存在性 | `CanModerate` + List 前先 `arts.Get`（D3 已埋） | i7j8k9l |
+| 4 | `?size=abc` 让 admin 列表 500 | `curl '…/admin/users?size=abc'` | `strconv.Atoi` 的 err 被 `_` 丢掉，size=0 进 `Limit(0)` | 抽 `normalizePaging`，非数字与 0 一起兜底，补表驱动 | k9l0m1n |
 
 <span class="c"># 规约：一个 bug 一个 commit，message 写 `fix: 根因摘要 (#序号)`；
-#        修完必须回去把 BUGLOG 的复现命令再跑一遍才算关单。</span></pre>
+#        修完必须回去把 BUGLOG 的复现命令再跑一遍才算关单；
+#        能自动化的那条同时进测试文件——#4 就落成了 TestNormalizePaging 的一行用例。</span></pre>
   </section>
 
   <section>
     <h2>今日练习</h2>
     <div class="task">
       <div class="task-title">练习 1：清单过格（60 分钟）</div>
-      <p>按第 1 节六大类清单逐项手动过一遍，任何一格与预期不符就记 BUGLOG 并当场修。今天结束时表格里应该躺着 ≥3 行。</p>
-      <p><b>参考答案</b>：常见钓出的鱼——① <code>page=999</code> 返回 500（Offset 负数/乘溢出）；② 搜索输入 <code>%</code> 返回 500（LIKE 通配符没转义，GORM 里用 <code>Like("%"+escape(kw)+"%")</code> 前处理 <code>\ % _</code>）；③ 上传字段名拼错（form 里写成 files）返回 500 而非 400。三个都符合「现象/根因/修复/commit」模板。</p>
+      <p>按第 1 节六大类清单逐项手动过一遍（浏览器 + curl 各半），任何一格与预期不符就记 BUGLOG 并当场修。今天结束时表格里应该躺着 ≥3 行。</p>
+      <p><b>参考答案</b>：常见钓出的鱼——① <code>page=999</code> 返回 500（Offset 算成负数或溢出）；② 搜索输入 <code>%</code> 返回 500 或吐出全量（LIKE 通配符没转义，<code>Where("title LIKE ?", "%"+escape(kw)+"%")</code> 之前先处理 <code>\ % _</code>）；③ 上传字段名拼错（form 里写成 <code>files</code>）返回 500 而非 400（<code>FormFile</code> 返回零值 FileHeader，<code>ValidateImage</code> 里 <code>file.Filename</code> 空 → 走到「文件为空」，handler 却把它当 5000 发出去了）。三个都符合「现象/根因/修复/commit」模板。</p>
     </div>
     <div class="task">
-      <div class="task-title">练习 2：三个测试文件落地（45 分钟）</div>
-      <p>把讲义的 RBAC 表驱动测试、httptest admin 403 测试抄进项目并跑通；再给 ListUsers 的分页兜底（size&gt;50 回落 10）补一个 httptest 断言。</p>
-      <p><b>参考答案</b>：<code>go test ./... -v</code> 应看到 <code>--- PASS: TestCanModerate/管理员处置他人文章</code> 等子测试逐条打印；若 fakeAuth 版 RequireRole 测试编译失败说 <code>role</code> 类型不匹配，说明 D1 的中间件里存的类型和断言不一致——正好按坑表修正。</p>
+      <div class="task-title">练习 2：四个测试落盘（45 分钟）</div>
+      <p>把讲义的 <code>rbac.go + rbac_test.go</code>、<code>validate_test.go</code>、<code>normalizePaging + admin_test.go</code>、httptest admin 403 全抄进项目跑通，再补一条「refresh token 冒充 access 打 admin」的用例（这条要真的走 <code>middleware.Auth</code>，不能用 fakeAuth）。</p>
+      <p><b>参考答案</b>：<code>go test ./internal/... -v</code> 应看到 <code>--- PASS: TestCanModerate/管理员处置他人文章</code> 这类子测试逐条打印。<b>如果 <code>CanModerate undefined</code>，说明你把它写进了 <code>_test.go</code></b>——回第 2 节，文件名去掉 <code>_test</code> 后缀，调用点才会用上它。最后那条要真 token：注册两个账号、把 <code>refresh_token</code> 当 Bearer 发出去，期望 <code>401 + 1005</code>（不是 403——「你是谁」这一关就没过）；<code>Claims.Type</code> 的 <code>wantType</code> 校验（W4）在这里被复用，测试跑通就等于给「双 token 不能互换」上了锁。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 3：边界六连 + race（45 分钟）</div>
-      <p>逐行执行第 5 节表格里的 6 条 curl，把实际返回写成「预期 vs 实际」两列；然后 <code>go test -race ./...</code> 与并发上传轰炸，确保无 DATA RACE。</p>
-      <p><b>参考答案</b>：6 条里最容易翻车的是并发同名上传——若你 D2 用了「时间戳+rand」但 rand 源没初始化好出现重名互相覆盖，换 crypto/rand 或 UUID 并记 BUGLOG；race 若命中在 gin 之外的自建 map（比如你缓存了验证码），立刻上 <code>sync.RWMutex</code>。</p>
+      <p>逐行执行第 7 节表格里 6 条命令，把返回写成「预期 vs 实际」两列；然后 <code>go test -race ./...</code>，再用 <code>CGO_ENABLED=1 go build -race -o /tmp/goblog-race ./cmd/server</code> 起服务跑 <code>./scripts/hammer.sh</code>（带上 <code>IMG=</code> 一张真图），确认无非 2xx 且日志无 DATA RACE。</p>
+      <p><b>参考答案</b>：最容易翻车的是并发同名上传——若你 D2 用了「时间戳+rand」而 rand 源没初始化好出现重名互相覆盖，换 <code>crypto/rand</code>（D2 的 <code>randHex</code> 就是）并记 BUGLOG；race 若命中在 gin 之外的自建 map（例如你缓存了验证码），立刻上 <code>sync.RWMutex</code>；命中在 GORM 连接池上通常是你把 <code>*gorm.DB</code> 存进了包级变量又在 goroutine 里改它的 Clone——用 <code>db.WithContext(ctx)</code> 而不是改共享实例。轰完记得清测试数据。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：把升级后的 CI 推绿（30 分钟）</div>
+      <p>整份替换 <code>.github/workflows/ci.yml</code>，推一个分支并开 PR，看着两个 job 变绿；然后在 PR 描述里写三句话：为什么加了 <code>working-directory</code>、为什么 MySQL 那步要先跑迁移、覆盖率产物怎么在本地打开。</p>
+      <p><b>参考答案</b>：常见三种红法——① <code>go.mod file not found</code>：漏了 <code>working-directory: backend</code>（或路径写成 <code>goblog/backend</code>，仓库根就是 <code>goblog/</code>，别把自己套两层）；② <code>connection refused</code> 或 <code>Unknown database 'goblog_test'</code>：健康检查缺失/重试太少，或 <code>MYSQL_DATABASE</code> 没建库；③ artifact 路径报 <code>no files were provided</code>：<code>path</code> 相对的是<b>仓库根</b>，要写 <code>backend/coverage.out</code>。第一版绿了之后，故意把 <code>CanModerate</code> 的 <code>uid == 0</code> 那三行删掉再推一次——看 CI 替你把这条红点拦下来，这才是这套东西的意义。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 5（选做）：给评论接口补一条 httptest 用例</div>
+      <p>复用第 5 节那台「假 Auth + 探针」的路由，测 <code>DELETE /api/v1/comments/:id</code>：普通用户删别人的 → 403+1003，删自己的 → 放行到 handler（探针回一句固定话术），管理员删别人的 → 放行。判定用的是 <code>CanModerate</code>，所以这条测的是「中间件 + service 分支接线」而不是角色本身。</p>
+      <p><b>参考答案</b>：三条用例的期望分别落在不同错误上，别都写成 403：<b>评论不存在</b>要先于<b>不是作者</b>（404+1001 vs 403+1003），顺序反了就会用 403 遮住「这条评论根本不存在」。这条用例也是 D3 那笔「判定顺序」债的最终验收。</p>
     </div>
   </section>
 
@@ -249,8 +599,11 @@ wait
       <tr><th>术语</th><th>一句话解释</th></tr>
       <tr><td>回归清单（checklist）</td><td>每次发布前逐格重复验证的固定项目表，用确定性对抗「改一处坏三处」</td></tr>
       <tr><td>表驱动测试</td><td>把用例放进切片、循环子测试的 Go 惯用写法，一个函数覆盖一片输入空间</td></tr>
+      <tr><td>纯函数化重构</td><td>把「判定」从 handler/service 里抠成不吃 IO 的函数，先让它可测，再让调用点用上它</td></tr>
       <tr><td>httptest</td><td>标准库的假请求/假响应对象：不起端口直接喂路由函数，毫秒级接口测试</td></tr>
-      <tr><td>DATA RACE</td><td>两个 goroutine 无同步地访问同一内存且至少一个在写；<code>-race</code> 会在运行时抓现行</td></tr>
+      <tr><td>DATA RACE</td><td>两个 goroutine 无同步地访问同一内存且至少一个在写；<code>-race</code> 会在运行时抓现行（需要 CGO）</td></tr>
+      <tr><td>构建标签（build tag）</td><td>文件首行 <code>//go:build mysql</code>：默认不编译，<code>-tags=mysql</code> 才进来，用来隔离需要真依赖的测试</td></tr>
+      <tr><td>service 容器</td><td>GitHub Actions 里 <code>services:</code> 起的伴随容器（MySQL 等），端口映射到 runner 的 <code>127.0.0.1</code></td></tr>
       <tr><td>边界轰炸</td><td>专挑 0 值、超长、假类型、恶意字符、并发五类坏输入攻击接口的测试方式</td></tr>
     </table>
   </section>
@@ -259,22 +612,25 @@ wait
     <h2>常见坑</h2>
     <table>
       <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
-      <tr><td>测试只在 Happy Path 打转</td><td>单测全绿照样被 0 字节文件锤出 500</td><td>清单里每个「攻击项」配一个测试用例，坏输入优先测</td></tr>
-      <tr><td>bug 修了不留档</td><td>同一个分页兜底三周后以新 bug 之名再修一遍</td><td>BUGLOG 五列模板：现象/复现/根因/修复/commit 一个不少</td></tr>
-      <tr><td>用 -race 跑生产构建</td><td>性能腰斩还以为是代码问题</td><td>race 只进 CI 与本地，发布二进制不带</td></tr>
-      <tr><td>httptest 里连真数据库</td><td>测试慢、互相踩数据、CI 上直接挂</td><td>测路由/中间件用 fakeAuth 与假 handler；DB 层单独用 sqlite 内存库或测试容器</td></tr>
-      <tr><td>「重启一下就好了」当修复</td><td>竞态与缓存类 bug 换个时机复发</td><td>说不出根因就不关单，写进 BUGLOG 的 root cause 列</td></tr>
+      <tr><td>被测函数写在 <code>_test.go</code> 里</td><td>测试全绿，线上跑的还是老的手写判断；CI 保护的是一个测试文件里的副本</td><td><code>CanModerate</code> 放 <code>internal/service/rbac.go</code>，三处调用点换上它，<code>grep -rn 'UserID != ' internal/</code> 结果为空</td></tr>
+      <tr><td>import 前缀写 <code>blog/internal/…</code></td><td><code>package blog/internal/model is not in std</code>，整份测试编译不过</td><td>模块名从第 3 周起就是 <code>goblog</code>，一律 <code>goblog/…</code>；命令在 <code>backend/</code> 目录下跑</td></tr>
+      <tr><td>假中间件塞的键/类型和生产不一致</td><td><code>c.Set("uid", …)</code> 或塞 <code>int8</code>，RequireRole 走 <code>!exists/!ok</code> 分支，测试「假绿」</td><td>统一 <code>c.Set("userID", uint)</code> + <code>c.Set("role", model.Role)</code>；断言失败宁可拒绝也不落零值</td></tr>
+      <tr><td>测试只在 Happy Path 打转</td><td>单测全绿照样被 0 字节文件锤出 500</td><td>清单里每个「攻击项」配一条用例，坏输入优先测（0 值、非数字、超限、假类型各一条）</td></tr>
+      <tr><td>httptest 里连真数据库</td><td>测试慢、互相踩数据、CI 上直接挂</td><td>测中间件用 fakeAuth + 探针 handler；测数据访问用内存 sqlite；只有集成测那一段才连 MySQL</td></tr>
+      <tr><td>为了跑 race 去动发布镜像</td><td>给 alpine 装 gcc、把 <code>CGO_ENABLED</code> 改回 1，镜像大一圈还引入 glibc 风险</td><td>race 只在本地与 CI；W7 那个 <code>CGO_ENABLED=0</code> 静态产物保持不动</td></tr>
+      <tr><td>CI 路径与 monorepo 对不上</td><td>本地全绿、CI 报 go.mod not found 或 artifact 找不到文件</td><td><code>working-directory: backend</code> 管命令；<code>upload-artifact.path</code> 永远相对仓库根（<code>backend/coverage.out</code>）</td></tr>
+      <tr><td>bug 修了不留档 / 「重启一下就好了」当修复</td><td>同一个分页兜底三周后以新 bug 之名再修一遍；竞态换个时机复发</td><td>BUGLOG 五列一个不少，说不出根因就不关单；能自动化的那条同时落成测试</td></tr>
     </table>
   </section>
 
   <section>
     <h2>完成检查（全部勾掉才算毕业）</h2>
     <ul class="check">
-      <li><label><input type="checkbox" data-key="w8d4c1">六大类清单全部过格并落成 TESTING.md，失败项均有 bug 编号</label></li>
-      <li><label><input type="checkbox" data-key="w8d4c2"><code>go test ./...</code> 全绿，含 RBAC 表驱动、上传校验、httptest admin 403 三块新测试</label></li>
-      <li><label><input type="checkbox" data-key="w8d4c3"><code>go vet ./...</code> 与 <code>go test -race ./...</code> 干净无告警</label></li>
-      <li><label><input type="checkbox" data-key="w8d4c4">边界六连的「预期 vs 实际」记录完毕，不符项已修</label></li>
-      <li><label><input type="checkbox" data-key="w8d4c5">BUGLOG.md 至少 3 行完整记录，且每行都能重跑复现命令验证已关闭</label></li>
+      <li><label><input type="checkbox" data-key="w8d4c1">六大类清单全部过格并落成 <code>TESTING.md</code>，失败项均有 bug 编号</label></li>
+      <li><label><input type="checkbox" data-key="w8d4c2"><code>CanModerate</code> 活在 <code>internal/service/rbac.go</code>（不在测试文件里），文章改删与评论删除三处调用点全部换用该函数，<code>grep -rn 'UserID != ' internal/</code> 为空</label></li>
+      <li><label><input type="checkbox" data-key="w8d4c3"><code>go test ./...</code> 全绿，含 <code>TestCanModerate</code>／<code>TestCheck</code>（6 例）／<code>TestNormalizePaging</code>／<code>TestAdminUsers_RequiresAdmin</code> 四块新测试</label></li>
+      <li><label><input type="checkbox" data-key="w8d4c4"><code>go vet ./...</code> 与 <code>go test -race ./...</code> 干净；race 二进制 + <code>scripts/hammer.sh</code>（或 hey）轰一轮无非 2xx、日志无 DATA RACE</label></li>
+      <li><label><input type="checkbox" data-key="w8d4c5">升级后的 <code>ci.yml</code> 在 GitHub 上两个 job 均变绿，覆盖率产物能下载并用 <code>go tool cover -html</code> 打开；BUGLOG.md ≥4 行且每条复现命令重跑过</label></li>
     </ul>
   </section>
 

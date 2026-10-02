@@ -4,14 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>W4 总结 · JWT 认证博客 API | Go 全栈修炼手册</title>
-<meta name="description" content="第 4 周总结：JWT 双 token 认证博客 API 主线项目、知识地图、周末冲刺指南、验收 curl 清单、错误码/权限自查、常见卡点答疑与第 5 周并发预告。">
+<meta name="description" content="第 4 周总结：JWT 双 token 认证博客 API 主线项目、知识地图、周末冲刺指南、/api/v1 验收 curl 清单、错误码与权限自查、假仓储与权限矩阵测试、常见卡点答疑与第 5 周并发预告。">
 <link rel="stylesheet" href="../../assets/style.css">
 <script src="../../assets/app.js"></script>
 </head>
 <body>
 <header class="site-header">
   <a class="logo" href="../../index.html">Go<span>FullStack</span> Roadmap</a>
-  <nav><a href="../../index.html">8 周路线</a><a href="day1.html">第 4 周每日</a></nav>
+  <nav><a href="../../index.html">8 周路线</a><a href="day1.html">第 4 周每日课</a></nav>
 </header>
 
 <main class="page">
@@ -29,11 +29,11 @@
     <h2>本周知识地图</h2>
     <table>
       <tr><th>天</th><th>主题</th><th>核心产出</th><th>一句话回忆点</th></tr>
-      <tr><td>D1</td><td>密码哈希与注册登录</td><td><code>/auth/register</code> <code>/auth/login</code></td><td>bcrypt 自动加盐 + 可调 cost；<code>ComparePassword(哈希在前, 明文在后)</code>；1062 → 业务码；统一提示防枚举</td></tr>
-      <tr><td>D2</td><td>JWT 双 token</td><td>access(15min) + refresh(7d) + <code>/auth/refresh</code> + 鉴权中间件</td><td>三段式 header.payload.signature；签名≠加密；中间件解析成功 <code>c.Set("userID")</code>，失败 401+1005</td></tr>
+      <tr><td>D1</td><td>密码哈希与注册登录</td><td><code>/api/v1/auth/register</code> <code>/api/v1/auth/login</code></td><td>bcrypt 自动加盐 + 可调 cost；<code>bcrypt.CompareHashAndPassword(哈希在前, 明文在后)</code>，返回 <code>nil</code> 才算通过；唯一索引冲突 → 业务码 1006；统一提示防枚举</td></tr>
+      <tr><td>D2</td><td>JWT 双 token</td><td>access(15min) + refresh(7d) + <code>/api/v1/auth/refresh</code> + 鉴权中间件</td><td>三段式 header.payload.signature；签名≠加密；两把密钥分开签；中间件解析成功 <code>c.Set("userID", uint)</code>，失败 401+1005 并 <b>return</b></td></tr>
       <tr><td>D3</td><td>配置管理</td><td>config 包 + .env + .env.example</td><td>12-factor：代码与配置分离；可选给默认值、必填 fail-fast；Config 结构体传参而非全局变量</td></tr>
       <tr><td>D4</td><td>日志 / 请求 ID / 优雅关闭</td><td>slog JSON 日志、X-Request-ID、Shutdown</td><td>结构化=可检索；RequestID 中间件排第一；SIGTERM → 停止接新活 → 等在途 → 退出</td></tr>
-      <tr><td>D5</td><td>单元与接口测试</td><td>表驱动 + httptest 测 handler</td><td><code>_test.go</code>/<code>TestXxx</code>；NewRecorder 进程内驱动 engine；测试永不连开发库</td></tr>
+      <tr><td>D5</td><td>单元与接口测试</td><td>假仓储单测 service + httptest 测 handler + 权限矩阵 + <code>.github/workflows/ci.yml</code></td><td><code>_test.go</code>/<code>TestXxx</code>；接口 + 一个实现 = mock；NewRecorder 进程内驱动 engine；测试永不连开发库</td></tr>
     </table>
     <div class="callout note"><p>主线贯穿：D1 管「你是谁」、D2 管「凭证」、D3–D4 管「活得像生产服务」、D5 管「改不怕」。第 6 周 React 前端的 axios 拦截器将直接对接 D2 的 <code>/auth/refresh</code>，所以 refresh 链路必须验收通过。</p></div>
   </section>
@@ -54,75 +54,117 @@
     <h2>主线项目：JWT 认证博客 API</h2>
     <p>在第 3 周 MySQL 版博客上扩展，要求全部满足：</p>
     <ul>
-      <li><b>认证三接口</b>：<code>POST /auth/register</code>（强度校验 + 唯一冲突 1006）、<code>POST /auth/login</code>（返回 access + refresh 双 token）、<code>POST /auth/refresh</code>（校验 refresh 串换发新的一对）。</li>
-      <li><b>文章 CRUD</b>：GET 列表/详情<b>开放只读</b>；POST/PUT/DELETE 全部过鉴权中间件。</li>
-      <li><b>仅作者可改删</b>：更新/删除时取 <code>c.GetInt64("userID")</code> 与文章的 <code>UserID</code> 比对，不等返回 <code>403 + {"code":1003}</code>。</li>
-      <li><b>统一错误码</b>：0 成功 / 1001 用户不存在 / 1002 密码错误 / 1003 无权限 / 1004 参数错误 / 1005 token 无效或过期 / 1006 用户名已存在，HTTP 状态码与 code 双层同步。</li>
-      <li><b>工程化底座</b>：配置全部来自 config 包；每个请求有 X-Request-ID 且日志可 grep；kill -TERM 优雅退出；<code>go test ./...</code> 全绿。</li>
+      <li><b>认证三接口 + 一个「我是谁」</b>：<code>POST /api/v1/auth/register</code>（强度校验 + 唯一冲突 1006）、<code>POST /api/v1/auth/login</code>（<code>data</code> 里同时给出 <code>user</code> + <code>access_token</code> + <code>refresh_token</code>）、<code>POST /api/v1/auth/refresh</code>（只认 refresh 串，换发新的一对）、<code>GET /api/v1/users/me</code>（受保护，取自己的资料，前端刷新页面靠它）。</li>
+      <li><b>文章 CRUD</b>：<code>GET /api/v1/articles</code> 列表/详情<b>开放只读</b>；<code>POST</code>/<code>PUT</code>/<code>DELETE</code> 全部过 <code>middleware.Auth(cfg.JWTSecret)</code>。</li>
+      <li><b>仅作者可改删</b>：更新/删除时取 <code>c.GetUint(middleware.CtxKeyUserID)</code> 与文章的 <code>UserID</code>（同为 <code>uint</code>）比对，不等返回 <code>403 + {"code":1003}</code>；资源本身不存在返回 <code>404 + {"code":2001}</code>（含已被软删除的）。</li>
+      <li><b>统一错误码</b>：0 成功 / 1001 资源不存在（通用，<code>NoRoute</code> 也发它）/ 1002 密码错误 / 1003 权限不足 / 1004 参数错误 / 1005 未认证或 token 无效 / 1006 唯一冲突（用户名已存在、邮箱已被注册共用此码，靠 message 区分）/ 2001 文章不存在 / 5000 服务器内部错误。常量全部写在 <code>pkg/response</code> 里，HTTP 状态码与 code 双层同步。</li>
+      <li><b>工程化底座</b>：配置全部来自 config 包；每个请求有 X-Request-ID 且日志可 grep；<code>kill -TERM</code> 优雅退出；<code>go test ./...</code> 全绿；<code>.github/workflows/ci.yml</code> 推上 GitHub 后 Actions 是绿的。</li>
     </ul>
-    <pre><span class="code-label">权限核心代码（PUT /articles/:id）</span>uid := c.<span class="t">GetInt64</span>(<span class="s">"userID"</span>)
-article, err := h.svc.<span class="t">Get</span>(id)
-<span class="k">if</span> err != <span class="k">nil</span> { resp.<span class="t">Fail</span>(c, <span class="n">404</span>, <span class="n">2001</span>, <span class="s">"文章不存在"</span>); <span class="k">return</span> }
-<span class="k">if</span> article.UserID != uid {
-    resp.<span class="t">Fail</span>(c, <span class="n">403</span>, <span class="n">1003</span>, <span class="s">"无权限操作他人文章"</span>)  <span class="c">// ← 本周验收的灵魂一行</span>
-    <span class="k">return</span>
+    <pre><span class="code-label">权限核心（PUT / DELETE /api/v1/articles/:id 共用同一套形状）</span><span class="c">// 取当前用户：中间件 Set 进去的是 uint，这里就必须 GetUint；键名走常量，别裸写字符串</span>
+uid := c.<span class="t">GetUint</span>(middleware.CtxKeyUserID)
+
+a, err := h.arts.<span class="t">Update</span>(<span class="t">uint</span>(id), uid, req.Title, req.Content)   <span class="c">// 判断在 service：先 Get 再比 UserID</span>
+<span class="k">if</span> err != <span class="k">nil</span> {
+    <span class="k">switch</span> {
+    <span class="k">case</span> errors.<span class="t">Is</span>(err, repository.ErrArticleNotFound):
+        response.<span class="t">Fail</span>(c, http.StatusNotFound, response.CodeArticleNotFound, <span class="s">"文章不存在"</span>)
+    <span class="k">case</span> errors.<span class="t">Is</span>(err, service.ErrNotOwner):
+        response.<span class="t">Fail</span>(c, http.StatusForbidden, response.CodeForbidden, <span class="s">"只能修改自己的文章"</span>)  <span class="c">// ← 本周验收的灵魂一行</span>
+    <span class="k">default</span>:
+        response.<span class="t">Fail</span>(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务器开小差了"</span>)
+    }
+    <span class="k">return</span>                                                       <span class="c">// ← 这个 return 也不能省</span>
 }
-<span class="c">// ... 是作者，继续更新 ...</span></pre>
+response.<span class="t">OK</span>(c, gin.<span class="t">H</span>{<span class="s">"article"</span>: a})</pre>
+    <div class="callout note"><p>注意上面<b>没有</b> <code>resp</code> 这个别名：<code>response.OK(c, data)</code> 两参、<code>response.Created(c, data)</code> 两参、<code>response.Fail(c, httpStatus, code, msg)</code> <b>四参</b>（先 HTTP 状态码再业务码），全站只有这一套。<b>「仅作者可改删」的完整正文分在两处</b>：D2 第 8 节（<code>Update</code> + 那张 curl 矩阵）和 D5 第 5 节（补完 <code>Delete</code> + 表驱动权限矩阵测试）。验收要求 DELETE 也交出和 PUT 一样的四种结果。</p></div>
   </section>
 
   <section>
     <h2>周末冲刺指南（4–6 小时）</h2>
     <table>
       <tr><th>时段</th><th>做什么</th><th>卡住时</th></tr>
-      <tr><td>0:00–0:45</td><td>盘点缺口：把 D1/D2 的接口按本周代码风格合并到第 3 周项目，路由分组 <code>/auth</code>、<code>/articles</code></td><td>结构乱就先画依赖图：main → config.Load → gorm → service → handler → 中间件</td></tr>
-      <tr><td>0:45–2:00</td><td>文章 CRUD 接入鉴权：GET 公开、写操作挂 Auth 中间件；创建时作者取 ctx 里的 userID</td><td>401 排查三步：请求头是否 <code>Bearer␣</code> 带空格、secret 是否同一个、exp 是否已过期（解码看）</td></tr>
-      <tr><td>2:00–3:00</td><td>实现「仅作者可改删」403+1003；注册第二个测试账号造跨用户数据</td><td>忘了 return 导致 403 之后还执行更新——检查每个 Abort 后面有没有 return</td></tr>
+      <tr><td>0:00–0:45</td><td>盘点缺口：把 D1/D2 的接口按本周代码风格合并到第 3 周项目，路由分组 <code>/api/v1/auth</code>（公开）与 <code>/api/v1</code> 下的保护组</td><td>结构乱就先画依赖图：main → config.Load → <code>repository.New(DSN)</code> → 仓储 → service → handler → 中间件</td></tr>
+      <tr><td>0:45–2:00</td><td>文章 CRUD 接入鉴权：GET 公开、写操作挂 Auth 中间件；创建时作者取 <code>c.GetUint(middleware.CtxKeyUserID)</code> 赋给 <code>Article.UserID</code></td><td>401 排查三步：请求头是否 <code>Bearer␣</code> 带空格、签发和验签是不是同一把 secret、exp 是否已过期（解码看）</td></tr>
+      <tr><td>2:00–3:00</td><td>实现「仅作者可改删」403+1003：<code>Update</code> 与 <code>Delete</code> 都要（Delete 见 D5 第 5 节）；顺手注册 alice + bob 两个账号造跨用户数据，密码记得 ≥8 位且含字母和数字，否则被强度校验拦在 400</td><td>忘了 return 导致 403 之后还执行更新——检查每个 Abort/Fail 后面有没有 return</td></tr>
       <tr><td>3:00–4:00</td><td>工程化收尾：config 包收口、RequestID+AccessLog 中间件、main 换 http.Server+Shutdown</td><td>.env 忘进 .gitignore 是最严重红灯，先处理这个再往下</td></tr>
-      <tr><td>4:00–5:00</td><td>补测试：TestLogin 三用例 + 注册 409 用例 + 非作者改文 403 用例（httptest 里带 Bearer 头即可）</td><td>service 依赖 <code>*gorm.DB</code> 不好 mock？测试里直接开内存 sqlite 就是最简方案（D5 已教）</td></tr>
-      <tr><td>5:00–结束</td><td>照下面的 curl 清单逐条验收 → Git 提交 → 更新 README（含 .env.example 说明、错误码表、logout 技术债）</td><td>任何一条不过，回去修到过为止，不接受「差不多就行」</td></tr>
+      <tr><td>4:00–5:00</td><td>补测试：<code>TestRegister</code>/<code>TestLogin</code> 表驱动 + 注册 409 用例 + 非作者改删 403 用例（httptest 里带 Bearer 头即可）+ <code>.github/workflows/ci.yml</code></td><td>别急着开数据库：service 从 D1 起就只依赖 <code>repository.UserRepository</code> <b>接口</b>，测试里塞一个 map 版假仓储（D5 第 3 节的 <code>memUserRepo</code>）就能跑；handler 测试才需要真库，用命名过的内存 sqlite（D5 第 4 节）</td></tr>
+      <tr><td>5:00–结束</td><td>照下面的 curl 清单逐条验收 → Git 提交 → 更新 README（含 .env.example 说明、错误码表、curl 验收记录、logout 技术债）</td><td>任何一条不过，回去修到过为止，不接受「差不多就行」</td></tr>
     </table>
     <div class="callout tip"><p>冲刺节奏建议：每个时段结束拍一次 Git 提交，哪怕功能没完也先 <code>git commit -m "wip: ..."</code>。验收日如果全红，你能精确回滚到「昨天还能跑」的那个点——工程化的本质就是让自己永远有退路。</p></div>
   </section>
 
   <section>
     <h2>验收 curl 清单（全部通过才算毕业）</h2>
-    <pre><span class="code-label">shell</span><span class="c"># ① 未登录只读：GET 公开、POST 被拒</span>
-$ curl -s localhost:8080/articles                      <span class="c"># 200 + code:0</span>
-$ curl -s -X POST localhost:8080/articles -H <span class="s">"Content-Type: application/json"</span> \
-  -d <span class="s">'{"title":"noauth"}'</span>                             <span class="c"># 401 + code:1005</span>
+    <pre><span class="code-label">shell</span><span class="c"># ⓪ 先把两个作者准备好（密码必须 ≥8 位且含字母和数字，否则被强度校验拦成 400+1004）</span>
+$ curl -s -X POST localhost:8080/api/v1/auth/register -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"alice","password":"goodpass123","email":"alice@example.com"}'</span>   <span class="c"># 201 + code:0</span>
+$ curl -s -X POST localhost:8080/api/v1/auth/register -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"bob","password":"goodpass456","email":"bob@example.com"}'</span>       <span class="c"># 201 + code:0</span>
+$ curl -s -i -X POST localhost:8080/api/v1/auth/register -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"alice","password":"goodpass789"}'</span>                               <span class="c"># 409 + code:1006「用户名已存在」</span>
 
-<span class="c"># ② 登录可写：alice 建文成功</span>
-$ LOGIN=$(curl -s -X POST localhost:8080/auth/login -H <span class="s">"Content-Type: application/json"</span> \
+<span class="c"># ① 未登录：读公开、写被拒、me 被拒</span>
+$ curl -s localhost:8080/api/v1/articles                              <span class="c"># 200 + code:0</span>
+$ curl -s -X POST localhost:8080/api/v1/articles -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"title":"noauth"}'</span>                                           <span class="c"># 401 + code:1005</span>
+$ curl -s localhost:8080/api/v1/users/me                              <span class="c"># 401 + code:1005「未登录」</span>
+
+<span class="c"># ② 登录可写：alice 建文，并用 /users/me 确认中间件把身份传对了</span>
+$ LOGIN=$(curl -s -X POST localhost:8080/api/v1/auth/login -H <span class="s">"Content-Type: application/json"</span> \
   -d <span class="s">'{"username":"alice","password":"goodpass123"}'</span>)
 $ ACCESS=$(echo <span class="s">"$LOGIN"</span> | grep -o <span class="s">'"access_token":"[^"]*"'</span> | cut -d<span class="s">'"'</span> -f4)
-$ curl -s -X POST localhost:8080/articles -H <span class="s">"Authorization: Bearer <span class="n">$ACCESS</span>"</span> \
-  -H <span class="s">"Content-Type: application/json"</span> -d <span class="s">'{"title":"jwt week"}'</span>   <span class="c"># 201 + code:0</span>
+$ CREATE=$(curl -s -X POST localhost:8080/api/v1/articles -H <span class="s">"Authorization: Bearer <span class="n">$ACCESS</span>"</span> \
+  -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"title":"jwt week","content":"body"}'</span>)               <span class="c"># 201 + code:0</span>
+$ ID=$(echo <span class="s">"$CREATE"</span> | python3 -c <span class="s">'import json,sys;print(json.load(sys.stdin)["data"]["ID"])'</span>)
+<span class="c"># 文章内嵌 gorm.Model，没打 json 标签，所以键是大写 ID（第 3 周 D1 那条注）。
+# 这里按 JSON 路径取数，而不是 grep '"ID":'：Create 不 Preload 作者，返回体里还嵌着一个
+# "user":{"ID":0,…}，同名键出现两次，grep 一次给你两行，取错那条后面 ③④ 就全跑歪了。</span>
+$ curl -s localhost:8080/api/v1/users/me -H <span class="s">"Authorization: Bearer <span class="n">$ACCESS</span>"</span>  <span class="c"># 200 + data.user.username=alice</span>
 
-<span class="c"># ③ 非作者 403：bob 改 alice 的文章</span>
-$ BOB=$(curl -s -X POST localhost:8080/auth/login -H <span class="s">"Content-Type: application/json"</span> \
+<span class="c"># ③ 仅作者：alice 改自己的 200；bob 改 403、bob 删 403</span>
+$ curl -s -X PUT localhost:8080/api/v1/articles/<span class="n">$ID</span> -H <span class="s">"Authorization: Bearer <span class="n">$ACCESS</span>"</span> \
+  -H <span class="s">"Content-Type: application/json"</span> -d <span class="s">'{"title":"mine","content":"ok"}'</span>   <span class="c"># 200 + code:0</span>
+$ BOB=$(curl -s -X POST localhost:8080/api/v1/auth/login -H <span class="s">"Content-Type: application/json"</span> \
   -d <span class="s">'{"username":"bob","password":"goodpass456"}'</span> | grep -o <span class="s">'"access_token":"[^"]*"'</span> | cut -d<span class="s">'"'</span> -f4)
-$ curl -s -X PUT localhost:8080/articles/<span class="n">1</span> -H <span class="s">"Authorization: Bearer <span class="n">$BOB</span>"</span> \
-  -H <span class="s">"Content-Type: application/json"</span> -d <span class="s">'{"title":"hijack"}'</span>     <span class="c"># 403 + code:1003</span>
+$ curl -s -i -X PUT localhost:8080/api/v1/articles/<span class="n">$ID</span> -H <span class="s">"Authorization: Bearer <span class="n">$BOB</span>"</span> \
+  -H <span class="s">"Content-Type: application/json"</span> -d <span class="s">'{"title":"hijack","content":"x"}'</span>
+HTTP/1.1 403 Forbidden                                          <span class="c"># code:1003 ← 本周验收的灵魂</span>
+$ curl -s -i -X DELETE localhost:8080/api/v1/articles/<span class="n">$ID</span> -H <span class="s">"Authorization: Bearer <span class="n">$BOB</span>"</span>
+HTTP/1.1 403 Forbidden                                          <span class="c"># code:1003，删除同样要验归属</span>
 
-<span class="c"># ④ 坏 token 401</span>
-$ curl -s localhost:8080/articles -H <span class="s">"Authorization: Bearer <span class="n">$ACCESS</span>x"</span>       <span class="c"># 篡改一位 → 401+1005</span>
-$ curl -s localhost:8080/articles -H <span class="s">"Authorization: <span class="n">$ACCESS</span>"</span>               <span class="c"># 缺 Bearer 前缀 → 401+1005</span>
+<span class="c"># ④ 作者删自己的：200；再删一次 404（软删除之后 Get 就查不见了）</span>
+$ curl -s -X DELETE localhost:8080/api/v1/articles/<span class="n">$ID</span> -H <span class="s">"Authorization: Bearer <span class="n">$ACCESS</span>"</span>  <span class="c"># 200 + code:0</span>
+$ curl -s -i -X DELETE localhost:8080/api/v1/articles/<span class="n">$ID</span> -H <span class="s">"Authorization: Bearer <span class="n">$ACCESS</span>"</span>
+HTTP/1.1 404 Not Found                                          <span class="c"># code:2001「文章不存在」</span>
 
-<span class="c"># ⑤ refresh 成功换发（并把新 access 再验证一次可用）</span>
+<span class="c"># ⑤ 坏 token 一律 401</span>
+$ curl -s localhost:8080/api/v1/articles -H <span class="s">"Authorization: Bearer <span class="n">${ACCESS}</span>x"</span>   <span class="c"># 篡改一位 → 401+1005</span>
+$ curl -s localhost:8080/api/v1/articles -H <span class="s">"Authorization: <span class="n">$ACCESS</span>"</span>              <span class="c"># 缺 Bearer 前缀 → 401+1005</span>
+
+<span class="c"># ⑥ refresh：换发成功 + 拒绝被冒充</span>
 $ REFRESH=$(echo <span class="s">"$LOGIN"</span> | grep -o <span class="s">'"refresh_token":"[^"]*"'</span> | cut -d<span class="s">'"'</span> -f4)
-$ curl -s -X POST localhost:8080/auth/refresh -H <span class="s">"Content-Type: application/json"</span> \
-  -d <span class="s">"{\"refresh_token\":\"$REFRESH\"}"</span>                                      <span class="c"># 200 + 新 token 对</span>
+$ curl -s -X POST localhost:8080/api/v1/auth/refresh -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">"{\"refresh_token\":\"$REFRESH\"}"</span>                              <span class="c"># 200 + 新 token 对</span>
+$ curl -s -X POST localhost:8080/api/v1/auth/refresh -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">"{\"refresh_token\":\"$ACCESS\"}"</span>                               <span class="c"># 拿 access 冒充 → 401+1005</span>
 
-<span class="c"># ⑥ 请求 ID：任一响应头都含 X-Request-ID，且能在日志里 grep 到同一值</span>
-$ curl -si localhost:8080/health | grep -i x-request-id</pre>
+<span class="c"># ⑦ 兜底两件事：统一健康检查 + 写错路径也要吐 JSON</span>
+$ curl -si localhost:8080/health | grep -i x-request-id
+$ curl -s localhost:8080/health
+{<span class="s">"code"</span>:0,<span class="s">"message"</span>:<span class="s">"ok"</span>,<span class="s">"data"</span>:{<span class="s">"status"</span>:<span class="s">"ok"</span>}}
+$ curl -s localhost:8080/api/v1/eerken
+{<span class="s">"code"</span>:1001,<span class="s">"message"</span>:<span class="s">"资源不存在"</span>,<span class="s">"data"</span>:<span class="k">null</span>}                       <span class="c"># 404，不是裸文本</span></pre>
     <table>
       <tr><th>#</th><th>验收点</th><th>期望</th></tr>
-      <tr><td>1</td><td>未登录读文章 / 未登录写文章</td><td>200 / 401+1005</td></tr>
-      <tr><td>2</td><td>登录后创建、改自己的、删自己的</td><td>201 / 200 / 200</td></tr>
-      <tr><td>3</td><td>非作者更新、删除</td><td>403+1003</td></tr>
-      <tr><td>4</td><td>篡改 token / 缺 Bearer / 过期 access</td><td>401+1005</td></tr>
-      <tr><td>5</td><td>refresh 换发新 access 并可继续访问；拿 access 冒充 refresh</td><td>200 换发成功 / 401 拒绝</td></tr>
-      <tr><td>6</td><td>kill -TERM 优雅退出 + 日志含 request_id + go test 全绿</td><td>存量请求拿到完整响应后进程才退出</td></tr>
+      <tr><td>1</td><td>未登录读列表 / 未登录写文章 / 未登录取 <code>/users/me</code></td><td>200 / 401+1005 / 401+1005</td></tr>
+      <tr><td>2</td><td>登录 alice：创建文章、改自己的、删自己的、<code>/users/me</code></td><td>201 / 200 / 200 / 200</td></tr>
+      <tr><td>3</td><td>bob 更新、bob 删除 alice 的文章</td><td>403+1003（两条都要）</td></tr>
+      <tr><td>4</td><td>删完再删 / 改一个不存在的 id</td><td>404+2001</td></tr>
+      <tr><td>5</td><td>篡改 token / 缺 Bearer / 过期 access</td><td>401+1005</td></tr>
+      <tr><td>6</td><td>refresh 换发新 access 并可继续访问；拿 access 冒充 refresh</td><td>200 换发成功 / 401+1005 拒绝</td></tr>
+      <tr><td>7</td><td><code>/health</code> 与任意未匹配路径的响应体形状</td><td>都是统一 <code>{code,message,data}</code>，没有裸文本</td></tr>
+      <tr><td>8</td><td>kill -TERM 优雅退出 + 日志含 request_id + <code>go test ./...</code> 全绿 + Actions 绿</td><td>存量请求拿到完整响应后进程才退出</td></tr>
     </table>
   </section>
 
@@ -130,51 +172,64 @@ $ curl -si localhost:8080/health | grep -i x-request-id</pre>
     <h2>错误码 × HTTP 状态码全对照</h2>
     <table>
       <tr><th>场景</th><th>HTTP</th><th>code</th><th>message 示例</th></tr>
-      <tr><td>一切成功</td><td>200 / 201</td><td>0</td><td>success</td></tr>
+      <tr><td>一切成功</td><td>200 / 201</td><td>0</td><td>ok（201 走 <code>response.Created</code>）</td></tr>
       <tr><td>参数缺失/格式错（binding 失败）</td><td>400</td><td>1004</td><td>参数错误</td></tr>
-      <tr><td>密码强度不足</td><td>400</td><td>1004</td><td>密码至少 8 位，且包含字母和数字</td></tr>
+      <tr><td>密码强度不足（service 层拦下）</td><td>400</td><td>1004</td><td>密码至少 8 位，且包含字母和数字</td></tr>
+      <tr><td>路径写错（<code>NoRoute</code>）/ 通用资源不存在</td><td>404</td><td>1001</td><td>资源不存在</td></tr>
       <tr><td>登录失败（用户不存在 或 密码错，话术统一）</td><td>401</td><td>1002</td><td>用户名或密码错误</td></tr>
-      <tr><td>无 Authorization 头 / token 篡改 / 过期 / 类型不符</td><td>401</td><td>1005</td><td>token 无效或已过期</td></tr>
+      <tr><td>无 Authorization 头 / token 篡改 / 过期 / 类型不符</td><td>401</td><td>1005</td><td>未登录 ／ token 无效或已过期</td></tr>
       <tr><td>用户名已被注册</td><td>409</td><td>1006</td><td>用户名已存在</td></tr>
-      <tr><td>非作者更新/删除文章</td><td>403</td><td>1003</td><td>无权限操作他人文章</td></tr>
-      <tr><td>文章不存在</td><td>404</td><td>2001</td><td>文章不存在</td></tr>
+      <tr><td>邮箱已被注册（同一个码，换文案）</td><td>409</td><td>1006</td><td>该邮箱已被注册</td></tr>
+      <tr><td>非作者更新 / 删除文章</td><td>403</td><td>1003</td><td>只能修改自己的文章 ／ 只能删除自己的文章</td></tr>
+      <tr><td>文章不存在（含已被软删除的）</td><td>404</td><td>2001</td><td>文章不存在</td></tr>
       <tr><td>数据库/未预期错误</td><td>500</td><td>5000</td><td>服务器开小差了</td></tr>
     </table>
-    <div class="callout note"><p>记住双层约定的分工：<b>HTTP 状态码给机器看</b>（第 6 周 axios 拦截器只认 401/403 分支），<b>code 给人和业务分支看</b>（同样是 401，1002 该停在学习页、1005 该触发静默刷新）。两层同时出现、语义不冲突。</p></div>
+    <div class="callout note"><p><b>常量名以 <code>pkg/response</code> 里那一个 const 块为准</b>（D1 补齐、D4 第 5 节整表铺开，以后六周不再新增）：<code>CodeOK</code> 0、<code>CodeUserNotFound</code> 1001、<code>CodeBadPassword</code> 1002、<code>CodeForbidden</code> 1003、<code>CodeInvalidParam</code> 1004、<code>CodeTokenInvalid</code> 1005、<code>CodeUsernameTaken</code> 1006、<code>CodeArticleNotFound</code> 2001、<code>CodeInternal</code> 5000。三条禁令：不用 1000 当通用失败、不用 5001、不让 code 等于 HTTP 状态码。</p></div>
+    <div class="callout tip"><p>记住双层约定的分工：<b>HTTP 状态码给机器看</b>（第 6 周 axios 拦截器只认 401/403 分支），<b>code 给人和业务分支看</b>（同样是 401，1002 该停在学习页、1005 该触发静默刷新）。两层同时出现、语义不冲突。</p></div>
   </section>
 
   <section>
     <h2>项目最终结构（验收时的样子）</h2>
-    <pre><span class="code-label">tree</span>studyblog/
-├── .env / .env.example / .gitignore      <span class="c"># D3</span>
+    <pre><span class="code-label">tree</span>goblog/                                   <span class="c"># 模块名就叫 goblog（go.mod: module goblog），本周没换项目</span>
+├── .env / .env.example / .gitignore      <span class="c"># D3：.env 只在硬盘上，.env.example 入库</span>
+├── .github/workflows/ci.yml              <span class="c"># D5 第 7 节：go vet + go test -race -cover，本周不需要 MySQL 服务容器</span>
 ├── docker-compose.yml                    <span class="c"># W3 起，D3 改为 ${DB_PASS} 引用</span>
-├── cmd/server/main.go                    <span class="c"># config.Load → 依赖装配 → http.Server + Shutdown（D4）</span>
+├── go.mod / go.sum                       <span class="c"># 依赖：gin、gorm+mysql、golang-jwt/v5、godotenv、x/crypto、uuid</span>
+├── cmd/server/main.go                    <span class="c"># config.Load → 依赖装配 → 分组路由 → http.Server + Shutdown（D4）</span>
 ├── internal/
-│   ├── config/        <span class="c"># Config 结构体 + Load()，全项目唯一读 env 的地方</span>
-│   ├── model/         <span class="c"># User(json:"-" 的 Password) / Article</span>
-│   ├── service/       <span class="c"># auth.go: Register/Login/哈希；article.go: CRUD</span>
-│   │   └── auth_test.go                  <span class="c"># D5 表驱动</span>
-│   ├── handler/       <span class="c"># 参数绑定 + errors.Is 分发业务码</span>
-│   │   └── auth_test.go                  <span class="c"># D5 httptest 三用例</span>
+│   ├── config/config.go   <span class="c"># D3 Config + Load()，全项目唯一读 env 的地方</span>
+│   ├── model/             <span class="c"># user.go / article.go / tag.go（User.Password 打 json:"-"；本周无 Role）</span>
+│   ├── dto/               <span class="c"># W3 的列表查询参数；本周注册/登录的请求体仍在 handler 里就地声明</span>
+│   ├── repository/        <span class="c"># db.go(New) · user.go(UserRepository + gorm 实现) · article.go(ArticleRepository)</span>
+│   ├── service/           <span class="c"># auth.go Register/Login + 四个哨兵错误；article.go Update/Delete + ErrNotOwner</span>
+│   │   ├── auth_test.go                  <span class="c"># D5：TestPasswordStrong + memUserRepo + TestRegister/TestLogin</span>
+│   │   └── article_test.go               <span class="c"># 可选：给 Update/Delete 的归属判断补一张表（D5 练习之外）</span>
+│   ├── handler/           <span class="c"># auth.go / article.go / user.go：绑定 + errors.Is 翻译业务码</span>
+│   │   ├── auth_test.go                  <span class="c"># D5：newTestEnv + TestLogin + TestAuthMiddleware</span>
+│   │   └── article_test.go               <span class="c"># D5 第 5 节：TestArticleOwnerOnly 权限矩阵</span>
 │   ├── middleware/
 │   │   ├── request_id.go  <span class="c"># D4，注册顺序第一</span>
 │   │   ├── access_log.go  <span class="c"># D4 slog JSON</span>
-│   │   └── auth.go        <span class="c"># D2 Bearer 解析 + c.Set("userID")</span>
-│   └── pkg/jwtutil/   <span class="c"># D2 Claims/Sign/Parse/NewAccessToken/NewRefreshToken</span>
+│   │   └── auth.go        <span class="c"># D2 Auth(secret) + CtxKeyUserID，Set 的是 uint</span>
+│   └── pkg/
+│       ├── applog/applog.go              <span class="c"># D4：New(mode) 返回 *slog.Logger，全项目只建一个</span>
+│       └── jwtutil/jwt.go   <span class="c"># D2 Claims/Sign/Parse/NewAccessToken/NewRefreshToken/ErrTokenType</span>
+├── pkg/response/response.go <span class="c"># W2 起就在模块根（不在 internal/ 下）：Body / OK / Created / Fail + 全部业务码常量</span>
 └── README.md          <span class="c"># 错误码表、.env 说明、curl 验收记录、logout 技术债</span></pre>
+    <div class="callout note"><p>和 D3 那棵树比，周末结束时多了这几份新文件（<code>internal/pkg/applog/applog.go</code>、三份 <code>_test.go</code>、<code>.github/workflows/ci.yml</code>）和一处结构提醒：<b><code>repository/</code> 与 <code>dto/</code> 一直都在</b>，本周只是把 <code>ByUsername</code> 补进仓储、把 <code>email</code> 收进注册请求体。如果你交出来的项目里 <code>service</code> 直接持有 <code>*gorm.DB</code>，D5 第 3 节那个假仓储就塞不进去——那是本周最贵的一处返工。</p></div>
   </section>
 
   <section>
     <h2>一次请求的完整旅程（把五天串起来）</h2>
     <table>
       <tr><th>#</th><th>阶段</th><th>谁在工作</th><th>产出</th></tr>
-      <tr><td>1</td><td>curl 带 <code>Authorization: Bearer &lt;access&gt;</code> 发 PUT /articles/1</td><td>—</td><td>请求进入</td></tr>
+      <tr><td>1</td><td>curl 带 <code>Authorization: Bearer &lt;access&gt;</code> 发 PUT /api/v1/articles/1</td><td>—</td><td>请求进入</td></tr>
       <tr><td>2</td><td>RequestID 中间件</td><td>D4 uuid</td><td>c.Set("request_id")，响应头回写</td></tr>
       <tr><td>3</td><td>AccessLog 中间件</td><td>D4 slog</td><td>（结束时）method/path/status/latency 一行 JSON</td></tr>
-      <tr><td>4</td><td>Auth 中间件</td><td>D2 jwtutil.Parse</td><td>验签+exp+typ；失败 401+1005 并 <b>return</b></td></tr>
+      <tr><td>4</td><td>Auth 中间件</td><td>D2 jwtutil.Parse</td><td>验签+exp+typ；失败 401+1005 并 <b>return</b>；成功 <code>c.Set(CtxKeyUserID, claims.UserID)</code>（uint）</td></tr>
       <tr><td>5</td><td>handler 绑定参数</td><td>D2/D5</td><td>ShouldBindJSON 失败 → 400+1004</td></tr>
-      <tr><td>6</td><td>权限比对</td><td>本周项目核心</td><td><code>article.UserID != c.GetInt64("userID")</code> → 403+1003</td></tr>
-      <tr><td>7</td><td>service 更新 → repository 落库</td><td>W3 GORM</td><td>成功 {code:0}；panic 由 Recovery 兜底 500+5000</td></tr>
+      <tr><td>6</td><td>权限比对（在 service 里）</td><td>D2 第 8 节 + D5 第 5 节</td><td>先 <code>Get</code>（查不到 → 404+2001），再 <code>a.UserID != c.GetUint(middleware.CtxKeyUserID)</code> → 403+1003</td></tr>
+      <tr><td>7</td><td>service 更新 → repository 落库</td><td>W3 GORM</td><td>成功 {code:0}；panic 由 <code>gin.Recovery()</code> 兜成 500（官方那一份的 body 是空的，<code>code:5000</code> 要靠 W2D3 §3.6 那份自定义 Recovery 才吐得出来——本周装配沿用官方的，500 的业务码只出现在 handler 自己写的错误分支里）</td></tr>
       <tr><td>8</td><td>此时你 <code>kill -TERM</code></td><td>D4 Shutdown</td><td>这条请求仍拿到完整响应后进程才退出</td></tr>
     </table>
   </section>
@@ -183,7 +238,7 @@ $ curl -si localhost:8080/health | grep -i x-request-id</pre>
     <h2>周日复盘十问（答不上来的回去重读对应天）</h2>
     <ol>
       <li>为什么 bcrypt 比「sha256+盐」安全？两个关键词：慢、cost 可调。（D1）</li>
-      <li><code>ComparePassword</code> 的参数顺序和返回语义？（D1）</li>
+      <li><code>bcrypt.CompareHashAndPassword</code> 的参数顺序和返回语义？它为什么不返回布尔，<code>nil</code> 在这里代表什么？（D1）</li>
       <li>JWT 三段分别是什么？哪一段能防篡改、哪一段防不了偷看？（D2）</li>
       <li>为什么 access 只给 15 分钟还不够，还要 refresh？各自的使用面？（D2）</li>
       <li>中间件鉴权失败时，为什么 <code>return</code> 比写响应更重要？（D2/D4）</li>
@@ -191,18 +246,18 @@ $ curl -si localhost:8080/health | grep -i x-request-id</pre>
       <li>12-factor 一句话？.env 和 .env.example 谁进 Git？（D3）</li>
       <li>Config 为什么用结构体传参而不是全局变量？和明天写测试有什么关系？（D3/D5）</li>
       <li>用户报「20:11 登录失败」，你如何 10 秒内找齐这次请求的所有日志？（D4）</li>
-      <li>httptest 测 handler 需要监听端口吗？为什么测试绝不能连开发库？（D5）</li>
+      <li>httptest 测 handler 需要监听端口吗？为什么 service 层的测试连数据库都不用起？测试为什么绝不能连开发库？（D5）</li>
     </ol>
   </section>
 
   <section>
     <h2>完成检查（勾满 6 条再进第 5 周）</h2>
     <ul class="check">
-      <li><label><input type="checkbox" data-key="w4sum1">curl 清单 ①–⑤ 逐条通过，截图或记录进 README</label></li>
-      <li><label><input type="checkbox" data-key="w4sum2">仅作者可改删生效：bob 动 alice 的文章稳定 403+1003</label></li>
+      <li><label><input type="checkbox" data-key="w4sum1">curl 清单 ⓪–⑦ 逐条通过，截图或记录进 README</label></li>
+      <li><label><input type="checkbox" data-key="w4sum2">仅作者可改删生效：bob 动 alice 的文章，PUT 和 DELETE 都稳定 403+1003；删完再删是 404+2001</label></li>
       <li><label><input type="checkbox" data-key="w4sum3">数据库无明文密码；.env 未被 Git 跟踪；仓库有 .env.example</label></li>
       <li><label><input type="checkbox" data-key="w4sum4">kill -TERM 演练通过，每个响应带 X-Request-ID 且日志可 grep</label></li>
-      <li><label><input type="checkbox" data-key="w4sum5"><code>go test -cover ./...</code> 全绿，handler 层关键路径有表驱动用例</label></li>
+      <li><label><input type="checkbox" data-key="w4sum5"><code>go test -cover ./...</code> 全绿：service 层用假仓储（不连库）、handler 层有 newTestEnv + 权限矩阵，<code>.github/workflows/ci.yml</code> 在 Actions 上是绿的</label></li>
       <li><label><input type="checkbox" data-key="w4sum6">README 更新：错误码表、双 token 流程图（文字版即可）、logout 技术债说明</label></li>
     </ul>
   </section>
@@ -218,25 +273,28 @@ $ curl -si localhost:8080/health | grep -i x-request-id</pre>
 
   <section>
     <h2>本周常见卡点答疑</h2>
-    <div class="callout warn"><p><b>Q1：登录成功、token 也带了，却处处 401。</b>三查：① <code>Bearer</code> 后必须有且只有一个空格；② 签发和校验用的 JWT_SECRET 是不是两个进程各读了一份（比如服务起着起着改了 .env 没重启）；③ 解码 payload 看 exp 是不是早就过了（时钟漂了或 TTL 忘了改回 15 分钟）。</p></div>
+    <div class="callout warn"><p><b>Q1：登录成功、token 也带了，却处处 401。</b>三查：① <code>Bearer</code> 后必须有且只有一个空格；② 保护组挂的是 <code>middleware.Auth(cfg.JWTSecret)</code> —— 拿 refresh 那把 <code>JWT_REFRESH_SECRET</code> 去验 access 必挂（这是双密钥设计的代价，不是 bug）；③ 服务起着起着改了 <code>.env</code> 没重启，两个进程各读了一份密钥；④ 解码 payload 看 exp 是不是早就过了（时钟漂了或 TTL 忘了改回 15 分钟）。</p></div>
     <div class="callout warn"><p><b>Q2：403 返回了，但文章还是被改了。</b>Abort/写响应之后没 <code>return</code>，handler 继续往下执行。本周所有「拦截型」分支都过一遍：中间件、权限比对、参数校验，一个 return 都不能少。</p></div>
-    <div class="callout warn"><p><b>Q3：注册第二次同名没报 1006，反而 500。</b>唯一索引根本没建上（改 tag 后没 AutoMigrate，或表已存在时索引没补）——<code>SHOW INDEX FROM users;</code> 看有没有 username 的 UNIQUE 索引；再确认 service 里 1062 的翻译分支生效。</p></div>
-    <div class="callout warn"><p><b>Q4：go test 一跑，开发库数据没了。</b>测试连到了开发 DSN！立刻检查测试用的连接来源，改成内存 sqlite 或独立的 <code>blog_test</code> 库，并从开发库备份恢复数据。这是本周最贵的坑，中招的同学反而印象最深。</p></div>
-    <div class="callout note"><p><b>Q5：logout 到底做没做？</b>按 D2 的诚实方案：客户端删 token + README 记录「access 有效期内技术上仍可用」的技术债。别为了「看起来完整」写一个只返回 ok 却什么都不作废的接口骗验收——那是伪功能。</p></div>
-    <div class="callout warn"><p><b>Q6：/auth/refresh 用对了还是 401。</b>四查：① 传的是 refresh 串而不是 access（解码看 <code>"typ"</code> 字段）；② 两个签发函数用的 secret 是否同一个来源；③ refresh 的 7 天 TTL 是否真给了（常量复制错很常见）；④ Parse 的 wantType 参数在该路由上传的是否为 <code>"refresh"</code>。</p></div>
-    <div class="callout warn"><p><b>Q7：文章创建成功但 author 是空的。</b>handler 里取了 <code>c.GetInt64("userID")</code> 却忘了赋给模型，或者中间件 Set 的 key 与 Get 的 key 拼写不一致（"userID" vs "userId"，Go 大小写敏感）。用常量 <code>CtxKeyUserID</code> 统一管理 key 可根治。</p></div>
+    <div class="callout warn"><p><b>Q3：注册第二次同名没报 1006，反而 500。</b>两种可能：① 唯一索引根本没建上（改 tag 后没 AutoMigrate，或表已存在时索引没补）——<code>SHOW INDEX FROM users;</code> 看 username（和 email）有没有 UNIQUE 索引；② service 里那段翻译没生效：它得同时认 MySQL 的 <code>1062 Duplicate entry … for key 'users.username'</code> 和 sqlite 的 <code>UNIQUE constraint failed: users.username</code>（就是 D1 那个 <code>isDuplicateOn(err, "username")</code>）。只在测试里红、开发库里绿，多半是②。</p></div>
+    <div class="callout warn"><p><b>Q4：go test 一跑，开发库数据没了。</b>测试连到了开发 DSN！立刻检查测试用的连接来源，改成内存 sqlite（D5 第 4 节那种「库名带测试名」的写法）或独立的 <code>goblog_test</code> 库 + 单独的 <code>TEST_DB_DSN</code>，并从开发库备份恢复数据。这是本周最贵的坑，中招的同学反而印象最深。</p></div>
+    <div class="callout note"><p><b>Q5：logout 到底做没做？</b>按 D2 的诚实方案：客户端删 token + README 记录「access 有效期内技术上仍可用」的技术债。别为了「看起来完整」写一个只返回 ok 却什么都不作废的接口骗验收——那是伪功能。（服务端撤销的黑名单方案在本课程范围外，第 8 周也不会引入它。）</p></div>
+    <div class="callout warn"><p><b>Q6：/api/v1/auth/refresh 用对了还是 401。</b>四查：① 传的是 refresh 串而不是 access（解码看 <code>"typ"</code> 字段）；② <code>NewRefreshToken</code> 和 <code>Parse</code> 用的是同一把 <code>JWT_REFRESH_SECRET</code>；③ refresh 的 7 天 TTL 是否真给了（常量复制错很常见）；④ <code>Parse</code> 的 wantType 参数在该路由上传的是否为 <code>"refresh"</code>。</p></div>
+    <div class="callout warn"><p><b>Q7：文章创建成功但 author 是空的。</b>handler 里取了 <code>c.GetUint(middleware.CtxKeyUserID)</code> 却忘了赋给 <code>Article.UserID</code>，或者中间件 <code>Set</code> 的键与 <code>Get</code> 的键拼写不一致（"userID" vs "userId"，Go 大小写敏感），又或者类型不匹配——存 <code>uint</code> 却用 <code>GetInt64</code>/<code>GetInt</code> 取，gin 断言失败<b>不报错、只返回零值 0</b>。用常量 <code>CtxKeyUserID</code> 统一键名、用 <code>GetUint</code> 统一类型，可根治这两类。</p></div>
+    <div class="callout warn"><p><b>Q8：bob 删 alice 的文章返回了 200，权限判断像没生效。</b>最典型的成因是<b>两边同时为 0</b>：创建文章时 handler 取错了值（Q7 那个 <code>GetInt64</code>，或键名拼成 <code>"userId"</code>，拿到零值 0），于是文章带着 <code>UserID = 0</code> 进库；改删时又用同一个错法取当前用户，照样是 0 —— <code>a.UserID != userID</code> 成了 <code>0 != 0</code>，对谁都不成立，判断被两个零值喂穿。反过来只有一侧为 0（文章是 0、请求者是正常的 2）时你会看到<b>稳定的 403</b>，那是另一种响法，别混。先跑 D5 第 5 节那张权限矩阵：它会在「偷改 bob 的」那条上直接红。另一类原因：写操作根本没挂进保护组，<code>priv := v1.Group("", middleware.Auth(...))</code> 必须在注册路由<b>之前</b>建好（D2 第 6 节）。</p></div>
   </section>
 
   <section>
     <h2>本周 Git 提交记录参考（README 展示用）</h2>
     <pre><span class="code-label">git log</span>feat(auth): bcrypt password hashing with register/login endpoints      <span class="c"># D1</span>
 feat(auth): access(15m)+refresh(7d) JWT and auth middleware             <span class="c"># D2</span>
-feat(auth): POST /auth/refresh with rolling reissue                     <span class="c"># D2</span>
-refactor(config): load port/dsn/secret from .env, fail-fast             <span class="c"># D3</span>
+feat(auth): POST /api/v1/auth/refresh with rolling reissue              <span class="c"># D2</span>
+refactor(config): load port/dsn/two jwt secrets from .env, fail-fast    <span class="c"># D3</span>
 chore: gitignore .env, add .env.example                                 <span class="c"># D3</span>
 feat(obs): slog access log + X-Request-ID propagation                   <span class="c"># D4</span>
-feat(server): graceful shutdown on SIGTERM                              <span class="c"># D4</span>
-test(auth): table-driven service tests + httptest handler cases         <span class="c"># D5</span>
+feat(server): graceful shutdown on SIGTERM + unified NoRoute 404        <span class="c"># D4</span>
+test(service): fake user repo, table-driven register/login cases        <span class="c"># D5</span>
+test(handler): httptest engine + auth middleware + owner-only matrix    <span class="c"># D5</span>
+chore(ci): go vet and go test -race -cover on push                      <span class="c"># D5</span>
 feat(blog): author-only update/delete with 403 + code 1003              <span class="c"># 周末项目</span></pre>
   </section>
 
@@ -245,7 +303,7 @@ feat(blog): author-only update/delete with 403 + code 1003              <span cl
     <ul>
       <li>给登录接口加最简单的失败限频（同一用户名 1 分钟内错 5 次锁 3 分钟，内存 map + 时间戳即可）——防撞库的正解之一。</li>
       <li>了解一下 RS256 非对称签名：为什么本课程仍推荐中小项目用 HS256（没有多服务独立验签需求时，对称密钥更简单）。</li>
-      <li>把 refresh token 落库（用户ID+哈希+过期时间），实现「会话列表/踢出设备」雏型——也为第 8 周 RBAC 铺路。</li>
+      <li>把 refresh token 落库（用户ID+哈希+过期时间），做出「会话列表 / 踢出某个设备」——这就是 D2 第 7 节说的「想让已签发的凭证立刻作废，就得把状态请回来」。本课程不走这条路，验收也不看它。</li>
     </ul>
   </section>
 
@@ -268,7 +326,9 @@ feat(blog): author-only update/delete with 403 + code 1003              <span cl
     <ul>
       <li>JWT 官方规范站 jwt.io：在线粘贴 token 即可解码，配合 D2 的 base64 手动解码互相印证。</li>
       <li>Go 标准库文档 log/slog、net/http.Server、os/signal——今天一半的 API 都在标准库里，官方 doc 即最佳教材。</li>
-      <li>golang.org/x/crypto/bcrypt 与 github.com/golang-jwt/jwt（v5 分支 README）：注意网上老教程多为 v4 写法。</li>
+      <li>golang.org/x/crypto/bcrypt 与 github.com/golang-jwt/jwt/v5（认准 v5 的 README）：注意网上老教程多为 v4 写法，keyfunc 签名和过期判断都不一样。</li>
+      <li>GORM 官方文档的 Query Log / Soft Delete 两页：本周 <code>deleted_at</code> 那个「行还在表里、查询却看不见」的行为，D5 第 5 节的 404 用例全靠它。</li>
+      <li>GitHub Actions 文档 <code>workflow-syntax</code>：读 D5 那份 <code>ci.yml</code> 时对照着看 <code>on</code> / <code>jobs</code> / <code>steps</code> 三层结构即可，别通读。</li>
       <li>OWASP Password Storage Cheat Sheet：想深入「为什么慢哈希安全」时的英文进阶读物，本周知识够用不强求。</li>
     </ul>
   </section>

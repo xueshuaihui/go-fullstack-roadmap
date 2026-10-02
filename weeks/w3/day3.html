@@ -31,9 +31,10 @@
       <li><label><input type="checkbox" data-key="w3d3g1">能写出 <code>HasMany</code>（用户→文章）与 <code>many2many</code>（文章↔标签）的模型声明，并说出中间表 <code>article_tags</code> 的列结构</label></li>
       <li><label><input type="checkbox" data-key="w3d3g2">会用 <code>Preload</code> 一次带出关联数据，并解释它和循环里逐条查的 SQL 条数差别</label></li>
       <li><label><input type="checkbox" data-key="w3d3g3">能给 <code>Preload</code> 加条件/字段裁剪/排序限量，也能写嵌套 <code>Preload("Articles.Tags")</code></label></li>
-      <li><label><input type="checkbox" data-key="w3d3g4">完成 <code>GET /users/:id/articles</code>（带作者信息）与 <code>GET /articles/:id</code>（带 tags）两个接口</label></li>
+      <li><label><input type="checkbox" data-key="w3d3g4">完成 <code>GET /api/v1/users/:id/articles</code>（带作者信息）与 <code>GET /api/v1/articles/:id</code>（带 tags）两个接口，全程 handler → service → repository</label></li>
+      <li><label><input type="checkbox" data-key="w3d3g5">能看懂 <code>LIMIT/OFFSET</code>、<code>LEFT JOIN ... ON</code>、<code>GROUP BY ... HAVING</code> 三种 SQL 片段各自在干什么，并说出对应的 GORM 写法</label></li>
     </ul>
-    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这五条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
   </section>
 
   <section>
@@ -45,97 +46,217 @@
   <section>
     <h2>知识讲义</h2>
 
-    <h3>1. 关联声明：模型补全</h3>
-    <p>昨天的模型只有字段，今天把关系补齐（三个模型的最终形态，本周后面都用它）：</p>
-    <pre><span class="code-label">internal/model/user.go</span><span class="k">type</span> User <span class="k">struct</span> {
-    gorm.Model
-
-    Name     <span class="t">string</span> <span class="s">`gorm:"type:varchar(64);not null" json:"name"`</span>
-    Email    <span class="t">string</span> <span class="s">`gorm:"type:varchar(128);not null;uniqueIndex" json:"email"`</span>
-    Password <span class="t">string</span> <span class="s">`gorm:"type:varchar(255);not null" json:"-"`</span>
-
-    <span class="c">// 一对多：外键 UserID 在 articles 表上。foreignKey 指「对方表里的外键列」</span>
-    Articles []Article <span class="s">`gorm:"foreignKey:UserID" json:"articles,omitempty"`</span>
-}</pre>
-    <pre><span class="code-label">internal/model/article.go</span><span class="k">type</span> Article <span class="k">struct</span> {
-    gorm.Model
-
-    Title   <span class="t">string</span> <span class="s">`gorm:"type:varchar(128);not null;index" json:"title"`</span>
-    Content <span class="t">string</span> <span class="s">`gorm:"type:text" json:"content"`</span>
-    Views   <span class="t">int</span>    <span class="s">`gorm:"not null;default:0" json:"views"`</span>
-
-    UserID <span class="t">uint</span> <span class="s">`gorm:"not null;index" json:"user_id"`</span>
-    User   User <span class="s">`gorm:"foreignKey:UserID;references:ID" json:"user,omitempty"`</span> <span class="c">// belongs to：外键在我身上</span>
-
-    <span class="c">// 多对多：GORM 自动建中间表 article_tags(article_id, tag_id)，两个列即联合主键</span>
-    Tags []Tag <span class="s">`gorm:"many2many:article_tags;" json:"tags,omitempty"`</span>
-}</pre>
-    <pre><span class="code-label">internal/model/tag.go</span><span class="k">type</span> Tag <span class="k">struct</span> {
-    ID        <span class="t">uint</span>      <span class="s">`gorm:"primaryKey" json:"id"`</span>
-    Name      <span class="t">string</span>    <span class="s">`gorm:"type:varchar(32);not null;uniqueIndex" json:"name"`</span>
-    CreatedAt <span class="t">time.Time</span> <span class="s">`json:"created_at"`</span>
-}</pre>
-    <p>迁移别忘了把三个模型一起交给 AutoMigrate（顺序影响外键约束，中间表由 GORM 自动建）：</p>
-    <pre><span class="code-label">cmd/server/main.go</span><span class="k">if</span> err := db.AutoMigrate(&amp;model.User{}, &amp;model.Tag{}, &amp;model.Article{}); err != <span class="k">nil</span> {
+    <h3>1. 关联声明：模型今天一行都不用改</h3>
+    <p>day2 定稿的三个模型<b>就是本周最终形态</b>，关系字段当时就写好了：<code>User.Articles</code>（HasMany，外键 <code>user_id</code> 在对方表上）、<code>Article.User</code>（BelongsTo，外键在自己身上）、<code>Article.Tags</code>（Many2Many，中间表 <code>article_tags</code>）。今天只是开始<b>用</b>它们。</p>
+    <table>
+      <tr><th>声明</th><th>方向怎么记</th><th>GORM 靠什么找到对方</th></tr>
+      <tr><td><code>Articles []Article `gorm:"foreignKey:UserID"`</code></td><td>我有多个 → HasMany</td><td>去 <code>articles</code> 表找 <code>user_id = 我的 id</code></td></tr>
+      <tr><td><code>User User `gorm:"foreignKey:UserID"`</code></td><td>我属于一个 → BelongsTo</td><td>用<b>我自己</b>的 <code>user_id</code> 去 <code>users.id</code></td></tr>
+      <tr><td><code>Tags []Tag `gorm:"many2many:article_tags"`</code></td><td>互相多个 → Many2Many</td><td>查中间表 <code>article_tags</code> 的两列 <code>article_id / tag_id</code></td></tr>
+    </table>
+    <p>迁移仍是 day2 那一行，三个模型一次传进去：</p>
+    <pre><span class="code-label">cmd/server/main.go</span><span class="k">if</span> err := db.AutoMigrate(&amp;model.User{}, &amp;model.Article{}, &amp;model.Tag{}); err != <span class="k">nil</span> {
     log.Fatalf(<span class="s">"迁移失败: %v"</span>, err)
+}</pre>
+    <div class="callout warn"><p><b>先纠正一个流传很广的说法</b>：有人告诉你「AutoMigrate 的<b>顺序影响外键约束</b>，必须先迁父表」——<b>GORM 根本不会创建数据库级外键约束</b>。翻遍它的日志你也找不到一句 <code>FOREIGN KEY</code> / <code>ADD CONSTRAINT</code>。它建的是<b>普通索引</b>（<code>UserID uint `gorm:"index"`</code> 那句就是）。所以 <code>articles.user_id = 999</code>（不存在的用户）照样插得进去——<b>引用完整性由你的 service 层负责</b>（练习 4 里 <code>ErrAuthorNotFound</code> 就是干这个的）。顺序真正影响的只有一件事：漏传某个模型 → 那张表压根不存在 → 后面 <code>Preload</code> 直接报 <code>Table 'goblog.article_tags' doesn't exist</code>。数据库级外键什么时候需要？第 7 周用版本化迁移手工加。</p></div>
+    <pre><span class="code-label">shell</span>$ docker exec -it goblog-mysql mysql -ugoblog -pgoblog123 --database=goblog -e <span class="s">"SHOW TABLES; DESCRIBE article_tags;"</span>
++------------------+
+| Tables_in_goblog |
++------------------+
+| article_tags |
+| articles         |
+| tags             |
+| users            |
++------------------+
++------------+-----------------+------+-----+---------+-------+
+| Field      | Type            | Null | Key | Default | Extra |
++------------+-----------------+------+-----+---------+-------+
+| article_id | bigint unsigned | NO   | PRI | NULL    |       |
+| tag_id     | bigint unsigned | NO   | PRI | NULL    |       |
++------------+-----------------+------+-----+---------+-------+</pre>
+    <div class="callout tip"><p>中间表就两列，<b>两列组成联合主键</b>：<code>PRIMARY KEY (article_id, tag_id)</code>。这条约束意味着「同一篇文章贴同一个标签两次」在数据库层面就被禁止（第 4 列 <code>PRI</code> 就是证据），但它<b>不</b>阻止「同一个标签被 100 篇文章用」——那正是多对多的语义。GORM 没给这张表加 <code>id</code>、<code>created_at</code>，因为它只是一张关系表。想看关系：<code>SELECT * FROM article_tags;</code>。</p></div>
+
+    <h3>2. 最小 SQL 前置：四行看懂就够</h3>
+    <p>今天第 6 节要<b>手写 JOIN</b>，day4 还要写子查询。你不需要会设计 SQL，只要能看懂 GORM 打在日志里的那几行。下面四条请在 MySQL 命令行里<b>逐条真跑一遍</b>（先做第 3 节的种子数据），这 10 分钟能省掉你后面两小时的对猜。</p>
+    <pre><span class="code-label">shell</span>$ docker exec -it goblog-mysql mysql -ugoblog -pgoblog123 --database=goblog
+
+<span class="c">-- ① 取行：只要这三列，按创建时间倒排，跳过前 10 行取 5 行（这就是「分页」的全部秘密）</span>
+mysql&gt; <span class="k">SELECT</span> id, title, views <span class="k">FROM</span> articles <span class="k">WHERE</span> user_id = 1
+          <span class="k">ORDER BY</span> created_at <span class="k">DESC</span> <span class="k">LIMIT</span> 5 <span class="k">OFFSET</span> 10;
+
+<span class="c">-- ② 连接：按 ON 的条件把两张表的行拼成一行；LEFT 保证「没有作者的文章也不丢」</span>
+mysql&gt; <span class="k">SELECT</span> a.id, a.title, u.username <span class="k">FROM</span> articles <span class="k">AS</span> a
+          <span class="k">LEFT JOIN</span> users <span class="k">AS</span> u <span class="k">ON</span> u.id = a.user_id;
+
+<span class="c">-- ③ 分组聚合：按 user_id 分堆，每堆算一次；HAVING 过滤的是「堆」，WHERE 过滤的是「行」</span>
+mysql&gt; <span class="k">SELECT</span> user_id, <span class="k">COUNT</span>(*) <span class="k">AS</span> n, <span class="k">SUM</span>(views) <span class="k">AS</span> sum_views
+          <span class="k">FROM</span> articles <span class="k">GROUP BY</span> user_id <span class="k">HAVING</span> n &gt; 1;
+
+<span class="c">-- ④ 子查询：IN 后面套一条 SELECT</span>
+mysql&gt; <span class="k">SELECT</span> id, title <span class="k">FROM</span> articles <span class="k">WHERE</span> user_id <span class="k">IN</span>
+          (<span class="k">SELECT</span> id <span class="k">FROM</span> users <span class="k">WHERE</span> role = 0);</pre>
+    <table>
+      <tr><th>SQL 片段</th><th>GORM 写法</th><th>要点</th></tr>
+      <tr><td><code>WHERE user_id = 1</code></td><td><code>db.Where("user_id = ?", 1)</code></td><td>值永远走 <code>?</code> 占位符，<b>不要</b>字符串拼接（day4 亲手打断一次）</td></tr>
+      <tr><td><code>LIMIT 5 OFFSET 10</code></td><td><code>db.Limit(5).Offset(10)</code></td><td>分页 = 这两个数；<code>OFFSET = (page-1)*size</code></td></tr>
+      <tr><td><code>LEFT JOIN users ON u.id = a.user_id</code></td><td><code>db.Joins("LEFT JOIN users ON users.id = articles.user_id")</code></td><td><b>GORM 不替你写 ON 子句</b>，引号里的字符串原样拼进 SQL，所以表名列名要写全</td></tr>
+      <tr><td><code>SELECT u.username AS username</code></td><td><code>db.Select("users.username AS username").Scan(&amp;rows)</code></td><td>结果列对不上 model 字段时用 <code>Scan</code> + 自定义 struct</td></tr>
+      <tr><td><code>GROUP BY user_id</code> + <code>COUNT(*) AS n</code></td><td><code>db.Group("user_id").Select("user_id, COUNT(*) AS n").Scan(&amp;rows)</code></td><td>聚合结果不在任何表里，只能用带 <code>n</code> 字段的 struct 接</td></tr>
+      <tr><td><code>HAVING n &gt; 1</code></td><td><code>db.Having("n &gt; ?", 1)</code></td><td>带聚合的条件才走 HAVING；<code>Where</code> 里是拿不到 <code>n</code> 的</td></tr>
+      <tr><td><code>IN (SELECT id FROM users ...)</code></td><td><code>db.Where("user_id IN (?)", sub)</code>，<code>sub := db.Model(&amp;model.User{}).Select("id").Where("role = ?", 0)</code></td><td>把一个 <code>*gorm.DB</code> 当子查询传进去，它不会被执行</td></tr>
+      <tr><td><code>AS a</code>（表别名）</td><td>GORM 默认用<b>全表名</b>，不用别名</td><td>所以手写 join 里请写 <code>articles.id</code> 而不是 <code>a.id</code>，除非你自己 <code>Table("articles AS a")</code></td></tr>
+    </table>
+    <div class="callout js"><p>三条最容易混的：<b>INNER JOIN</b> 丢掉拼不上的行（没作者的文章消失）；<b>LEFT JOIN</b> 保留左表全部行，右表列给 <code>NULL</code>；<b>WHERE 在分组前筛行、HAVING 在分组后筛堆</b>。对照 JS：<code>rows.filter(r =&gt; r.user_id === 1)</code> 是 WHERE，<code>Object.entries(groupBy(rows)).filter(([,v]) =&gt; v.length &gt; 1)</code> 才是 HAVING。</p></div>
+
+    <h3>3. 造点种子数据：一个能跑的 cmd/seed/main.go</h3>
+    <p>关联查询得有数据才好观察。<b>新建文件 <code>cmd/seed/main.go</code></b>（和 <code>cmd/server</code> 平级，各自一个 <code>package main</code>，互不干扰），整份抄进去就能跑：</p>
+    <pre><span class="code-label">cmd/seed/main.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">fmt</span>
+    <span class="t">log</span>
+
+    <span class="s">"gorm.io/gorm"</span>
+
+    <span class="s">"goblog/internal/config"</span>
+    <span class="s">"goblog/internal/model"</span>
+    <span class="s">"goblog/internal/repository"</span>
+)
+
+<span class="k">func</span> main() {
+    db := repository.MustConnect(config.DSN)       <span class="c">// day1 建的那个函数，别自己再 gorm.Open 一次</span>
+    <span class="k">if</span> err := db.AutoMigrate(&amp;model.User{}, &amp;model.Article{}, &amp;model.Tag{}); err != <span class="k">nil</span> {
+        log.Fatalf(<span class="s">"迁移失败: %v"</span>, err)
+    }
+    <span class="k">if</span> err := seed(db); err != <span class="k">nil</span> {
+        log.Fatalf(<span class="s">"种子失败: %v"</span>, err)
+    }
 }
 
-<span class="code-label">shell</span>$ docker exec -it golearn-mysql mysql -ugolearn -pgolearn123 --database=study_plan -e <span class="s">"SHOW TABLES; DESCRIBE article_tags;"</span>
-+------------------------+
-| Tables_in_study_plan   |
-+------------------------+
-| article_tags | articles | tags | users |
-+------------------------+
-Field      Type            Null Key Default
-article_id bigint unsigned NO  PRI NULL
-tag_id     bigint unsigned NO  PRI NULL</pre>
-
-    <h3>2. 造点种子数据：关联的创建与级联保存</h3>
-    <p>GORM 在 <code>Create</code> 时会自动保存关联对象——这既是便利也是陷阱：</p>
-    <pre><span class="code-label">cmd/seed/main.go</span><span class="k">func</span> seed(db *gorm.DB) {
-    u := model.User{Name: <span class="s">"小明"</span>, Email: <span class="s">"xm@example.com"</span>, Password: <span class="s">"h1"</span>}
-    db.Create(&amp;u)   <span class="c">// 拿到 u.ID = 1</span>
-
-    <span class="c">// ⚠️ 一次 Create 带上 Tags：GORM 会连带 INSERT tags 与 article_tags，共 3 类写入</span>
-    a := model.Article{
-        Title:   <span class="s">"Go 的 Preload 为什么快"</span>,
-        Content: <span class="s">"……"</span>,
-        UserID:  u.ID,
-        Tags: []model.Tag{
-            {Name: <span class="s">"go"</span>},
-            {Name: <span class="s">"gorm"</span>},
-        },
+<span class="k">func</span> seed(db *gorm.DB) <span class="t">error</span> {
+    tagNames := []<span class="t">string</span>{<span class="s">"go"</span>, <span class="s">"mysql"</span>, <span class="s">"gorm"</span>, <span class="s">"docker"</span>}
+    users := []model.User{
+        {Username: <span class="s">"xiaoming"</span>, Nickname: <span class="s">"小明"</span>, Email: <span class="s">"xm@example.com"</span>, Password: <span class="s">"abcdef123456"</span>},
+        {Username: <span class="s">"ahua"</span>, Nickname: <span class="s">"阿花"</span>, Email: <span class="s">"ahua@example.com"</span>, Password: <span class="s">"abcdef123456"</span>},
+        {Username: <span class="s">"laozhang"</span>, Nickname: <span class="s">"老张"</span>, Email: <span class="s">"lz@example.com"</span>, Password: <span class="s">"abcdef123456"</span>},
     }
-    <span class="k">if</span> err := db.Create(&amp;a).Error; err != <span class="k">nil</span> {
-        log.Fatal(err)
+
+    <span class="c">// 1) 标签：有则复用、无则插入 —— 多对多的标准起手式</span>
+    tags := make([]model.Tag, <span class="n">0</span>, len(tagNames))
+    <span class="k">for</span> _, name := <span class="k">range</span> tagNames {
+        <span class="k">var</span> t model.Tag
+        <span class="k">if</span> err := db.Where(<span class="t">map</span>[<span class="t">string</span>]<span class="t">any</span>{<span class="s">"name"</span>: name}).FirstOrCreate(&amp;t).Error; err != <span class="k">nil</span> {
+            <span class="k">return</span> fmt.Errorf(<span class="s">"seed tag %q: %w"</span>, name, err)
+        }
+        tags = append(tags, t)
     }
-    fmt.Printf(<span class="s">"article=%d tags=%d(id=%d,id=%d)\n"</span>, a.ID, len(a.Tags), a.Tags[0].ID, a.Tags[1].ID)
+
+    <span class="c">// 2) 用户 + 每人 2 篇文章 + 每篇 2 个标签（全部幂等，反复跑结果一致）</span>
+    <span class="k">for</span> _, u := <span class="k">range</span> users {
+        <span class="k">if</span> err := db.Where(<span class="s">"username = ?"</span>, u.Username).FirstOrCreate(&amp;u).Error; err != <span class="k">nil</span> {
+            <span class="k">return</span> fmt.Errorf(<span class="s">"seed user %s: %w"</span>, u.Username, err)
+        }
+        <span class="k">for</span> n := <span class="n">1</span>; n &lt;= <span class="n">2</span>; n++ {
+            title := fmt.Sprintf(<span class="s">"%s 的第 %d 篇"</span>, u.Nickname, n)
+            a := model.Article{Title: title, Content: <span class="s">"正文若干……"</span>,
+                Summary: title + <span class="s">"（摘要）"</span>, UserID: u.ID, Views: int64(n * 10)}
+            <span class="k">if</span> err := db.Where(<span class="s">"title = ? AND user_id = ?"</span>, title, u.ID).FirstOrCreate(&amp;a).Error; err != <span class="k">nil</span> {
+                <span class="k">return</span> fmt.Errorf(<span class="s">"seed article %q: %w"</span>, title, err)
+            }
+            <span class="c">// 关键：不在 Create 里塞 Tags，而是关系单独走 Association（下一节解释为什么）</span>
+            rel := []model.Tag{tags[n%<span class="t">len</span>(tags)], tags[(n+1)%<span class="t">len</span>(tags)]}
+            <span class="k">if</span> err := db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Replace(rel); err != <span class="k">nil</span> {
+                <span class="k">return</span> fmt.Errorf(<span class="s">"seed rel %q: %w"</span>, title, err)
+            }
+        }
+        fmt.Printf(<span class="s">"user %-9s id=%d 文章 2 篇\n"</span>, u.Username, u.ID)
+    }
+
+    <span class="c">// 3) 汇报战果：Table("article_tags") 直接数中间表</span>
+    <span class="k">var</span> nu, na, nt, nr int64
+    db.Model(&amp;model.User{}).Count(&amp;nu)
+    db.Model(&amp;model.Article{}).Count(&amp;na)
+    db.Model(&amp;model.Tag{}).Count(&amp;nt)
+    db.Table(<span class="s">"article_tags"</span>).Count(&amp;nr)
+    fmt.Printf(<span class="s">"完成：users=%d articles=%d tags=%d article_tags=%d\n"</span>, nu, na, nt, nr)
+    <span class="k">return</span> <span class="k">nil</span>
 }</pre>
-    <div class="callout warn"><p><b>级联保存的两个注意事项：</b>① 关联的 Tag 是<b>新 struct 零 ID</b>，所以每次 Create 文章都会<b>新插入</b>标签行；因为 <code>Name</code> 上有唯一索引，第二篇也用 <code>"go"</code> 时会报 <code>Error 1062 Duplicate entry</code>，而不是复用已有标签。<b>正确做法：先按名字查/建标签拿到 ID，再把带 ID 的 tag 挂上去</b>（见第 3 节与练习 4）。② <code>Save(&amp;a)</code> 会连带更新关联：想只改文章本身，用 <code>Updates</code>；想整体替换关联，用 <code>db.Session(&amp;gorm.Session{FullSaveAssociations: true}).Save(&amp;a)</code>。</p></div>
+    <pre><span class="code-label">shell</span>$ go run ./cmd/seed
+user xiaoming  id=1 文章 2 篇
+user ahua      id=2 文章 2 篇
+user laozhang  id=3 文章 2 篇
+完成：users=3 articles=6 tags=4 article_tags=12
 
-    <h3>3. 只维护关系，不创建记录：Association 模式</h3>
-    <pre><span class="code-label">关系维护</span><span class="c">// 拿或建标签（有则复用，无则插入）—— 多对多的标准起手式</span>
-<span class="k">func</span> firstOrCreateTag(db *gorm.DB, name <span class="t">string</span>) (model.Tag, <span class="t">error</span>) {
+$ go run ./cmd/seed        <span class="c"># 再跑一遍：数字一模一样，这才叫幂等</span>
+完成：users=3 articles=6 tags=4 article_tags=12</pre>
+    <div class="callout warn"><p><b>级联保存的两个注意事项</b>（也是上面这段为什么绕一圈用 <code>Association</code> 的原因）：① 如果在 <code>db.Create(&amp;a)</code> 里直接塞 <code>Tags: []model.Tag{{Name: "go"}}</code>，那是<b>零 ID 的新 struct</b>，GORM 会连带 INSERT 一行新标签；因为 <code>tags.name</code> 上有唯一索引，第二篇也用 <code>"go"</code> 时就撞 <code>Error 1062 Duplicate entry</code>——而不是复用已有标签。<b>正确做法永远是先按名字查/建拿到 ID，再把带 ID 的 tag 挂上去。</b>② <code>Save(&amp;a)</code> 会连带更新关联；想只改文章本身用 <code>Updates</code>，想整体替换关联用 <code>Association("Tags").Replace</code>。</p></div>
+
+    <h3>4. 只维护关系，不创建记录：Association 模式</h3>
+    <pre><span class="code-label">internal/repository/tag.go（今天新建，完整）</span><span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="s">"goblog/internal/model"</span>
+
+    <span class="s">"gorm.io/gorm"</span>
+)
+
+<span class="c">// TagRepository 标签这一侧的能力。名字与 day2 的 UserRepository 同一套风格</span>
+<span class="k">type</span> <span class="t">TagRepository</span> <span class="k">interface</span> {
+    FindOrCreate(name <span class="t">string</span>) (model.Tag, <span class="t">error</span>)
+    ReplaceFor(articleID <span class="t">uint</span>, tagIDs []<span class="t">uint</span>) <span class="t">error</span>
+    ListByArticle(articleID <span class="t">uint</span>) ([]model.Tag, <span class="t">error</span>)
+}
+
+<span class="k">type</span> <span class="t">gormTagRepo</span> <span class="k">struct</span> { db *gorm.DB }
+
+<span class="k">func</span> NewTagRepo(db *gorm.DB) <span class="t">TagRepository</span> { <span class="k">return</span> &amp;gormTagRepo{db: db} }
+
+<span class="k">var</span> _ TagRepository = (*gormTagRepo)(<span class="k">nil</span>)
+
+<span class="c">// FindOrCreate 有则复用、无则插入。返回的 tag 一定带 ID</span>
+<span class="k">func</span> (r *gormTagRepo) FindOrCreate(name <span class="t">string</span>) (model.Tag, <span class="t">error</span>) {
     <span class="k">var</span> tag model.Tag
-    err := db.Where(<span class="t">map</span>[<span class="t">string</span>]<span class="t">any</span>{<span class="s">"name"</span>: name}).FirstOrCreate(&amp;tag).Error
+    err := r.db.Where(<span class="t">map</span>[<span class="t">string</span>]<span class="t">any</span>{<span class="s">"name"</span>: name}).FirstOrCreate(&amp;tag).Error
     <span class="k">return</span> tag, err
 }
 
-<span class="k">var</span> a model.Article
-db.First(&amp;a, <span class="n">1</span>)
-goTag, _ := firstOrCreateTag(db, <span class="s">"go"</span>)
-dockerTag, _ := firstOrCreateTag(db, <span class="s">"docker"</span>)
+<span class="c">// ReplaceFor 整体替换这篇文章的标签：只动 article_tags，永远不碰 tags 表的行</span>
+<span class="k">func</span> (r *gormTagRepo) ReplaceFor(articleID <span class="t">uint</span>, tagIDs []<span class="t">uint</span>) <span class="t">error</span> {
+    <span class="k">var</span> tags []model.Tag
+    <span class="k">if</span> len(tagIDs) == <span class="n">0</span> {
+        <span class="k">return</span> r.db.Model(&amp;model.Article{ID: articleID}).Association(<span class="s">"Tags"</span>).Clear()
+    }
+    <span class="k">if</span> err := r.db.Find(&amp;tags, tagIDs).Error; err != <span class="k">nil</span> {
+        <span class="k">return</span> err
+    }
+    <span class="k">return</span> r.db.Model(&amp;model.Article{ID: articleID}).Association(<span class="s">"Tags"</span>).Replace(tags)
+}
 
-db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Append([]model.Tag{goTag, dockerTag}) <span class="c">// 追加，只写中间表</span>
-db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Replace([]model.Tag{goTag})           <span class="c">// 整体替换成这组</span>
-db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Delete([]model.Tag{dockerTag})        <span class="c">// 断开指定关系（标签本身还在）</span>
+<span class="k">func</span> (r *gormTagRepo) ListByArticle(articleID <span class="t">uint</span>) ([]model.Tag, <span class="t">error</span>) {
+    <span class="k">var</span> tags []model.Tag
+    err := r.db.Model(&amp;model.Article{ID: articleID}).Association(<span class="s">"Tags"</span>).Find(&amp;tags)
+    <span class="k">return</span> tags, err
+}</pre>
+    <div class="callout note"><p><b>注意 <code>Association</code> 系列方法的返回值类型</b>：它们返回的是<b>裸 <code>error</code></b>，不是 <code>*gorm.DB</code>。所以 <code>Association("Tags").Replace(tags).Error</code> <b>编译不过</b>（<code>Replace</code> 已经没有 <code>.Error</code> 可取了），写成 <code>err := ...Replace(tags).Error</code> 是初学高频错误。正确形态就是上面那样：<code>if err := r.db.Model(...).Association("Tags").Replace(tags); err != nil { ... }</code>。同理 <code>Find(&amp;tags)</code>、<code>Clear()</code>、<code>Delete(...)</code> 都是 <code>error</code>，只有 <code>Count()</code> 是 <code>(int64, error)</code>。</p></div>
+    <pre><span class="code-label">Association 四件套（对照上面三个方法，看清语义差别）</span><span class="c">// 追加：只补没有的关系，已有的不删</span>
+<span class="k">if</span> err := db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Append([]model.Tag{goTag}); err != <span class="k">nil</span> { <span class="c">/* … */</span> }
 
+<span class="c">// 替换：先把这篇文章现有的关系全断掉，再写入这批 —— 幂等，seed 用的就是它</span>
+<span class="k">if</span> err := db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Replace([]model.Tag{goTag, mysqlTag}); err != <span class="k">nil</span> { <span class="c">/* … */</span> }
+
+<span class="c">// 断开指定关系（标签本身还在 tags 表里，别人的关系也不受影响）</span>
+<span class="k">if</span> err := db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Delete([]model.Tag{dockerTag}); err != <span class="k">nil</span> { <span class="c">/* … */</span> }
+
+<span class="c">// 清空这篇文章的全部关系</span>
+<span class="k">if</span> err := db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Clear(); err != <span class="k">nil</span> { <span class="c">/* … */</span> }
+
+<span class="c">// 读关系 / 数一下</span>
 <span class="k">var</span> tags []model.Tag
-db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Find(&amp;tags)       <span class="c">// 读关系</span>
-n, err := db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Count() <span class="c">// 数一下</span></pre>
-    <div class="callout js"><p>类比 JS：这就像 <code>Object.assign</code>（Append）、整份替换（Replace）、把外键设成 null（Disconnect / Erase）。<b>Association 模式只动中间表，永远不会删除 tags 表的行</b>，所以「删一篇文章」不会误删别人也在用的标签。</p></div>
+<span class="k">if</span> err := db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Find(&amp;tags); err != <span class="k">nil</span> { <span class="c">/* … */</span> }
+n, err := db.Model(&amp;a).Association(<span class="s">"Tags"</span>).Count()</pre>
+    <div class="callout js"><p>类比 JS：这就像 <code>Set.add</code>（Append）、<code>set = new Set(list)</code>（Replace）、<code>Set.delete</code>（Delete）。<b>Association 模式只动中间表，永远不会删除 <code>tags</code> 表的行</b>，所以「删一篇文章」不会误删别人也在用的标签。反过来说：真要删一个标签，得自己 <code>Delete(&amp;model.Tag{}, id)</code> 再清 <code>article_tags</code> 里它的行（GORM 不会替你级联清）。</p></div>
 
-    <h3>4. Preload：一次把关联带出（以及 N+1 灾难）</h3>
+    <h3>5. Preload：一次把关联带出（以及 N+1 灾难）</h3>
     <p>默认情况下关联字段是<b>空的</b>——GORM 不查它，一条 SQL 都不多发：</p>
     <pre><span class="code-label">N+1 对比</span><span class="c">// ❌ 手写循环查询：1 + N 条 SQL</span>
 <span class="k">var</span> users []model.User
@@ -151,6 +272,7 @@ db.Preload(<span class="s">"Articles"</span>).Find(&amp;users)              <spa
     <p>Preload 的四种进阶形态：</p>
     <pre><span class="code-label">Preload 进阶</span><span class="c">// ① 带条件（字符串 + 占位符）</span>
 db.Preload(<span class="s">"Articles"</span>, <span class="s">"views &gt; ?"</span>, <span class="n">100</span>).First(&amp;user, <span class="n">1</span>)
+<span class="k">var</span> kw <span class="t">string</span> = <span class="s">"gorm"</span>                       <span class="c">// 真实来源是 ?kw=… 查询参数，day4 教绑定与转义</span>
 db.Preload(<span class="s">"Articles"</span>, <span class="s">"title LIKE ?"</span>, <span class="s">"%"</span>+kw+<span class="s">"%"</span>).First(&amp;user, <span class="n">1</span>)
 
 <span class="c">// ② 裁剪字段 + 排序 + 限量（回调里返回一个加了条件的 *gorm.DB）—— 列表页「最近 5 篇」</span>
@@ -166,18 +288,20 @@ db.Preload(<span class="s">"Articles.Tags"</span>).Find(&amp;users)
 db.Preload(<span class="s">"Tags"</span>).Preload(<span class="s">"User"</span>).First(&amp;article, <span class="n">1</span>)</pre>
     <div class="callout tip"><p>Preload 是「懒加载 + 显式批量」的组合，好处是<b>主查询干净、支持 order/limit/条件</b>；代价是每次关联多一条 SQL。列表接口里关联只需用于显示一两个字段时，考虑下面的 Joins。</p></div>
 
-    <h3>5. Joins：一条 SQL 搞定</h3>
-    <pre><span class="code-label">Joins</span><span class="c">// ① 简写：belongsto / hasone 关联可以直接写名字（不支持 has-many / many2many）</span>
+    <h3>6. Joins：一条 SQL 搞定</h3>
+    <pre><span class="code-label">Joins 三种用法</span><span class="c">// ① 简写：belongsto / hasone 关联可以直接写名字（不支持 has-many / many2many）</span>
 <span class="k">var</span> arts []model.Article
-db.Joins(<span class="s">"User"</span>).Where(<span class="s">"users.name = ?"</span>, <span class="s">"小明"</span>).Preload(<span class="s">"Tags"</span>).Find(&amp;arts)
+db.Joins(<span class="s">"User"</span>).Where(<span class="s">"users.username = ?"</span>, <span class="s">"xiaoming"</span>).Preload(<span class="s">"Tags"</span>).Find(&amp;arts)
+<span class="c">// → LEFT JOIN users ON users.id = articles.user_id AND users.deleted_at IS NULL
+//    WHERE users.username = 'xiaoming'   ← 注意：join 条件是 GORM 按外键自己推的</span>
 
-<span class="c">// ② 原生 JOIN + 自定义结果结构体：只要作者名，不要整个 User 对象</span>
+<span class="c">// ② 原生 JOIN + 自定义结果结构体：只要作者邮箱，不要整个 User 对象（第 2 节那条 SQL）</span>
 <span class="k">type</span> ArticleRow <span class="k">struct</span> {
     ID        <span class="t">uint</span>   <span class="s">`gorm:"column:id" json:"id"`</span>
     Title     <span class="t">string</span> <span class="s">`gorm:"column:title" json:"title"`</span>
     UserEmail <span class="t">string</span> <span class="s">`gorm:"column:user_email" json:"user_email"`</span>
 }
-<span class="c">// ↑ 若结构体名恰好匹配表名，GORM 会做内嵌扫描；用独立 DTO 结构最稳</span>
+<span class="c">// ↑ 结果形状和 model 不一样，就用这种「行结构体」接；Scan 只填字段、不管主键</span>
 <span class="k">var</span> rows []ArticleRow
 db.Table(<span class="s">"articles"</span>).
     Select(<span class="s">"articles.id, articles.title, users.email AS user_email"</span>).
@@ -187,80 +311,353 @@ db.Table(<span class="s">"articles"</span>).
 
 <span class="c">// ③ 关联计数：某用户有多少篇文章（不 Preload 整份数据）</span>
 <span class="k">var</span> cnt <span class="t">int64</span>
-db.Model(&amp;model.Article{}).Where(<span class="s">"user_id = ?"</span>, <span class="n">1</span>).Count(&amp;cnt)</pre>
+db.Model(&amp;model.Article{}).Where(<span class="s">"user_id = ?"</span>, <span class="n">1</span>).Count(&amp;cnt)
+
+<span class="c">// ④ 分组聚合 + HAVING（第 2 节 ③ 那条 SQL 的 GORM 版）</span>
+<span class="k">type</span> AuthorStat <span class="k">struct</span> { UserID <span class="t">uint</span> <span class="s">`gorm:"column:user_id"`</span>; N <span class="t">int64</span> <span class="s">`gorm:"column:n"`</span> }
+<span class="k">var</span> stats []AuthorStat
+db.Table(<span class="s">"articles"</span>).Select(<span class="s">"user_id, COUNT(*) AS n"</span>).
+    Group(<span class="s">"user_id"</span>).Having(<span class="s">"n &gt; ?"</span>, <span class="n">1</span>).Scan(&amp;stats)</pre>
+    <div class="callout warn"><p>② 里的 <code>Table("articles")</code> 会让 GORM <b>不再自动加软删除条件</b>吗？不会——<code>Table</code> 只是换个 FROM 目标，它拿不到模型信息，所以 <b><code>articles.deleted_at IS NULL</code> 得你自己写</b>（改成 <code>Joins("LEFT JOIN users ON ...").Where("articles.deleted_at IS NULL")</code>，或用 <code>Model(&amp;model.Article{})</code> 而不是 <code>Table</code>）。这是 <code>Table</code> + 软删除最经典的漏数据口子：回收站里的文章会出现在列表里。day5 会专门回头讲这件事。</p></div>
     <table>
       <tr><th>手段</th><th>SQL 条数</th><th>能带出 has-many？</th><th>能对关联表 where/order/limit？</th><th>什么时候用</th></tr>
       <tr><td>循环里查（N+1）</td><td>1 + N</td><td>能</td><td>能</td><td>永远不用</td></tr>
       <tr><td><code>Preload</code></td><td>1 + 每种关联 1 条</td><td>能</td><td>能（条件/裁剪/限量都行）</td><td>详情接口、要返回嵌套 JSON</td></tr>
       <tr><td><code>Joins</code></td><td>1 条</td><td>不能（会行放大）</td><td>能，但要自己写 ON/WHERE</td><td>只取关联的少量字段、需要按关联表条件过滤/排序</td></tr>
     </table>
-    <div class="callout warn"><p><code>Count</code> 和 <code>Joins</code> 混用要小心：一对多 JOIN 会让行数翻倍，<code>db.Model(&amp;a).Joins("User").Count(&amp;n)</code> 统计的是 join 后的行数。需要去重时写 <code>Distinct("articles.id")</code>，或干脆拆成两次查询。另外 <b>GORM 的 <code>Delete(&amp;user, 1)</code> 不会级联删除他的文章</b>——删除用户时要在事务里手工删/软删其文章（Day 5 会说），或建表时加数据库级外键约束。</p></div>
+    <div class="callout warn"><p><code>Count</code> 和 <code>Joins</code> 混用要小心：一对多 JOIN 会让行数翻倍，<code>db.Model(&amp;a).Joins("User").Count(&amp;n)</code> 统计的是 join 后的行数。需要去重时写 <code>Distinct("articles.id")</code>，或干脆拆成两次查询。另外 <b>GORM 的 <code>Delete(&amp;user, 1)</code> 不会级联删除他的文章</b>——第 1 节说过 GORM 不建数据库外键，所以数据库也不会帮你删。删除用户时要在事务里手工删/软删其文章（Day 5 会说）。</p></div>
   </section>
 
   <section>
     <h2>今日练习</h2>
     <div class="task">
-      <div class="task-title">练习 1：种子数据 + 亲眼看 N+1（30 分钟）</div>
-      <p>跑第 2 节的 seed 程序，建 3 个用户、每人 2 篇带标签的文章。然后写两版「列出所有用户及其文章」：循环版与 <code>Preload("Articles")</code> 版，把终端里 <code>[rows:n]</code> 的 SQL 行数分别记下来。</p>
-      <p><b>参考答案</b>：循环版 <code>1 + 3 = 4</code> 条 SELECT（用户多了就是几十条）；Preload 版恒定 <code>2</code> 条，第二条是 <code>WHERE user_id IN (1,2,3)</code>。标签版 Preload("Articles.Tags") 是 <code>3</code> 条，多一条 <code>WHERE article_tags.article_id IN (...)</code>。</p>
+      <div class="task-title">练习 1：跑种子 + 亲眼看 N+1（30 分钟）</div>
+      <p>跑第 3 节的 <code>go run ./cmd/seed</code>（它会造 3 用户 / 6 文章 / 4 标签 / 12 关系行）。然后写两版「列出所有用户及其文章」：循环版与 <code>Preload("Articles")</code> 版，把终端里 <code>[rows:n]</code> 的 SQL 条数分别记下来。</p>
+      <p><b>参考答案</b>：循环版 <code>1 + 3 = 4</code> 条 SELECT（用户多了就是几十条）；Preload 版恒定 <code>2</code> 条，第二条是 <code>WHERE user_id IN (1,2,3)</code>。<code>Preload("Articles.Tags")</code> 是 <code>3</code> 条，第三条多一个 <code>WHERE article_tags.article_id IN (...)</code>。把 <code>middleware.Timer()</code> 打的 <code>耗时</code> 也抄下来，你会看到 4 条 SQL 和 2 条 SQL 在本地 Docker 上差 2~3 毫秒——生产上是几十毫秒级。</p>
     </div>
     <div class="task">
-      <div class="task-title">练习 2：GET /users/:id/articles（40 分钟）</div>
-      <p>返回该用户的分页文章列表，<b>每篇带作者信息</b>（id、name、email，不含 password），并带出评论位（标签）。要求只发 2 条 SQL。</p>
-      <pre><span class="code-label">internal/handler/article.go</span><span class="k">func</span> (h *ArticleHandler) ListByUser(c *gin.Context) {
-    id, err := strconv.ParseUint(c.Param(<span class="s">"id"</span>), <span class="n">10</span>, <span class="n">64</span>)
-    <span class="k">if</span> err != <span class="k">nil</span> || id == <span class="n">0</span> {
-        c.JSON(<span class="n">400</span>, gin.H{<span class="s">"code"</span>: <span class="n">1004</span>, <span class="s">"message"</span>: <span class="s">"id 必须是正整数"</span>})
-        <span class="k">return</span>
-    }
+      <div class="task-title">练习 2：GET /api/v1/users/:id/articles（40 分钟）</div>
+      <p>返回该用户的<b>分页</b>文章列表，<b>每篇带作者信息</b>（username、nickname、email，<b>不含 password</b>）并带出标签。要求走满三层：handler 里不许出现 <code>*gorm.DB</code>。</p>
+      <p><b>第 0 步：先建 <code>internal/dto/page.go</code></b>（今天是「照抄」，<b>day4 才正式讲</b> <code>form</code> 绑定和为什么必须 Normalize——但今天两个接口就要用它，所以先建好）：</p>
+      <pre><span class="code-label">internal/dto/page.go（今天照抄，day4 正式讲）</span><span class="k">package</span> dto
 
-    <span class="k">var</span> user model.User
-    <span class="k">if</span> err := h.db.Select(<span class="s">"id"</span>, <span class="s">"name"</span>, <span class="s">"email"</span>).First(&amp;user, id).Error; err != <span class="k">nil</span> {
-        <span class="k">if</span> errors.Is(err, gorm.ErrRecordNotFound) {
-            c.JSON(<span class="n">404</span>, gin.H{<span class="s">"code"</span>: <span class="n">1001</span>, <span class="s">"message"</span>: <span class="s">"用户不存在"</span>})
-            <span class="k">return</span>
-        }
-        c.JSON(<span class="n">500</span>, gin.H{<span class="s">"code"</span>: <span class="n">5000</span>, <span class="s">"message"</span>: <span class="s">"服务异常"</span>})
-        <span class="k">return</span>
-    }
+<span class="c">// PageQuery 列表接口的公共查询参数：GET …?page=2&amp;size=10
+// 注意 tag 是 form 不是 json —— 它从 URL 查询串绑定，不从请求体</span>
+<span class="k">type</span> <span class="t">PageQuery</span> <span class="k">struct</span> {
+    Page <span class="t">int</span> `<span class="t">form</span>:<span class="s">"page"</span>`
+    Size <span class="t">int</span> `<span class="t">form</span>:<span class="s">"size"</span>`
+}
 
-    <span class="k">var</span> arts []model.Article
-    <span class="k">if</span> err := h.db.Preload(<span class="s">"Tags"</span>).
-        Where(<span class="s">"user_id = ?"</span>, user.ID).
-        Order(<span class="s">"created_at desc"</span>).
-        Find(&amp;arts).Error; err != <span class="k">nil</span> {
-        c.JSON(<span class="n">500</span>, gin.H{<span class="s">"code"</span>: <span class="n">5000</span>, <span class="s">"message"</span>: <span class="s">"服务异常"</span>})
-        <span class="k">return</span>
-    }
+<span class="k">const</span> (
+    defaultPage = <span class="n">1</span>
+    defaultSize = <span class="n">10</span>
+    maxSize     = <span class="n">100</span>  <span class="c">// 不设上限，别人一句 ?size=999999 就能拖死你</span>
+)
 
-    c.JSON(<span class="n">200</span>, gin.H{<span class="s">"code"</span>: <span class="n">0</span>, <span class="s">"message"</span>: <span class="s">"success"</span>, <span class="s">"data"</span>: gin.H{
-        <span class="s">"user"</span>:    user,   <span class="c">// password 因 json:"-" 不会出现</span>
-        <span class="s">"list"</span>:    arts,
-        <span class="s">"total"</span>:   len(arts),
-    }})
+<span class="c">// Normalize 把乱七八糟的入参收进安全区间。必须在使用 page/size 之前调用</span>
+<span class="k">func</span> (q *PageQuery) Normalize() {
+    <span class="k">if</span> q.Page &lt; <span class="n">1</span> { q.Page = defaultPage }
+    <span class="k">if</span> q.Size &lt; <span class="n">1</span> { q.Size = defaultSize }
+    <span class="k">if</span> q.Size &gt; maxSize { q.Size = maxSize }
+}
+
+<span class="c">// Offset 页码 → 跳过多少行，就是第 2 节那条 SQL 里的 OFFSET</span>
+<span class="k">func</span> (q PageQuery) Offset() <span class="t">int</span> { <span class="k">return</span> (q.Page - <span class="n">1</span>) * q.Size }
+
+<span class="c">// PageResult 全站统一的列表形状：{list,total,page,size,total_page}</span>
+<span class="k">type</span> <span class="t">PageResult</span> <span class="k">struct</span> {
+    List      <span class="t">any</span>   `<span class="t">json</span>:<span class="s">"list"</span>`
+    Total     int64  `<span class="t">json</span>:<span class="s">"total"</span>`
+    Page      <span class="t">int</span>   `<span class="t">json</span>:<span class="s">"page"</span>`
+    Size      <span class="t">int</span>   `<span class="t">json</span>:<span class="s">"size"</span>`
+    TotalPage <span class="t">int</span>   `<span class="t">json</span>:<span class="s">"total_page"</span>`
+}
+
+<span class="c">// NewPageResult 传入的 q 必须是已经 Normalize 过的，否则 size=0 会除零</span>
+<span class="k">func</span> NewPageResult(list <span class="t">any</span>, total int64, q PageQuery) PageResult {
+    pages := <span class="n">0</span>
+    <span class="k">if</span> q.Size &gt; <span class="n">0</span> {
+        pages = (<span class="t">int</span>(total) + q.Size - <span class="n">1</span>) / q.Size  <span class="c">// 整数向上取整，不用 math.Ceil</span>
+    }
+    <span class="k">return</span> PageResult{List: list, Total: total, Page: q.Page, Size: q.Size, TotalPage: pages}
 }</pre>
-      <p><b>验收</b>：<code>curl -s localhost:8080/users/1/articles</code> 的 <code>data.list[0].tags</code> 非空，响应里搜不到 <code>password</code>。</p>
-    </div>
-    <div class="task">
-      <div class="task-title">练习 3：GET /articles/:id 带 tags 与作者（30 分钟）</div>
-      <p>一次请求返回 <code>{ id, title, content, views, user:{id,name}, tags:[{id,name}] }</code>。</p>
-      <pre><span class="code-label">repository/article.go</span><span class="k">func</span> (r *gormArticleRepo) DetailWithRels(id <span class="t">uint</span>) (*model.Article, <span class="t">error</span>) {
+      <p><b>第 1 步：仓储层</b>（<code>internal/repository/article.go</code> 新文件，接口就是 day2 那份 W2 契约 + 今天两个方法）：</p>
+      <pre><span class="code-label">internal/repository/article.go</span><span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="t">errors</span>
+
+    <span class="s">"goblog/internal/model"</span>
+
+    <span class="s">"gorm.io/gorm"</span>
+)
+
+<span class="c">// ArticleRepository 前 5 个方法来自第 2 周（gin-api 的内存版），签名不动；
+// 后 2 个是今天为「关联查询」新增的 —— 改接口的代价见 day2 练习 2 的说明。</span>
+<span class="k">type</span> <span class="t">ArticleRepository</span> <span class="k">interface</span> {
+    List() ([]model.Article, <span class="t">error</span>)
+    Get(id <span class="t">uint</span>) (model.Article, <span class="t">error</span>)
+    Create(a model.Article) (model.Article, <span class="t">error</span>)
+    Update(a model.Article) <span class="t">error</span>
+    Delete(id <span class="t">uint</span>) <span class="t">error</span>
+
+    ListByUser(userID <span class="t">uint</span>, limit, offset <span class="t">int</span>) ([]model.Article, int64, <span class="t">error</span>)
+    DetailWithRels(id <span class="t">uint</span>) (model.Article, <span class="t">error</span>)
+}
+
+<span class="k">type</span> <span class="t">gormArticleRepo</span> <span class="k">struct</span> { db *gorm.DB }
+
+<span class="k">func</span> NewArticleRepo(db *gorm.DB) <span class="t">ArticleRepository</span> { <span class="k">return</span> &amp;gormArticleRepo{db: db} }
+
+<span class="k">var</span> _ ArticleRepository = (*gormArticleRepo)(<span class="k">nil</span>)
+
+<span class="k">func</span> (r *gormArticleRepo) List() ([]model.Article, <span class="t">error</span>) {
+    arts := []model.Article{}
+    err := r.db.Order(<span class="s">"id asc"</span>).Find(&amp;arts).Error
+    <span class="k">return</span> arts, err
+}
+
+<span class="k">func</span> (r *gormArticleRepo) Get(id <span class="t">uint</span>) (model.Article, <span class="t">error</span>) {
+    <span class="k">var</span> a model.Article
+    err := r.db.First(&amp;a, id).Error
+    <span class="k">if</span> errors.Is(err, gorm.ErrRecordNotFound) { <span class="k">return</span> model.Article{}, ErrArticleNotFound }
+    <span class="k">return</span> a, err
+}
+
+<span class="k">func</span> (r *gormArticleRepo) Create(a model.Article) (model.Article, <span class="t">error</span>) {
+    <span class="k">if</span> err := r.db.Create(&amp;a).Error; err != <span class="k">nil</span> { <span class="k">return</span> model.Article{}, err }
+    <span class="k">return</span> a, <span class="k">nil</span>
+}
+
+<span class="k">func</span> (r *gormArticleRepo) Update(a model.Article) <span class="t">error</span> {
+    <span class="k">var</span> n int64
+    <span class="k">if</span> err := r.db.Model(&amp;model.Article{}).Where(<span class="s">"id = ?"</span>, a.ID).Count(&amp;n).Error; err != <span class="k">nil</span> {
+        <span class="k">return</span> err
+    }
+    <span class="k">if</span> n == <span class="n">0</span> { <span class="k">return</span> ErrArticleNotFound }
+    <span class="k">return</span> r.db.Omit(<span class="s">"User"</span>, <span class="s">"Tags"</span>).Save(&amp;a).Error   <span class="c">// 更新主表，别连带写关联</span>
+}
+
+<span class="k">func</span> (r *gormArticleRepo) Delete(id <span class="t">uint</span>) <span class="t">error</span> {
+    res := r.db.Delete(&amp;model.Article{}, id)
+    <span class="k">if</span> res.Error != <span class="k">nil</span> { <span class="k">return</span> res.Error }
+    <span class="k">if</span> res.RowsAffected == <span class="n">0</span> { <span class="k">return</span> ErrArticleNotFound }
+    <span class="k">return</span> <span class="k">nil</span>
+}
+
+<span class="c">// ListByUser 4 条 SELECT：计数 1 + 主表 1 + 作者批量 1 + 标签批量 1。
+// 如果不 Preload 而回到 for 循环里逐条查，会变成 2 + 2N。</span>
+<span class="k">func</span> (r *gormArticleRepo) ListByUser(userID <span class="t">uint</span>, limit, offset <span class="t">int</span>) ([]model.Article, int64, <span class="t">error</span>) {
+    <span class="k">var</span> total int64
+    <span class="k">if</span> err := r.db.Model(&amp;model.Article{}).Where(<span class="s">"user_id = ?"</span>, userID).Count(&amp;total).Error; err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, <span class="n">0</span>, err
+    }
+    arts := []model.Article{}
+    err := r.db.Where(<span class="s">"user_id = ?"</span>, userID).
+        Preload(<span class="s">"User"</span>).Preload(<span class="s">"Tags"</span>).
+        Order(<span class="s">"created_at desc"</span>).Limit(limit).Offset(offset).
+        Find(&amp;arts).Error
+    <span class="k">return</span> arts, total, err
+}
+
+<span class="c">// DetailWithRels：作者走 Joins（一条 SQL 顺手带出），标签走 Preload（多对多 Preload 才成）</span>
+<span class="k">func</span> (r *gormArticleRepo) DetailWithRels(id <span class="t">uint</span>) (model.Article, <span class="t">error</span>) {
     <span class="k">var</span> a model.Article
     err := r.db.Preload(<span class="s">"Tags"</span>).
-        Joins(<span class="s">"User"</span>).          <span class="c">// belongs-to 用 Joins 一条 SQL 带出作者，省一条</span>
-        Select(<span class="s">"articles.*"</span>).   <span class="c">// 避免 join 后列名歧义，显式只要主表列</span>
+        Joins(<span class="s">"User"</span>).
+        Select(<span class="s">"articles.*"</span>).  <span class="c">// join 后两张表都有 id/created_at，不写清楚就歧义</span>
         First(&amp;a, id).Error
-    <span class="k">if</span> errors.Is(err, gorm.ErrRecordNotFound) {
-        <span class="k">return</span> <span class="k">nil</span>, ErrArticleNotFound
-    }
-    <span class="k">return</span> &amp;a, err
+    <span class="k">if</span> errors.Is(err, gorm.ErrRecordNotFound) { <span class="k">return</span> model.Article{}, ErrArticleNotFound }
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> model.Article{}, err }
+    <span class="k">return</span> a, <span class="k">nil</span>
 }</pre>
-      <p><b>参考答案</b>：跑起来共 2 条 SQL（<code>articles LEFT JOIN users</code> 一条 + <code>tags WHERE article_tags.article_id IN (id)</code> 一条）。若嫌 <code>Select("articles.*")</code> 麻烦，把 <code>Joins("User")</code> 换成 <code>Preload("User")</code> 也可以，只是变成 3 条 SQL。</p>
+      <p><b>第 2 步：<code>internal/service/article.go</code></b>（构造函数今天定型为 3 个依赖；<b>day5</b> 会因为要开事务再给它加 <code>db</code> 和 <code>stats</code>，那时签名会变，别提前抄）：</p>
+      <pre><span class="code-label">internal/service/article.go</span><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"goblog/internal/dto"</span>
+    <span class="s">"goblog/internal/model"</span>
+    <span class="s">"goblog/internal/repository"</span>
+)
+
+<span class="k">type</span> <span class="t">ArticleService</span> <span class="k">struct</span> {
+    arts  repository.ArticleRepository <span class="c">// 三个都是接口，和 day2 同一个道理</span>
+    users repository.UserRepository
+    tags  repository.TagRepository
+}
+
+<span class="k">func</span> NewArticleService(arts repository.ArticleRepository, users repository.UserRepository,
+    tags repository.TagRepository) *ArticleService {
+    <span class="k">return</span> &amp;ArticleService{arts: arts, users: users, tags: tags}
+}
+
+<span class="c">// ListByUser 先确认作者存在，再取分页 —— 404 的语义由这一层决定</span>
+<span class="k">func</span> (s *ArticleService) ListByUser(userID <span class="t">uint</span>, q dto.PageQuery) (dto.PageResult, <span class="t">error</span>) {
+    <span class="k">if</span> _, err := s.users.Get(userID); err != <span class="k">nil</span> {
+        <span class="k">return</span> dto.PageResult{}, err       <span class="c">// ErrUserNotFound 原样往上抛</span>
+    }
+    arts, total, err := s.arts.ListByUser(userID, q.Size, q.Offset())
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">return</span> dto.PageResult{}, err
+    }
+    <span class="k">return</span> dto.NewPageResult(arts, total, q), <span class="k">nil</span>
+}
+
+<span class="k">func</span> (s *ArticleService) DetailWithRels(id <span class="t">uint</span>) (model.Article, <span class="t">error</span>) {
+    <span class="k">return</span> s.arts.DetailWithRels(id)
+}</pre>
+      <p><b>第 3 步：handler</b>。方法名沿用 day2 的约定：<b>带 <code>:id</code> 的详情就叫 <code>Get</code></b>（仓储层那个「带关联」的版本才叫 <code>DetailWithRels</code>），本周不要再出现第三种叫法。</p>
+      <pre><span class="code-label">internal/handler/article.go（今天新增的两条读接口）</span><span class="k">package</span> handler
+
+<span class="k">import</span> (
+    <span class="t">errors</span>   <span class="c">// 第 3 步还用不到（先写上会给个 imported and not used），练习 4 的 Create 用到 errors.Is，两段一起抄就干净了</span>
+    <span class="t">net/http</span>
+
+    <span class="s">"github.com/gin-gonic/gin"</span>
+
+    <span class="s">"goblog/internal/dto"</span>
+    <span class="s">"goblog/internal/service"</span>
+    <span class="s">"goblog/pkg/response"</span>
+)
+
+<span class="k">type</span> <span class="t">ArticleHandler</span> <span class="k">struct</span> { svc *service.ArticleService }
+
+<span class="k">func</span> NewArticleHandler(svc *service.ArticleService) *ArticleHandler {
+    <span class="k">return</span> &amp;ArticleHandler{svc: svc}
+}
+
+<span class="k">func</span> (h *ArticleHandler) Register(public, auth *gin.RouterGroup) {
+    <span class="c">// public.GET("/articles", h.List)</span>         <span class="c">// 先注释：全量列表要等 day4 的分页 DTO + ListPage 才有实现可挂</span>
+    public.GET(<span class="s">"/articles/:id"</span>, h.Get)              <span class="c">// 今天：带 user 与 tags（练习 3）</span>
+    public.GET(<span class="s">"/users/:id/articles"</span>, h.ListByUser)  <span class="c">// 今天：某人的分页文章（练习 2）</span>
+    auth.POST(<span class="s">"/articles"</span>, h.Create)               <span class="c">// 练习 4</span>
+}
+
+<span class="k">func</span> (h *ArticleHandler) ListByUser(c *gin.Context) {
+    id, ok := parseID(c)                        <span class="c">// day2 写在 handler 包里的同包函数，直接用</span>
+    <span class="k">if</span> !ok { <span class="k">return</span> }
+
+    <span class="k">var</span> q dto.PageQuery
+    <span class="k">if</span> err := c.ShouldBindQuery(&amp;q); err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"page/size 必须是整数"</span>)
+        <span class="k">return</span>
+    }
+    q.Normalize()                               <span class="c">// ← 归一化必须紧跟绑定，之后只用 q.Size/q.Page</span>
+
+    res, err := h.svc.ListByUser(id, q)
+    <span class="k">switch</span> {
+    <span class="k">case</span> service.IsNotFound(err):
+        response.Fail(c, http.StatusNotFound, response.CodeUserNotFound, <span class="s">"用户不存在"</span>)
+    <span class="k">case</span> err != <span class="k">nil</span>:
+        response.Fail(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务繁忙"</span>)
+    <span class="k">default</span>:
+        response.OK(c, res)                     <span class="c">// {list,total,page,size,total_page}</span>
+    }
+}
+
+<span class="k">func</span> (h *ArticleHandler) Get(c *gin.Context) {
+    id, ok := parseID(c)
+    <span class="k">if</span> !ok { <span class="k">return</span> }
+    a, err := h.svc.DetailWithRels(id)
+    <span class="k">switch</span> {
+    <span class="k">case</span> service.IsArticleNotFound(err):
+        response.Fail(c, http.StatusNotFound, response.CodeArticleNotFound, <span class="s">"文章不存在"</span>)
+    <span class="k">case</span> err != <span class="k">nil</span>:
+        response.Fail(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"服务繁忙"</span>)
+    <span class="k">default</span>:
+        response.OK(c, a)
+    }
+}</pre>
+      <p><b>第 4 步：装配 + 验收。</b><code>main.go</code> 在 <code>userHandler.Register(api, auth)</code> 下面加四行：</p>
+      <pre><span class="code-label">cmd/server/main.go（追加）</span>artRepo := repository.NewArticleRepo(db)
+tagRepo := repository.NewTagRepo(db)
+artSvc := service.NewArticleService(artRepo, userRepo, tagRepo) <span class="c">// userRepo 是 day2 就有的那个变量</span>
+handler.NewArticleHandler(artSvc).Register(api, auth)             <span class="c">// 和 users 共用 api / auth 两个组</span></pre>
+      <pre><span class="code-label">shell</span>$ curl -s <span class="s">"localhost:8080/api/v1/users/1/articles?page=1&amp;size=2"</span> | head -c 400
+{"code":0,"message":"success","data":{"list":[
+  {"ID":2,"CreatedAt":"2026-03-11T10:02:11.456+08:00","UpdatedAt":"…","DeletedAt":null,
+   "title":"小明 的第 2 篇","content":"正文若干……","summary":"小明 的第 2 篇（摘要）","cover_image":"",
+   "views":20,"user_id":1,"user":{"ID":1,"CreatedAt":"…","UpdatedAt":"…","DeletedAt":null,
+   "username":"xiaoming","nickname":"小明","email":"xm@example.com","role":0,"article_count":0},
+   "tags":[{"id":3,"name":"gorm","created_at":"2026-03-11T10:00:00+08:00"}]}
+  , …],
+ "total":2,"page":1,"size":2,"total_page":1}}
+
+$ curl -s <span class="s">"localhost:8080/api/v1/users/999/articles"</span> -o /dev/null -w <span class="s">"%{http_code}\n"</span>   <span class="c"># 404</span>
+$ curl -si localhost:8080/api/v1/users/1/articles | grep -i <span class="s">x-process-time</span>              <span class="c"># Timer 头还在</span></pre>
+      <p>注意 <code>user</code> 里没有 <code>password</code>（<code>json:"-"</code>），但 <code>ID/CreatedAt</code> 是大写键（day1 第 6 节那个 note 讲过，第 6 周接前端时统一在 DTO 里转）。<b>SQL 条数验收</b>：日志里应当正好 <code>count(*)</code>、<code>articles WHERE user_id</code>、<code>users WHERE users.id IN</code>、<code>tags WHERE article_tags.article_id IN</code> 四条。</p>
     </div>
     <div class="task">
-      <div class="task-title">练习 4：让标签可复用（25 分钟）</div>
-      <p>把 <code>POST /articles</code> 的入参改成带 <code>tags: ["go","docker"]</code>（字符串数组），落库时先 <code>FirstOrCreate</code> 拿标签 ID，再用 <code>Association("Tags").Replace</code> 建立关系。反复用同一篇相同标签创建两篇文章，确认 <code>tags</code> 表里没有重复行。</p>
-      <p><b>参考答案要点</b>：<code>db.Where(map[string]any{"name": n}).FirstOrCreate(&amp;tag)</code> 是幂等的；关系写入用 <code>Association</code> 而不是把 tag 塞进 <code>Article.Tags</code> 再 <code>Create</code>，后者在标签已存在时仍会尝试插入而撞唯一索引。若标签不存在又希望并发安全，第 4 周会补 <code>ON DUPLICATE KEY UPDATE id = id</code>（<code>clause.OnConflict</code>）写法。</p>
+      <div class="task-title">练习 3：GET /api/v1/articles/:id 带 tags 与作者（30 分钟）</div>
+      <p>一次请求返回文章本体 + <code>user</code> 对象 + <code>tags</code> 数组。代码就是练习 2 里 <code>DetailWithRels</code> 那一套（仓储 + service + handler 已给全），现在动手敲并回答下面两个问题。</p>
+      <pre><span class="code-label">shell</span>$ curl -s localhost:8080/api/v1/articles/1 | head -c 320
+{"code":0,"message":"success","data":{"ID":1,"title":"小明 的第 1 篇","views":10,"user_id":1,
+ "user":{"ID":1,"username":"xiaoming","nickname":"小明", …},"tags":[{"id":1,"name":"go", …}]}}
+
+$ curl -si localhost:8080/api/v1/articles/424242
+HTTP/1.1 404 Not Found
+{"code":2001,"message":"文章不存在","data":null}   <span class="c"># 文章专属码 2001，不是 1001</span></pre>
+      <p><b>问题 1</b>：跑起来一共几条 SQL？<b>答</b>：2 条——<code>articles LEFT JOIN users ON … WHERE articles.id = 1 LIMIT 1</code> 一条，<code>tags WHERE article_tags.article_id IN (1)</code> 一条。把 <code>Joins("User")</code> 换成 <code>Preload("User")</code> 就变 3 条，两种写法都要会。</p>
+      <p><b>问题 2</b>：为什么必须写 <code>Select("articles.*")</code>？<b>答</b>：join 之后结果集里同时有 <code>articles.id</code> 和 <code>users.id</code>、两份 <code>created_at</code>（还有 <code>users.password</code>！）。不指定列名时 GORM 按结果列顺序往 struct 上扫，可能把 <code>users.username</code> 灌进别的字段、或报 <code>Ambiguous column name</code>。<b>join + Select 主表列</b> 是固定搭配。</p>
+    </div>
+    <div class="task">
+      <div class="task-title">练习 4：让标签可复用 —— POST /api/v1/articles（35 分钟）</div>
+      <p>入参带 <code>tags: ["go","docker"]</code>（字符串数组）。落库时先 <code>FindOrCreate</code> 拿标签 ID，再用 <code>Association("Tags").Replace</code> 建立关系。反复用同一批标签创建两篇文章，确认 <code>tags</code> 表里没有重复行。</p>
+      <pre><span class="code-label">internal/dto/article.go</span><span class="k">package</span> dto
+
+<span class="c">// CreateArticleReq 发文章的入参。形状校验全在 binding tag 里
+// dive = 「数组的每个元素再按后面的规则校验」，validator 的写法，第一天见不用深究</span>
+<span class="k">type</span> <span class="t">CreateArticleReq</span> <span class="k">struct</span> {
+    Title      <span class="t">string</span>   `<span class="t">json</span>:<span class="s">"title"</span>       <span class="t">binding</span>:<span class="s">"required,min=2,max=120"</span>`
+    Content    <span class="t">string</span>   `<span class="t">json</span>:<span class="s">"content"</span>     <span class="t">binding</span>:<span class="s">"required"</span>`
+    Summary    <span class="t">string</span>   `<span class="t">json</span>:<span class="s">"summary"</span>     <span class="t">binding</span>:<span class="s">"max=255"</span>`
+    CoverImage <span class="t">string</span>   `<span class="t">json</span>:<span class="s">"cover_image"</span> <span class="t">binding</span>:<span class="s">"max=255"</span>`
+    Tags       []<span class="t">string</span> `<span class="t">json</span>:<span class="s">"tags"</span>         <span class="t">binding</span>:<span class="s">"max=8,dive,min=1,max=32"</span>`
+}</pre>
+      <div class="callout note"><p><b>为什么这个 DTO 里没有 <code>user_id</code>？</b>因为作者是<b>登录的人</b>，不是请求体里填谁算谁——否则任何人都能冒名发文章。写接口挂在 <code>auth</code> 组上，<code>middleware.RequireAuth()</code> 已经往 context 里塞过 <code>userID</code>（day1 承接清单第 4 行搬来的那个文件），读出来就行：<code>userID := c.GetUint("userID")</code>。本周是固定 token，所以它<b>永远等于 1</b>（只能发成小明的文章）；第 4 周换真 JWT 之后这一行代码都不用改。</p></div>
+      <pre><span class="code-label">internal/service/article.go（追加）</span><span class="c">// Create 三步：验作者 → 建文章 → 挂关系。今天故意「不加事务」，练习 4 末尾会踩出脏数据，day5 收拾</span>
+<span class="k">func</span> (s *ArticleService) Create(userID <span class="t">uint</span>, req dto.CreateArticleReq) (model.Article, <span class="t">error</span>) {
+    <span class="k">if</span> _, err := s.users.Get(userID); err != <span class="k">nil</span> {
+        <span class="k">if</span> IsNotFound(err) { <span class="k">return</span> model.Article{}, ErrAuthorNotFound } <span class="c">// → 400 + 1004</span>
+        <span class="k">return</span> model.Article{}, err
+    }
+    a, err := s.arts.Create(model.Article{
+        Title: req.Title, Content: req.Content,
+        Summary: req.Summary, CoverImage: req.CoverImage, UserID: userID,
+    })
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> model.Article{}, err }
+
+    ids := make([]<span class="t">uint</span>, <span class="n">0</span>, len(req.Tags))
+    <span class="k">for</span> _, name := <span class="k">range</span> req.Tags {
+        t, err := s.tags.FindOrCreate(name)      <span class="c">// 有则复用，无则插入；返回的 t 一定带 ID</span>
+        <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> a, err }         <span class="c">// ← 注意这里返回的是 a：文章已经躺在库里了</span>
+        ids = append(ids, t.ID)
+    }
+    <span class="k">if</span> err := s.tags.ReplaceFor(a.ID, ids); err != <span class="k">nil</span> {
+        <span class="k">return</span> a, err                            <span class="c">// ← 同样：脏数据已经产生了</span>
+    }
+    <span class="k">return</span> s.arts.DetailWithRels(a.ID)             <span class="c">// 回读一次，把关联字段填好再返给前端</span>
+}</pre>
+      <pre><span class="code-label">internal/handler/article.go（追加）</span><span class="k">func</span> (h *ArticleHandler) Create(c *gin.Context) {
+    <span class="k">var</span> req dto.CreateArticleReq
+    <span class="k">if</span> err := c.ShouldBindJSON(&amp;req); err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam,
+            <span class="s">"title(≥2)/content 必填，tags 最多 8 个"</span>)
+        <span class="k">return</span>
+    }
+    userID := c.GetUint(<span class="s">"userID"</span>)   <span class="c">// 来自 RequireAuth，本周恒为 1</span>
+    a, err := h.svc.Create(userID, req)
+    <span class="k">switch</span> {
+    <span class="k">case</span> errors.Is(err, service.ErrAuthorNotFound):
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"作者不存在"</span>)
+    <span class="k">case</span> err != <span class="k">nil</span>:
+        response.OK(c, a)   <span class="c">// ← 故意写错：把失败当成功返回</span>
+        <span class="k">return</span>              <span class="c">// ← 而且这条 return 对本 case 无效，Fail 分支漏了 return</span>
+    <span class="k">default</span>:
+        response.Created(c, a)   <span class="c">// 201 + code 0</span>
+    }
+}</pre>
+      <div class="callout warn"><p>上面那段 <code>case err != nil</code> 里我写了一行<b>明显的 bug</b>（<code>response.OK(c, a)</code> 然后 <code>return</code>，把失败当成功返回，还漏了 <code>return</code> 语义）——把它改对是本次作业的一部分：失败应该 <code>response.Fail(c, http.StatusInternalServerError, response.CodeInternal, "服务繁忙")</code> 再 <code>return</code>。改完再跑：<code>curl -si -X POST localhost:8080/api/v1/articles -H "Content-Type: application/json" -H "Authorization: Bearer go-fullstack-2026" -d '{"title":"标签复用实验","content":"x","tags":["go","docker"]}'</code> → <code>201</code>；<code>SELECT name, COUNT(*) FROM tags GROUP BY name;</code> 里 <code>go</code> 只有一行。</p></div>
     </div>
   </section>
 
@@ -268,7 +665,7 @@ db.Model(&amp;model.Article{}).Where(<span class="s">"user_id = ?"</span>, <span
     <h2>常见坑（新手 100% 会踩）</h2>
     <table>
       <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
-      <tr><td>以为 Preload 自动生效</td><td><code>a.User.Name</code> 一直是零值，JSON 里没关联</td><td>关联必须显式 <code>Preload</code> / <code>Joins</code> / <code>Association().Find()</code>，GORM 没有惰性加载</td></tr>
+      <tr><td>以为 Preload 自动生效</td><td><code>a.User.Nickname</code> 一直是零值，JSON 里没关联</td><td>关联必须显式 <code>Preload</code> / <code>Joins</code> / <code>Association().Find()</code>，GORM 没有惰性加载</td></tr>
       <tr><td>循环里逐条查</td><td>列表页 50 条 SQL，日志刷屏，接口 800ms</td><td><code>Preload("X")</code>，让它变成 <code>WHERE ... IN (...)</code></td></tr>
       <tr><td>Create 时直接塞新关联对象</td><td>标签表出现重复行或 <code>Error 1062</code></td><td>先 <code>FirstOrCreate</code> 拿 ID，再用 <code>Association().Append/Replace</code></td></tr>
       <tr><td>foreignKey 方向搞反</td><td>报 <code>invalid field reference</code> 或结果永远是空</td><td>HasMany 写 <code>foreignKey:UserID</code>（对方表的外键），BelongsTo 外键在自己身上</td></tr>
@@ -297,14 +694,14 @@ db.Model(&amp;model.Article{}).Where(<span class="s">"user_id = ?"</span>, <span
     <ul class="check">
       <li><label><input type="checkbox" data-key="w3d3c1"><code>SHOW TABLES</code> 有 <code>article_tags</code>，<code>DESCRIBE article_tags</code> 是 <code>article_id + tag_id</code> 联合主键</label></li>
       <li><label><input type="checkbox" data-key="w3d3c2">练习 1：能报出两版的 SQL 条数，并贴出 <code>WHERE user_id IN (...)</code> 那一行日志</label></li>
-      <li><label><input type="checkbox" data-key="w3d3c3">练习 2：<code>GET /users/1/articles</code> 返回作者信息 + tags，响应无 <code>password</code></label></li>
-      <li><label><input type="checkbox" data-key="w3d3c4">练习 3：<code>GET /articles/1</code> 一条请求内带出 user 与 tags，SQL 不超过 3 条</label></li>
+      <li><label><input type="checkbox" data-key="w3d3c3">练习 2：<code>GET /api/v1/users/1/articles</code> 返回作者信息 + tags，响应无 <code>password</code>，日志里正好 4 条 SQL</label></li>
+      <li><label><input type="checkbox" data-key="w3d3c4">练习 3：<code>GET /api/v1/articles/1</code> 一条请求内带出 user 与 tags；<code>/api/v1/articles/424242</code> 返 404 + <code>2001</code></label></li>
       <li><label><input type="checkbox" data-key="w3d3c5">练习 4：重复创建带同名标签的文章后，<code>SELECT name, COUNT(*) FROM tags GROUP BY name</code> 没有重复行</label></li>
     </ul>
   </section>
 
   <nav class="day-nav">
-    <a href="../../index.html"><span class="hint">← 回到</span>8 周路线总览</a>
+    <a href="day2.html"><span class="hint">← 上一天 · W3D2</span>模型与 CRUD</a>
     <a href="day4.html"><span class="hint">下一天 · W3D4 →</span>分页、搜索、排序</a>
   </nav>
 </article>

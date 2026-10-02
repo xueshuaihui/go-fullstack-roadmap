@@ -61,11 +61,14 @@
     r.Use(gin.Recovery())     <span class="c">// 全局：兜住 panic</span>
     r.Use(helloMw())          <span class="c">// 全局：自定义</span>
 
-    admin := r.Group(<span class="s">"/admin"</span>, RequireAuth())      <span class="c">// 分组级：只有 /admin/** 过这个中间件（RequireAuth 见第 6 节）</span>
+    <span class="c">// RequireAuth / CORS / Timer 都在 middleware 包里，引用必须带包名限定：</span>
+    <span class="c">//   import "gin-api/middleware"（今天中间件还在仓库根的 middleware/ 目录，day4 才搬进 internal/）</span>
+    admin := r.Group(<span class="s">"/admin"</span>, middleware.RequireAuth())   <span class="c">// 分组级：只有 /admin/** 过这个中间件（RequireAuth 见第 6 节）</span>
     admin.GET(<span class="s">"/stats"</span>, <span class="k">func</span>(c *gin.Context) { c.JSON(<span class="n">200</span>, gin.H{<span class="s">"online"</span>: <span class="n">1</span>}) })
 
-    r.PUT(<span class="s">"/users/:id"</span>, RequireAuth(), updateUser)   <span class="c">// 路由级：单条临时加；updateUser 是你已有的 handler</span>
+    r.PUT(<span class="s">"/users/:id"</span>, middleware.RequireAuth(), updateUser) <span class="c">// 路由级：单条临时加；updateUser 是你已有的 handler</span>
 }</pre>
+    <div class="callout warn"><p>别把 <code>middleware.RequireAuth()</code> 写成裸 <code>RequireAuth()</code>。第 6 节把 <code>RequireAuth</code> 定义在 <code>middleware</code> 包里（<code>package middleware</code>），Go 没有"跨包自动可见"，调用处一定要 <b>包名限定</b>，并在文件头 <code>import "gin-api/middleware"</code>。IDE 不会帮你圆过去——裸写会直接 <code>undefined: RequireAuth</code> 编译失败。</p></div>
     <div class="callout warn"><p><b>注册顺序 = 洋葱从外到内的层序。</b><code>Use(A); Use(B)</code> 的执行顺序是 A进 → B进 → handler → B出 → A出。Recovery 必须<b>尽早</b>注册（越外层越能兜住内层中间件的 panic）；鉴权中间件要注册在你希望它<b>拦住</b>的那些路由之前。</p></div>
 
     <h3>2. 洋葱模型：c.Next() 与 c.Abort()</h3>
@@ -94,8 +97,74 @@ r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
     },
     Output: os.Stdout,
 }))
-r.Use(gin.Recovery()) <span class="c">// handler 里 panic("boom") 不会打挂进程：日志堆栈 + 返回 500</span></pre>
-    <div class="callout note"><p>Recovery 的原理明天讲分层后会用到：<b>Go 的 panic 默认让整个进程崩溃</b>（不像 JS 的异常只死一个请求），Recovery 中间件用 <code>defer + recover()</code> 把 panic 拦在单请求范围内，转成 500 响应。<b>没有它，一个接口的一行 bug 就能让全站下线。</b>这就是 <code>gin.Default()</code> 自带它的原因。</p></div>
+r.Use(gin.Recovery()) <span class="c">// handler 里 panic("boom") 不会打挂进程：日志堆栈 + 返回 500（注意 body 是空的，见 3.6）</span></pre>
+    <div class="callout note"><p>Recovery 的原理下一节（3.5）就展开讲：<b>Go 的 panic 默认让整个进程崩溃</b>（不像 JS 的异常只死一个请求），Recovery 中间件用 <code>defer + recover()</code> 把 panic 拦在单请求范围内，转成 500 响应。<b>没有它，一个接口的一行 bug 就能让全站下线。</b>这就是 <code>gin.Default()</code> 自带它的原因。</p></div>
+
+    <h3>3.5 panic / recover 最小认识（只需会读，day4/第 5 周还会反复用）</h3>
+    <p>今天必须把上面那句"panic 会打挂整个进程"落到能写出来的程度，否则后面 <code>MustGet</code>、Recovery、向 nil map 写入全是它的坑。三句话：</p>
+    <ol>
+      <li><b>panic = 运行时的"炸锅"</b>：Go 里 <code>panic(v)</code> 会立刻停止当前函数，一路往上炸（deferred 函数按 LIFO 执行），直到没人接住就把<b>整个进程</b>干掉、打印堆栈。<br>对照 JS：≈ 一个没被 <code>try/catch</code> 接住的 <code>throw</code>，但 JS 通常只终止这个调用栈/这个请求，Go 终止的是<b>进程</b>——这是两者最要命的区别。</li>
+      <li><b>recover() = 在 defer 里把 panic"接住"</b>：<code>recover()</code> 只有在 <code>defer</code> 的函数里被调用才有效，它返回 panic 抛出的值并让当前函数正常返回，从而<b>阻断 panic 继续上抛</b>。</li>
+      <li><b>为什么中间件里要 recover</b>：Gin 每个请求跑在独立 goroutine 里，一个请求 handler 里 panic，如果没人 recover，全站的其它请求会跟着一起下线。Recovery 中间件正是<b>每个请求最外层</b>那圈 <code>defer recover()</code>——接住 panic，写一个 500，进程继续接下一个请求。</li>
+    </ol>
+    <pre><span class="code-label">panic-demo/main.go（最小可跑：亲手看 recover 怎么把 panic 拦下来）</span><span class="k">package</span> main
+
+<span class="k">import</span> <span class="t">"fmt"</span>
+
+<span class="c">// safeCall 用 defer+recover 把 f 里的 panic 变成一句打印，而不是让程序崩</span>
+<span class="k">func</span> safeCall(f <span class="k">func</span>()) {
+    <span class="k">defer func</span>() {
+        <span class="k">if</span> r := <span class="t">recover</span>(); r != <span class="k">nil</span> { <span class="c">// recover 返回 panic 的值；返回非 nil 说明真接住了</span>
+            fmt.Println(<span class="s">"接住了 panic:"</span>, r)
+        }
+    }()
+    f() <span class="c">// f 里 panic 时，上面这个 defer 会执行</span>
+}
+
+<span class="k">func</span> main() {
+    safeCall(<span class="k">func</span>() { <span class="k">panic</span>(<span class="s">"boom"</span>) })
+    fmt.Println(<span class="s">"程序还活着"</span>) <span class="c">// 能打到这行，就说明 recover 生效了</span>
+
+    <span class="c">// 对比：不 recover，这一句就会让进程当场崩、打印堆栈，后面的代码不执行</span>
+    <span class="c">// var m map[string]int; m["x"] = 1 // panic: assignment to entry in nil map</span>
+}</pre>
+    <pre><span class="code-label">shell</span>$ go run ./demo/panic
+接住了 panic: boom
+程序还活着</pre>
+    <div class="callout warn"><p><b>这份代码放哪：</b>它自带 <code>package main</code> + <code>func main()</code>，而你的 <code>gin-api/</code> 根目录已经有一份 <code>main.go</code>（今天整页代码都往它那一个 <code>func main()</code> 里加）。Go 的规矩是<b>同一目录只能有一个 <code>func main()</code></b>，抄进同一个目录会直接 <code>main redeclared in this block</code>。按第 1 周 day2 的老办法「一个子目录一份 main」：在 gin-api 里单独开 <code>demo/panic/</code>，把上面这份存成 <code>demo/panic/main.go</code>，然后 <code>go run ./demo/panic</code>（还在同一个模块里，不用重新 <code>go mod init</code>）。它只是理解用的沙盒，<b>明天分层前可以删掉</b>，也不要 import 到项目里——工程上真正兜 panic 的是 Recovery 中间件，不是自己到处写 recover。</p></div>
+    <div class="callout js"><p>把 <code>defer recover()</code> 想成 Express 里那个包在所有 handler 外面的错误中间件，或 React 的 ErrorBoundary：它不是"捕获每个异常"的日常工具（日常错误照旧用 <code>if err != nil</code>），而是<b>最后一道防线</b>。Go 的哲学是"错误是值，别乱 panic"；只有在"程序此刻根本没法继续"（比如启动失败 <code>panic(err)</code>、<code>MustGet</code> 取不到必需值）才 panic，然后靠最外层的 Recovery 兜住不让全站陪葬。</p></div>
+
+    <h3>3.6 自定义 Recovery：让 500 也说统一的 JSON</h3>
+    <p>3.5 讲的是原理，这一节把原理写成能跑的中间件。<b>为什么要自己写？</b>因为 <code>gin.Recovery()</code> 兜住 panic 后只调 <code>c.AbortWithStatus(500)</code>——<b>状态码有，响应体是空的</b>（<code>curl -si localhost:8080/debug/boom</code> 里能看到 <code>Content-Length: 0</code>，body 一行字节都没有）。day2 立的"所有响应都是 <code>{code,message,data}</code>"规矩，被它一个字面地打破了：前端 <code>JSON.parse('')</code> 直接抛错，连"服务器出错了"这句人话都收不到。下面这份就是 3.5 三句话的工业版：</p>
+    <pre><span class="code-label">middleware/recovery.go</span><span class="k">package</span> middleware
+
+<span class="k">import</span> (
+    <span class="t">"log"</span>
+    <span class="t">"net/http"</span>
+    <span class="t">"runtime/debug"</span>
+
+    <span class="t">"github.com/gin-gonic/gin"</span>
+
+    <span class="s">"gin-api/pkg/response"</span>
+)
+
+<span class="c">// Recovery 替换 gin.Recovery()：三件事一件不落——</span>
+<span class="c">// ① 接住 panic（CustomRecovery 内部就是 defer + recover()）</span>
+<span class="c">// ② 把 panic 值和堆栈写进服务端日志（debug.Stack() 等价于终端里那一大坨）</span>
+<span class="c">// ③ 用统一响应结构返回 500：HTTP 500 + 业务码 5000</span>
+<span class="k">func</span> <span class="t">Recovery</span>() gin.HandlerFunc {
+    <span class="k">return</span> gin.CustomRecovery(<span class="k">func</span>(c *gin.Context, recovered <span class="t">any</span>) {
+        log.Printf(<span class="s">"[recovery] %s %s panic: %v\n%s"</span>,
+            c.Request.Method, c.Request.URL.Path, recovered, debug.Stack())
+        c.AbortWithStatusJSON(http.StatusInternalServerError, response.Body{
+            Code: response.CodeInternal, Message: <span class="s">"服务繁忙"</span>, Data: <span class="k">nil</span>,
+        })
+    })
+}</pre>
+    <pre><span class="code-label">main.go（注册处换掉一行）</span><span class="c">// 原来：r.Use(gin.Logger(), gin.Recovery(), middleware.CORS(), middleware.Timer())</span>
+r.Use(gin.Logger(), middleware.Recovery(), middleware.CORS(), middleware.Timer()) <span class="c">// Recovery 仍留在最外层（紧跟 gin.Logger() 之后），别挪到 CORS/鉴权后面，否则那几层里 panic 就没人兜了</span></pre>
+    <div class="callout note"><p><b>签名要认得：</b><code>gin.CustomRecovery(handle gin.RecoveryFunc) gin.HandlerFunc</code>，其中 <code>RecoveryFunc = func(c *gin.Context, recovered any)</code>——<code>recovered</code> 就是 <code>panic()</code> 里传进去的那个值（老资料里写作 <code>interface{}</code>，和 <code>any</code> 是同一个类型）。你不用自己写 <code>defer</code> 和 <code>recover()</code>，<code>CustomRecovery</code> 已经把这套壳子套好了，你只负责"接住之后干什么"。</p></div>
+    <div class="callout tip"><p><b>本周口径：</b>day4 的装配讲义里仍写 <code>gin.Recovery()</code>（先把进程保住这一件事做对，分层和 Recovery 两件事不搅在一起）；<b>day5 练习 4</b> 会把注册那行换成上面这份，届时 <code>/debug/boom</code> 的响应从"500 + 空 body"变成"500 + <code>{"code":5000,"message":"服务繁忙","data":null}</code>"，服务照常接下一个请求。<b>周末 summary 的装配按终态写</b>，也就是直接挂 <code>middleware.Recovery()</code>。第 4 周正式给那一条链上的<b>结构化日志与 request_id</b>（AccessLog + RequestID 两个中间件），它并不替换 Recovery——所以这份 §3.6 的 JSON Recovery 就是你本周、也是后面各周的终态，别退回官方的空 body 版。</p></div>
 
     <h3>4. 自定义：请求计时中间件</h3>
     <pre><span class="code-label">middleware/timer.go</span><span class="k">package</span> middleware
@@ -107,18 +176,27 @@ r.Use(gin.Recovery()) <span class="c">// handler 里 panic("boom") 不会打挂�
     <span class="t">"github.com/gin-gonic/gin"</span>
 )
 
-<span class="c">// Timer 记录每个请求耗时，并回写到响应头 X-Process-Time</span>
+<span class="c">// Timer 把每个请求的方法、路径、最终状态码、耗时打进服务端日志。
+// 注意：耗时只能在 c.Next() 之后才知道，而那时响应头已经发出去了——
+// 所以这里只写日志，不去改响应头（想回写 X-Process-Time 见下方「坑」）。</span>
 <span class="k">func</span> Timer() gin.HandlerFunc {
     <span class="k">return func</span>(c *gin.Context) {
         start := time.Now()
         c.Next() <span class="c">// ← 把"业务"包在里面，出来时请求已处理完</span>
         cost := time.Since(start)
-        c.Header(<span class="s">"X-Process-Time"</span>, cost.String())
         log.Printf(<span class="s">"[timer] %s %s -&gt; %d 耗时 %s"</span>,
             c.Request.Method, c.Request.URL.Path, c.Writer.Status(), cost)
     }
 }</pre>
+    <pre><span class="code-label">shell</span>$ curl -s localhost:8080/api/v1/users -o /dev/null
+<span class="c"># 终端 A（服务日志）里应出现一行：</span>
+2026/01/05 10:12:33 [timer] GET /api/v1/users -&gt; 200 耗时 63.458µs
+
+<span class="c"># 客户端侧想看到耗时，用 curl 自带的计时（不用服务端配合）：</span>
+$ curl -s -o /dev/null -w <span class="s">"状态=%{http_code} 总耗时=%{time_total}s\n"</span> localhost:8080/api/v1/users
+状态=200 总耗时=0.000412s</pre>
     <div class="callout tip"><p>「Next 之后才有的信息」是中间件设计的关键：耗时、最终状态码（<code>c.Writer.Status()</code>）都必须在 <code>c.Next()</code> 之后读，写在 Next 之前拿到的是零值。</p></div>
+    <div class="callout warn"><p><b>别在 Next 之后 <code>c.Header(...)</code> 回写响应头</b>（很多博客里那句 <code>c.Header("X-Process-Time", cost.String())</code> 是无效的）：handler 里的 <code>c.JSON</code> 已经把状态行和响应头发出去了，之后再改 header 映射表，客户端收不到，而且不报错——最坑的那种。想把耗时交给客户端，得在 <code>c.Next()</code> <b>之前</b>就写头（比如 <code>X-Request-Id</code> 这种请求进入就能算的），或者包一层自定义 <code>gin.ResponseWriter</code> 在真正 flush 前插值——那是<b>第 4 周 day4</b> 结构化 access 日志（一行 JSON 记方法/路径/状态码/耗时/IP）才会碰的工程量，本周不碰。今天的口径：<b>耗时进服务端日志</b>，客户端想看就用 <code>curl -w</code> 自己量。本周项目按上面的日志版实现即可。</p></div>
 
     <h3>5. CORS：手写版理解预检</h3>
     <p>浏览器同源策略：前端 <code>localhost:5173</code> 调你的 <code>localhost:8080</code> 属于跨域。对于带 <code>Content-Type: application/json</code> 或自定义头的请求，浏览器会<b>先发一次 OPTIONS 预检</b>，服务端允许了才发真正的请求。手写版把全过程摊开：</p>
@@ -184,31 +262,39 @@ r.Use(cors.New(cors.Config{
             })
             <span class="k">return</span>
         }
-        c.Set(<span class="s">"userID"</span>, <span class="n">1</span>) <span class="c">// 把"当前用户"塞进上下文，下游 handler 用 c.Get/c.MustGet 取</span>
+        c.Set(<span class="s">"userID"</span>, <span class="t">uint</span>(<span class="n">1</span>)) <span class="c">// 把"当前用户"塞进上下文（CANONICAL 口径：userID 存 uint），下游 handler 用 c.GetUint 取</span>
         c.Next()
     }
 }</pre>
-    <pre><span class="code-label">main.go</span>write := r.Group(<span class="s">""</span>) <span class="c">// 只给写操作挂鉴权，读接口保持公开</span>
-write.PUT(<span class="s">"/users/:id"</span>, middleware.RequireAuth(), updateUser)
-write.DELETE(<span class="s">"/users/:id"</span>, middleware.RequireAuth(), deleteUser)</pre>
+    <pre><span class="code-label">main.go</span>api := r.Group(<span class="s">"/api/v1"</span>)   <span class="c">// 读：匿名组，只挂全局中间件</span>
+api.GET(<span class="s">"/users"</span>, listUsers)
+api.GET(<span class="s">"/users/:id"</span>, getUser)
+
+write := r.Group(<span class="s">"/api/v1"</span>) <span class="c">// 全站 W2 起统一 /api/v1 前缀；全部写操作（POST/PUT/DELETE）挂鉴权</span>
+write.Use(middleware.RequireAuth())
+write.POST(<span class="s">"/users"</span>, createUser)
+write.PUT(<span class="s">"/users/:id"</span>, updateUser)
+write.DELETE(<span class="s">"/users/:id"</span>, deleteUser)</pre>
+    <div class="callout note"><p>读写分离的做法见练习 2：读接口挂在匿名的 <code>api := r.Group("/api/v1")</code>，写接口（<b>POST 创建 + PUT 更新 + DELETE 删除，一个都不例外</b>）收进 <code>write := r.Group("/api/v1")</code> 再 <code>write.Use(middleware.RequireAuth())</code>。前缀必须是 <code>/api/v1</code>（不是空串 <code>""</code>），否则和 day1 练习 3、day4 装配的路径口径不一致，curl 会一头雾水。<b>两个 group 前缀相同、互不冲突</b>，Gin 允许同一前缀注册多组——day4 的 <code>Register(public, auth)</code> 就是这套写法，只是同一个组换了个名字：<b>今天的 <code>write</code> 在 day4/summary 里叫 <code>auth</code></b>（含义完全一样，搬代码时按新名字改引用即可）。今天的口径会一路用到第 4 周真 JWT。</p></div>
 
     <h3>7. 层间信箱：c.Set / c.Get 传递请求级数据</h3>
     <p>中间件解析出的东西（用户 ID、请求 ID、语言偏好）不该塞进全局变量，Gin 提供了请求级键值空间 <code>c.Keys</code>：</p>
     <pre><span class="code-label">main.go</span><span class="c">// 写入（鉴权中间件里，见第 6 节）</span>
-c.Set(<span class="s">"userID"</span>, <span class="n">1</span>)
+c.Set(<span class="s">"userID"</span>, <span class="t">uint</span>(<span class="n">1</span>))
 
 <span class="c">// 读取（任意下游 handler / 中间件「出」阶段）</span>
 <span class="k">if</span> v, exists := c.Get(<span class="s">"userID"</span>); exists {
-    uid := v.(<span class="t">int</span>)              <span class="c">// 取出来是 any，需要断言回原类型</span>
+    uid := v.(<span class="t">uint</span>)             <span class="c">// 取出来是 any，需要断言回原类型（这里中间件塞的是 uint）</span>
     fmt.Println(<span class="s">"当前用户:"</span>, uid)
 }
-uid := c.GetInt(<span class="s">"userID"</span>)       <span class="c">// 更推荐：带类型的便捷方法，取不到给零值</span>
-name := c.MustGet(<span class="s">"userID"</span>).(<span class="t">int</span>) <span class="c">// 断言失败会 panic——只在「前面必挂鉴权」时敢用</span></pre>
+uid := c.GetUint(<span class="s">"userID"</span>)     <span class="c">// 更推荐：带类型的便捷方法，取不到给零值（0 = 未登录）</span>
+name := c.MustGet(<span class="s">"userID"</span>).(<span class="t">uint</span>) <span class="c">// 断言失败会 panic——被 Recovery 兜成 500；只在「前面必挂鉴权」时敢用（原理见 3.5）</span></pre>
+    <div class="callout warn"><p>断言的类型要和中间件<b>写入时的实际类型一致</b>。CANONICAL 统一 <code>c.Set("userID", uint)</code>、读取用 <code>c.GetUint("userID")</code>，所以下游断言写 <code>.(uint)</code> 不是 <code>.(int)</code>——写成 <code>.(int)</code> 会 panic「interface conversion: interface {} is uint, not int」。day4 的 service 方法签名也用 <code>uint</code>（ID 一律 uint），从 <code>c.GetUint</code> 取出的值可以直接传进去。</p></div>
     <table>
       <tr><th>方法</th><th>取不到时</th><th>使用建议</th></tr>
       <tr><td><code>c.Get(k)</code></td><td>返回 (nil, false)</td><td>最安全，配 exists 分支</td></tr>
       <tr><td><code>c.GetInt/GetString…</code></td><td>返回零值</td><td>业务默认值场景，配合「零值 = 未登录」判断</td></tr>
-      <tr><td><code>c.MustGet(k)</code></td><td>panic（被 Recovery 兜 500）</td><td>链路有强约束时用，失败要在日志可查</td></tr>
+      <tr><td><code>c.MustGet(k)</code></td><td>panic（被 Recovery 兜 500，原理见 3.5）</td><td>链路有强约束时用，失败要在日志可查</td></tr>
     </table>
     <div class="callout tip"><p>第 4 周学 JWT 后，auth 中间件验签得到 <code>userID + role</code>，依旧走 <code>c.Set</code>；handler 一行都不用改——中间件换芯、上层无感，这就是今天把接口写成「从 c.Get 拿用户」而不是「解析 Header」的原因。</p></div>
   </section>
@@ -217,18 +303,48 @@ name := c.MustGet(<span class="s">"userID"</span>).(<span class="t">int</span>) 
     <h2>今日练习</h2>
     <div class="task">
       <div class="task-title">练习 1：给全部路由挂 CORS + 计时（40 分钟）</div>
-      <p><b>要求：</b>把引擎从 <code>gin.Default()</code> 换成 <code>gin.New()</code> + 手动 <code>Use(gin.Logger(), gin.Recovery(), middleware.CORS(), middleware.Timer())</code>；每个响应的 <code>X-Process-Time</code> 头出现，日志含耗时。</p>
+      <p><b>要求：</b>把引擎从 <code>gin.Default()</code> 换成 <code>gin.New()</code> + 手动 <code>Use(gin.Logger(), gin.Recovery(), middleware.CORS(), middleware.Timer())</code>；服务日志里每条请求都有 <code>[timer] ... 耗时 ...</code>，OPTIONS 预检返回 204 + Allow 头。</p>
       <p><b>步骤：</b>① 建 <code>middleware</code> 包，抄讲义 4/5 节两个文件；② main.go 换引擎 + 注册；③ 验证：</p>
-      <pre><span class="code-label">shell</span>$ curl -i localhost:8080/users | grep -i <span class="s">"x-process-time"</span>
-X-Process-Time: 52.125µs
-$ curl -si -X OPTIONS localhost:8080/users -H <span class="s">"Origin: http://localhost:5173"</span> \
-  -H <span class="s">"Access-Control-Request-Method: POST"</span> | head -n 8   <span class="c"># 预检应返回 204 + 三个 Allow 头</span></pre>
-      <p><b>参考答案：</b>代码即讲义 4、5 节全文；预检 204 说明 OPTIONS 被 <code>AbortWithStatus</code> 正确熔断。</p>
+      <pre><span class="code-label">shell</span><span class="c"># 路径带上 day1 练习 3 定的 /api/v1 前缀，和讲义 6、day4 装配保持一致</span>
+$ curl -s localhost:8080/api/v1/users -o /dev/null
+<span class="c"># 服务端终端应多出一行（这就是计时中间件生效的证据，别看响应头）：</span>
+2026/01/05 10:20:41 [timer] GET /api/v1/users -&gt; 200 耗时 58.902µs
+
+$ curl -s -o /dev/null -w <span class="s">"%{http_code} %{time_total}s\n"</span> localhost:8080/api/v1/users
+200 0.000385s                              <span class="c"># 客户端侧计时，和服务端日志对得上</span>
+
+$ curl -si -X OPTIONS localhost:8080/api/v1/users -H <span class="s">"Origin: http://localhost:5173"</span> \
+  -H <span class="s">"Access-Control-Request-Method: POST"</span> | grep -E <span class="s">'^(HTTP|Access-Control)'</span>
+HTTP/1.1 204 No Content
+Access-Control-Allow-Credentials: true
+Access-Control-Allow-Headers: Content-Type,Authorization
+Access-Control-Allow-Methods: GET,POST,PUT,DELETE,OPTIONS
+Access-Control-Allow-Origin: http://localhost:5173
+Access-Control-Max-Age: 86400
+<span class="c"># 预检：204（说明 AbortWithStatus 生效、没进业务 handler）+ Allow-Origin / Allow-Methods /
+#   Allow-Headers 三个浏览器必查的头齐全；gin 还会另发一行 Allow: GET, POST（该路径的方法清单），
+#   它不属于 CORS，别把它当成"少配了东西"</span></pre>
+      <p><b>参考答案：</b>代码即讲义 4、5 节全文；预检 204 说明 OPTIONS 被 <code>AbortWithStatus</code> 正确熔断。想给响应加一个"请求号"头是可行的（在 <code>c.Next()</code> <b>之前</b> <code>c.Header("X-Request-Id", ...)</code>，值不依赖 handler 结果）；依赖耗时的值就只能走日志。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 2：读写分离的鉴权（30 分钟）</div>
-      <p><b>要求：</b>GET 接口全部匿名可访问；POST/PUT/DELETE 必须带 <code>Authorization: Bearer go-fullstack-2026</code>，否则 401 + code 1005。</p>
-      <p><b>参考答案：</b>见讲义 6 末段——核心是把写接口收进一个 <code>write := r.Group("/api/v1")</code> 然后 <code>write.Use(middleware.RequireAuth())</code>；别一条条路由手写两遍中间件。</p>
+      <p><b>要求：</b>GET 接口全部匿名可访问；<b>POST/PUT/DELETE 全部</b>必须带 <code>Authorization: Bearer go-fullstack-2026</code>，否则 401 + code 1005。</p>
+      <p><b>参考答案：</b>见讲义 6 末段——核心是把写接口收进一个 <code>write := r.Group("/api/v1")</code> 然后 <code>write.Use(middleware.RequireAuth())</code>；别一条条路由手写两遍中间件。三条命令验口径：</p>
+      <pre><span class="code-label">shell</span><span class="c"># 每条都带 | grep -E '^(HTTP|\{)'：只留状态行和 body 行，401 必须同时看到 code 1005 才算过</span>
+$ curl -si localhost:8080/api/v1/users | grep -E <span class="s">'^(HTTP|\{)'</span>
+HTTP/1.1 200 OK
+{"code":0,"message":"ok","data":[]}                              <span class="c"># 匿名 GET → 200，组里没这条路由的中间件</span>
+
+$ curl -si -X POST localhost:8080/api/v1/users -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"nobody","email":"n@e.com","password":"passw0rd-123"}'</span> | grep -E <span class="s">'^(HTTP|\{)'</span>
+HTTP/1.1 401 Unauthorized
+{"code":1005,"message":"token 缺失或无效","data":null}           <span class="c"># 没 token 的 POST → 401 + 1005</span>
+
+$ curl -si -X POST localhost:8080/api/v1/users -H <span class="s">"Authorization: Bearer go-fullstack-2026"</span> \
+  -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"username":"someone","email":"s@e.com","password":"passw0rd-123"}'</span> | grep -E <span class="s">'^(HTTP|\{)'</span>
+HTTP/1.1 201 Created
+{"code":0,"message":"ok","data":{"id":1,"username":"someone",…}}  <span class="c"># 带 token → 放行，进业务</span></pre>
     </div>
     <div class="task">
       <div class="task-title">练习 3：上下文传值 c.Set/c.Get（20 分钟）</div>
@@ -270,7 +386,7 @@ $ curl -si -X OPTIONS localhost:8080/users -H <span class="s">"Origin: http://lo
     <h2>完成检查（全部勾掉才算毕业）</h2>
     <ul class="check">
       <li><label><input type="checkbox" data-key="w2d3c1">引擎已换成 <code>gin.New()</code> + 4 个显式 Use，Logger/Recovery 功能没丢</label></li>
-      <li><label><input type="checkbox" data-key="w2d3c2">练习 1：<code>curl -i</code> 能看到 X-Process-Time；OPTIONS 预检返回 204 + 完整 Allow 头</label></li>
+      <li><label><input type="checkbox" data-key="w2d3c2">练习 1：服务日志里每条请求都有 <code>[timer] … 耗时 …</code>，<code>curl -o /dev/null -w "状态=%{http_code} 总耗时=%{time_total}s\n"</code> 也能看到状态与耗时；OPTIONS 预检返回 204 + 完整 Allow 头</label></li>
       <li><label><input type="checkbox" data-key="w2d3c3">练习 2：无 token 的 DELETE 返回 401 + code 1005，带 token 成功</label></li>
       <li><label><input type="checkbox" data-key="w2d3c4">练习 4 的两次输出差异已贴进笔记，能口述 Abort 之后哪些代码还跑</label></li>
       <li><label><input type="checkbox" data-key="w2d3c5">能向别人解释：为什么 CORS 中间件要注册在鉴权中间件之前</label></li>

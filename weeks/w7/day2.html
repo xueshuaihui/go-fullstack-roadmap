@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>W7D2 · 前端构建 + Nginx | Go 全栈修炼手册</title>
-<meta name="description" content="Day 2：Vite dist 产物结构、nginx:alpine 托管静态文件、try_files 根治 SPA history 路由 404、proxy_pass 反代 /api、GZIP 配置，产出前端多阶段 Dockerfile 完整文件。">
+<meta name="description" content="Day 2：Vite dist 产物结构、nginx:alpine 托管静态文件、try_files 根治 SPA history 路由 404、location /api/ 与 /api/v1 的匹配规则、proxy_pass 反代与结尾斜杠、SetTrustedProxies 兑现 W4D4 伏笔、GZIP 配置，产出前端多阶段 Dockerfile 完整文件。">
 <link rel="stylesheet" href="../../assets/style.css">
 <script src="../../assets/app.js"></script>
 </head>
@@ -30,7 +30,7 @@
     <ul class="check">
       <li><label><input type="checkbox" data-key="w7d2g1">看懂 Vite <code>npm run build</code> 后的 dist 结构，能解释文件名 hash 的作用</label></li>
       <li><label><input type="checkbox" data-key="w7d2g2">能讲清 SPA history 路由为什么"点进去正常、刷新就 404"，并用 <code>try_files</code> 一行修复</label></li>
-      <li><label><input type="checkbox" data-key="w7d2g3">会写 <code>proxy_pass /api → backend</code>，知道带不带结尾斜杠的区别</label></li>
+      <li><label><input type="checkbox" data-key="w7d2g3">会写 <code>proxy_pass /api/ → backend</code>（它兜住 <code>/api/v1/*</code>），知道匹配规则、结尾斜杠的区别，以及后端为什么要 <code>SetTrustedProxies</code></label></li>
       <li><label><input type="checkbox" data-key="w7d2g4">产出前端多阶段 Dockerfile（node 构建 + nginx 运行），一个容器内前端 + 代理全通</label></li>
     </ul>
     <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
@@ -38,7 +38,8 @@
 
   <section>
     <h2>课前须知</h2>
-    <div class="callout note"><p>今天在 <code>frontend/</code>（第 6 周的 React + Vite 项目）下工作。约定沿用第 2 周起的口径：<b>后端业务路由都挂在 <code>/api</code> 前缀下</b>（<code>/api/articles</code>、<code>/api/auth/login</code>），健康检查在 <code>/health</code>；前端 axios 的请求基址是相对路径 <code>/api</code>（第 6 周 Day 5 的 <code>VITE_API_BASE=/api</code>）。这个约定是今天 proxy 配置成立的前提。</p></div>
+    <div class="callout note"><p>今天在 <code>frontend/</code>（第 6 周那个 React + Vite 项目，仓库归置已在 W6D5 完成，它就住在 <code>goblog/frontend/</code>）下工作。<b>路由口径与既有代码逐字对齐</b>：后端业务路由挂在 <code>/api/v1</code> 组下（<code>/api/v1/articles</code>、<code>/api/v1/auth/login</code>），健康检查是<b>不带前缀</b>的 <code>GET /health</code>；前端 <code>src/api/http.js</code> 的 <code>baseURL</code> 和 W6D5 的 <code>VITE_API_BASE</code> 都是 <code>/api/v1</code>；前端自己的页面路由是 <code>/</code>、<code>/post/:id</code>、<code>/post/new</code>、<code>/me</code>、<code>/login</code>。今天的 nginx 只负责两件事：把 <code>/api/</code> 开头的请求转给后端（<code>/api/v1/…</code> 自然命中，规则见第 4 节），其余全部交给 <code>try_files</code> 兜回 <code>index.html</code>。</p></div>
+    <div class="callout js"><p><b>和上周的对接点：</b>开发期你靠 <code>vite.config.js</code> 的 <code>server.proxy['/api']</code> 把请求转给 <code>localhost:8080</code>。今天做的事一模一样，只是把"谁来转发"从 Vite 换成了 Nginx——<b>key 只要 <code>/api</code>、baseURL 从 <code>/api/v1</code> 起写</b>这条规矩在 nginx 这里同样成立（W6D5 排错表里那条"请求变成 /api/api/v1"的坑，nginx 也会踩）。</p></div>
   </section>
 
   <section>
@@ -72,36 +73,78 @@ dist/assets/vendor-a10c8f22.js</pre>
 
 $ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localhost:<span class="n">3000</span>/
 <span class="n">200</span>                                            <span class="c"># 首页正常</span>
-$ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localhost:<span class="n">3000</span>/articles/<span class="n">1</span>
-<span class="n">404</span>                                            <span class="c"># ← 灾难现场：刷新文章详情页 404 了</span></pre>
+$ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localhost:<span class="n">3000</span>/post/<span class="n">1</span>
+<span class="n">404</span>                                            <span class="c"># ← 灾难现场：刷新文章详情页（W6 的真实路由 /post/:id）404 了</span></pre>
     <p>先别修，把这个 404 记住——下一节解释原理，然后一行配置根治它。</p>
 
     <h3>3. 重点：SPA history 路由为什么刷新 404，try_files 怎么救</h3>
-    <div class="callout js"><p><b>history 模式原理（React Router 7 / history router）：</b>你在站内从首页点进文章详情页时，Router 调用浏览器原生的 <code>history.pushState()</code>——它<b>只改写地址栏</b>并压入一条历史栈，<b>不发任何网络请求</b>，然后 React 在内存里换掉渲染的组件。所以"点进去"永远正常。<br><br>但当你<b>刷新页面</b>（或直接粘贴 URL 访问、别人转发给你的 <code>/articles/1</code> 链接被点开）时，浏览器就真的向服务器发出 <code>GET /articles/1</code>。Nginx 在 dist 目录里找一个叫 <code>articles/1</code> 的文件——不存在，404。<b>"路由"这个概念只活在 JS 里，服务器根本不知道。</b></p></div>
+    <div class="callout js"><p><b>history 模式原理（React Router 7 / history router）：</b>你在站内从首页点进文章详情页时，Router 调用浏览器原生的 <code>history.pushState()</code>——它<b>只改写地址栏</b>并压入一条历史栈，<b>不发任何网络请求</b>，然后 React 在内存里换掉渲染的组件。所以"点进去"永远正常。<br><br>但当你<b>刷新页面</b>（或直接粘贴 URL 访问、别人转发给你的 <code>/post/1</code> 链接被点开）时，浏览器就真的向服务器发出 <code>GET /post/1</code>。Nginx 在 dist 目录里找一个叫 <code>post/1</code> 的文件——不存在，404。<b>"路由"这个概念只活在 JS 里，服务器根本不知道。</b></p></div>
     <p>解法：<code>try_files</code>——按顺序找文件，全都找不到就把 <code>index.html</code> 兜底返回。HTML 一加载，React Router 接管，根据地址栏 URL 渲染对应页面：</p>
     <pre><span class="code-label">nginx.conf 节选</span><span class="k">location</span> / {
     <span class="c"># $uri 原始路径 → $uri/ 目录 → 都没有就内部改写为 /index.html（返回 200）</span>
     try_files <span class="n">$uri</span> <span class="n">$uri/</span> /index.html;
 }</pre>
-    <div class="callout warn"><p><b>副作用要知道：</b>配了兜底之后，访问一个<b>真不存在</b>的静态资源（如 <code>/logo-typo.png</code>）也会返回 index.html + 200，排查图片 404 时容易被骗。所以上面把 <code>/assets/</code>（带 hash 的产物）单独设了 location（见第 5 节），真实生产还会再为图片等加精确匹配。</p></div>
-    <div class="callout note"><p>hash 路由模式 <code>#/articles/1</code> 不会有这个问题——# 后面的内容从不发给服务器。但 URL 丑、分享性差，本项目坚持 history 模式 + try_files 是标准答案。</p></div>
+    <div class="callout warn"><p><b>副作用要知道：</b>配了兜底之后，访问一个<b>真不存在</b>的静态资源（如 <code>/logo-typo.png</code>）也会返回 index.html + 200，排查图片 404 时容易被骗。<b>更阴的一件事</b>：后端那个 <code>/health</code> 探针在 nginx 里没有对应 location，浏览器直访 <code>http://域名/health</code> 会命中兜底的 <code>location /</code> → 返回 <b>200 的 HTML</b>，看代码的人以为后端健康，其实一行 Go 都没碰到——这就是<b>"假绿探针"</b>。两个应对：① <code>/assets/</code>（带 hash 的产物）单独设 location，不让它落进兜底（见第 5 节）；② <b>D5</b> 里要么加一条 <code>location = /health</code> 精确代理到后端，要么巡检脚本直接打后端容器的 8080，两边都讲。</p></div>
+    <div class="callout note"><p>hash 路由模式 <code>#/post/1</code> 不会有这个问题——# 后面的内容从不发给服务器。但 URL 丑、分享性差，本项目坚持 history 模式 + try_files 是标准答案。</p></div>
 
-    <h3>4. proxy_pass：把 /api 转给 Go 后端</h3>
+    <h3>4. proxy_pass：把 /api/v1 转给 Go 后端</h3>
     <p>同源部署后 CORS 都不需要了——浏览器眼里所有请求都来自同一个域名，Nginx 在内网替你转发：</p>
     <pre><span class="code-label">nginx.conf 节选</span><span class="k">location</span> /api/ {
     <span class="c"># backend 是容器/服务名，在共享网络里由 Docker DNS 解析（明天 compose 正式用）</span>
-    proxy_pass http://backend:<span class="n">8080</span>;
+    proxy_pass http://backend:<span class="n">8080</span>;        <span class="c"># 结尾不写斜杠：路径原样透传</span>
 
     <span class="c"># 三个标准透传头，否则后端日志里全是一个 IP、Host 也失真</span>
     proxy_set_header Host <span class="n">$host</span>;
     proxy_set_header X-Real-IP <span class="n">$remote_addr</span>;
     proxy_set_header X-Forwarded-For <span class="n">$proxy_add_x_forwarded_for</span>;
 }</pre>
+
+    <h4>4.1 location 到底怎么匹配：为什么写 /api/ 而不是 /api/v1/</h4>
+    <p>不带正则的 <code>location</code> 是"<b>前缀匹配</b>"：请求 URI 只要<b>以这段字符串开头</b>就算命中，所以 <code>location /api/</code> 同时兜住 <code>/api/v1/articles</code> 和将来可能出现的 <code>/api/v2/…</code>；写成 <code>location /api/v1/</code> 也完全能用，只是以后加版本要在 nginx 里再补一行。nginx 挑的是<b>最长</b>的那条命中规则（与书写顺序无关），全都匹配不上才落到 <code>location /</code>；<code>location = /index.html</code> 这种精确匹配优先级最高。两条纪律：</p>
+    <ul>
+      <li><b>location 结尾的 <code>/</code> 要写</b>：<code>location /api</code>（无斜杠）会连 <code>/apifoo</code> 都命中，属于意外通过。</li>
+      <li><b>前端 baseURL 决定请求长什么样</b>：W6 的 <code>VITE_API_BASE=/api/v1</code> 意味着产物里所有接口都是 <code>/api/v1/…</code> 开头 → <code>location /api/</code> 稳命中。</li>
+    </ul>
+    <table>
+      <tr><th>浏览器请求的 URI</th><th>命中的 location</th><th>转发给后端的路径</th><th>结果</th></tr>
+      <tr><td><code>/api/v1/articles?page=1&amp;size=10</code></td><td><code>/api/</code></td><td><code>/api/v1/articles?page=1&amp;size=10</code>（原样）</td><td>200，Gin 的 <code>r.Group("/api/v1")</code> 命中</td></tr>
+      <tr><td><code>/api/v1/articles/1</code></td><td><code>/api/</code></td><td><code>/api/v1/articles/1</code></td><td>200</td></tr>
+      <tr><td><code>/api/v1/auth/login</code></td><td><code>/api/</code></td><td><code>/api/v1/auth/login</code></td><td>200 / 401（业务码，不是 nginx 的事）</td></tr>
+      <tr><td><code>/post/1</code></td><td><code>/</code>（try_files）</td><td>不转发</td><td>200 + index.html，前端路由接管</td></tr>
+      <tr><td><code>/health</code></td><td><code>/</code>（try_files）</td><td>不转发</td><td><b>200 + HTML ← 假绿探针</b>，见第 3 节警告</td></tr>
+      <tr><td><code>/api/v1/articles/1</code>，但 <code>proxy_pass</code> 结尾多写了 <code>/</code></td><td><code>/api/</code></td><td><code>/v1/articles/1</code>（前缀被剥掉）</td><td>404 —— 经典事故</td></tr>
+    </table>
     <table>
       <tr><th>写法</th><th>行为</th><th>本项目</th></tr>
-      <tr><td><code>proxy_pass http://backend:8080;</code>（<b>不带</b>结尾斜杠/路径）</td><td>请求路径<b>原样</b>转发：<code>/api/articles</code> → 后端收到 <code>/api/articles</code></td><td>✔ 用这个（后端路由本身带 /api 前缀）</td></tr>
-      <tr><td><code>proxy_pass http://backend:8080/;</code>（带结尾斜杠）</td><td>把 <code>location</code> 前缀剥掉：<code>/api/articles</code> → 后端收到 <code>/articles</code> → 404</td><td>✘ 经典"莫名其妙 404"来源</td></tr>
+      <tr><td><code>proxy_pass http://backend:8080;</code>（<b>不带</b>结尾斜杠/路径）</td><td>请求路径<b>原样</b>转发：<code>/api/v1/articles</code> → 后端收到 <code>/api/v1/articles</code></td><td>✔ 用这个（后端路由组本身带 <code>/api/v1</code> 前缀）</td></tr>
+      <tr><td><code>proxy_pass http://backend:8080/;</code>（带结尾斜杠）</td><td>把 <code>location</code> 前缀剥掉：<code>/api/v1/articles</code> → 后端收到 <code>/v1/articles</code> → 404</td><td>✘ 经典"莫名其妙 404"来源</td></tr>
     </table>
+    <div class="callout tip"><p>记一句就够：<b>nginx 的 location 只管"哪些请求归我转发"，路径改不改由 proxy_pass 结尾有没有 URI 决定。</b>本项目两端都保留 <code>/api/v1</code>，所以 proxy_pass 不带 URI。</p></div>
+
+    <h4>4.2 兑现第 4 周的伏笔：后端必须 SetTrustedProxies</h4>
+    <p>第 4 周 Day 4 讲访问日志时挂过一条 TODO："<code>c.ClientIP()</code> 拿的是与服务器建 TCP 连接那台机器的 IP，将来套上 Nginx 后所有人都会变成代理机的 IP，第 7 周用 <code>SetTrustedProxies</code> + X-Forwarded-For 处理"。今天就是第 7 周，两个动作配对：<b>nginx 负责把真实来源写进请求头（上面那三行 <code>proxy_set_header</code>），后端负责决定信不信这些头。</b></p>
+    <p>现象（练习 4 组网后一定会看到）：所有请求在 backend 日志里的来源 IP 都是 nginx 容器的内网地址（<code>172.18.0.x</code>），W4 的访问日志、按 IP 限流、"最近登录地点"全部失效——因为 TCP 连接确实是从 nginx 来的。</p>
+    <pre><span class="code-label">backend/cmd/server/main.go（节选：改两行）</span>r := gin.Default()                       <span class="c">// W4 就是这个，不动</span>
+
+<span class="c">// 紧跟其后、注册任何路由与中间件之前：声明"我只信 compose 内网网段送来的 X-Forwarded-For"</span>
+<span class="c">// Docker 给容器网络的地址通常落在 172.16.0.0/12（172.16–172.31 段），明天 D3 你会亲眼看到 172.18.0.2</span>
+r.<span class="t">SetTrustedProxies</span>([]<span class="t">string</span>{<span class="s">"172.16.0.0/12"</span>})
+
+r.GET(<span class="s">"/health"</span>, <span class="k">func</span>(c *gin.Context) { response.OK(c, gin.H{<span class="s">"status"</span>: <span class="s">"ok"</span>}) })
+<span class="c">// ... 后面的 /api/v1 路由组照 W4 原样 ...</span></pre>
+    <p>三点必须讲清：</p>
+    <ul>
+      <li><b>放在哪里</b>：<code>r := gin.Default()</code> 之后<b>第一行</b>。 Gin 的 <code>Logger</code>/<code>AccessLog</code> 中间件在请求到来时才读这张信任表，但你在中间件之后、甚至在某个 handler 里才设置，就等于前面的日志行已经用错值写出去了；放到路由注册之后虽然也能工作，但顺序读起来最容易被自己骗。</li>
+      <li><b>为什么是 <code>172.16.0.0/12</code></b>：这是 Docker 容器网段所在的私有地址块。<code>SetTrustedProxies</code> 的语义是"当<b>直连我的那台机器</b>落在这个网段里，我才去解析 <code>X-Forwarded-For</code> 并把它当作 ClientIP"；否则一律用 TCP 直连地址。</li>
+      <li><b>为什么不能写 <code>0.0.0.0/0</code> / <code>nil</code>（全信任）</b>：那等于任何客户端只要在请求头里塞 <code>X-Forwarded-For: 1.2.3.4</code>，你的日志和风控就照单全收——IP 可伪造。<b>W4D4 那句"别现在就自行解析转发头"防的正是这个。</b></li>
+    </ul>
+    <pre><span class="code-label">shell（验证信任表生效：故意打一个假 XFF）</span>$ curl -s -H <span class="s">"X-Forwarded-For: 8.8.8.8, 1.1.1.1"</span> http://localhost:<span class="n">3000</span>/api/v1/articles &gt; /dev/null
+
+$ docker logs backend --tail <span class="n">1</span>
+[GIN] <span class="n">2026</span>/<span class="n">09</span>/<span class="n">28</span> - <span class="n">21</span>:<span class="n">02</span>:<span class="n">11</span> | <span class="n">200</span> |   <span class="n">1.234</span>ms | <span class="n">8.8</span>.<span class="n">8.8</span>       | GET      <span class="s">"/api/v1/articles"</span>
+<span class="c"># ↑ 设了信任表：nginx 在 172.16.0.0/12 内 → GIN 采纳 XFF 的第一个地址 8.8.8.8</span>
+<span class="c"># 没设那一行时这里会是 nginx 容器自己的 IP（172.18.0.2），真实访客全被抹成同一个人</span></pre>
+    <div class="callout note"><p>顺带一条链路认知：nginx 容器里的 <code>$remote_addr</code> 是"连它的那个人"。你从宿主机 curl 时它是宿主机在该网段里的地址；到第 5 天套上 Caddy，它就变成真实访客 IP（Caddy 会把 XFF 续上）。<b>信任网段这条线要从最外层一路通到后端，中间任何一层没转发或后端没信任，ClientIP 就断在那一格。</b></p></div>
     <div class="callout warn"><p><b>容器里的 localhost 陷阱（今天预习、明天主考）：</b>在 nginx 容器内，<code>proxy_pass http://localhost:8080</code> 指向的是 <b>nginx 容器自己</b>，不是你的宿主机，更不是后端容器。本地想用 docker run 临时联调可以写 <code>host.docker.internal:8080</code>（宿主机地址），而正式方案永远是明天的容器网络服务名 <code>backend</code>。</p></div>
 
     <h3>5. GZIP 与缓存策略</h3>
@@ -132,7 +175,7 @@ $ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localho
     <div class="callout tip"><p>验证 GZIP 生效：响应头要有 <code>Content-Encoding: gzip</code>。curl 默认不发 <code>Accept-Encoding</code>，要加 <code>--compressed</code>：<code>curl -s -H "Accept-Encoding: gzip" -o /dev/null -w "%{size_download}\n" --compressed http://localhost:3000/assets/index-4f2a9c1e.js</code>，对比文件原始大小。</p></div>
 
     <h3>6. 完整文件：前端多阶段 Dockerfile + nginx.conf</h3>
-    <p>结构照抄第 6 周前端项目根目录，新增两个文件即可。</p>
+    <p>文件放在 <code>goblog/frontend/</code> 里（W6D5 已经把 <code>blog-web</code> 挪成这个目录），新增三个文件即可，源码结构不动。</p>
     <pre><span class="code-label">frontend/Dockerfile</span><span class="c"># ---------- 阶段一：构建（需要完整 node_modules，这层大但不要了）----------</span>
 <span class="k">FROM</span> node:<span class="n">22</span>-alpine <span class="k">AS</span> build
 
@@ -144,7 +187,8 @@ $ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localho
 
 <span class="k">COPY</span> . .
 <span class="c"># 生产环境变量在构建时烧进产物（Vite 是构建期替换，不是运行期读取！）</span>
-<span class="k">ENV</span> VITE_API_BASE=/api
+<span class="c"># 值与 W6D5 的 .env.production 一致：/api/v1。Dockerfile 里再写一遍是防有人本地 .env 漏了这行</span>
+<span class="k">ENV</span> VITE_API_BASE=/api/v1
 <span class="k">RUN</span> npm run build
 
 <span class="c"># ---------- 阶段二：运行（只有 nginx + 2MB 静态文件）----------</span>
@@ -167,11 +211,11 @@ $ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localho
     gzip_min_length <span class="n">1024</span>;
     gzip_types text/css application/javascript application/json image/svg+xml;
 
-    <span class="k">location</span> /api/ {
-        proxy_pass http://backend:<span class="n">8080</span>;
+    <span class="k">location</span> /api/ {                          <span class="c"># 前缀匹配：/api/v1/* 全部命中（见 4.1）</span>
+        proxy_pass http://backend:<span class="n">8080</span>;           <span class="c"># 不带结尾斜杠，/api/v1 前缀原样交给后端</span>
         proxy_set_header Host <span class="n">$host</span>;
         proxy_set_header X-Real-IP <span class="n">$remote_addr</span>;
-        proxy_set_header X-Forwarded-For <span class="n">$proxy_add_x_forwarded_for</span>;
+        proxy_set_header X-Forwarded-For <span class="n">$proxy_add_x_forwarded_for</span>;   <span class="c"># 后端要 SetTrustedProxies 才认（4.2）</span>
     }
 
     <span class="k">location</span> /assets/ {
@@ -194,12 +238,20 @@ dist
 .env.*
 .vscode
 *.md</pre>
-    <p>构建并快速自检（先不测 /api，那是练习 4 的事）：</p>
-    <pre><span class="code-label">shell</span>$ docker build -t goblog-web:<span class="n">0.1</span> frontend/    <span class="c"># 在项目根目录执行</span>
-$ docker images goblog-web                     <span class="c"># 预期 ≈ 53MB（nginx 基座 50MB + 2MB 产物）</span>
+    <p>构建并快速自检（先不测 /api/v1，那是练习 4 的事）：</p>
+    <pre><span class="code-label">shell（在项目根 goblog/ 执行）</span>$ docker build -t goblog-web:<span class="n">0.1</span> frontend/
+$ docker images goblog-web
+REPOSITORY    TAG       SIZE
+goblog-web    <span class="n">0.1</span>       <span class="n">54</span>.8MB     <span class="c"># 预期 ≈ 53MB（nginx 基座 50MB + 2MB 产物）</span>
 $ docker run --rm -d --name web -p <span class="n">3000</span>:<span class="n">80</span> goblog-web:<span class="n">0.1</span>
-$ curl -s http://localhost:<span class="n">3000</span>/articles/<span class="n">1</span> | head -<span class="n">3</span>   <span class="c"># 返回 &lt;!doctype html&gt;… 即 try_files 生效</span></pre>
-    <div class="callout note"><p>注意此时 <code>/api/*</code> 会返回 502（nginx 里 <code>backend</code> 这个名字解析不到），<b>属于预期</b>——服务名互访要等共享网络，练习 4 手动组网先体验一遍，明天 compose 让它成为日常。另外 Vite 的环境变量是<b>构建期</b>替换进 JS 常量的，改 <code>VITE_API_BASE</code> 必须重新 build 镜像，这点和第 4 周后端"运行期读 .env"完全不同。</p></div>
+$ curl -s http://localhost:<span class="n">3000</span>/post/<span class="n">1</span> | head -<span class="n">3</span>   <span class="c"># 返回 &lt;!doctype html&gt;… 即 try_files 生效</span>
+&lt;!doctype html&gt;
+&lt;html lang=<span class="s">"zh-CN"</span>&gt;
+  &lt;head&gt;
+$ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localhost:<span class="n">3000</span>/api/v1/articles
+<span class="n">502</span>                                            <span class="c"># ← 预期如此：这里还没有 backend</span>
+$ docker rm -f web</pre>
+    <div class="callout note"><p>此时 <code>/api/*</code> 返回 502 是<b>预期行为</b>（nginx 里 <code>backend</code> 这个名字解析不到），<b>属于预期</b>——服务名互访要等共享网络，练习 4 手动组网先体验一遍，明天 compose 让它成为日常。另外 Vite 的环境变量是<b>构建期</b>替换进 JS 常量的，改 <code>VITE_API_BASE</code> 必须重新 build 镜像，这点和第 4 周后端"运行期读 .env"完全不同。</p></div>
   </section>
 
   <section>
@@ -210,30 +262,62 @@ $ curl -s http://localhost:<span class="n">3000</span>/articles/<span class="n">
     </div>
     <div class="task">
       <div class="task-title">练习 2：亲手复现并修复刷新 404（25 分钟）</div>
-      <p>用第 2 节的 <code>docker run -v .../dist nginx:alpine</code> 挂载法：① 裸配置下 <code>curl /articles/1</code> 确认 404；② 在本地写一份只加 <code>try_files</code> 的最小 conf，追加挂载 <code>-v $(pwd)/nginx.conf:/etc/nginx/conf.d/default.conf:ro</code> 重启容器，再 curl 确认 200 且返回 index.html 内容。</p>
+      <p>用第 2 节的 <code>docker run -v .../dist nginx:alpine</code> 挂载法：① 裸配置下 <code>curl http://localhost:3000/post/1</code> 确认 404；② 在 <code>frontend/</code> 写一份只加 <code>try_files</code> 的最小 conf（文件名 <code>nginx.dev.conf</code>），追加挂载 <code>-v "$(pwd)/nginx.dev.conf:/etc/nginx/conf.d/default.conf:ro"</code> 重跑容器，再 curl 确认 200 且返回 index.html 内容。</p>
+      <pre><span class="code-label">shell（接着第 2 节那个 web 容器玩）</span>$ docker rm -f web
+$ docker run -d --name web -p <span class="n">3000</span>:<span class="n">80</span> <span class="c">\</span>
+    -v <span class="s">"$(pwd)"</span>/dist:/usr/share/nginx/html:ro <span class="c">\</span>
+    -v <span class="s">"$(pwd)/nginx.dev.conf"</span>:/etc/nginx/conf.d/default.conf:ro nginx:<span class="n">1.27</span>-alpine
+$ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localhost:<span class="n">3000</span>/post/<span class="n">1</span>
+<span class="n">200</span></pre>
       <p><b>要点：</b>挂载配置文件改完后不用重建镜像，<code>docker exec web nginx -s reload</code> 或重跑容器即可——先习惯"配置即文件，文件可挂载"。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 3：产出前端镜像（必做，30 分钟）</div>
-      <p>抄录第 6 节三个文件（<code>frontend/Dockerfile</code>、<code>frontend/nginx.conf</code>、<code>frontend/.dockerignore</code>），构建 <code>goblog-web:0.1</code>。验收：<code>docker images</code> ≤ 60MB；<code>curl /</code> 与 <code>curl /articles/1</code> 均 200；<code>curl -H "Accept-Encoding: gzip" --compressed -sI</code> 大 JS 文件响应头含 <code>Content-Encoding: gzip</code>。</p>
+      <p>抄录第 6 节三个文件（<code>frontend/Dockerfile</code>、<code>frontend/nginx.conf</code>、<code>frontend/.dockerignore</code>），构建 <code>goblog-web:0.1</code>。验收：<code>docker images</code> ≤ 60MB；<code>curl /</code> 与 <code>curl /post/1</code> 均 200；<code>curl -H "Accept-Encoding: gzip" --compressed -sI</code> 大 JS 文件响应头含 <code>Content-Encoding: gzip</code>。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 4：一个容器内前端 + 代理全通（40 分钟）</div>
-      <p>不写 compose，用 <code>docker network</code> 手工把昨天的后端、一个 MySQL、今天的前端连成网，端到端打通 <code>浏览器 → nginx → /api → Gin → MySQL</code>：</p>
-      <pre><span class="code-label">shell</span>$ docker network create goblog
+      <p>不写 compose，用 <code>docker network</code> 手工把昨天的后端、一个 MySQL、今天的前端连成网，端到端打通 <code>浏览器 → nginx → /api/v1 → Gin → MySQL</code>。容器名必须就叫 <code>mysql</code> 和 <code>backend</code>——nginx 的 <code>proxy_pass http://backend:8080</code> 和后端的 <code>DB_HOST=mysql</code> 认的就是这两个名字：</p>
+      <pre><span class="code-label">shell（在项目根 goblog/ 执行）</span>$ docker network create goblog
 $ docker run -d --name mysql --network goblog <span class="c">\</span>
-    -e MYSQL_ROOT_PASSWORD=<span class="s">"&lt;强占位符&gt;"</span> -e MYSQL_DATABASE=goblog <span class="c">\</span>
-    -e MYSQL_USER=goblog -e MYSQL_PASSWORD=<span class="s">"&lt;强占位符&gt;"</span> <span class="c">\</span>
-    -v mysql-demo:/var/lib/mysql mysql:<span class="n">8.0</span> --default-time-zone=<span class="s">"+08:00"</span>
+    -e MYSQL_ROOT_PASSWORD=goblogroot -e MYSQL_DATABASE=goblog <span class="c">\</span>
+    -e MYSQL_USER=goblog -e MYSQL_PASSWORD=goblog123 <span class="c">\</span>
+    -v mysql-demo:/var/lib/mysql mysql:<span class="n">8.0</span> --default-time-zone=+<span class="n">08</span>:<span class="n">00</span>
+<span class="c"># GIN_MODE 这里特意用 debug，为的是看得见下面的启动日志；明天 compose 里用 release</span>
 $ docker run -d --name backend --network goblog -p <span class="n">8080</span>:<span class="n">8080</span> <span class="c">\</span>
-    -e MYSQL_DSN=<span class="s">"goblog:&lt;强占位符&gt;@tcp(mysql:3306)/goblog?charset=utf8mb4&amp;parseTime=True&amp;loc=Local"</span> <span class="c">\</span>
-    -e JWT_SECRET=<span class="s">"$(openssl rand -base64 32)"</span> -e GIN_MODE=release goblog-api:<span class="n">0.1</span>
+    -e PORT=<span class="n">8080</span> -e GIN_MODE=debug -e AUTO_MIGRATE=true <span class="c">\</span>
+    -e DB_HOST=mysql -e DB_PORT=<span class="n">3306</span> -e DB_USER=goblog -e DB_PASS=goblog123 -e DB_NAME=goblog <span class="c">\</span>
+    -e JWT_SECRET=$(openssl rand -base64 <span class="n">32</span>) -e JWT_REFRESH_SECRET=$(openssl rand -base64 <span class="n">32</span>) <span class="c">\</span>
+    goblog-api:<span class="n">0.1</span>
 $ docker run -d --name frontend --network goblog -p <span class="n">3000</span>:<span class="n">80</span> goblog-web:<span class="n">0.1</span>
 
-<span class="c"># MySQL 首次初始化约 30 秒，等 backend 的 healthcheck 变 healthy 再测</span>
-$ curl -s http://localhost:<span class="n">3000</span>/api/articles?page=<span class="n">1</span>
-{<span class="s">"code"</span>:<span class="n">0</span>,<span class="s">"message"</span>:<span class="s">"success"</span>,<span class="s">"data"</span>:{...}}   <span class="c"># ← 经 nginx 代理的完整链路！</span></pre>
-      <p><b>参考答案排错：</b>502 看 <code>docker logs frontend</code>——<code>backend could not be resolved</code> 说明两容器不在同一网络（<code>docker network inspect goblog</code> 检查 Containers）；500/连接库失败看 <code>docker logs backend</code>——DSN 主机必须是 <code>mysql</code> 而非 localhost（本练习已按此配好）。玩完 <code>docker rm -f mysql backend frontend; docker network rm goblog</code> 清理，明天交给 compose。</p>
+<span class="c"># MySQL 首次初始化要 20–40 秒。这一阶段全是 docker run，没有 healthcheck，只能自己等：</span>
+$ sleep <span class="n">20</span>
+$ docker logs mysql --tail <span class="n">1</span>
+<span class="n">2026</span>-<span class="n">09</span>-<span class="n">28</span>T<span class="n">21</span>:<span class="n">05</span>:<span class="n">12</span>.<span class="n">448901</span>Z <span class="n">0</span> [System] [MY-010931] [Server] /usr/sbin/mysqld: ready for connections. Version: <span class="s">'8.0.40'</span>  socket: <span class="s">'/var/run/mysqld/mysqld.sock'</span>  port: <span class="n">3306</span>
+$ docker logs backend --tail <span class="n">1</span>                          <span class="c"># 若报"数据库连接失败"就再 sleep 10 然后 docker restart backend</span>
+[GIN-debug] Listening and serving HTTP on :<span class="n">8080</span>
+
+<span class="c"># 打通整条链路：浏览器只碰 3000，后面三跳都在 docker 网络里</span>
+$ curl -s http://localhost:<span class="n">3000</span>/api/v1/articles?page=<span class="n">1</span>&amp;size=<span class="n">10</span>
+{<span class="s">"code"</span>:<span class="n">0</span>,<span class="s">"message"</span>:<span class="s">"success"</span>,<span class="s">"data"</span>:{<span class="s">"list"</span>:[],<span class="s">"total"</span>:<span class="n">0</span>,<span class="s">"page"</span>:<span class="n">1</span>,<span class="s">"size"</span>:<span class="n">10</span>,<span class="s">"total_page"</span>:<span class="n">0</span>}}
+$ curl -s -o /dev/null -w <span class="s">"%{http_code}\n"</span> http://localhost:<span class="n">3000</span>/api/v1/articles/<span class="n">1</span>
+<span class="n">404</span>                                            <span class="c"># 空库没这篇文章：404 来自后端（code 2001），不是 nginx ——能说出这个区别才算过关</span>
+$ curl -s -X POST http://localhost:<span class="n">3000</span>/api/v1/auth/register <span class="c">\</span>
+    -H <span class="s">"Content-Type: application/json"</span> <span class="c">\</span>
+    -d <span class="s">'{"username":"fe01","nickname":"前端来客","email":"fe01@yourdomain.com","password":"Goblog2026dev"}'</span>
+{<span class="s">"code"</span>:<span class="n">0</span>,<span class="s">"message"</span>:<span class="s">"success"</span>,<span class="s">"data"</span>:{<span class="s">"user"</span>:{<span class="s">"id"</span>:<span class="n">1</span>,<span class="s">"username"</span>:<span class="s">"fe01"</span>,<span class="s">"nickname"</span>:<span class="s">"前端来客"</span>,<span class="s">"email"</span>:<span class="s">"fe01@yourdomain.com"</span>},<span class="s">"access_token"</span>:<span class="s">"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."</span>,<span class="s">"refresh_token"</span>:<span class="s">"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."</span>}}  <span class="c"># ← 注册即发 token，键名 snake_case（W6 前端已按此对齐）</span>
+
+<span class="c"># 同一条注册命令再敲一次：唯一约束生效 = 数据真的落库了，这是最省事的证明</span>
+$ curl -s -X POST http://localhost:<span class="n">3000</span>/api/v1/auth/register <span class="c">\</span>
+    -H <span class="s">"Content-Type: application/json"</span> <span class="c">\</span>
+    -d <span class="s">'{"username":"fe01","nickname":"前端来客","email":"fe01@yourdomain.com","password":"Goblog2026dev"}'</span>
+{<span class="s">"code"</span>:<span class="n">1006</span>,<span class="s">"message"</span>:<span class="s">"用户名已存在"</span>,<span class="s">"data"</span>:<span class="k">null</span>}        <span class="c"># ← 409 + 1006，nginx 与后端都活着，MySQL 也记住了这个账号</span>
+
+$ docker logs backend --tail <span class="n">1</span>                       <span class="c"># 顺手看一眼访问日志的来源 IP（4.2 的知识此刻回来找你）</span>
+[GIN] <span class="n">2026</span>/<span class="n">09</span>/<span class="n">28</span> - <span class="n">21</span>:<span class="n">07</span>:<span class="n">44</span> | <span class="n">201</span> |   <span class="n">3.412</span>ms | <span class="n">172</span>.<span class="n">18</span>.<span class="n">0</span>.<span class="n">1</span>       | POST     <span class="s">"/api/v1/auth/register"</span></pre>
+      <p><b>两个注释：</b>①<code>AUTO_MIGRATE=true</code> 今天其实用不上——这份后端还是 W4 的原样代码，启动时无条件 <code>AutoMigrate</code>，空库会自己长出 <code>users</code>/<code>articles</code>；先把这个键写上，是因为 <b>D4 要把它变成开关、D3 的 compose 与 .env 模板里必须有它</b>。②日志里那个 <code>172.18.0.1</code> 是宿主机在 docker 网段里的地址（你从本机 curl），真实访客的 IP 要等 D5 套上 Caddy 才会出现在这里——细节见 4.2。</p>
+      <p><b>参考答案排错：</b>502 看 <code>docker logs frontend</code>——<code>backend could not be resolved</code> 说明两容器不在同一网络（<code>docker network inspect goblog</code> 检查 Containers）；500/连接库失败看 <code>docker logs backend</code>——<code>DB_HOST</code> 必须是 <code>mysql</code> 而非 localhost（本练习已按此配好）；<code>Exited (1)</code> 是 <code>配置加载失败: 缺少环境变量 …</code>，少给了哪个 <code>-e</code> 就补哪个。日志里 ClientIP 全是 172.18.0.x？回去补 4.2 那行 <code>SetTrustedProxies</code> 再 <code>docker build -t goblog-api:0.2 backend/ &amp;&amp; docker rm -f backend</code> 重跑。玩完 <code>docker rm -f mysql backend frontend; docker network rm goblog</code> 清理，明天交给 compose。</p>
     </div>
   </section>
 
@@ -241,8 +325,11 @@ $ curl -s http://localhost:<span class="n">3000</span>/api/articles?page=<span c
     <h2>常见坑（新手 100% 会踩）</h2>
     <table>
       <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
-      <tr><td>没配 try_files</td><td>站内点击一切正常，任何子路由刷新即 404</td><td><code>try_files $uri $uri/ /index.html;</code></td></tr>
-      <tr><td>proxy_pass 多写结尾斜杠</td><td>后端日志显示请求路径丢了 <code>/api</code> 前缀，全线 404</td><td>后端路由带 /api 时，proxy_pass 不带 URI 部分</td></tr>
+      <tr><td>没配 try_files</td><td>站内点击一切正常，任何子路由（如 <code>/post/1</code>）刷新即 404</td><td><code>try_files $uri $uri/ /index.html;</code></td></tr>
+      <tr><td>proxy_pass 多写结尾斜杠</td><td>后端日志显示请求路径丢了 <code>/api/v1</code> 前缀（变成 <code>/v1/articles</code>），全线 404</td><td>后端路由组带 /api/v1 时，proxy_pass 不带 URI 部分（4.1 表最后两行）</td></tr>
+      <tr><td>前端 baseURL 与后端前缀不同款</td><td>页面请求 <code>/api/articles</code>，后端只注册了 <code>/api/v1/articles</code> → 404（nginx 转发了，是后端没这条路由）</td><td>全链一口径：<code>VITE_API_BASE=/api/v1</code> + Gin <code>/api/v1</code> 组 + nginx <code>location /api/</code></td></tr>
+      <tr><td>nginx 转发了 XFF，后端没设信任表</td><td>backend 日志里每个访客都是 <code>172.18.0.x</code>，按 IP 限流/统计全部废掉</td><td><code>r.SetTrustedProxies([]string{"172.16.0.0/12"})</code>，紧跟 <code>gin.Default()</code>（4.2）</td></tr>
+      <tr><td>信任表写成全放行</td><td>谁都能在请求头里伪造 <code>X-Forwarded-For</code>，日志与风控数据不可信</td><td>只信任代理所在的私有网段，绝不写 <code>0.0.0.0/0</code></td></tr>
       <tr><td>proxy_pass 写 localhost</td><td>502，且后端容器日志里毫无请求痕迹</td><td>容器里的 localhost 是 nginx 自己；同网络用服务名，宿主机用 host.docker.internal</td></tr>
       <tr><td>改了 VITE_API_BASE 没重新 build</td><td>镜像"更新了"但前端还在请求旧地址</td><td>Vite 环境变量烧录在产物 JS 里，必须重新构建镜像</td></tr>
       <tr><td>gzip 没效果</td><td>响应头没有 Content-Encoding</td><td>检查 gzip_types 是否包含该 MIME、文件是否达到 gzip_min_length</td></tr>
@@ -259,6 +346,10 @@ $ curl -s http://localhost:<span class="n">3000</span>/api/articles?page=<span c
       <tr><td>try_files</td><td>nginx 按序探测文件是否存在，最后一项通常写成内部跳转 /index.html</td></tr>
       <tr><td>immutable 缓存</td><td>配合内容 hash 文件名，让 /assets/ 下的产物被浏览器缓存一年</td></tr>
       <tr><td>npm ci</td><td>严格按 lock 文件安装、跳过交互式解析的干净安装命令，构建环境专用</td></tr>
+      <tr><td>前缀 location 匹配</td><td><code>location /api/</code> = "URI 以 /api/ 开头的都归我"，最长的那条胜出，所以它同时兜住 <code>/api/v1/*</code></td></tr>
+      <tr><td>X-Forwarded-For / X-Real-IP</td><td>代理把"原始客户端 IP"逐跳写进请求头带下去；nginx 转发只是第一步</td></tr>
+      <tr><td>SetTrustedProxies</td><td>Gin 侧的信任名单：只有直连来源在名单网段内，才采信 XFF 作为 ClientIP（W4D4 伏笔，4.2 兑现）</td></tr>
+      <tr><td>假绿探针</td><td>不存在的路径被 try_files 兜成 index.html + 200，看状态码会误判服务健康</td></tr>
     </table>
   </section>
 
@@ -266,10 +357,11 @@ $ curl -s http://localhost:<span class="n">3000</span>/api/articles?page=<span c
     <h2>完成检查（全部勾掉才算毕业）</h2>
     <ul class="check">
       <li><label><input type="checkbox" data-key="w7d2c1">dist 与 node_modules 的 du 对比数字（约 2MB vs 400MB+）已记入笔记</label></li>
-      <li><label><input type="checkbox" data-key="w7d2c2">练习 2 完成：亲眼见过 404 → 挂上 try_files 后变 200</label></li>
-      <li><label><input type="checkbox" data-key="w7d2c3"><code>goblog-web:0.1</code> 镜像 ≤ 60MB，/ 与 /articles/1 均返回 200</label></li>
-      <li><label><input type="checkbox" data-key="w7d2c4">练习 4 三容器组网：<code>curl :3000/api/articles</code> 拿到后端 JSON，能说出 DNS 解析靠的是什么</label></li>
+      <li><label><input type="checkbox" data-key="w7d2c2">练习 2 完成：亲眼见过 <code>/post/1</code> 的 404 → 挂上 try_files 后变 200</label></li>
+      <li><label><input type="checkbox" data-key="w7d2c3"><code>goblog-web:0.1</code> 镜像 ≤ 60MB，/ 与 /post/1 均返回 200</label></li>
+      <li><label><input type="checkbox" data-key="w7d2c4">练习 4 三容器组网：<code>curl :3000/api/v1/articles</code> 拿到后端 JSON，能说出 DNS 解析靠的是什么</label></li>
       <li><label><input type="checkbox" data-key="w7d2c5">能口述 proxy_pass 结尾斜杠差异 + Vite 构建期环境变量这两个坑的机理</label></li>
+      <li><label><input type="checkbox" data-key="w7d2c6">backend 里 <code>SetTrustedProxies</code> 那一行已加上，并能用 4.2 的假 XFF 命令证明它生效</label></li>
     </ul>
   </section>
 

@@ -31,16 +31,60 @@
       <li><label><input type="checkbox" data-key="w3d1g1">能用一句话分别解释 Docker 的<b>镜像、容器、卷</b>，并说出对应的 npm 世界类比</label></li>
       <li><label><input type="checkbox" data-key="w3d1g2">写好 <code>docker-compose.yml</code>（环境变量 + 3306 端口映射 + 命名卷 + healthcheck），<code>docker compose up -d</code> 后 MySQL 状态是 healthy</label></li>
       <li><label><input type="checkbox" data-key="w3d1g3">会用 <code>docker compose ps / logs / exec</code> 三条命令排障，并能进 MySQL 命令行执行 <code>SHOW TABLES</code></label></li>
-      <li><label><input type="checkbox" data-key="w3d1g4">跑通 Go 程序：<code>gorm.Open</code> 连库成功 + <code>AutoMigrate</code> 自动建出 <code>users</code> 表</label></li>
+      <li><label><input type="checkbox" data-key="w3d1g4">跑通 Go 程序：<code>repository.MustConnect(config.DSN)</code> 连库成功 + <code>AutoMigrate</code> 自动建出 <code>users</code> 表</label></li>
+      <li><label><input type="checkbox" data-key="w3d1g5">把第 2 周的 <code>pkg/response</code> 与 <code>middleware</code> 搬进 <code>goblog</code>，跑通 <code>/api/v1/users</code>，404 也是 <code>code:1001</code> 的统一 Body</label></li>
     </ul>
-    <p style="color:var(--text-dim);font-size:13px">↑ 这四条是「学习目标」，学的过程中随时回来勾；页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p>
+    <p style="color:var(--text-dim);font-size:13px">↑ 这五条是「学习目标」，学的过程中随时回来勾；页面底部还有 6 条「完成检查」，全部勾掉今天才算结束。</p>
   </section>
 
   <section>
     <h2>课前须知：为什么本周先学 Docker</h2>
     <div class="callout js"><p><b>安装 MySQL 这件事本身就被 Docker 消灭了。</b>以前你要下载 dmg、选版本、配 <code>my.cnf</code>、记住 root 密码、卸载时满Finder找残留。现在是一行 <code>docker compose up -d</code>，两分钟后一个干净的 MySQL 8 就在跑；不想要了 <code>docker compose down</code>，宿主机零残留。所以规划里把 Compose 基础<b>前移到第 3 周</b>——它只是你使用数据库的前置技能，学习成本半小时。</p></div>
     <div class="callout note"><p>本周只讲「把数据库跑起来」所需的最小 Docker 知识：镜像、容器、卷、端口、日志。<b>多阶段构建（Dockerfile 编译 Go）、前端 Nginx、完整多服务编排、上线部署</b>全部在第 7 周。今天不要碰 Dockerfile。</p></div>
-    <div class="callout tip"><p>需要先装 Docker Desktop（macOS/Windows 官网下载 <code>.dmg</code>/<code>.exe</code>，Linux 装 <code>docker-ce</code> + <code>docker-compose-plugin</code>）。验证：<code>docker version</code> 和 <code>docker compose version</code> 都有输出即可。国内网络拉镜像慢时，在 Docker Desktop 的 Docker Engine 配置里加镜像加速地址后 Restart。</p></div>
+    <div class="callout tip"><p>需要先装 Docker Desktop（macOS/Windows 官网下载 <code>.dmg</code>/<code>.exe</code>，Linux 装 <code>docker-ce</code> + <code>docker-compose-plugin</code>）。验证：<code>docker version</code> 和 <code>docker compose version</code> 都有输出即可。</p></div>
+    <h3>装好了但 <code>docker compose up</code> 卡住不动？（国内网络大概率会）</h3>
+    <p>Docker 默认从 <code>registry-1.docker.io</code> 拉镜像，国内经常卡在 <code>dial tcp ... i/o timeout</code>。解决办法是配<b>镜像加速地址</b>（registry mirror）——它只是一个提速用的缓存，<b>不影响本周任何一行的正确性</b>：不加也能学完，只是慢。</p>
+    <p><b>macOS / Windows：</b>托盘图标 → Settings → <b>Docker Engine</b>，把下面这段贴进右边那个 JSON 编辑器（保留原有的键，只加 <code>registry-mirrors</code>），点 Apply &amp; Restart。</p>
+    <p><b>Linux：</b>同样内容写进 <code>/etc/docker/daemon.json</code>，然后 <code>sudo systemctl restart docker</code>。</p>
+    <pre><span class="code-label">daemon.json（Docker Engine 配置）</span>{
+  <span class="t">"registry-mirrors"</span>: [<span class="s">"https://&lt;你的加速地址&gt;.mirror.aliyuncs.com"</span>],
+  <span class="t">"builder"</span>: { <span class="t">"gc"</span>: <span class="k">true</span> },
+  <span class="t">"features"</span>: { <span class="t">"containerd-snapshotter"</span>: <span class="k">false</span> }
+}</pre>
+    <p>其中 <code>&lt;你的加速地址&gt;</code> 那一串是<b>每人不同的专属前缀</b>：登录阿里云控制台 → 搜「容器镜像服务 ACR」→ 左侧「镜像工具 → 镜像加速器」，页面里那行 <code>https://xxxx.mirror.aliyuncs.com</code> 复制过来即可（免费，需实名登录）。填对了验证方式：</p>
+    <pre><span class="code-label">shell</span>$ docker info | grep -A 2 <span class="s">"Registry Mirrors"</span>
+ Registry Mirrors:
+  https://xxxx.mirror.aliyuncs.com/       <span class="c"># 有你刚填的地址 = 生效</span></pre>
+    <div class="callout warn"><p>加速器<b>只对 <code>docker pull</code> 生效，不是翻墙代理</b>；它偶尔会失效（第三方镜像站关停是常态）。失效时把 <code>registry-mirrors</code> 那两行删掉、换一个新的地址即可，本周项目文件一行都不用改。</p></div>
+  </section>
+
+  <section>
+    <h2>承接第 2 周：从 gin-api 带走什么</h2>
+    <p>本周的项目换了个新模块叫 <code>goblog</code>，但它不是从零开始——第 2 周 <code>gin-api</code> 里那些<b>与数据库无关</b>的东西全部原样搬过来。先把这张清单勾完，后面五天你就不用再写一遍响应体和 CORS。</p>
+    <table>
+      <tr><th>带走的文件</th><th>在 gin-api 里的位置</th><th>搬到 goblog 的位置</th><th>为什么要带走</th></tr>
+      <tr><td><b>统一响应包</b></td><td><code>pkg/response/response.go</code></td><td><code>pkg/response/response.go</code>（一字不改）</td><td><code>response.Body{code,message,data}</code> + <code>OK/Created/Fail</code> 与错误码常量（0/1001/1002/1003/1004/1005/1006/2001/5000）本周接口照常要用，换数据库不该改外壳</td></tr>
+      <tr><td><b>CORS 中间件</b></td><td><code>internal/middleware/cors.go</code></td><td><code>internal/middleware/cors.go</code></td><td>第 6 周前端要跨域吃这些接口，预检 204 + 三个 Allow 头已经调对了</td></tr>
+      <tr><td><b>Timer 中间件</b></td><td><code>internal/middleware/timer.go</code></td><td><code>internal/middleware/timer.go</code></td><td>本周要观察「N+1 到底慢多少」（day3），每条 SQL 的耗时全靠它打在日志与 <code>X-Process-Time</code> 头上</td></tr>
+      <tr><td><b>Bearer 鉴权雏形</b></td><td><code>internal/middleware/auth.go</code></td><td><code>internal/middleware/auth.go</code></td><td>写操作照旧要 <code>Authorization: Bearer go-fullstack-2026</code>；<b>本周不动它</b>，第 4 周整段换成 <code>middleware.Auth(secret)</code> 签 JWT</td></tr>
+      <tr><td><b>DTO 思路</b></td><td><code>internal/model/user.go</code> 里的 <code>CreateUserDTO</code> 等</td><td>本周独立成 <code>internal/dto/</code> 包</td><td>入参形状（<code>binding</code> tag）与存储形状（GORM tag）分离；本周新增 <code>form</code> tag 一路（查询参数绑定，day4）</td></tr>
+      <tr><td><b>装配套路</b></td><td><code>cmd/server/main.go</code></td><td><code>cmd/server/main.go</code></td><td>repo → service → handler 自底向上 new、<code>api</code>/<code>auth</code> 两个同前缀分组、NoRoute 兜 404+1001，全部沿用</td></tr>
+      <tr><td><b>不带的东西</b></td><td><code>internal/repository/*</code>（map+RWMutex 版）</td><td>—</td><td><b>接口定义抄过来，内存实现丢掉</b>：本周要写的正是同一接口的 GORM 实现（day2）</td></tr>
+    </table>
+    <div class="callout note"><p><b>为什么不直接在 gin-api 里改？</b>三个教学理由：① 本周的主线是 GORM，如果原地改造，你要一边删 <code>MemRepo</code> 的 <code>sync.RWMutex</code>、一边处理 <code>ID uint</code> 变 <code>gorm.Model</code>、还要顺手改内存版遗留的 <code>CreatedAt time.Now()</code> 赋值——三件不相干的事挤在同一次改动里，报错时你分不清是数据库没连上还是改造没改净。② 新开模块后，<code>gin-api</code>（内存版）和 <code>goblog</code>（MySQL 版）<b>同一套接口两种实现并存</b>，day2 你能真的把两份代码并排 diff，「依赖倒置」这词才有实物可指。③ 第 2 周项目的 <code>POST /users</code> 入参是明文密码 + <code>Role string</code>，本周模型要按第 4 周的 bcrypt 与 <code>role tinyint</code> 定稿，原地改会把上周的验收命令全打翻。<b>结论：<code>gin-api</code> 目录留在原地别删，它是你这周的对照样本。</b></p></div>
+    <pre><span class="code-label">shell</span><span class="c"># 一次性把外壳搬过来（在项目根目录的 goblog 外层执行）</span>
+$ mkdir -p goblog/pkg goblog/internal/middleware
+$ cp -r gin-api/pkg/response        goblog/pkg/
+$ cp    gin-api/internal/middleware/cors.go   goblog/internal/middleware/
+$ cp    gin-api/internal/middleware/timer.go  goblog/internal/middleware/
+$ cp    gin-api/internal/middleware/auth.go   goblog/internal/middleware/
+
+<span class="c"># 关键一步：这四个文件里的 import 路径还写着 gin-api，全局换掉，否则编译报
+# "package gin-api/pkg/response is not in std"</span>
+$ cd goblog
+$ grep -rl <span class="s">"gin-api/"</span> pkg internal | xargs sed -i <span class="s">""</span> -e <span class="s">"s#gin-api/#goblog/#g"</span>   <span class="c"># macOS 的 sed 必须带 -i ""</span>
+$ grep -rn <span class="s">"gin-api"</span> pkg internal                                     <span class="c"># 无输出 = 换干净了</span></pre>
+    <div class="callout tip"><p>不想用 <code>sed</code> 也可以：VS Code 左侧搜索 <code>gin-api/</code> → 右上角「替换」→ 范围填 <code>goblog/pkg,goblog/internal</code> → 全部替换，效果一样。<b>本周所有路由一律挂在 <code>/api/v1</code> 下</b>（<code>GET /health</code> 按基准不带前缀），从这一页第一条 curl 起就是它，后面四天不会有任何一行接口路径变化。</p></div>
   </section>
 
   <section>
@@ -62,13 +106,13 @@
     <pre><span class="code-label">docker-compose.yml</span><span class="t">services</span>:
   <span class="t">mysql</span>:                              <span class="c"># 服务名，自己起；服务之间用名字互相访问</span>
     <span class="t">image</span>: <span class="s">mysql:8.0</span>                  <span class="c"># 镜像名:标签 —— 只读的「软件成品」</span>
-    <span class="t">container_name</span>: <span class="s">golearn-mysql</span>     <span class="c"># 固定容器名，方便 docker exec 直呼其名</span>
+    <span class="t">container_name</span>: <span class="s">goblog-mysql</span>      <span class="c"># 固定容器名，方便 docker exec 直呼其名（第 7 周沿用这个名字）</span>
     <span class="t">restart</span>: <span class="s">unless-stopped</span>           <span class="c"># Docker 重启后自动拉起，手动 stop 则不拉</span>
     <span class="t">environment</span>:                      <span class="c"># 官方镜像认这些环境变量（等价于初始化配置）</span>
-      <span class="t">MYSQL_ROOT_PASSWORD</span>: <span class="s">"root123456"</span>
-      <span class="t">MYSQL_DATABASE</span>: <span class="s">"study_plan"</span>     <span class="c"># 首次启动自动 CREATE DATABASE</span>
-      <span class="t">MYSQL_USER</span>: <span class="s">"golearn"</span>            <span class="c"># 建一个业务账号，别拿 root 连应用</span>
-      <span class="t">MYSQL_PASSWORD</span>: <span class="s">"golearn123"</span>
+      <span class="t">MYSQL_ROOT_PASSWORD</span>: <span class="s">"goblogroot"</span>
+      <span class="t">MYSQL_DATABASE</span>: <span class="s">"goblog"</span>        <span class="c"># 首次启动自动 CREATE DATABASE</span>
+      <span class="t">MYSQL_USER</span>: <span class="s">"goblog"</span>             <span class="c"># 建一个业务账号，别拿 root 连应用</span>
+      <span class="t">MYSQL_PASSWORD</span>: <span class="s">"goblog123"</span>
     <span class="t">ports</span>:
       - <span class="s">"3306:3306"</span>                    <span class="c"># 宿主机端口:容器端口 —— 让 127.0.0.1:3306 能连进去</span>
     <span class="t">volumes</span>:
@@ -77,7 +121,7 @@
       - <span class="s">--character-set-server=utf8mb4</span>  <span class="c"># 服务端默认字符集，emoji 也存得下</span>
       - <span class="s">--collation-server=utf8mb4_unicode_ci</span>
     <span class="t">healthcheck</span>:                       <span class="c"># 「真的能接请求了」的判据，不只是进程活着</span>
-      <span class="t">test</span>: [<span class="s">"CMD"</span>, <span class="s">"mysqladmin"</span>, <span class="s">"ping"</span>, <span class="s">"-h127.0.0.1"</span>, <span class="s">"-uroot"</span>, <span class="s">"-proot123456"</span>]
+      <span class="t">test</span>: [<span class="s">"CMD"</span>, <span class="s">"mysqladmin"</span>, <span class="s">"ping"</span>, <span class="s">"-h127.0.0.1"</span>, <span class="s">"-uroot"</span>, <span class="s">"-pgoblogroot"</span>]
       <span class="t">interval</span>: <span class="s">10s</span>
       <span class="t">timeout</span>: <span class="s">5s</span>
       <span class="t">retries</span>: <span class="n">5</span>
@@ -86,15 +130,16 @@
 <span class="t">volumes</span>:                              <span class="c"># 顶层 volumes 块：声明这个卷归 Compose 管</span>
   <span class="t">mysql-data</span>: {}</pre>
     <div class="callout note"><p><b>为什么不写 <code>version: "3.8"</code>？</b>新版 Compose（<code>docker compose</code> 带空格，是 v2）已废弃顶层 <code>version</code> 字段，写了会警告。老教程里的 <code>docker-compose</code>（带横杠）是 v1，已经停止维护，看到 <code>docker-compose up</code> 一律换成 <code>docker compose up</code>。</p></div>
+    <div class="callout note"><p><b>这套名字（库 <code>goblog</code>、账号 <code>goblog/goblog123</code>、root <code>goblogroot</code>、容器 <code>goblog-mysql</code>）从第 3 周用到第 8 周</b>，第 4 周的 <code>.env</code>、第 7 周的 <code>compose.yaml</code> 都按它对齐。学习用的密码就长这样，<b>别照抄到真项目</b>。</p></div>
     <pre><span class="code-label">shell</span>$ cd goblog
 $ docker compose up -d        <span class="c"># -d = detached，后台运行；首次会拉 ~600MB 镜像</span>
 [+] Running 2/2
  ✔ Network goblog_default    Created
- ✔ Container golearn-mysql   Started
+ ✔ Container goblog-mysql   Started
 
 $ docker compose ps            <span class="c"># 等 20~40 秒，STATE 从 (health: starting) 变 Up (healthy)</span>
-NAME            IMAGE       STATUS                   PORTS
-golearn-mysql   mysql:8.0   Up 40 seconds (healthy)  0.0.0.0:3306-&gt;3306/tcp</pre>
+NAME           IMAGE       STATUS                   PORTS
+goblog-mysql   mysql:8.0   Up 40 seconds (healthy)  0.0.0.0:3306-&gt;3306/tcp</pre>
     <div class="callout tip"><p><code>ports: "3306:3306"</code> 左边的宿主机端口可以换：<b>本机已经装了 MySQL（Homebrew 常见）时</b>会报 <code>Address already in use</code>，改成 <code>"3307:3306"</code> 即可，Go 的 DSN 里也写 3307。</p></div>
 
     <h3>3. 三条保命命令：ps / logs / exec</h3>
@@ -107,7 +152,7 @@ $ docker compose logs -f mysql          <span class="c"># -f 跟随，Ctrl+C 退
 $ docker compose logs --tail=50 mysql   <span class="c"># 只看最后 50 行</span>
 
 <span class="c"># ③ 钻进容器：用命令行客户端连上自己的库</span>
-$ docker exec -it golearn-mysql mysql -ugolearn -pgolearn123 --database=study_plan
+$ docker exec -it goblog-mysql mysql -ugoblog -pgoblog123 --database=goblog
 mysql&gt; <span class="k">SELECT</span> VERSION();
 +-----------+
 | VERSION() |
@@ -119,7 +164,7 @@ Empty set (0.00 sec)        <span class="c"># 现在还是空的，第 6 节 Aut
 mysql&gt; <span class="k">QUIT</span>
 
 <span class="c"># 其他常用：进 shell / 重启 / 停掉但不删数据 / 删干净（危险）</span>
-$ docker exec -it golearn-mysql bash
+$ docker exec -it goblog-mysql bash
 $ docker compose restart mysql
 $ docker compose down        <span class="c"># 删容器和网络，命名卷保留 → 数据还在 ✅</span>
 $ docker compose down -v     <span class="c"># 连卷一起删 → 数据全没 ❌ 本周别手滑</span></pre>
@@ -128,17 +173,19 @@ $ docker compose down -v     <span class="c"># 连卷一起删 → 数据全没 
     <h3>4. 装上 GORM 与 MySQL 驱动</h3>
     <p>GORM 本体和「数据库方言驱动」是两个包，装进 Go 模块的方式和 npm 一样是改 <code>go.mod</code>：</p>
     <pre><span class="code-label">shell</span>$ cd goblog
-$ go mod init goblog               <span class="c"># 生成 go.mod（项目主模块名）</span>
+$ go mod init goblog               <span class="c"># 生成 go.mod（本周主模块名，所有 import 前缀就是它）</span>
 $ go get gorm.io/gorm              <span class="c"># ORM 本体（当前 v2 线）</span>
 $ go get gorm.io/driver/mysql      <span class="c"># MySQL 驱动（dialector）</span>
-$ mkdir -p internal/model cmd/server
-$ go mod tidy                       <span class="c"># 补齐间接依赖，养成习惯</span>
+$ go get github.com/gin-gonic/gin  <span class="c"># 上一节 cp 过来的 middleware/、response/ 要 import 它</span>
+$ mkdir -p internal/model internal/config internal/repository cmd/server
+$ go mod tidy                       <span class="c"># 补齐间接依赖（含搬过来的四个文件用到的包），养成习惯</span>
 
 $ <span class="c"># 看结果：go.mod 里多了 gorm.io/driver/mysql v1.5.x 等</span>
 $ cat go.mod
 <span class="k">module</span> goblog
 <span class="k">go</span> 1.24
 <span class="k">require</span> (
+        github.com/gin-gonic/gin v1.10.0
         gorm.io/driver/mysql v1.5.7
         gorm.io/gorm v1.25.12
 )</pre>
@@ -148,14 +195,27 @@ $ cat go.mod
       <tr><td>sequelize 是通用层，<code>dialect: 'mysql'</code> 选驱动</td><td>GORM 是通用层，<code>mysql.Open(dsn)</code> 就是 MySQL dialector</td></tr>
       <tr><td>Prisma / TypeORM：模型 + 迁移</td><td>GORM：struct tag 即模型，<code>AutoMigrate</code> 即迁移</td></tr>
     </table>
+    <div class="callout note"><p>跑完这两步，目录应该长这样（标 <b>cp</b> 的四个文件是「承接第 2 周」一节搬过来的原件，内容一行没改，只换了 import 前缀）：</p>
+    <pre style="margin:8px 0 0"><span class="code-label">tree</span>goblog/
+├── docker-compose.yml
+├── go.mod                            <span class="c"># module goblog</span>
+├── cmd/server/main.go                <span class="c"># 今天从这里起步（第 6、7 节会覆盖它两次）</span>
+├── internal/
+│   ├── config/config.go              <span class="c"># 第 5 节：全项目唯一的 DSN（第 4 周换成读 .env）</span>
+│   ├── model/user.go                 <span class="c"># 第 6 节：一个 struct = 一张表</span>
+│   ├── repository/db.go              <span class="c"># 第 6 节：连库 + 探活的唯一出入口</span>
+│   └── middleware/                   <span class="c"># cp：cors.go / timer.go / auth.go（第 2 周原件）</span>
+└── pkg/response/                     <span class="c"># cp：response.go，全周所有接口都走它</span></pre></div>
 
     <h3>5. 连接字符串（DSN）：parseTime 与 charset 不能省</h3>
     <p>GORM 连 MySQL 靠一个 DSN 字符串，格式对 JS 开发者很好记——<code>账号:密码@协议(地址:端口)/库名?参数</code>：</p>
-    <pre><span class="code-label">config.go</span><span class="k">package</span> config
+    <pre><span class="code-label">internal/config/config.go</span><span class="k">package</span> config
 
 <span class="c">// 用户名:密码@tcp(host:port)/数据库名?参数</span>
-<span class="k">const</span> DSN = <span class="s">"golearn:golearn123@tcp(127.0.0.1:3306)/study_plan"</span> +
+<span class="c">// 账号密码要和 docker-compose.yml 里的 MYSQL_USER / MYSQL_PASSWORD 完全一致</span>
+<span class="k">const</span> DSN = <span class="s">"goblog:goblog123@tcp(127.0.0.1:3306)/goblog"</span> +
     <span class="s">"?charset=utf8mb4&amp;parseTime=True&amp;loc=Local"</span></pre>
+    <div class="callout tip"><p>这是<b>全项目唯一的 DSN</b>：文件放在 <code>internal/config/config.go</code>，第 6 节的 <code>cmd/server/main.go</code> 直接 <code>config.DSN</code> 引用它，后面每一天的 <code>cmd/seed</code>、连接池代码也都从这一处取。端口换成 3307 时<b>只改这一行</b>，别去各文件里散着改。第 4 周会把它换成读 <code>.env</code>（真项目里密码不该进 git），今天先照抄常量。</p></div>
     <table>
       <tr><th>参数</th><th>作用</th><th>不写会怎样</th></tr>
       <tr><td><code>charset=utf8mb4</code></td><td>通信字符集</td><td>默认 <code>utf8</code>（MySQL 的残缺 utf8，3 字节），存 emoji / 生僻字直接报错或乱码</td></tr>
@@ -165,88 +225,238 @@ $ cat go.mod
     <div class="callout js"><p>容器里的 MySQL 默认时区是 <b>UTC</b>（<code>TZ</code> 环境变量没设）。你 20:00 北京时间写入的一行，<code>created_at</code> 存的是 12:00。加上 <code>loc=Local</code> 让驱动负责换算，读出来就是 20:00；也可以在 compose 的 environment 里加 <code>TZ: "Asia/Shanghai"</code> 并把 command 换成 <code>--default-time-zone=+08:00</code>。两种都行，<b>但只选一种，全项目统一</b>。</p></div>
 
     <h3>6. 第一次连接 + AutoMigrate 建表</h3>
-    <p>完整可运行程序（<code>cmd/server/main.go</code>）：</p>
+    <p>模型先照抄一遍（<code>internal/model/user.go</code>，全周唯一的 User 版本，day2 只补关联字段不重定义）：</p>
+    <pre><span class="code-label">internal/model/user.go</span><span class="k">package</span> model
+
+<span class="k">import</span> (
+    <span class="s">"gorm.io/gorm"</span>
+)
+
+<span class="c">// User 一个 struct = 一张表。字段顺序 = 建表时的列顺序</span>
+<span class="k">type</span> User <span class="k">struct</span> {
+    gorm.Model                              <span class="c">// 内嵌：ID uint / CreatedAt / UpdatedAt / DeletedAt（软删除）</span>
+    Username <span class="t">string</span> <span class="s">`gorm:"type:varchar(32);uniqueIndex;not null" json:"username"`</span>
+    Nickname <span class="t">string</span> <span class="s">`gorm:"type:varchar(32)" json:"nickname"`</span>
+    Email    <span class="t">string</span> <span class="s">`gorm:"type:varchar(128);uniqueIndex" json:"email"`</span>
+    Password <span class="t">string</span> <span class="s">`gorm:"type:varchar(72);not null" json:"-"`</span> <span class="c">// json:"-" 永不外泄</span>
+    Role     <span class="t">Role</span>   <span class="s">`gorm:"column:role;type:tinyint;not null;default:0;index" json:"role"`</span>
+
+    <span class="c">// Articles []Article `gorm:"foreignKey:UserID" json:"articles,omitempty"` // day2 建好 Article 再打开</span>
+}
+
+<span class="c">// Role 用自定义整型，避免裸 int8 到处传</span>
+<span class="k">type</span> Role <span class="t">int8</span>
+
+<span class="k">const</span> (
+    RoleUser  Role = <span class="n">iota</span> <span class="c">// 0 普通用户</span>
+    RoleAdmin               <span class="c">// 1 管理员</span>
+)</pre>
+    <p>连库收到一个函数里（<code>internal/repository/db.go</code>），后面 <code>cmd/seed</code>、day5 的连接池都复用它：</p>
+    <pre><span class="code-label">internal/repository/db.go</span><span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="t">log</span>
+
+    <span class="s">"gorm.io/driver/mysql"</span>
+    <span class="s">"gorm.io/gorm"</span>
+    <span class="s">"gorm.io/gorm/logger"</span>
+)
+
+<span class="c">// New 打开连接池并探活。全周唯一的建库入口。</span>
+<span class="k">func</span> New(dsn <span class="t">string</span>) (<span class="t">*gorm.DB</span>, <span class="t">error</span>) {
+    db, err := gorm.Open(mysql.Open(dsn), &amp;gorm.Config{
+        Logger:            logger.Default.LogMode(logger.Info), <span class="c">// 开发期把执行的 SQL 打到终端</span>
+        BlockGlobalUpdate: <span class="k">true</span>,             <span class="c">// 没有 WHERE 的 UPDATE/DELETE 直接报错（day2 第 5 节解释）</span>
+    })
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, err
+    }
+    sqlDB, err := db.DB() <span class="c">// 拿到底层 *sql.DB 才能 Ping；db.DB() 返回的就是连接池</span>
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, err
+    }
+    <span class="k">if</span> err := sqlDB.Ping(); err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, err       <span class="c">// gorm.Open 是惰性的，不 Ping 就会「连上了但一查就炸」</span>
+    }
+    <span class="k">return</span> db, <span class="k">nil</span>
+}
+
+<span class="c">// MustConnect 给脚本/启动阶段用：连不上就直接退出，不留一个半死的进程</span>
+<span class="k">func</span> MustConnect(dsn <span class="t">string</span>) <span class="t">*gorm.DB</span> {
+    db, err := New(dsn)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        log.Fatalf(<span class="s">"连不上数据库: %v"</span>, err)
+    }
+    <span class="k">return</span> db
+}</pre>
+    <p>然后是今天的 main（<code>cmd/server/main.go</code>，完整可跑）：</p>
     <pre><span class="code-label">cmd/server/main.go</span><span class="k">package</span> main
 
 <span class="k">import</span> (
     <span class="t">fmt</span>
     <span class="t">log</span>
-    <span class="t">time</span>
 
-    <span class="t">gorm.io/driver/mysql</span>
-    <span class="t">gorm.io/gorm</span>
-    <span class="t">gorm.io/gorm/logger</span>
+    <span class="s">"goblog/internal/config"</span>
+    <span class="s">"goblog/internal/model"</span>
+    <span class="s">"goblog/internal/repository"</span>
 )
 
-<span class="c">// 模型：一个 struct = 一张表，一个字段 = 一列</span>
-<span class="k">type</span> User <span class="k">struct</span> {
-    ID        <span class="t">uint</span>      <span class="s">`gorm:"primaryKey"`</span>
-    Name      <span class="t">string</span>    <span class="s">`gorm:"size:64;not null"`</span>
-    Email     <span class="t">string</span>    <span class="s">`gorm:"size:128;uniqueIndex"`</span>
-    CreatedAt <span class="t">time.Time</span>
-    UpdatedAt <span class="t">time.Time</span>
-}
-
 <span class="k">func</span> main() {
-    dsn := <span class="s">"golearn:golearn123@tcp(127.0.0.1:3306)/study_plan?charset=utf8mb4&amp;parseTime=True&amp;loc=Local"</span>
-
-    db, err := gorm.Open(mysql.Open(dsn), &amp;gorm.Config{
-        Logger: logger.Default.LogMode(logger.Info), <span class="c">// 开发期把执行的 SQL 打到终端</span>
-    })
-    <span class="k">if</span> err != <span class="k">nil</span> {
-        log.Fatalf(<span class="s">"连不上数据库: %v"</span>, err)
-    }
+    db := repository.MustConnect(config.DSN)
 
     <span class="c">// AutoMigrate：结构体变了 → 帮你把表结构改成一致（只加/改，从不删）</span>
-    <span class="k">if</span> err := db.AutoMigrate(&amp;User{}); err != <span class="k">nil</span> {
+    <span class="k">if</span> err := db.AutoMigrate(&amp;model.User{}); err != <span class="k">nil</span> {
         log.Fatalf(<span class="s">"迁移失败: %v"</span>, err)
     }
 
-    db.Create(&amp;User{Name: <span class="s">"小明"</span>, Email: <span class="s">"xiaoming@example.com"</span>})
+    u := model.User{
+        Username: <span class="s">"xiaoming"</span>,
+        Nickname: <span class="s">"小明"</span>,
+        Email:    <span class="s">"xiaoming@example.com"</span>,
+        Password: <span class="s">"abcdef123456"</span>, <span class="c">// 学习用的密码就长这样，别照抄到真项目</span>
+    }
+    <span class="k">if</span> err := db.Create(&amp;u).Error; err != <span class="k">nil</span> {
+        log.Fatalf(<span class="s">"写入失败: %v"</span>, err)
+    }
+    fmt.Printf(<span class="s">"新记录 ID = %d\n"</span>, u.ID) <span class="c">// Create 会把自增主键回填进结构体</span>
 
-    <span class="k">var</span> users []User
-    db.Find(&amp;users)
+    <span class="k">var</span> users []model.User
+    <span class="k">if</span> err := db.Find(&amp;users).Error; err != <span class="k">nil</span> {
+        log.Fatalf(<span class="s">"查询失败: %v"</span>, err)
+    }
     fmt.Printf(<span class="s">"库里现在有 %d 个用户\n"</span>, len(users))
 }</pre>
     <pre><span class="code-label">shell</span>$ go run ./cmd/server
 [0.522ms] [rows:-] SELECT DATABASE()
 [8.414ms] [rows:1] SHOW CREATE TABLE `users`
 [12.306ms] [rows:0] CREATE TABLE `users` (`id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `name` varchar(64) NOT NULL,`email` varchar(128),`created_at` datetime(3) NULL,
-  `updated_at` datetime(3) NULL,PRIMARY KEY (`id`),UNIQUE INDEX `users_email_idx` (`email`))
-[5.118ms] [rows:1] INSERT INTO `users` (`name`,`email`,`created_at`,`updated_at`) VALUES ('小明','xiaoming@example.com',...)
+  `created_at` datetime(3) NULL,`updated_at` datetime(3) NULL,`deleted_at` datetime(3) NULL,
+  `username` varchar(32) NOT NULL,`nickname` varchar(32) NULL,`email` varchar(128) NULL,
+  `password` varchar(72) NOT NULL,`role` tinyint NOT NULL DEFAULT 0,PRIMARY KEY (`id`),
+  UNIQUE INDEX `uni_users_username` (`username`),UNIQUE INDEX `uni_users_email` (`email`),
+  INDEX `idx_users_role` (`role`),INDEX `idx_users_deleted_at` (`deleted_at`))
+[5.118ms] [rows:1] INSERT INTO `users` (`created_at`,`updated_at`,`username`,`nickname`,`email`,`password`,`role`) VALUES (...)
+新记录 ID = 1
 库里现在有 1 个用户</pre>
+    <div class="callout warn"><p><b>每个终结方法都要接 err</b>：<code>db.Create(&amp;u)</code> 返回的是一个 <code>*gorm.DB</code>，真正的错误挂在它的 <code>.Error</code> 字段上。<code>db.Create(&amp;u)</code> 单写一行 = 把错误丢了，插失败你只会看到「库里现在有 0 个用户」。规则：<b>Create / First / Find / Save / Updates / Delete 一律 <code>if err := db.Xxx(...).Error; err != nil</code></b>，链式中间态（<code>Where</code>/<code>Select</code>/<code>Order</code>）不需要接。</p></div>
+    <div class="callout tip"><p>第二次 <code>go run ./cmd/server</code> 会撞 <code>Error 1062 (23000): Duplicate entry 'xiaoming' for key 'users.uni_users_username'</code>（唯一索引生效，是好事）。想反复跑就换成「有则取、无则插」：<code>db.Where("email = ?", u.Email).FirstOrCreate(&amp;u)</code>。注意报错里给的是<b>索引名</b> <code>uni_users_username</code> 而不是列名——GORM 的默认命名是 <code>uni_表_列</code> / <code>idx_表_列</code>，第 7 周手写迁移时要照抄这个名字，不然 down 脚本删不掉。</p></div>
+    <div class="callout note"><p><b>JSON 键名先知道一下</b>：内嵌的 <code>gorm.Model</code> 没有打 <code>json</code> 标签，所以直接序列化它会得到大写键 <code>{"ID":1,"CreatedAt":"…","UpdatedAt":"…","DeletedAt":null,"username":"xiaoming",…}</code>。这是 Go 的默认行为（用字段名），不是 GORM 的 bug。第 6 周接前端时那些键要转成 <code>id</code>/<code>created_at</code>，届时在 DTO 里处理；今天只要知道「大模型直接吐 JSON 不好看，所以后面都走 DTO」就够了。</p></div>
     <p>再回 MySQL 命令行验证，这就是今天的验收：</p>
-    <pre><span class="code-label">shell</span>$ docker exec -it golearn-mysql mysql -ugolearn -pgolearn123 --database=study_plan -e <span class="s">"SHOW TABLES; DESCRIBE users; SELECT id,name,email,created_at FROM users;"</span>
-+---------------------+
-| Tables_in_study_plan |
-+---------------------+
-| users                |
-+---------------------+</pre>
+    <pre><span class="code-label">shell</span>$ docker exec -it goblog-mysql mysql -ugoblog -pgoblog123 --database=goblog -e <span class="s">"SHOW TABLES; DESCRIBE users; SELECT id,username,nickname,email,role,created_at FROM users;"</span>
++------------------+
+| Tables_in_goblog |
++------------------+
+| users            |
++------------------+
++----------+--------------+------+-----+---------+----------------+
+| Field    | Type         | Null | Key | Default | Extra          |
++----------+--------------+------+-----+---------+----------------+
+| id       | bigint unsigned | NO | PRI | NULL    | auto_increment |
+| username | varchar(32)  | NO   | UNI | NULL    |                |
+| nickname | varchar(32)  | YES  |     | NULL    |                |
+| email    | varchar(128) | YES  | UNI | NULL    |                |
+| password | varchar(72)  | NO   |     | NULL    |                |
+| role     | tinyint      | NO   | MUL | 0       |                |
+| created_at | datetime(3) | YES  |     | NULL    |                |
++----------+--------------+------+-----+---------+----------------+
++----+----------+----------+----------------------+------+-------------------------+
+| id | username | nickname | email                | role | created_at              |
++----+----------+----------+----------------------+------+-------------------------+
+|  1 | xiaoming | 小明     | xiaoming@example.com |    0 | 2026-03-09 20:15:31.123 |
++----+----------+----------+----------------------+------+-------------------------+</pre>
     <div class="callout warn"><p><b>AutoMigrate 的能力边界（本周最重要的 ORM 认知）</b>：它只会 <code>CREATE TABLE</code> / <code>ADD COLUMN</code> / <code>CREATE INDEX</code>。它<b>永远不会</b>：删列、删表、删索引、把已有列改类型（可能丢数据时）。所以「模型里删了字段，数据库里的列还在」是正常现象；真要改结构，写 SQL 或用第 7 周的版本化迁移工具。</p></div>
+
+    <h3>7. 把第 2 周的架子接上：/api/v1 + response + 中间件</h3>
+    <p>光会连库不算「接口」。把「承接第 2 周」那节 cp 过来的东西接起来，今天就要有一个能 <code>curl</code> 的服务。<b>覆盖</b> <code>cmd/server/main.go</code>（模型和 <code>repository.MustConnect</code> 沿用第 6 节，一行不改）：</p>
+    <pre><span class="code-label">cmd/server/main.go</span><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="t">log</span>
+    <span class="t">net/http</span>
+
+    <span class="s">"github.com/gin-gonic/gin"</span>
+
+    <span class="s">"goblog/internal/config"</span>
+    <span class="s">"goblog/internal/middleware"</span>
+    <span class="s">"goblog/internal/model"</span>
+    <span class="s">"goblog/internal/repository"</span>
+    <span class="s">"goblog/pkg/response"</span>
+)
+
+<span class="k">func</span> main() {
+    db := repository.MustConnect(config.DSN)
+    <span class="k">if</span> err := db.AutoMigrate(&amp;model.User{}); err != <span class="k">nil</span> {
+        log.Fatalf(<span class="s">"迁移失败: %v"</span>, err)
+    }
+
+    r := gin.Default() <span class="c">// 自带 gin.Logger() + gin.Recovery()</span>
+    r.Use(middleware.CORS(), middleware.Timer())
+
+    r.GET(<span class="s">"/health"</span>, <span class="k">func</span>(c *gin.Context) {   <span class="c">// 健康检查不带前缀，第 7 周 nginx/LB 直接打它</span>
+        response.OK(c, gin.H{<span class="s">"status"</span>: <span class="s">"ok"</span>})
+    })
+
+    api := r.Group(<span class="s">"/api/v1"</span>)                  <span class="c">// 全周所有业务路由都挂这里</span>
+    api.GET(<span class="s">"/users"</span>, <span class="k">func</span>(c *gin.Context) {
+        <span class="k">var</span> users []model.User
+        <span class="k">if</span> err := db.Find(&amp;users).Error; err != <span class="k">nil</span> {
+            response.Fail(c, http.StatusInternalServerError, response.CodeInternal, <span class="s">"读用户失败"</span>)
+            <span class="k">return</span>
+        }
+        response.OK(c, users)
+    })
+
+    r.NoRoute(<span class="k">func</span>(c *gin.Context) {            <span class="c">// 404 也必须走统一 Body：HTTP 404 + code 1001</span>
+        response.Fail(c, http.StatusNotFound, response.CodeUserNotFound, <span class="s">"接口不存在: "</span>+c.Request.URL.Path)
+    })
+
+    log.Println(<span class="s">"goblog listening on :8080"</span>)
+    <span class="k">if</span> err := r.Run(<span class="s">":8080"</span>); err != <span class="k">nil</span> {
+        log.Fatal(err)
+    }
+}</pre>
+    <div class="callout warn"><p>这一节的 <code>api.GET("/users", …)</code> 里直接写了 <code>db.Find</code>——<b>故意的</b>，今天只是验收架子通了。<b>day2 第一件事就是把它拆成 handler → service → repository 三层</b>，别在 main 里堆业务。第 2 周你已经写过一遍正确的分层，这周只是把内存仓库换成 MySQL 仓库。</p>
+    <p>另外注意 <code>response.CodeUserNotFound</code> 这个常量名：它的值 <code>1001</code> 在码表里是「资源不存在（<b>通用</b>）」，NoRoute 就用它。第 3 周新增了文章，也别去改这个常量的语义——文章不存在有专门的 <code>2001</code>（day3 会用到）。</p></div>
+    <pre><span class="code-label">shell</span>$ go run ./cmd/server        <span class="c"># 另一个终端</span>
+$ curl -i http://localhost:8080/health
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+X-Process-Time: 0.0435ms      <span class="c"># middleware.Timer 加的，第 2 周那份原样生效</span>
+{"code":0,"message":"success","data":{"status":"ok"}}
+
+$ curl -s http://localhost:8080/api/v1/users | head -c 300
+{"code":0,"message":"success","data":[{"ID":1,"CreatedAt":"2026-03-09T20:15:31.123+08:00",
+ "UpdatedAt":"2026-03-09T20:15:31.123+08:00","DeletedAt":null,"username":"xiaoming",
+ "nickname":"小明","email":"xiaoming@example.com","role":0}]}   <span class="c"># password 不在里面，json:"-" 起作用了</span>
+
+$ curl -i http://localhost:8080/api/v1/nope
+HTTP/1.1 404 Not Found
+{"code":1001,"message":"接口不存在: /api/v1/nope","data":null}</pre>
+    <div class="callout tip"><p>看到 <code>"password"</code> 字段消失了吗？这不是我们手动删的，是 <code>`json:"-"`</code> 在帮忙。<b>模型层就堵死泄露</b>比在每个 handler 记得「别返回密码」可靠得多——第 4 周做登录时这条规则要再用一次。</p></div>
   </section>
 
   <section>
     <h2>今日练习</h2>
     <div class="task">
       <div class="task-title">练习 1：把 MySQL 起成 healthy（20 分钟）</div>
-      <p>照第 2 节抄一份 <code>docker-compose.yml</code>，改成你自己的库名/账号密码，起容器并用 <code>docker compose ps</code> 等到 <code>(healthy)</code>；然后故意把 <code>MYSQL_ROOT_PASSWORD</code> 改成空字符串再 <code>up -d</code>，用 <code>docker compose logs mysql</code> 看它怎么报错，改回来。</p>
+      <p>照第 2 节抄一份 <code>docker-compose.yml</code>，起容器并用 <code>docker compose ps</code> 等到 <code>(healthy)</code>；然后故意把 <code>MYSQL_ROOT_PASSWORD</code> 改成空字符串再 <code>up -d</code>，用 <code>docker compose logs mysql</code> 看它怎么报错，改回来。</p>
       <p><b>参考答案</b>：空密码时日志出现 <code>MYSQL_ROOT_PASSWORD, but you have set it blank. Instead of that, you can use MYSQL_RANDOM_ROOT_PASSWORD</code>，容器反复重启（<code>docker compose ps -a</code> 看到 <code>Restarting</code>）。结论：<b>容器起不来先 <code>logs</code>，不要凭猜</b>。</p>
+      <p><b>别顺手改库名和账号</b>：本周后面 4 天的所有命令、DSN、连接串都按 <code>goblog</code> / <code>goblog123</code> 写死；改了就得整周跟着你翻译，练习白做。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 2：命令行里手工插一行 + Go 读出来（30 分钟）</div>
-      <p>先用 SQL 手动写数据：<code>INSERT INTO users (name,email,created_at,updated_at) VALUES ('阿花','ahua@example.com',NOW(),NOW());</code>（表还不存在就先把讲义第 6 节的 <code>main.go</code> 跑一遍，<code>AutoMigrate</code> 会建出 <code>users</code> 表）。再在 Go 里 <code>db.Find(&amp;users)</code> 打印，确认能看到两行。</p>
-      <p><b>参考答案</b>：能读到即说明「数据库是共享的外置存储，不是 Go 进程内存」——这正是本周和上周的本质区别。若报 <code>Error 1146 (42S02): Table 'study_plan.users' doesn't exist</code>，说明 Go 程序还没跑过 <code>AutoMigrate</code>，或者库名对不上（<code>SELECT DATABASE();</code> 自查）。</p>
+      <p>先用 SQL 手动写数据（注意 <code>username</code> 和 <code>password</code> 都是 <code>NOT NULL</code>，必须给）：<code>INSERT INTO users (created_at,updated_at,username,nickname,email,password,role) VALUES (NOW(3),NOW(3),'ahua','阿花','ahua@example.com','abcdef123456',0);</code>（表还不存在就先把讲义第 6 节的 <code>main.go</code> 跑一遍，<code>AutoMigrate</code> 会建出 <code>users</code> 表）。再在 Go 里 <code>db.Find(&amp;users)</code> 打印，确认能看到两行。</p>
+      <p><b>参考答案</b>：能读到即说明「数据库是共享的外置存储，不是 Go 进程内存」——这正是本周和上周的本质区别。若报 <code>Error 1146 (42S02): Table 'goblog.users' doesn't exist</code>，说明 Go 程序还没跑过 <code>AutoMigrate</code>，或者库名对不上（<code>SELECT DATABASE();</code> 自查）。如果报 <code>Error 1054 (42S02): Unknown column 'name' in 'field list'</code>，说明你用的是老版本讲义的列名——本表没有 <code>name</code> 列，只有 <code>username</code>（登录名）和 <code>nickname</code>（显示名）。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 3：数据持久化实验（本周验收的预演，25 分钟）</div>
-      <p>依次执行并记录每次 <code>SELECT COUNT(*) FROM users;</code> 的结果：① <code>docker compose restart mysql</code>；② <code>docker compose down</code> 然后 <code>up -d</code>；③ <code>docker rm -f golearn-mysql</code> 然后 <code>docker compose up -d</code>。最后<b>把 volumes 那行注释掉</b>重复 ②，观察差异。</p>
+      <p>依次执行并记录每次 <code>SELECT COUNT(*) FROM users;</code> 的结果：① <code>docker compose restart mysql</code>；② <code>docker compose down</code> 然后 <code>up -d</code>；③ <code>docker rm -f goblog-mysql</code> 然后 <code>docker compose up -d</code>。最后<b>把 volumes 那行注释掉</b>重复 ②，观察差异。</p>
       <p><b>参考答案</b>：①②③ 行数都不变（卷活着）；注释掉卷之后 down/up，行数变 0（Go 程序重新跑才又插回去）。这就证明了<b>持久化 100% 来自那一行 <code>mysql-data:/var/lib/mysql</code></b>，和 <code>restart</code> 策略、和容器名都无关。</p>
     </div>
     <div class="task">
       <div class="task-title">练习 4：亲眼看一次 parseTime 事故（15 分钟）</div>
-      <p>把 DSN 里的 <code>parseTime=True</code> 删掉再跑练习 2 的查询程序，把报错原文记进笔记；然后只删 <code>loc=Local</code> 保留 <code>parseTime=True</code>，对比打印出来的 <code>CreatedAt</code> 与 <code>date</code> 命令的本机时间差几小时。</p>
-      <p><b>参考答案</b>：删 <code>parseTime=True</code> → <code>Error 1 (HY000): sql: Scan() argument 4 cannot be ... </code> 或 GORM 报 <code>unsupported Scan, storing driver.Value type []uint8 into type *time.Time</code>；删 <code>loc=Local</code> → 时间比实际<b>早 8 小时</b>。两个参数都得写。</p>
+      <p>把 <code>internal/config/config.go</code> 里 DSN 的 <code>parseTime=True</code> 删掉再跑练习 2 的查询程序，把报错原文记进笔记；然后只删 <code>loc=Local</code> 保留 <code>parseTime=True</code>，对比打印出来的 <code>CreatedAt</code> 与 <code>date</code> 命令的本机时间差几小时。</p>
+      <p><b>参考答案</b>：删 <code>parseTime=True</code> → <code>Error 1 (HY000): sql: Scan() argument 4 cannot be ... </code> 或 GORM 报 <code>unsupported Scan, storing driver.Value type []uint8 into type *time.Time</code>；删 <code>loc=Local</code> → 时间比实际<b>早 8 小时</b>。两个参数都得写。改完记得把这一行复原，否则 day3 的 <code>created_at</code> 排序实验会把你带偏。</p>
     </div>
   </section>
 
@@ -261,6 +471,8 @@ $ cat go.mod
       <tr><td>3306 被占用</td><td><code>Bind for 0.0.0.0:3306 failed: port is already allocated</code></td><td>宿主机端口改 <code>"3307:3306"</code>，DSN 同步改；或停掉本机 Homebrew 的 mysql</td></tr>
       <tr><td>以为容器起不来是 Go 的错</td><td>Go 报 <code>connect: connection refused</code> 就一直改 Go 代码</td><td>先 <code>docker compose ps</code> 看 healthy 没有，再 <code>logs</code>。健康检查没过时 Go 连不上是正常的</td></tr>
       <tr><td>以为 AutoMigrate 会清理</td><td>删了字段后老列还在，改类型不生效</td><td>它只加不减；破坏性变更自己写 <code>ALTER TABLE</code>，或用第 7 周迁移工具</td></tr>
+      <tr><td>丢掉 <code>.Error</code></td><td><code>db.Create(&amp;u)</code> 插失败毫无提示，只是查出来 0 行</td><td>每个终结方法都写 <code>if err := db.Xxx(...).Error; err != nil</code>；GORM 的错误只在 <code>.Error</code> 上，不会 panic</td></tr>
+      <tr><td>以为 <code>gorm.Open</code> 成功就是连上了</td><td>启动一切正常，第一个请求才报 connection refused</td><td><code>repository.New</code> 里补一句 <code>sqlDB.Ping()</code>（第 6 节已给），启动时就暴露</td></tr>
     </table>
   </section>
 
@@ -276,6 +488,8 @@ $ cat go.mod
       <tr><td>dialector（驱动）</td><td>GORM 针对不同数据库的适配包，MySQL 用 <code>gorm.io/driver/mysql</code></td></tr>
       <tr><td>DSN</td><td>数据源名，把账号密码地址库名参数压成一个字符串的连接配置</td></tr>
       <tr><td>AutoMigrate</td><td>按 struct 建表/加列/加索引的轻量迁移，永不删列删表</td></tr>
+      <tr><td><code>gorm.Model</code></td><td>官方内嵌结构体，一次给你 <code>ID uint</code> + <code>CreatedAt</code> + <code>UpdatedAt</code> + <code>DeletedAt</code> 四列</td></tr>
+      <tr><td>软删除（soft delete）</td><td>因为多了 <code>DeletedAt</code> 列，<code>Delete</code> 只写时间戳不真删行；查询自动加 <code>WHERE deleted_at IS NULL</code>（day2 展开）</td></tr>
     </table>
   </section>
 
@@ -283,10 +497,11 @@ $ cat go.mod
     <h2>完成检查（全部勾掉才算毕业）</h2>
     <ul class="check">
       <li><label><input type="checkbox" data-key="w3d1c1"><code>docker compose ps</code> 显示 <code>Up (healthy)</code>，端口映射为 <code>0.0.0.0:3306-&gt;3306</code>（或 3307）</label></li>
-      <li><label><input type="checkbox" data-key="w3d1c2"><code>docker exec -it golearn-mysql mysql -ugolearn -p --database=study_plan</code> 能进去并执行 <code>SHOW TABLES;</code></label></li>
-      <li><label><input type="checkbox" data-key="w3d1c3"><code>go run ./cmd/server</code> 打出执行的 SQL 且 <code>users</code> 表已在 MySQL 里真实存在（<code>DESCRIBE users</code> 对得上 struct）</label></li>
+      <li><label><input type="checkbox" data-key="w3d1c2"><code>docker exec -it goblog-mysql mysql -ugoblog -pgoblog123 --database=goblog</code> 能进去并执行 <code>SHOW TABLES;</code></label></li>
+      <li><label><input type="checkbox" data-key="w3d1c3"><code>go run ./cmd/server</code> 打出执行的 SQL 且 <code>users</code> 表已在 MySQL 里真实存在（<code>DESCRIBE users</code> 对得上 struct，含 <code>deleted_at</code>）</label></li>
       <li><label><input type="checkbox" data-key="w3d1c4">练习 3 三种重启方式行数不变；注释掉卷之后数据丢失 —— 亲眼验证过</label></li>
       <li><label><input type="checkbox" data-key="w3d1c5">能口述 DSN 三个参数各自的作用，以及删掉 <code>parseTime=True</code> 的报错原文</label></li>
+      <li><label><input type="checkbox" data-key="w3d1c6">第 7 节的架子跑通：<code>/health</code> 无前缀、<code>/api/v1/users</code> 有数据、<code>/api/v1/nope</code> 返回 404 + <code>code:1001</code>，响应里带 <code>X-Process-Time</code></label></li>
     </ul>
   </section>
 
