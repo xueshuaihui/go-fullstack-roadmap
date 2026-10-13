@@ -1,0 +1,3 @@
+key	stage	kind	title	minutes	difficulty	increment
+w04d5	S2	server	配置加载雏形：env 读 PORT 与 GIN_MODE	30min	★★★☆☆	①+② 新建 internal/platform/config 雏形包：Load() 读 PORT 与 GIN_MODE（空值给默认 8080/debug，非法值返回点名变量与值的 error 拒绝启动）；main 从 config 取监听地址与 Gin 模式，删除写死 :8080
+w06d5	S3	server	连接池与 DB 配置：config 由 DB_* 拼 DSN	30min	★★★☆☆	⑤+① config 定稿：DB_* 必填校验与默认值、拼 homeos/finance 双 DSN（唯一拼装点）、AUTO_MIGRATE=true 拒绝启动、池四参数在 db.Open 生效；main 与测试里手拼 DSN 与散落 env 读取全收进 config，并补 config 必填/默认/非法值表驱动测试

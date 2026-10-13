@@ -1,0 +1,3 @@
+key	stage	kind	title	minutes	difficulty	increment
+w04d6	S2	server	周六 · S2 收口与费曼自测	4h	★★★☆☆	周六串联：把 w03-w04 十二张卡串成一条完整能力——build/test/lint 全绿、curl 剧本走通分类 6 条含失败档（1009/1010/1001/NoRoute）、grep 清零假入口与版本段与内层 HTTP 词汇、README 与代码逐项一致、干净检出副本全绿、S2 判据 6 条带证据自测记进 notes/s2-close.md、费曼三题录档
+w06d6	S3	server	周六 · S3 收口：全链重放与判据自测	4h	★★★★☆	周六串联：homeos 与 finance 两条迁移链各自完整 up→down→up 重放（down 到底除账本外 0 表、再 up 回 homeos version=2 / finance version=3、预置两段各 6 行、全程无 dirty）、双专属账号跨 schema 建表/DROP 被数据库直接拒、迁移源码跨 code 引用 grep 零命中、分类 6 条接口一行不改跑真 Postgres 全剧本、README 启动步骤对齐、干净检出全绿、S3 判据 s3o1-s3o6 逐条带证据自测记进 notes/s3-close.md

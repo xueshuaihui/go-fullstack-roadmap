@@ -1,0 +1,5 @@
+key	stage	kind	title	minutes	difficulty	increment
+w08d6	S4	server	周六 · 成员编辑/移除/头像上传 + 转让	4h	★★★★☆	②③ PUT members/{id}（字段白名单+指针部分更新）/ DELETE members/{id}（软删带 deleted_by）/ POST members/{id}/avatar（4002 限额+嗅探落盘）/ POST family/transfer-owner（事务两行）四条路由真实现，再把本周五个微增量串成成员生命周期全链路测试
+w09d1	S4	server	四级角色与成员 status：退出不是删除	30min	★★★☆☆	①④② status 三取值落 model 常量 + 放宽 homeos_member.status CHECK 的迁移（up/down 成对）+ POST /api/homeos/family/leave 一条路由，在档口径收进 scope.OnFile
+w09d2	S4	server	platform/authz：判定唯一实现	30min	★★★★☆	②③ 建 internal/platform/authz（Action 类型 + 一张 matrix + Allow，三条 fail-closed），六处散落角色分支清零；新增 GET /api/homeos/permissions（Of 导出）与 POST /api/homeos/family/disband 两条路由 + authz 包表驱动测试
+w09d3	S4	server	角色默认矩阵落地	30min	★★★★☆	①③ 治理 family:update / 面配置 face:enable / 时间与协作 due:remind 三行动作常量与矩阵行落进 platform/authz 同一张 matrix（Allow/Of/fail-closed 不动，不落新路由）+ 表驱动测试每行至少一允一拒（写被拒 403+1003，越权读仍 404+1001）

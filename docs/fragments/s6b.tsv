@@ -1,0 +1,12 @@
+w15d1	S6	server	预算模型与月度预算创建	30min	★★★☆☆	①②④ Budget struct（CategoryID *int64，NULL=总预算）+ POST /api/finance/budgets（1006/4001）+ 部分唯一索引迁移
+w15d2	S6	server	分类级预算与超支判定	30min	★★★☆☆	⑤③ GET /api/finance/budgets 带 used/remaining/overspent；SumExpenseByCategory 聚合从假数据换真 SQL；rollup 纯函数表驱动测试
+w15d3	S6	server	未设周期预算：budget_unset 红线	30min	★★★★☆	⑤③ 未设预算返回 200+code0+budget_unset:true 不折算；PUT /api/finance/budgets/{id} 乐观锁 1009 双版本 payload；四态表驱动测试
+w15d4	S6	server	预算告警钩子：platform Notifier 占位	25min	★★★☆☆	①④③ internal/platform/notify 占位包（Event/Notifier/LogNotifier）+ alerted_at 列迁移 + 整数阈值 reached() + fakeNotifier 去重测试
+w15d5	S6	server	周期记账规则表 finance_recurring_rule	30min	★★★☆☆	①② 规则表 struct + GET/POST /api/finance/recurring（有界 list 无游标字段）+ nextMonthly 月末夹取可跑 playground
+w15d6	S6	server	周六 · 周期记账的幂等自动入账	4h	★★★★☆	②③ PUT /api/finance/recurring/{id} + RunDue 到期入账，幂等键 recurring:{ruleID}:{periodKey} 防重复 + 正常/同期二次/停机补跑三连测试
+w16d1	S6	server	报表三视图：趋势/分类/成员 SQL 聚合	30min	★★★★☆	② GET /api/finance/reports/summary view=trend|category|member 白名单（非法 1004 不回落）+ FILTER 聚合 + share_bp 整数万分比
+w16d2	S6	server	时间窗五档桶：ISO 周与季/年边界	30min	★★★★☆	⑤③ ISO 周键 %04d-W%02d + monthBuckets/mergeQuarters/mergeYear：季/年只由月桶合并 + TestQuarterEqualsSumOfMonths
+w16d3	S6	server	环比与服务端逐期累计余额	30min	★★★★☆	⑤③ period.Prev 键运算 + change_bp *int64 可 null + WithRunning 服务端逐期累加（前端二次累加须为 0）+ 差值自洽测试
+w16d4	S6	server	报表游标与无上限返回禁令	25min	★★★☆☆	①③ normalizeSpan 白名单上限（day31/week53/month24/quarter12/year10，溢出 1004 不截断）+ 有界/无界判据 + 无游标字段契约测试
+w16d5	S6	server	面内设置与 CSV 导出	30min	★★★★☆	②⑤③ GET/PUT /api/finance/settings 活配置 + GET /api/finance/reports/export CSV 流式导出（BOM、guest 1003、行数=同筛选查询行数测试）
+w16d6	S6	server	周六 · S6 收口：30 条划掉与三条判据自测	4h	★★★★☆	③ TestS6Acceptance 八步链路全绿 + B 段 30 条逐条三关核销 + notes/s6-review.md 收口笔记
