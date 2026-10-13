@@ -1,6 +1,0 @@
-key	stage	kind	title	minutes	difficulty	increment
-w05f1	F2	frontend	uni-app 工程结构怎么读：pages.json 与配置式路由	2h	★★☆☆☆	前端卡（无服务端增量）：动手改注册一个新页面并从首页跳过去（含 navigateTo 与 reLaunch 的返回行为对比、练完删干净），定位题「page not found」两步定论是路由配置还是组件本身
-w06f1	F2	frontend	请求层 http.js：baseURL、拦截器与 401 重放	2h	★★★☆☆	前端卡（无服务端增量）：动手改给 4001 与 4002 两个业务错误码补中文文案并让它在页面 catch 里显示（含 1009 单独分支），定位题「页面空白、Console 无报错、Network 200 但数据没上屏」的四处依次排查
-w07f1	F3	frontend	Pinia 与 token 持久化	2h	★★☆☆☆	前端卡（无服务端增量）：动手改给 authStore 加一个 isGuest getter（role 4）并用 v-if 隐藏导出按钮、再用 storeToRefs 解构，定位题「刷新后登录态丢了」是没持久化还是持久化了没在启动时读回来
-w08f1	F3	frontend	路由守卫与登录态	2h	★★★☆☆	前端卡（无服务端增量）：动手改把成员管理入口按 role===1 收起、给该页加 useRequireAuth 兜底与 1003 跳 403 页的分支，定位题「明明登录了还被踢回登录页」用一次 Network 面板分清前端守卫判错还是服务端返 1005
-w09f1	F3	frontend	家庭上下文与切换家庭	2h	★★★★☆	前端卡（无服务端增量）：动手改在切换家庭成功后补清空缓存 + 重置时间窗 + reLaunch 回首页并给列表页加世代号判断，定位题「切换家庭后列表还是旧数据」列出前端三处与服务端一处及其区分方法；末尾 F3 三张卡判据逐条自测收口
