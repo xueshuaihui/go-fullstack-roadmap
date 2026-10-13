@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S1·D10 · 表驱动测试与 httptest | HomeCube 修炼手册</title>
+<meta name="description" content="把散落的用例收编成规范表驱动测试：t.Run 与子测试命名、Fatal 与 Error 的分工、NewRecorder 与 NewServer 的分界，覆盖成功 + 1001 + 1004 三条路径。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w02d4">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S1</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S1</a> / w02d4</div>
+  <div class="day-meta">
+    <span class="chip">S1 · DAY 10</span>
+    <span class="chip alt">预计 25 分钟</span>
+    <span class="chip">难度 ★★☆☆☆</span>
+  </div>
+  <h1>表驱动测试与 httptest</h1>
+  <p>D2 你写过第一个表驱动测试，这几天它又被你复制了好几份。今天把这门手艺<b>规范化</b>：表的字段怎么起名、子测试怎么命名才能被 <code>-run</code> 精确单跑、<code>t.Fatal</code> 与 <code>t.Error</code> 什么时候用哪个、断言 JSON 用字符串片段还是解码回结构体。今日增量属类型 ③：给 response 包与两个 handler 补齐规范测试，覆盖<b>成功 + 1001 + 1004</b> 三条路径。测试是接下来 20 周你唯一的「安全带」，今天值得慢一点。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w02d4g1">写出规范表驱动测试：字段起名 <code>name/in/want</code>，用例名可被 <code>-run</code> 精确过滤</label></li>
+      <li><label><input type="checkbox" data-key="w02d4g2">说清 <code>t.Fatal</code>（本用例到此为止）与 <code>t.Error</code>（记一笔继续跑）的分工</label></li>
+      <li><label><input type="checkbox" data-key="w02d4g3">说清 <code>NewRecorder</code> 与 <code>NewServer</code> 的分界：S2/S4 用前者，S5 用后者，为什么</label></li>
+      <li><label><input type="checkbox" data-key="w02d4g4">response 包与 handler 的测试补齐三条路径，全部绿</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 规范表的 anatomy</h3>
+    <pre><span class="code-label">片段 · 前置：import "testing"</span><code>tests := []<span class="k">struct</span> {
+    name <span class="t">string</span>   <span class="c">// 用例名：说人话，描述「输入特征 → 期望」，会成为子测试名</span>
+    in   <span class="t">Xxx</span>       <span class="c">// 输入；多个输入就多个字段，别硬塞 map</span>
+    want <span class="t">Yyy</span>       <span class="c">// 期望输出；复杂结果拆 wantA/wantB，别造「万能期望 struct」</span>
+}{ … }</code></pre>
+    <p>三条纪律：<b>① 用例名是给人读的失败报告</b>——「路径参数不是数字_应400」远胜「case3」；<b>② 一行用例只验一件事</b>，塞五个断言的用例失败时你要读半天才知道哪件塌了；<b>③ 表和循环体分家</b>——加用例只加一行表项，永远不碰循环体，这就是「表驱动」的全部红利。</p>
+
+    <h3>2. 子测试：命名与单跑</h3>
+    <pre><span class="code-label">可跑 · 在仓库根执行，感受 -run 过滤</span><code>cd server
+go test -v -count=1 -run <span class="s">'TestParsing/路径参数不是数字'</span> ./cmd/homecube
+<span class="c"># -v：打印每个子测试的 PASS/FAIL；-count=1：禁用缓存（D1 讲过，永远带着）</span></code></pre>
+    <p>两个细节：<code>-run</code> 的值是<b>正则</b>，用 <code>/</code> 分隔「父测试/子测试」；用例名里的<b>空格会被转成下划线</b>（<code>-run 'X/a_b_c'</code> 匹配用例 "a b c"）——所以本站惯例是<b>用例名不含空格</b>，中文直接连写，过滤时不用猜转义。</p>
+    <p><code>t.Fatal/Fatalf</code> = <code>Error</code> + 立即终止<b>当前子测试</b>；<code>t.Error/Errorf</code> = 记一笔失败但继续跑。选择规则一句话：<b>后续断言依赖这一步的结果就用 Fatal，否则用 Error</b>。「状态码都不对」后面再断言 body 毫无意义 → Fatal；「三个字段各验各的」→ 三个 Error，一次跑完看全貌。</p>
+    <div class="callout note"><p>你在旧教程里见过 <code>tt := tt</code> 这行咒语——那是 Go 1.22 之前「循环变量全循环共用一份」时代的补丁，配合 <code>t.Parallel()</code> 使用。<b>Go 1.22 起循环变量每轮迭代都是新变量</b>，本项目不需要这行咒语；见到别人的代码里有，知道是历史包袱即可。</p></div>
+
+    <h3>3. 断言 JSON：从「字符串片段」升级到「解码回结构体」</h3>
+    <p>前几天我们断言 <code>strings.Contains(body, `"code":1004`)</code>——快，但脆：字段顺序、空格、数字格式一变就误报。规范姿势是<b>把响应体解码回结构体，逐字段断言</b>：</p>
+    <pre><span class="code-label">片段 · 前置：import "encoding/json"；response.Body 已落地（D6）</span><code><span class="k">var</span> got response.<span class="t">Body</span>
+<span class="k">if</span> err := json.<span class="t">Unmarshal</span>(w.<span class="t">Body</span>.<span class="t">Bytes</span>(), &amp;got); err != <span class="k">nil</span> {
+    t.<span class="t">Fatalf</span>(<span class="s">"响应体不是合法 JSON: %v"</span>, err)
+}
+<span class="k">if</span> got.Code != tt.wantCode { t.<span class="t">Errorf</span>(<span class="s">"code = %d, want %d"</span>, got.Code, tt.wantCode) }</code></pre>
+    <p><code>json.Unmarshal</code> 是 <code>Decoder.Decode</code> 的兄弟：后者从流里读（D8 解请求体），前者把一整段 <code>[]byte</code> 解进变量（测试里断言响应）。<code>Data</code> 字段是 <code>any</code>，解码后是 <code>map[string]any</code>——要断言 data 内部字段时做类型断言（D5），或者干脆给 data 定义一个测试用的小 struct 再解一次。</p>
+
+    <h3>4. NewRecorder vs NewServer：一条分界线记 20 周</h3>
+    <table>
+      <tr><th></th><td><code>httptest.NewRecorder()</code></td><td><code>httptest.NewServer(h)</code></td></tr>
+      <tr><th>本质</th><td>假的 ResponseWriter，<b>不起网络</b>，进程内直调 handler</td><td>真起一个 <b>localhost 随机端口</b> 的 HTTP 服务，给你真 URL</td></tr>
+      <tr><th>速度/稳定性</th><td>微秒级，零端口冲突</td><td>毫秒级，占用端口，用完必须 <code>defer ts.Close()</code></td></tr>
+      <tr><th>能测什么</th><td>路由匹配、handler 逻辑、状态码与 body——99% 的接口测试</td><td>必须走真网络栈的场景：真实客户端行为、超时、<b>并发</b></td></tr>
+      <tr><th>本站使用期</th><td><b>S2 / S4 主力</b>（S1 今天已经在用）</td><td><b>S5 并发与工程化专用</b>（配 <code>-race</code>）</td></tr>
+    </table>
+    <p>纪律一句话：<b>能用 Recorder 解决的绝不开 Server</b>。测试套件的耗时与「时红时绿」概率，都是按你开了多少真端口计的。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>③：补测试用例</b>。两处：response 包的写出函数测试（新建），main_test.go 的收编重构（把 D6-D8 散落的用例规范化）。</p>
+
+    <h3>步骤 1 · response 包：FailErr 的三条路径</h3>
+    <pre><span class="code-label">完整 · server/pkg/response/response_test.go</span><code><span class="k">package</span> response
+
+<span class="k">import</span> (
+    <span class="s">"encoding/json"</span>
+    <span class="s">"errors"</span>
+    <span class="s">"fmt"</span>
+    <span class="s">"net/http/httptest"</span>
+    <span class="s">"testing"</span>
+)
+
+<span class="k">func</span> <span class="t">TestFailErr</span>(t *testing.T) {
+    tests := []<span class="k">struct</span> {
+        name       <span class="t">string</span>
+        err        <span class="t">error</span>
+        wantStatus <span class="t">int</span>
+        wantCode   <span class="t">int</span>
+    }{
+        {<span class="s">"哨兵NotFound_包装两层仍404+1001"</span>,
+            fmt.<span class="t">Errorf</span>(<span class="s">"load: %w"</span>, fmt.<span class="t">Errorf</span>(<span class="s">"repo: %w"</span>, ErrNotFound)), <span class="n">404</span>, <span class="t">CodeNotFound</span>},
+        {<span class="s">"哨兵InvalidParam_400+1004"</span>, ErrInvalidParam, <span class="n">400</span>, <span class="t">CodeInvalidParam</span>},
+        {<span class="s">"陌生错误_回落500+5000"</span>, errors.<span class="t">New</span>(<span class="s">"something exploded"</span>), <span class="n">500</span>, <span class="t">CodeInternal</span>},
+    }
+    <span class="k">for</span> _, tt := <span class="k">range</span> tests {
+        t.<span class="t">Run</span>(tt.name, <span class="k">func</span>(t *testing.T) {
+            w := httptest.<span class="t">NewRecorder</span>()
+            <span class="t">FailErr</span>(w, tt.err)
+
+            <span class="k">if</span> w.Code != tt.wantStatus {
+                t.<span class="t">Fatalf</span>(<span class="s">"状态码 = %d, want %d"</span>, w.Code, tt.wantStatus) <span class="c">// 状态码错，body 不用看了</span>
+            }
+            <span class="k">var</span> got <span class="t">Body</span>
+            <span class="k">if</span> err := json.<span class="t">Unmarshal</span>(w.<span class="t">Body</span>.<span class="t">Bytes</span>(), &amp;got); err != <span class="k">nil</span> {
+                t.<span class="t">Fatalf</span>(<span class="s">"响应体不是合法 JSON: %v"</span>, err)
+            }
+            <span class="k">if</span> got.Code != tt.wantCode {
+                t.<span class="t">Errorf</span>(<span class="s">"code = %d, want %d"</span>, got.Code, tt.wantCode)
+            }
+            <span class="k">if</span> got.Message == <span class="s">""</span> {
+                t.<span class="t">Errorf</span>(<span class="s">"message 不应为空"</span>)
+            }
+        })
+    }
+}
+
+<span class="k">func</span> <span class="t">TestOK</span>(t *testing.T) {
+    w := httptest.<span class="t">NewRecorder</span>()
+    <span class="t">OK</span>(w, <span class="k">map</span>[<span class="t">string</span>]<span class="t">string</span>{<span class="s">"status"</span>: <span class="s">"ok"</span>})
+    <span class="k">if</span> w.Code != <span class="n">200</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"状态码 = %d, want 200"</span>, w.Code)
+    }
+    <span class="k">if</span> ct := w.<span class="t">Header</span>().<span class="t">Get</span>(<span class="s">"Content-Type"</span>); ct != <span class="s">"application/json; charset=utf-8"</span> {
+        t.<span class="t">Errorf</span>(<span class="s">"Content-Type = %q"</span>, ct)
+    }
+}</code></pre>
+
+    <h3>步骤 2 · main_test.go 收编：一张规范表覆盖三条路径</h3>
+    <p>把 D7 的 <code>TestRoutes</code> 与 D8 的 <code>TestParsing</code> 合并重写成一张表（旧的两个函数删掉），并升级为解码断言。<code>TestHealthz</code>（D6 的字符串级精确断言）保留——精确断言用在「契约钉死到字节」的地方恰好合适：</p>
+    <pre><span class="code-label">完整 · server/cmd/homecube/routes_test.go（新建；同时删除 main_test.go 里的 TestRoutes 与 TestParsing）</span><code><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"encoding/json"</span>
+    <span class="s">"net/http/httptest"</span>
+    <span class="s">"strings"</span>
+    <span class="s">"testing"</span>
+
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="k">func</span> <span class="t">TestRoutesCanonical</span>(t *testing.T) {
+    tests := []<span class="k">struct</span> {
+        name       <span class="t">string</span>
+        method     <span class="t">string</span>
+        path       <span class="t">string</span>
+        body       <span class="t">string</span>
+        wantStatus <span class="t">int</span>
+        wantCode   <span class="t">int</span>
+    }{
+        <span class="c">// 成功路径</span>
+        {<span class="s">"healthz_成功_200+0"</span>, <span class="s">"GET"</span>, <span class="s">"/healthz"</span>, <span class="s">""</span>, <span class="n">200</span>, response.<span class="t">CodeOK</span>},
+        {<span class="s">"ping_成功_200+0"</span>, <span class="s">"GET"</span>, <span class="s">"/api/ping"</span>, <span class="s">""</span>, <span class="n">200</span>, response.<span class="t">CodeOK</span>},
+        {<span class="s">"路径参数合法_200+0"</span>, <span class="s">"GET"</span>, <span class="s">"/api/ping/123"</span>, <span class="s">""</span>, <span class="n">200</span>, response.<span class="t">CodeOK</span>},
+        {<span class="s">"JSON合法_200+0"</span>, <span class="s">"POST"</span>, <span class="s">"/api/ping/echo"</span>, <span class="s">`{"name":"shuai"}`</span>, <span class="n">200</span>, response.<span class="t">CodeOK</span>},
+        <span class="c">// 1001 路径：未知资源</span>
+        {<span class="s">"未知路径_404+1001"</span>, <span class="s">"GET"</span>, <span class="s">"/no/such/path"</span>, <span class="s">""</span>, <span class="n">404</span>, response.<span class="t">CodeNotFound</span>},
+        <span class="c">// 1004 路径：请求不合法</span>
+        {<span class="s">"路径参数非数字_400+1004"</span>, <span class="s">"GET"</span>, <span class="s">"/api/ping/abc"</span>, <span class="s">""</span>, <span class="n">400</span>, response.<span class="t">CodeInvalidParam</span>},
+        {<span class="s">"JSON语法烂_400+1004"</span>, <span class="s">"POST"</span>, <span class="s">"/api/ping/echo"</span>, <span class="s">`{"name":`</span>, <span class="n">400</span>, response.<span class="t">CodeInvalidParam</span>},
+        {<span class="s">"未知字段_400+1004"</span>, <span class="s">"POST"</span>, <span class="s">"/api/ping/echo"</span>, <span class="s">`{"nmae":"x"}`</span>, <span class="n">400</span>, response.<span class="t">CodeInvalidParam</span>},
+    }
+    <span class="k">for</span> _, tt := <span class="k">range</span> tests {
+        t.<span class="t">Run</span>(tt.name, <span class="k">func</span>(t *testing.T) {
+            w := httptest.<span class="t">NewRecorder</span>()
+            req := httptest.<span class="t">NewRequest</span>(tt.method, tt.path, strings.<span class="t">NewReader</span>(tt.body))
+            <span class="t">newRouter</span>().<span class="t">ServeHTTP</span>(w, req)
+
+            <span class="k">if</span> w.Code != tt.wantStatus {
+                t.<span class="t">Fatalf</span>(<span class="s">"状态码 = %d, want %d（body: %s）"</span>, w.Code, tt.wantStatus, w.Body.<span class="t">String</span>())
+            }
+            <span class="k">var</span> got response.<span class="t">Body</span>
+            <span class="k">if</span> err := json.<span class="t">Unmarshal</span>(w.<span class="t">Body</span>.<span class="t">Bytes</span>(), &amp;got); err != <span class="k">nil</span> {
+                t.<span class="t">Fatalf</span>(<span class="s">"响应体不是合法 JSON: %v（原始: %s）"</span>, err, w.Body.<span class="t">String</span>())
+            }
+            <span class="k">if</span> got.Code != tt.wantCode {
+                t.<span class="t">Errorf</span>(<span class="s">"code = %d, want %d"</span>, got.Code, tt.wantCode)
+            }
+        })
+    }
+}</code></pre>
+    <div class="callout note"><p>注意 D7 那条「POST /healthz → 405 裸文本」用例<b>没有</b>进这张表——它的响应不是统一信封，解码断言不适用，留在 <code>TestRoutes</code> 被删前请把它挪进独立的 <code>TestMethodNotAllowed</code>，用字符串断言。一张表只装同一形状的东西，这也是规范的一部分。</p></div>
+
+    <h3>步骤 3 · 验收并提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test    <span class="c"># 全部包 ok</span>
+make lint
+
+cd server
+go test -v -count=1 -run <span class="s">'TestRoutesCanonical/未知路径_404'</span> ./cmd/homecube   <span class="c"># 单跑一条子测试，验证 -run 过滤</span>
+go test -count=1 -cover ./pkg/response   <span class="c"># 顺手看一眼覆盖率数字，S5 接进 CI</span>
+cd ..
+
+git add server
+git status
+git commit -m "test(s1d10): response 包与路由的规范表驱动测试，覆盖成功/1001/1004 三条路径"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>用例名带空格再想 <code>-run</code> 过滤</td><td>匹配不上——空格被转成了下划线</td><td>用例名不用空格；或过滤时写 <code>用例_名</code></td></tr>
+      <tr><td>状态码已错还继续断言 body</td><td>一条用例刷出五个失败，噪音盖住病根</td><td>依赖性断言用 <code>Fatalf</code> 提前收场；独立断言才用 <code>Errorf</code></td></tr>
+      <tr><td>字符串片段断言一切 JSON</td><td>字段顺序/格式微调 → 测试误报一片</td><td>解码回结构体断字段；字符串精确断言只留给「字节级契约」（如 healthz）</td></tr>
+      <tr><td>忘了 <code>-count=1</code></td><td>改了代码测试还是绿——跑的是缓存</td><td>Makefile 里已焊死（D1）；手敲命令时也带上</td></tr>
+      <tr><td>旧教程的 <code>tt := tt</code> 照抄进来</td><td>无害但莫名其妙</td><td>Go 1.22+ 不需要；知道它是循环变量旧时代的补丁即可</td></tr>
+      <tr><td>每个测试都开 <code>NewServer</code></td><td>套件变慢、偶发端口冲突、CI 时红时绿</td><td>进程内一律 <code>NewRecorder</code>；<code>NewServer</code> 是 S5 并发测试的工具</td></tr>
+      <tr><td>测试之间共享可变状态</td><td>单跑绿、全量跑红（或反过来）</td><td>每个子测试里新建 repo/recorder；顺序无关是表驱动的前提</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>表驱动测试</td><td>用例是数据（表），循环体是解释器；加用例 = 加一行</td></tr>
+      <tr><td>子测试（<code>t.Run</code>）</td><td>表里每行一个独立测试上下文，可单跑、失败隔离</td></tr>
+      <tr><td><code>t.Fatal</code> vs <code>t.Error</code></td><td>前者终止当前子测试，后者记录后继续；按「后续断言是否依赖」选</td></tr>
+      <tr><td><code>-run</code> / <code>-v</code> / <code>-count=1</code></td><td>正则过滤 / 逐条打印 / 禁缓存——手敲测试命令三件套</td></tr>
+      <tr><td><code>json.Unmarshal</code></td><td>把整段 []byte 解进变量；Decoder 的「非流式」兄弟</td></tr>
+      <tr><td><code>NewRecorder</code></td><td>进程内假响应记录器；S2/S4 接口测试主力</td></tr>
+      <tr><td><code>NewServer</code></td><td>真端口的本地测试服务；S5 并发与超时场景专用，用完 <code>defer Close</code></td></tr>
+      <tr><td>覆盖率（<code>-cover</code>）</td><td>被测试执行到的语句占比；数字只是线索不是目标，S5 接进 CI</td></tr>
+      <tr><td>测试替身</td><td>为测试造的假依赖；D5 的内存 repo 就是第一个</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有两种情况出去查：</p>
+    <ul>
+      <li><b>testing 包的完整能力</b>（Setup/子测试并行/基准测试）：<a href="https://pkg.go.dev/testing" target="_blank">testing 文档</a>（可选，今天只需要 Test/Run/Fatal/Error 四件事）。</li>
+      <li><b>httptest 两个工具的边界</b>：<a href="https://pkg.go.dev/net/http/httptest" target="_blank">httptest 文档</a>（可选，包文档开头两段就是分工说明书）。</li>
+    </ul>
+    <p>测试红了的标准动作：<b>先读失败输出的第一行</b>（哪个子测试、got/want 各是什么），再决定是代码错还是用例错——两边都可能错，<b>不许为了让它绿而放宽断言</b>。放宽断言让测试变绿，等于把烟雾报警器的电池拆了。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w02d4c1"><code>response_test.go</code> 落盘：FailErr 表覆盖「包装两层的 NotFound → 404+1001」「InvalidParam → 400+1004」「陌生错误 → 500+5000」</label></li>
+      <li><label><input type="checkbox" data-key="w02d4c2"><code>routes_test.go</code> 一张规范表覆盖成功 + 1001 + 1004 三条路径，旧的重复用例已删除或归置</label></li>
+      <li><label><input type="checkbox" data-key="w02d4c3"><code>-run 'TestRoutesCanonical/未知路径_404'</code> 能精确单跑一条子测试；能口述 Fatal 与 Error 的选择规则</label></li>
+      <li><label><input type="checkbox" data-key="w02d4c4"><code>make build</code> 与 <code>make test</code> 全绿，commit 带卡号 <code>s1d10</code></label></li>
+      <li><label><input type="checkbox" data-key="w02d4c5"><code>notes/</code> 写三行：表驱动的红利是什么、Recorder 与 Server 的分界线、为什么断言 JSON 优先解码而不是字符串片段</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w02d3.html"><span class="hint">← 昨天 · S1·D9</span>响应写出与中间件</a>
+    <a href="w02d5.html"><span class="hint">明天 · S1·D11 →</span>internal/ 分层与收口前的重构</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w02d4 · 明天见 ⟩</footer>
+</body>
+</html>

@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S6·D19 · 预算模型与月度预算创建 | HomeCube 修炼手册</title>
+<meta name="description" content="给 finance_budget 表补上 Go 侧 struct 与部分唯一索引，落地 POST /api/finance/budgets：月度总预算与分类预算的创建、1006 冲突映射与 4001 金额校验。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w15d1">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S6</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S6</a> / w15d1</div>
+  <div class="day-meta">
+    <span class="chip">S6 · DAY 19</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>预算模型与月度预算创建</h1>
+  <p>B1-B4 的 20 条接口上周已全部划掉，从今天起进入 B5 预算段。预算表 S3 就建好了，但一直没写业务——今天给它补上 Go 侧 struct、一条部分唯一索引迁移，以及第一个接口：<code>POST /api/finance/budgets</code>。先把「一行预算到底是什么」定义清楚，后面四天的超支判定、未设标记、告警钩子才有地基。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w15d1g1">说清一行预算的五元组：<code>(family_id, period_key, category_id, limit_cents, version)</code>，以及 <code>category_id IS NULL</code> 表示「总预算」</label></li>
+      <li><label><input type="checkbox" data-key="w15d1g2">说清「按周期归零」：每个 <code>period_key</code> 独立一行，本期没用完不结转下期</label></li>
+      <li><label><input type="checkbox" data-key="w15d1g3">知道 Postgres 唯一索引对 NULL 的行为，会写「COALESCE + 部分索引」的防重方案</label></li>
+      <li><label><input type="checkbox" data-key="w15d1g4"><code>POST /api/finance/budgets</code> 跑通：创建成功 201，重复创建 409 + 1006，金额 ≤0 返回 400 + 4001</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 一行预算 = 一个周期键上的一条限额</h3>
+    <p>预算不做「规则引擎」，就是一张朴素的表：<b>某家庭在某个周期键上，对某个分类（或全体）设一个金额上限</b>。周期键复用全站时间窗五档的编码（<code>2026-10</code>、<code>2026-Q4</code>、<code>2026</code>……），但预算只收 <b>month / quarter / year 三档</b>——day/week 档传进来返回 400 + 1004。为什么砍掉两档：「按周期归零」的口径是按自然月/季/年定义的，给「某一天」设预算没有归零语义，产品上也不存在这个入口。</p>
+    <table>
+      <tr><th>字段</th><th>类型</th><th>语义</th></tr>
+      <tr><td><code>period_key</code></td><td><code>TEXT NOT NULL</code></td><td>周期键，如 <code>2026-10</code>；创建时由统一的周期解析函数校验格式</td></tr>
+      <tr><td><code>category_id</code></td><td><code>BIGINT NULL</code></td><td><b>NULL = 该周期总预算</b>；非空 = 分类级预算（明天讲判定）</td></tr>
+      <tr><td><code>limit_cents</code></td><td><code>BIGINT NOT NULL</code></td><td>限额，<b>必须 &gt; 0</b>，否则 400 + 4001（金额非法）</td></tr>
+      <tr><td>通用列</td><td>—</td><td><code>id / family_id / created_at / updated_at / deleted_at / deleted_by / version</code>，S3 起全站同款</td></tr>
+    </table>
+    <div class="callout note"><p><b>归零口径</b>：10 月的预算行只管 10 月。11 月要预算就再插一行 <code>period_key='2026-11'</code>；10 月没花完的钱<b>不结转</b>。所以「复制上月预算」是前端的便捷操作（读上月行、改周期键、再 POST），服务端不存任何「周期规则」——存了就有两套真相。</p></div>
+
+    <h3>2. 唯一约束：同家庭同周期同分类只许一行</h3>
+    <p>重复创建必须撞唯一约束，映射成 409 + 1006。但这里有个 Postgres 的经典坑：<b>唯一索引把 NULL 视为互不相等</b>。<code>(family_id, period_key, category_id)</code> 直接建唯一索引的话，两行总预算（<code>category_id</code> 都是 NULL）能同时插进去——防重失效。两个手法叠加解决：</p>
+    <ul>
+      <li><b>表达式索引</b>：对 <code>COALESCE(category_id, 0)</code> 建索引，把 NULL 归一成 0（真实分类 id 从 1 起，0 不会被占用）。</li>
+      <li><b>部分索引</b>：加 <code>WHERE deleted_at IS NULL</code>，让软删的行退出唯一约束——否则「删掉重建同周期预算」会被一行尸体挡住。</li>
+    </ul>
+
+    <h3>3. 创建路径上的错误码分工</h3>
+    <table>
+      <tr><th>情形</th><th>HTTP + code</th><th>说明</th></tr>
+      <tr><td>JSON 解析失败 / 字段类型不对</td><td>400 + 1004</td><td>参数错误，绑定层直接拒</td></tr>
+      <tr><td><code>period_key</code> 不是合法五档编码（如 <code>2026-13</code>）</td><td>400 + 1007</td><td>时间窗编码非法专码，<b>不回落到任何默认档</b></td></tr>
+      <tr><td>编码合法但是 day/week 档（如 <code>2026-W42</code>）</td><td>400 + 1004</td><td>预算不支持的档位是「参数不支持」，不是「编码非法」，两码分工要记牢</td></tr>
+      <tr><td><code>limit_cents ≤ 0</code></td><td>400 + 4001</td><td>金额非法专码，不要混用 1004</td></tr>
+      <tr><td><code>category_id</code> 不存在或属别的家庭</td><td>404 + 1001</td><td>越权与不存在同形，不泄露存在性</td></tr>
+      <tr><td>同周期同分类已有行</td><td>409 + 1006</td><td>唯一约束冲突</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>①+④+②：加 struct、补一条迁移、加一条路由</b>。收工时 <code>make build</code> / <code>make test</code> 必须绿。</p>
+
+    <h3>步骤 1 · Budget struct</h3>
+    <pre><span class="code-label">片段 · server/internal/finance/model/budget.go（前置：S3 已建 finance_budget 表，通用列嵌入 S3 建好的 model.Base）</span><code><span class="k">package</span> model
+
+<span class="c">// Budget 一行 = 某家庭某周期键上、对某分类（NULL=总预算）的限额。</span>
+<span class="k">type</span> <span class="t">Budget</span> <span class="k">struct</span> {
+    Base                          <span class="c">// id/family_id/时间戳/软删/version，S3 起全站同款</span>
+    PeriodKey  <span class="t">string</span> <span class="s">`gorm:"column:period_key;not null"`</span>
+    CategoryID *<span class="t">int64</span> <span class="s">`gorm:"column:category_id"`</span>       <span class="c">// 指针表达 NULL：总预算</span>
+    LimitCents <span class="t">int64</span>  <span class="s">`gorm:"column:limit_cents;not null"`</span>
+}
+
+<span class="k">func</span> (*<span class="t">Budget</span>) <span class="t">TableName</span>() <span class="t">string</span> { <span class="k">return</span> <span class="s">"finance_budget"</span> }</code></pre>
+    <div class="callout warn"><p><code>CategoryID</code> 必须是 <code>*int64</code> 而不是 <code>int64</code>。用值类型的话「NULL」和「0」在 Go 侧不可区分，而 0 在我们的表达式索引里恰恰是总预算的归一值——类型选错，语义就塌了。</p></div>
+
+    <h3>步骤 2 · 部分唯一索引迁移</h3>
+    <pre><span class="code-label">完整 · server/migrations/finance/finance_00NN_budget_unique.up.sql（NN 接你 finance 序列的下一个号）</span><code>CREATE UNIQUE INDEX uq_finance_budget_family_period_category
+    ON finance_budget (family_id, period_key, COALESCE(category_id, <span class="n">0</span>))
+    WHERE deleted_at IS NULL;</code></pre>
+    <pre><span class="code-label">完整 · 同名 .down.sql</span><code>DROP INDEX IF EXISTS uq_finance_budget_family_period_category;</code></pre>
+
+    <h3>步骤 3 · POST handler</h3>
+    <pre><span class="code-label">片段 · server/internal/finance/handler/budget.go（前置：S2 三层与 S4 的鉴权中间件、scope helper 已就位；response 包签名同 S2）</span><code><span class="k">type</span> <span class="t">createBudgetReq</span> <span class="k">struct</span> {
+    PeriodKey  <span class="t">string</span> <span class="s">`json:"period_key" binding:"required"`</span>
+    CategoryID *<span class="t">int64</span> <span class="s">`json:"category_id"`</span>
+    LimitCents <span class="t">int64</span>  <span class="s">`json:"limit_cents" binding:"required"`</span>
+}
+
+<span class="k">func</span> (h *<span class="t">BudgetHandler</span>) <span class="t">Create</span>(c *gin.<span class="t">Context</span>) {
+    <span class="k">var</span> req createBudgetReq
+    <span class="k">if</span> err := c.<span class="t">ShouldBindJSON</span>(&amp;req); err != <span class="k">nil</span> {
+        response.<span class="t">FailErr</span>(c, response.<span class="t">ErrBadRequest</span>) <span class="c">// 400 + 1004</span>
+        <span class="k">return</span>
+    }
+    famID := c.<span class="t">GetInt64</span>(<span class="s">"familyID"</span>)          <span class="c">// S4 中间件注入，禁止裸键</span>
+    b, err := h.svc.<span class="t">Create</span>(c.<span class="t">Request</span>().<span class="t">Context</span>(), famID, req.PeriodKey, req.CategoryID, req.LimitCents)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        response.<span class="t">FailErr</span>(c, err)              <span class="c">// service 返回哨兵：1004/4001/1001/1006</span>
+        <span class="k">return</span>
+    }
+    response.<span class="t">Created</span>(c, b)                    <span class="c">// 201 + code 0</span>
+}</code></pre>
+    <p>service 层 <code>Create</code> 做四件事，顺序不能乱：① 用 S6·D8 写好的周期解析函数校验 <code>period_key</code>，编码非法 → <code>ErrBadPeriod</code>（1007）；编码合法但档位不在 {month, quarter, year} → <code>ErrBadRequest</code>（1004）；② <code>limitCents ≤ 0</code> → <code>ErrInvalidAmount</code>（4001）；③ <code>categoryID</code> 非空时按 scope helper 查一次分类（带 <code>WHERE family_id = ?</code>），查不到 → <code>ErrNotFound</code>（1001）；④ 插入，捕获唯一冲突翻译成 <code>ErrConflict</code>（1006）。</p>
+    <pre><span class="code-label">片段 · 路由注册（server/internal/finance/handler/routes.go 的 finance 分组内追加一行）</span><code>g := r.<span class="t">Group</span>(<span class="s">"/api/finance"</span>, middleware.<span class="t">Auth</span>(cfg.JWTSecret))
+g.<span class="t">POST</span>(<span class="s">"/budgets"</span>, budgetH.Create)</code></pre>
+
+    <h3>步骤 4 · 验收与提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令（TOKEN 用 S4 起的登录接口换取）</span><code>cd &lt;你的学习仓根目录&gt;
+migrate -path server/migrations/finance -database "$DB_URL" up   <span class="c"># 按你 S3 的迁移跑法</span>
+make build &amp;&amp; make test
+
+curl -s -X POST localhost:8080/api/finance/budgets -H "Authorization: Bearer $TOKEN" \
+     -H 'Content-Type: application/json' \
+     -d '{"period_key":"2026-10","limit_cents":300000}'
+<span class="c"># 期望 201；再跑一遍同样的命令 → 409 + {"code":1006,…}</span>
+<span class="c"># limit_cents 改成 0 → 400 + 4001；period_key 改成 "2026-W42" → 400 + 1004；改成 "2026-13" → 400 + 1007</span>
+
+git add server
+git commit -m "feat(s6d19): finance_budget struct + 部分唯一索引 + POST /api/finance/budgets"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>唯一索引不带 COALESCE</td><td>两行总预算（category_id 均 NULL）同时插入成功，防重失效</td><td>对 <code>COALESCE(category_id, 0)</code> 建表达式索引</td></tr>
+      <tr><td>唯一索引不带 <code>WHERE deleted_at IS NULL</code></td><td>软删一行后，同周期预算再也建不了</td><td>部分索引把软删行排除在约束外</td></tr>
+      <tr><td><code>limit_cents ≤ 0</code> 返回 1004</td><td>错误码表被稀释，前端没法按码给文案</td><td>金额非法专码 4001；1004 只管参数形状</td></tr>
+      <tr><td>用 float 接金额再乘 100</td><td><code>2999.99 * 100 = 299998.99…</code> 截断丢分</td><td>DTO 里就是 <code>int64</code> 分，前端负责乘除 100</td></tr>
+      <tr><td>把「未用完结转」做进服务端</td><td>预算表里出现 carry_over 列，两套真相打架</td><td>归零口径写死：一期一行，不结转</td></tr>
+      <tr><td>手写周期键拼接（<code>fmt.Sprintf("%d-%02d", …)</code>）</td><td>各处格式漂移，季度键拼出 <code>2026-Q04</code> 之类</td><td>全站只认 S6·D8 的解析/格式化函数一份实现</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>period_key（周期键）</td><td>时间窗五档编码字符串；预算只收 month/quarter/year 三档</td></tr>
+      <tr><td>按周期归零</td><td>每个周期键独立一行预算，未用完不结转下期</td></tr>
+      <tr><td>总预算</td><td><code>category_id IS NULL</code> 的预算行，管该周期全部分类合计</td></tr>
+      <tr><td>表达式索引</td><td>建在 <code>COALESCE(category_id, 0)</code> 这类表达式上的索引，用来把 NULL 归一</td></tr>
+      <tr><td>部分索引（partial index）</td><td>带 WHERE 条件的索引；这里用 <code>deleted_at IS NULL</code> 让软删行退出唯一约束</td></tr>
+      <tr><td><code>*int64</code> 可空外键</td><td>指针区分「NULL」与「0」；值类型做不到</td></tr>
+      <tr><td>1006</td><td>唯一约束冲突专码，HTTP 409</td></tr>
+      <tr><td>4001</td><td>金额非法专码（≤0 等），HTTP 400</td></tr>
+      <tr><td>哨兵错误</td><td>service 返回预定义错误值，<code>FailErr</code> 按 S1·D4 的映射翻成码</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <ul>
+      <li><b>唯一索引与 NULL 的行为</b>：Postgres 官方文档 <a href="https://www.postgresql.org/docs/current/indexes-unique.html" target="_blank">Unique Indexes</a>（可选，一段话讲清 NULL 不相等）。</li>
+      <li><b>GORM 里怎么捕获唯一冲突</b>：查 <code>errors.Is(err, gorm.ErrDuplicatedKey)</code> 的用法（可选；需要在 session 上开 <code>TranslateError</code>，S3 讲过）。</li>
+      <li><b>错误码拿不准</b>：回本站 S1·D4 的错误码全表卡，任何码都必须在那张表里。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w15d1c1">迁移 up→down→up 可重放；索引定义里同时有 COALESCE 与 <code>WHERE deleted_at IS NULL</code></label></li>
+      <li><label><input type="checkbox" data-key="w15d1c2">curl 创建月度总预算返回 201；原样重发返回 409 + 1006</label></li>
+      <li><label><input type="checkbox" data-key="w15d1c3"><code>limit_cents=0</code> → 400 + 4001；<code>"2026-W42"</code> → 400 + 1004；<code>"2026-13"</code> → 400 + 1007，三条都有测试用例</label></li>
+      <li><label><input type="checkbox" data-key="w15d1c4"><code>make build</code> / <code>make test</code> 绿，commit 带卡号 <code>s6d19</code></label></li>
+      <li><label><input type="checkbox" data-key="w15d1c5">notes/ 三行：归零口径为什么不做结转、唯一索引为什么必须 COALESCE + 部分索引、4001 与 1004 的分工</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../frontend/f4/w14f1.html"><span class="hint">← 上周日 · F4·w14</span>游标分页的前端侧（下）</a>
+    <a href="w15d2.html"><span class="hint">明天 · S6·D20 →</span>分类级预算与超支判定</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w15d1 · 明天见 ⟩</footer>
+</body>
+</html>

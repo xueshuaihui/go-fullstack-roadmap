@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S5·D2 · channel 与 select：goroutine 之间不共享、只传递 | HomeCube 修炼手册</title>
+<meta name="description" content="channel 的收发语义、close 与 range、select 多路复用与超时；顺手在 finance/service 落两个聚合 struct 和串行版对照组。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w10d2">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S5</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S5</a> / w10d2</div>
+  <div class="day-meta">
+    <span class="chip">S5 · DAY 2</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>channel 与 select：goroutine 之间不共享、只传递</h1>
+  <p>昨天靠锁保护共享内存，今天学另一条路：<b>干脆不共享</b>——数据从一个 goroutine 手里经 channel「递」给另一个，任一时刻只有一个持有者。Go 有句谚语：<b>不要通过共享内存来通信，而要通过通信来共享内存</b>。今天把 channel 的收发规则、close 与 range、select 多路复用一次立起来，并在 <code>finance/service</code> 落下两个 struct 与串行版聚合——它是本周所有并发版本的<b>对照组</b>。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w10d2g1">说得出无缓冲与带缓冲 channel 的阻塞规则，以及 close 之后收发各是什么行为</label></li>
+      <li><label><input type="checkbox" data-key="w10d2g2">会用 <code>select</code> 同时等多个 channel，会用 <code>time.After</code> 做超时兜底</label></li>
+      <li><label><input type="checkbox" data-key="w10d2g3">说得清 channel 与 Mutex 的分工直觉（D3 给判据，今天先有体感）</label></li>
+      <li><label><input type="checkbox" data-key="w10d2g4"><code>AggInput/AggResult</code> + 串行版 <code>SumByCategory</code> 落盘，表驱动测试绿</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. channel：带类型的传送带</h3>
+    <p><code>make(chan T)</code> 造一条传送带，<code>ch &lt;- v</code> 放上去，<code>v := &lt;-ch</code> 取下来。核心规则只有「谁等谁」：</p>
+    <table>
+      <tr><th>操作</th><th>无缓冲 <code>make(chan T)</code></th><th>带缓冲 <code>make(chan T, 3)</code></th></tr>
+      <tr><td>发送 <code>ch &lt;- v</code></td><td>阻塞，直到<b>有人接收</b>——一手交钱一手交货</td><td>缓冲没满就不阻塞；满了才等</td></tr>
+      <tr><td>接收 <code>&lt;-ch</code></td><td>阻塞，直到<b>有人发送</b></td><td>缓冲空了就等</td></tr>
+      <tr><td><code>close(ch)</code> 后接收</td><td colspan="2">立刻返回已缓冲的值；取完后返回零值，<code>v, ok := &lt;-ch</code> 的 <code>ok</code> 为 false</td></tr>
+      <tr><td><code>close(ch)</code> 后发送</td><td colspan="2"><b>panic</b>。重复 close 也 panic——close 是发送方的专属动作，且只做一次</td></tr>
+    </table>
+    <p><code>for v := range ch</code> 会一直收，直到 channel 被 close——所以「发完了」必须由发送方显式 <code>close</code>，接收方才知道该收工。方向可以写进类型里：<code>chan&lt;- int</code> 只能发、<code>&lt;-chan int</code> 只能收，函数签名里用上，编译器帮你拦住手滑。</p>
+
+    <h3>2. select：同时等多条传送带</h3>
+    <p><code>select</code> 长得像 switch，等的却是多个 channel 操作：<b>哪个先就绪走哪个</b>；同时就绪则随机挑一个（防止饿死）；带 <code>default</code> 就变成「都没就绪立刻返回」（非阻塞探测）；不带 default 就阻塞到有一个就绪。配 <code>time.After</code> 就是最经典的超时模式：</p>
+    <pre><span class="code-label">可跑 · server/playground/s5d2/main.go（自带 go.mod）</span><code><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"fmt"</span>
+    <span class="s">"time"</span>
+)
+
+<span class="k">func</span> <span class="t">main</span>() {
+    results := <span class="k">make</span>(<span class="k">chan</span> <span class="t">string</span>, <span class="n">3</span>)       <span class="c">// 带缓冲：3 个 worker 交作业时不用等谁在收</span>
+    names := []<span class="t">string</span>{<span class="s">"分类A"</span>, <span class="s">"分类B"</span>, <span class="s">"分类C"</span>}
+    <span class="k">for</span> _, name := <span class="k">range</span> names {
+        <span class="k">go</span> <span class="k">func</span>() {
+            time.<span class="t">Sleep</span>(<span class="n">100</span> * time.Millisecond) <span class="c">// 假装在干活</span>
+            results &lt;- name + <span class="s">" 聚合完成"</span>
+        }()
+    }
+
+    <span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="k">len</span>(names); i++ {          <span class="c">// 收满 3 份作业就走，不 range——没人 close</span>
+        <span class="k">select</span> {
+        <span class="k">case</span> r := &lt;-results:
+            fmt.<span class="t">Println</span>(<span class="s">"收到:"</span>, r)
+        <span class="k">case</span> &lt;-time.<span class="t">After</span>(<span class="n">2</span> * time.Second):
+            fmt.<span class="t">Println</span>(<span class="s">"超时：有 worker 没交作业"</span>)
+            <span class="k">return</span>
+        }
+    }
+    fmt.<span class="t">Println</span>(<span class="s">"三份作业齐了（注意顺序每次可能不同）"</span>)
+}</code></pre>
+    <pre><span class="code-label">可跑</span><code>cd server/playground/s5d2
+go mod init s5d2 &amp;&amp; go run .   <span class="c"># 多跑几次：完成的顺序是乱的——并发没有先后保证</span></code></pre>
+    <div class="callout note"><p>D4 会把 <code>time.After</code> 那一路换成 <code>ctx.Done()</code>——同样的 select 骨架，超时信号从「一次性定时器」升级为「可传播、可级联的取消信号」。今天先把形状练熟。</p></div>
+
+    <h3>3. channel 还是 Mutex：先给直觉，D3 给判据</h3>
+    <ul>
+      <li><b>传递数据的所有权</b>（作业队列、结果收集、worker 间接力）→ channel。</li>
+      <li><b>保护一份大家都要就地读写的状态</b>（内存 map、计数器、缓存）→ Mutex。</li>
+    </ul>
+    <p>两条路不互斥：今天的增量里，串行版用普通 map；D3 的并发版会用 Mutex 保护汇总 map；D5 的 worker pool 会用 channel 派活、再汇总。同一个问题里两者各司其职是常态。</p>
+
+    <h3>4. 今日增量的业务形状：聚合的输入与输出</h3>
+    <p>S6 的报表接口要做「按分类/按账户汇总金额」。本阶段不碰接口，只把它的<b>并发骨架</b>练出来：输入是一批流水行（金额一律 <code>*_cents int64</code>，S3 起的老规矩），输出是每个维度一个合计。今天先落 struct 与串行版——<b>串行版是本周所有并发版本的对照组</b>：并发算出来的结果必须和它分毫不差，这是 D6 验收的第一条。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>①：加 struct</b>——<code>internal/finance/service</code> 新建包，落两个 struct 加一个串行聚合函数，附表驱动测试。收工时 <code>make build</code> / <code>make test</code> 必须绿。</p>
+
+    <h3>步骤 1 · service 包与串行聚合</h3>
+    <pre><span class="code-label">完整 · server/internal/finance/service/agg.go</span><code><span class="k">package</span> service
+
+<span class="k">import</span> <span class="s">"sort"</span>
+
+<span class="c">// AggInput 是被聚合的一行流水：账户、分类、金额（分）。</span>
+<span class="c">// S5 只有并发骨架；S6 起由报表 handler 从库里取真行喂进来。</span>
+<span class="k">type</span> <span class="t">AggInput</span> <span class="k">struct</span> {
+    AccountID   <span class="t">int64</span>
+    CategoryID  <span class="t">int64</span>
+    AmountCents <span class="t">int64</span>
+}
+
+<span class="c">// AggResult 是一个维度（某分类或某账户）的聚合结果。</span>
+<span class="k">type</span> <span class="t">AggResult</span> <span class="k">struct</span> {
+    ID         <span class="t">int64</span>
+    TotalCents <span class="t">int64</span>
+}
+
+<span class="c">// SumByCategory 按分类分组求和：串行版，S5 全期的对照组。</span>
+<span class="c">// 输出按 ID 升序——map 遍历顺序是乱的（S1·D4），不排序就没法和并发版对拍。</span>
+<span class="k">func</span> <span class="t">SumByCategory</span>(rows []<span class="t">AggInput</span>) []<span class="t">AggResult</span> {
+    totals := <span class="k">map</span>[<span class="t">int64</span>]<span class="t">int64</span>{}
+    <span class="k">for</span> _, r := <span class="k">range</span> rows {
+        totals[r.CategoryID] += r.AmountCents
+    }
+    out := <span class="k">make</span>([]<span class="t">AggResult</span>, <span class="n">0</span>, <span class="k">len</span>(totals))
+    <span class="k">for</span> id, cents := <span class="k">range</span> totals {
+        out = <span class="k">append</span>(out, <span class="t">AggResult</span>{ID: id, TotalCents: cents})
+    }
+    sort.<span class="t">Slice</span>(out, <span class="k">func</span>(i, j <span class="t">int</span>) <span class="t">bool</span> { <span class="k">return</span> out[i].ID &lt; out[j].ID })
+    <span class="k">return</span> out
+}</code></pre>
+
+    <h3>步骤 2 · 表驱动测试（S1·D2 的老手艺）</h3>
+    <pre><span class="code-label">完整 · server/internal/finance/service/agg_test.go</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"reflect"</span>
+    <span class="s">"testing"</span>
+)
+
+<span class="k">func</span> <span class="t">TestSumByCategory</span>(t *testing.T) {
+    tests := []<span class="k">struct</span> {
+        name <span class="t">string</span>
+        rows []<span class="t">AggInput</span>
+        want []<span class="t">AggResult</span>
+    }{
+        {<span class="s">"空输入"</span>, <span class="k">nil</span>, []<span class="t">AggResult</span>{}},
+        {<span class="s">"单分类多行"</span>, []<span class="t">AggInput</span>{
+            {AccountID: <span class="n">1</span>, CategoryID: <span class="n">10</span>, AmountCents: <span class="n">1500</span>},
+            {AccountID: <span class="n">2</span>, CategoryID: <span class="n">10</span>, AmountCents: <span class="n">2500</span>},
+        }, []<span class="t">AggResult</span>{{ID: <span class="n">10</span>, TotalCents: <span class="n">4000</span>}}},
+        {<span class="s">"多分类乱序"</span>, []<span class="t">AggInput</span>{
+            {AccountID: <span class="n">1</span>, CategoryID: <span class="n">20</span>, AmountCents: <span class="n">100</span>},
+            {AccountID: <span class="n">1</span>, CategoryID: <span class="n">10</span>, AmountCents: <span class="n">200</span>},
+            {AccountID: <span class="n">2</span>, CategoryID: <span class="n">20</span>, AmountCents: <span class="n">300</span>},
+        }, []<span class="t">AggResult</span>{{ID: <span class="n">10</span>, TotalCents: <span class="n">200</span>}, {ID: <span class="n">20</span>, TotalCents: <span class="n">400</span>}}},
+    }
+    <span class="k">for</span> _, tt := <span class="k">range</span> tests {
+        t.<span class="t">Run</span>(tt.name, <span class="k">func</span>(t *testing.T) {
+            <span class="k">if</span> got := <span class="t">SumByCategory</span>(tt.rows); !reflect.<span class="t">DeepEqual</span>(got, tt.want) {
+                t.<span class="t">Fatalf</span>(<span class="s">"SumByCategory() = %+v, want %+v"</span>, got, tt.want)
+            }
+        })
+    }
+}</code></pre>
+
+    <h3>步骤 3 · 验收并提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test    <span class="c"># finance/service 是新面孔，必须 ok</span>
+make lint
+
+git add server/internal/finance/service
+git status
+git commit -m "feat(s5d2): 聚合 struct 与串行对照组 SumByCategory"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>range 一个没人 close 的 channel</td><td>收完已有的值后永久阻塞，测试超时死掉</td><td>发送方发完必须 close；或像今天例子一样按已知数量收</td></tr>
+      <tr><td>向已 close 的 channel 发送</td><td>panic: send on closed channel</td><td>规矩：<b>谁发送谁 close，只 close 一次</b>；多个发送方就别 close，交给计数（D5 的 closer goroutine 模式）</td></tr>
+      <tr><td>无缓冲 channel 发了没人收</td><td>发送方 goroutine 永久阻塞——泄漏</td><td>发送前先回答「谁在另一头收」；收不到就用带缓冲 + select 超时</td></tr>
+      <tr><td>以为带缓冲能保顺序</td><td>输出顺序依旧随调度漂移</td><td>缓冲只解决「等不等」，不解决「谁先到」；要有序就收完再排序（对照组已示范）</td></tr>
+      <tr><td>select 一个 case 都不写</td><td>编译不过或空转</td><td>select 必须至少一个 case；想非阻塞加 default</td></tr>
+      <tr><td>在循环里滥用 <code>time.After</code></td><td>每轮都造一个定时器，高频循环下内存堆积</td><td>低频场景无所谓；高频等 D4 换 ctx，或复用 <code>time.Timer</code></td></tr>
+      <tr><td>用 channel 硬做互斥</td><td>「令牌 channel」能跑但绕晕队友</td><td>保护就地读写的状态用 Mutex（D3）；channel 用于传递所有权</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>channel（<code>chan</code>）</td><td>goroutine 间的类型化传送带；收发即同步点</td></tr>
+      <tr><td>无缓冲 vs 带缓冲</td><td>无缓冲 = 面对面交接（双方必须同时到场）；带缓冲 = 放进取出可异步，满了/空了才阻塞</td></tr>
+      <tr><td><code>close</code></td><td>发送方宣布「没有更多了」；接收方靠它退出 range。close 后发送 = panic</td></tr>
+      <tr><td>comma-ok 接收</td><td><code>v, ok := &lt;-ch</code>：ok 为 false 表示 channel 已关且取空</td></tr>
+      <tr><td>方向类型</td><td><code>chan&lt;- T</code> 只发、<code>&lt;-chan T</code> 只收；签名即文档，编译器站岗</td></tr>
+      <tr><td><code>select</code></td><td>等多个 channel 操作，谁先就绪走谁，同时就绪随机挑；default 变非阻塞</td></tr>
+      <tr><td><code>time.After</code></td><td>返回一个只读 channel，到点送一个值——select 里的超时兜底</td></tr>
+      <tr><td>goroutine 泄漏</td><td>goroutine 阻塞在永远等不到的收发上，再也回不来；D4 的 ctx 是解药</td></tr>
+      <tr><td>对照组（serial baseline）</td><td>串行正确版本；并发版必须与它结果全等，否则并发白做</td></tr>
+      <tr><td>errgroup</td><td>带错误传播与取消的 WaitGroup 增强版。<b>D5 正式讲</b></td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有两种情况出去查：</p>
+    <ul>
+      <li><b>close 后收发行为的权威描述</b>：<a href="https://go.dev/ref/spec#Channel_types" target="_blank">Go 语言规范 · Channel types</a>（可选，表格背不下来时来对答案）。</li>
+      <li><b>select 的完整语义</b>：<a href="https://go.dev/ref/spec#Select_statements" target="_blank">Go 语言规范 · Select statements</a>（可选，重点读「uniformly at random」那句）。</li>
+    </ul>
+    <p>卡死类 bug 的调试顺序：先看进程还活着吗（阻塞死锁 Go 会直接报 <code>all goroutines are asleep - deadlock!</code>），再数一遍「每个发送有没有对应的接收、每个 close 是不是恰好一次」。channel 的死锁九成是收发账目对不上。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w10d2c1">playground s5d2 跑通：三个 worker 经 channel 交作业，select 超时分支试过（把 Sleep 调到 3 秒亲眼看它触发）</label></li>
+      <li><label><input type="checkbox" data-key="w10d2c2"><code>agg.go</code> 落盘：<code>AggInput/AggResult</code> 金额字段为 <code>AmountCents int64</code>，串行版输出按 ID 排序</label></li>
+      <li><label><input type="checkbox" data-key="w10d2c3">表驱动测试三个用例全绿（空输入、单分类、多分类乱序）</label></li>
+      <li><label><input type="checkbox" data-key="w10d2c4"><code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，commit 带卡号 <code>s5d2</code></label></li>
+      <li><label><input type="checkbox" data-key="w10d2c5"><code>notes/</code> 里写下三行：close 后收发各什么行为、select 同时就绪挑谁、什么情况用 channel 什么情况用 Mutex</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w10d1.html"><span class="hint">← 昨天 · S5·D1</span>goroutine 与 WaitGroup</a>
+    <a href="w10d3.html"><span class="hint">明天 · S5·D3 →</span>Mutex/RWMutex 与 -race</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w10d2 · 明天见 ⟩</footer>
+</body>
+</html>

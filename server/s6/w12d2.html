@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S6·D2 · 收入、支出、转账：to_account_id 与 4001 | HomeCube 修炼手册</title>
+<meta name="description" content="给昨天的创建接口补全三种流水类型的语义：收入/支出走单账户，转账必须带 to_account_id，两端同账户、缺参、金额非法统一 400+4001，并为每种类型落测试。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w12d2">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S6</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S6</a> / w12d2</div>
+  <div class="day-meta">
+    <span class="chip">S6 · DAY 2</span>
+    <span class="chip alt">预计 25 分钟</span>
+    <span class="chip">难度 ★★☆☆☆</span>
+  </div>
+  <h1>收入、支出、转账：to_account_id 与 4001</h1>
+  <p>昨天 <code>POST /api/finance/transactions</code> 通了幂等，但 <code>type=transfer</code> 还是个空壳——收进来什么就存什么。今天补全三种类型的<b>语义校验</b>：收入/支出只碰一个账户；转账必须同时给 <code>account_id</code> 与 <code>to_account_id</code>，且两端不能是同一个账户。所有金额语义错误都走同一个出口：<b>400 + 4001</b>。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w12d2g1">说清三种 type 的字段矩阵：谁必填 <code>category_id</code>、谁必填 <code>to_account_id</code>、谁两者都可空</label></li>
+      <li><label><input type="checkbox" data-key="w12d2g2">说清转账为什么不算收支：它不改家庭总资产，只挪位置</label></li>
+      <li><label><input type="checkbox" data-key="w12d2g3">把「两端同账户」「transfer 缺 to_account_id」「金额 ≤0」全部收敛到 400 + 4001</label></li>
+      <li><label><input type="checkbox" data-key="w12d2g4">三种类型 + 三条负样本测试落盘，<code>make build</code> / <code>make test</code> 绿</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 三种类型的字段矩阵</h3>
+    <table>
+      <tr><th>字段</th><th>income 收入</th><th>expense 支出</th><th>transfer 转账</th></tr>
+      <tr><td><code>amount_cents</code></td><td colspan="3">三者都必须 &gt; 0，否则 4001</td></tr>
+      <tr><td><code>account_id</code></td><td>收款账户，必填</td><td>付款账户，必填</td><td>转出账户，必填</td></tr>
+      <tr><td><code>to_account_id</code></td><td>必须为空</td><td>必须为空</td><td><b>必填</b>，且 ≠ account_id</td></tr>
+      <tr><td><code>category_id</code></td><td>必填（收入分类）</td><td>必填（支出分类）</td><td>可空（转账通常无分类）</td></tr>
+    </table>
+    <div class="callout warn"><p><b>「两端同账户」= 400 + 4001</b>，不是 1004。它不是格式问题，是金额语义问题：自己转给自己在账目上是无意义操作，和「金额 ≤0」「超出可用余额」同族，错误码表里它们共用 4001。分类记错码，前端就没法给出「请先选择另一个账户」这类精准提示。</p></div>
+
+    <h3>2. 转账为什么单独一种类型</h3>
+    <p>把转账记成「一笔支出 + 一笔收入」是新手最常见的偷懒，代价惨重：两条流水各有一半真相，删一条留一条就凭空造钱或烧钱；报表里家庭总收入/总支出被内部挪动灌水。正确口径：<b>转账是一条流水</b>，同时挂两个账户，对家庭总资产的净影响为 0。明天算余额口径时你会看到，转账在两个账户上一负一正、在全家维度直接抵消。</p>
+    <p>还要防一个方向性错误：<code>account_id</code> 永远是<b>转出方</b>，<code>to_account_id</code> 永远是<b>转入方</b>。全站只有这一个约定，写反了余额就反了。</p>
+
+    <h3>3. 校验放哪一层</h3>
+    <p>字段矩阵校验放 <b>service 层</b>，不放 handler：binding tag 只能管「格式」（缺字段、类型错 → 1004），管不了「组合语义」（transfer 必须两端不同 → 4001）。分层口径从 S2 三层起没变过——handler 只做翻译（HTTP ↔ Go），业务规则全在 service，repo 只管存取。这样明天单测 service 不需要起 HTTP。</p>
+    <pre><span class="code-label">片段 · 组合语义校验的形状（伪码）</span><code>validate(in):
+    in.AmountCents &lt;= 0                          → ErrAmountInvalid (4001)
+    in.Type == transfer:
+        in.ToAccountID == nil                    → ErrAmountInvalid (4001)
+        *in.ToAccountID == in.AccountID          → ErrAmountInvalid (4001)
+    in.Type != transfer &amp;&amp; in.ToAccountID != nil → ErrAmountInvalid (4001)
+    in.Type != transfer &amp;&amp; in.CategoryID == nil  → ErrAmountInvalid? 不——这是参数缺失，走 1004</code></pre>
+    <div class="callout note"><p>最后一条的分界值得停下来想：<b>「钱」的语义错 → 4001；「请求体完整性」错 → 1004。</b>收支缺 category_id 属于后者。错误码不是随手挑的，是每个码背后有一类可复用提示文案的分族。</p></div>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>①+③：补全 TxType 组合校验 + 三类型与负样本测试</b>。不动表、不加路由，只把昨天的 Create 里那段校验写满。</p>
+
+    <h3>步骤 1 · service 层补 validate</h3>
+    <pre><span class="code-label">片段 · server/internal/finance/service/transaction.go（插在 Create 的「首次」分支里、写库之前）</span><code><span class="k">func</span> <span class="t">validateCreate</span>(in *model.CreateTxInput) <span class="t">error</span> {
+    <span class="k">if</span> in.AmountCents &lt;= <span class="n">0</span> {
+        <span class="k">return</span> response.ErrAmountInvalid <span class="c">// 400 + 4001</span>
+    }
+    <span class="k">switch</span> in.Type {
+    <span class="k">case</span> model.TxTransfer:
+        <span class="k">if</span> in.ToAccountID == <span class="k">nil</span> || *in.ToAccountID == in.AccountID {
+            <span class="k">return</span> response.ErrAmountInvalid <span class="c">// 缺转入账户 / 两端同账户，同族 4001</span>
+        }
+    <span class="k">case</span> model.TxIncome, model.TxExpense:
+        <span class="k">if</span> in.ToAccountID != <span class="k">nil</span> {
+            <span class="k">return</span> response.ErrAmountInvalid
+        }
+        <span class="k">if</span> in.CategoryID == <span class="k">nil</span> {
+            <span class="k">return</span> response.ErrInvalidParam <span class="c">// 400 + 1004：请求体不完整</span>
+        }
+    <span class="k">default</span>:
+        <span class="k">return</span> response.ErrInvalidParam
+    }
+    <span class="k">return</span> <span class="k">nil</span>
+}</code></pre>
+
+    <h3>步骤 2 · 表驱动测试</h3>
+    <pre><span class="code-label">完整 · server/internal/finance/service/transaction_type_test.go</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"errors"</span>
+    <span class="s">"testing"</span>
+
+    <span class="s">"homecube/internal/finance/model"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="k">func</span> <span class="t">TestValidateCreate</span>(t *testing.T) {
+    two := <span class="t">int64</span>(<span class="n">2</span>)
+    cat := <span class="t">int64</span>(<span class="n">7</span>)
+    tests := []<span class="k">struct</span> {
+        name <span class="t">string</span>
+        in   model.CreateTxInput
+        want <span class="t">error</span> <span class="c">// nil = 应通过</span>
+    }{
+        {<span class="s">"支出合法"</span>, model.CreateTxInput{Type: model.TxExpense, AmountCents: <span class="n">100</span>, AccountID: <span class="n">1</span>, CategoryID: &amp;cat}, <span class="k">nil</span>},
+        {<span class="s">"收入合法"</span>, model.CreateTxInput{Type: model.TxIncome, AmountCents: <span class="n">100</span>, AccountID: <span class="n">1</span>, CategoryID: &amp;cat}, <span class="k">nil</span>},
+        {<span class="s">"转账合法"</span>, model.CreateTxInput{Type: model.TxTransfer, AmountCents: <span class="n">100</span>, AccountID: <span class="n">1</span>, ToAccountID: &amp;two}, <span class="k">nil</span>},
+        {<span class="s">"金额为0"</span>, model.CreateTxInput{Type: model.TxExpense, AmountCents: <span class="n">0</span>, AccountID: <span class="n">1</span>, CategoryID: &amp;cat}, response.ErrAmountInvalid},
+        {<span class="s">"两端同账户"</span>, model.CreateTxInput{Type: model.TxTransfer, AmountCents: <span class="n">100</span>, AccountID: <span class="n">1</span>, ToAccountID: &amp;[]<span class="t">int64</span>{<span class="n">1</span>}[<span class="n">0</span>]}, response.ErrAmountInvalid},
+        {<span class="s">"转账缺转入"</span>, model.CreateTxInput{Type: model.TxTransfer, AmountCents: <span class="n">100</span>, AccountID: <span class="n">1</span>}, response.ErrAmountInvalid},
+        {<span class="s">"支出缺分类"</span>, model.CreateTxInput{Type: model.TxExpense, AmountCents: <span class="n">100</span>, AccountID: <span class="n">1</span>}, response.ErrInvalidParam},
+    }
+    <span class="k">for</span> _, tt := <span class="k">range</span> tests {
+        t.Run(tt.name, <span class="k">func</span>(t *testing.T) {
+            err := validateCreate(&amp;tt.in)
+            <span class="k">if</span> tt.want == <span class="k">nil</span> &amp;&amp; err != <span class="k">nil</span> { t.Fatalf(<span class="s">"应通过, got %v"</span>, err) }
+            <span class="k">if</span> tt.want != <span class="k">nil</span> &amp;&amp; !errors.Is(err, tt.want) { t.Fatalf(<span class="s">"want %v, got %v"</span>, tt.want, err) }
+        })
+    }
+}</code></pre>
+    <p><code>&amp;[]int64{1}[0]</code> 这个写法丑得醒目——取一个字面量的地址。Go 不允许 <code>&amp;1</code>，测试里造 <code>*int64</code> 就得这么绕一下（或者声明个变量，上面 <code>two</code> 就是正经写法）。</p>
+
+    <h3>步骤 3 · 验收</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test     <span class="c"># 新增 7 个 case 全绿，昨天的幂等三态不许红</span>
+make lint
+
+<span class="c"># 手工一发转账（两个账户 id 换成你库里的真实值）：</span>
+curl -s -X POST http://localhost:8080/api/finance/transactions \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"client_request_id":"demo-0002","type":"transfer","amount_cents":5000,"account_id":1,"to_account_id":1,"occurred_at":"2026-01-06T09:00:00Z"}'
+<span class="c"># 期望：400，body 里 code=4001</span>
+
+git add server
+git commit -m "feat(s6d2): 流水三类型组合校验，两端同账户 4001"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>转账拆成一收一支两条流水</td><td>删一半造出/烧掉一笔钱；报表被内部挪动灌水</td><td>转账是<b>一条</b>流水挂两个账户，家庭总资产净变化为 0</td></tr>
+      <tr><td>支出存负数金额</td><td>SUM 时正负抵消口径全靠脑补</td><td><code>amount_cents</code> 恒正，方向看 <code>type</code></td></tr>
+      <tr><td>两端同账户返回 1004</td><td>金额语义错混进参数错，前端提示不准</td><td>4001 专管「钱」的语义：≤0 / 超余额 / 两端同账户</td></tr>
+      <tr><td>校验写进 handler</td><td>service 单测测不到规则，换个入口（明天的导入、后天的周期入账）规则就丢了</td><td>组合语义全在 service；handler 只管 HTTP 翻译</td></tr>
+      <tr><td><code>to_account_id</code> 用 0 表示「没有」</td><td>0 与「未填」分不清，外键校验全是洞</td><td>可空外键用 <code>*int64</code> + NULL，不用零值魔法</td></tr>
+      <tr><td>income/expense 也收 <code>to_account_id</code></td><td>存进去一个永远没人读的字段值</td><td>非转账带了 to_account_id 直接 4001，口径收紧</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>字段矩阵</td><td>每种 type 下各字段的必填/必空约定表，校验代码就是它的直译</td></tr>
+      <tr><td><code>to_account_id</code></td><td>转账的转入账户；转出方永远是 <code>account_id</code>，全站唯一方向约定</td></tr>
+      <tr><td>两端同账户</td><td><code>account_id == to_account_id</code> 的转账，无意义操作，400 + 4001</td></tr>
+      <tr><td>组合语义校验</td><td>跨字段才能判断的合法性（binding tag 管不了），归 service 层</td></tr>
+      <tr><td>净变化为 0</td><td>转账对家庭总资产不改一分，只是两个账户间挪动</td></tr>
+      <tr><td><code>*int64</code> 可空外键</td><td>指针区分「没填」（nil/NULL）与「填了 0」；Go 里 <code>&amp;1</code> 不合法，要借助变量</td></tr>
+      <tr><td>表驱动测试</td><td>cases 切片 + 循环断言，S1·D2 起的老朋友，负样本越多越值</td></tr>
+      <tr><td>1004 vs 4001 分界</td><td>请求体完整性/格式 → 1004；金额语义 → 4001</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <ul>
+      <li><b>表驱动测试的写法忘了</b>：回 S1·D2（第一个表驱动测试）与 S2·D4 前后的 handler 测试。</li>
+      <li><b>哨兵错误怎么映射到 4001</b>：回 S1·D4；<code>CodeOf</code> 与 <code>FailErr</code> 是同一套字典。</li>
+      <li><b>binding tag 与手写校验的分工</b>：回 S2 讲请求解析的那一天（tag 管格式，service 管语义）。</li>
+      <li><b>昨天的幂等三态被改红了</b>：先 <code>git diff</code> 看 validate 插的位置——必须在幂等判定<b>之后</b>、写库之前，重放路径不重新校验。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w12d2c1">三种 type 的字段矩阵能徒手画出来，并说清每格为什么</label></li>
+      <li><label><input type="checkbox" data-key="w12d2c2">两端同账户、转账缺 <code>to_account_id</code>、金额 ≤0 三条 curl 全部返回 400 + 4001</label></li>
+      <li><label><input type="checkbox" data-key="w12d2c3">收支缺 <code>category_id</code> 返回 400 + 1004，与 4001 分界说得清</label></li>
+      <li><label><input type="checkbox" data-key="w12d2c4">表驱动测试 7 个 case 全绿，昨天的幂等三态测试仍绿，commit 带卡号 <code>s6d2</code></label></li>
+      <li><label><input type="checkbox" data-key="w12d2c5"><code>notes/</code> 三行：转账为什么是一条流水、转出方为什么固定是 account_id、4001 与 1004 各管什么</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w12d1.html"><span class="hint">← 昨天 · S6·D1</span>流水表与创建：client_request_id 幂等三态</a>
+    <a href="w12d3.html"><span class="hint">明天 · S6·D3 →</span>余额计算口径：由流水推导，不维护余额列</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w12d2 · 明天见 ⟩</footer>
+</body>
+</html>

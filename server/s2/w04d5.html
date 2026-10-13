@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S2·D11 · 配置加载雏形：env 读 PORT 与 GIN_MODE | HomeCube 修炼手册</title>
+<meta name="description" content="新建 internal/platform/config 雏形包：os.Getenv 读 PORT 与 GIN_MODE，空值给默认、非法值拒绝启动；main 从 config 取监听地址与运行模式，不再写死 :8080。完整的 DB_* 拼 DSN 与连接池在 S3·D11 定稿。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w04d5">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S2</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S2</a> / w04d5</div>
+  <div class="day-meta">
+    <span class="chip">S2 · DAY 11</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>配置加载雏形：env 读 PORT 与 GIN_MODE</h1>
+  <p>D10 把错误契约收了口，今天给第三类「随环境变的东西」安家：<b>运行配置</b>。还记得 S2·D1 换入 Gin 那天，main 里那句 <code>addr := ":8080"</code> 旁边的注释吗——「先沿用写死；D11 起从 env 的 PORT 读」。今天兑现它。新建 <code>internal/platform/config</code> 雏形包，教两个变量：<code>PORT</code> 与 <code>GIN_MODE</code> 的读法、默认值与非法值处理。为什么只是「雏形」？因为完整的 config——<code>DB_*</code> 六个变量拼 Postgres DSN、连接池四参数、<code>AUTO_MIGRATE</code> 门禁——要到 <a href="../s3/w06d5.html">S3·D11</a> 才一次定稿；今天只把「env 读取」这件事收进一个包，并把<b>读法</b>立成后面一路沿用的形状。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w04d5g1">讲得出「同一个二进制要跑在不同环境」时，端口与运行模式为什么必须外置注入，写死各欠一笔什么债</label></li>
+      <li><label><input type="checkbox" data-key="w04d5g2">说清 <code>os.Getenv</code> 对「未设置」的语义——返回空串而不是报错——以及「空给默认、非空校验、非法拒绝启动」的读法</label></li>
+      <li><label><input type="checkbox" data-key="w04d5g3"><code>internal/platform/config</code> 雏形包落盘：<code>Config{Port, GinMode}</code> + <code>Load()</code> 的「读取 → 默认 → 校验」三步</label></li>
+      <li><label><input type="checkbox" data-key="w04d5g4">main 改从 config 取监听地址与 Gin 模式：<code>PORT=9090</code> 真听 9090、<code>GIN_MODE=release</code> 真没 debug 横幅、<code>PORT=abc</code> 当场拒启</label></li>
+    </ul>
+    <div class="callout note"><p>↑ 这四条是「学习目标」。页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 端口和运行模式，为什么轮不到代码说了算</h3>
+    <p>你的 <code>homecube</code> 二进制从 S2 起就只有一个，可它要活的环境不止一个：</p>
+    <table>
+      <tr><th>环境</th><th>端口想是谁的</th><th>Gin 模式想是谁的</th></tr>
+      <tr><td>本机日常开发</td><td>8080（习惯了）</td><td>debug：路由注册、警告都打出来，方便对着看</td></tr>
+      <tr><td>本机 8080 被别人占了</td><td>临时换 8081——凭什么要重新编译？</td><td>debug</td></tr>
+      <tr><td>将来容器里（S3 的 compose、S8 的部署）</td><td>容器内监听、外部映射，两边不必相同</td><td>release：不该有 debug 横幅与多余警告</td></tr>
+      <tr><td>CI / 测试</td><td>随机端口，免得并行任务撞车</td><td>test（S2·D3 的 <code>gin.TestMode</code> 注释就写着「D11 起由 GIN_MODE 统一管理」）</td></tr>
+    </table>
+    <p>写死 <code>":8080"</code> 的债：每换一个环境就改一次代码、重编一次、<b>而且这份改动会进 git</b>——你临时换的 8081 会跟着提交推上去，第二天队友的 8080 就神秘失踪。行业把这笔账算了几十年，结论成文（12-factor 的第一条之一）：<b>配置存在环境变量里，代码里不写死</b>。代码负责「怎么跑」，环境负责「在哪跑、用什么值跑」。今天 config 包就是这条纪律在本仓的最小实现。</p>
+
+    <h3>2. os.Getenv 的三副面孔：空串，不是错误</h3>
+    <p>读环境变量的标准库入口是 <code>os.Getenv(name)</code>。新手对它最大的误会：以为「没设置会返回错误」。<b>不会——它返回空字符串</b>。没设置、设置了个空值，在 <code>Getenv</code> 这里同一个结果（要分辨得用双值形式 <code>v, ok := os.LookupEnv(name)</code>，今天用不上，先知道有这东西）。所以正确的读法不是「读—判错」，而是三段式：</p>
+    <pre><span class="code-label">片段 · 读 env 的标准三段式（本页主角 Load() 的骨架）</span><code>port := os.Getenv(<span class="s">"PORT"</span>)      <span class="c">// ① 读取：没设置时是 ""，不报错</span>
+<span class="k">if</span> port == <span class="s">""</span> {              <span class="c">// ② 空 → 默认值：不设也能起</span>
+    port = <span class="s">"8080"</span>
+}
+<span class="k">if</span> n, err := strconv.<span class="t">Atoi</span>(port); err != <span class="k">nil</span> || n &lt; <span class="n">1</span> || n &gt; <span class="n">65535</span> {
+    <span class="k">return</span> <span class="t">error</span>              <span class="c">// ③ 非空 → 必须合法：非法就拒绝，不静默回落</span>
+}</code></pre>
+    <p>第③步的「不回落」是今天的核心判据：<code>PORT=abc</code> 是拼错，不是「没设置」——把它悄悄当 8080 跑起来，你要到 curl 打错端口的那一刻才发现拼错。配置错误最便宜的暴露时刻是<b>启动那一秒</b>（fail fast）。</p>
+
+    <h3>3. 两个变量的读法与校验</h3>
+    <table>
+      <tr><th>变量</th><th>含义</th><th>不设时的默认</th><th>合法值</th><th>非法怎么办</th></tr>
+      <tr><td><code>PORT</code></td><td>HTTP 监听端口</td><td><code>8080</code></td><td>1–65535 的整数（<code>strconv.Atoi</code> 之外还要范围闸：<code>0</code>、<code>99999</code> 是合法整数、非法端口）</td><td><code>Load()</code> 返回错误，main <code>log.Fatalf</code> 拒启</td></tr>
+      <tr><td><code>GIN_MODE</code></td><td>Gin 运行模式</td><td><code>debug</code></td><td><code>debug</code> / <code>release</code> / <code>test</code> 三个值，一字不差</td><td>同上——<code>realse</code> 这种拼错不配被静默当 debug 跑半年</td></tr>
+    </table>
+    <p>两个顺带说清：<b>GIN_MODE 只此三值</b>——debug 打路由注册与开发警告，release 静音，test 给测试环境的静音档（S2·D3 你手动调过 <code>gin.SetMode(gin.TestMode)</code>，今天起这个决定权交给 env）。<b>不要躺平让框架自己读</b>：Gin 内部确实也会看 GIN_MODE，但本站的纪律是 config 是唯一读取点，main 显式 <code>gin.SetMode</code> 把它钉死——非法值拦在我们自己手里，错误信息写清变量名和实际值。</p>
+
+    <h3>4. 为什么这一步只做「雏形」</h3>
+    <p>今天包很小：一个 struct、一个 <code>Load()</code>、两个变量。故意的——完整的 config 要等数据库登场才有内容可做：</p>
+    <table>
+      <tr><th>能力</th><th>今天（S2·D11 雏形）</th><th>定稿（S3·D11）</th></tr>
+      <tr><td>HTTP 侧</td><td><code>PORT</code>、<code>GIN_MODE</code> 读取 + 默认 + 校验</td><td>沿用，一行不改</td></tr>
+      <tr><td>DB 侧</td><td><b>不接</b>——S2 存储还是内存 map，DB 变量此刻无处可连</td><td><code>DB_HOST/DB_PORT/DB_USER/DB_PASS/DB_NAME/DB_SSLMODE</code> 必填校验 + 拼 Postgres DSN，全站唯一拼装点（口径见 <a href="../s3/w05d1.html">S3·D1</a> 的 .env 两段）</td></tr>
+      <tr><td>连接池</td><td>不存在</td><td>四参数（MaxOpen/MaxIdle/Lifetime/IdleTime）一次讲透</td></tr>
+      <tr><td>门禁</td><td>不存在</td><td><code>AUTO_MIGRATE</code> 读到 true 直接拒绝启动</td></tr>
+    </table>
+    <p>雏形不是「凑合」，是<b>先把读法立对</b>：env → 默认 → 校验 → 返回 struct；调用方拿值，不碰 <code>os</code> 包。这套骨架从今天起到 S4 加 <code>JWT_SECRET</code>、S6 加 <code>UPLOAD_DIR</code>、S7 加 <code>CORS_ORIGIN</code>，全程只加字段、不改形状。另一个动机和 D10 完全同款：<b>收口</b>——错误翻译只有一个出口 <code>FailErr</code>，环境变量也只有一个读取点 <code>config.Load()</code>；散落的 <code>os.Getenv</code> 就是散落的翻译点，迟早有一处拼错、一处漏校验。config 住在 <code>internal/platform/</code>（S2·D4 立的规矩：横切住户不属于任何业务模块），main 从它取端口，业务包永远不知道 env 这回事。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>①+②</b>：新建 <code>internal/platform/config</code> 雏形包（①：Config struct + Load 的默认值与非法值处理），main 从它取监听地址与 Gin 模式、删除写死的 <code>:8080</code>（②：装配段的接线改造）。HTTP 契约零变化——分类 6 条与 <code>/healthz</code> 一字不动。收工时 <code>make build</code> / <code>make test</code> 仍绿。</p>
+
+    <h3>步骤 1 · 雏形包落盘</h3>
+    <pre><span class="code-label">完整 · server/internal/platform/config/config.go</span><code><span class="k">package</span> config
+
+<span class="k">import</span> (
+    <span class="s">"fmt"</span>
+    <span class="s">"os"</span>
+    <span class="s">"strconv"</span>
+)
+
+<span class="c">// Config 应用运行配置——S2·D11 雏形版：只 HTTP 侧两个变量。</span>
+<span class="c">// S3·D11 起定稿：补 DB_* 拼 DSN、连接池四参数、AUTO_MIGRATE 门禁。</span>
+<span class="c">// 今天立的读法（读取 → 默认 → 校验）一路用到毕业，之后只加字段不改形状。</span>
+<span class="k">type</span> <span class="t">Config</span> <span class="k">struct</span> {
+    <span class="t">Port</span>    <span class="t">string</span> <span class="c">// "PORT"：监听端口，默认 "8080"</span>
+    <span class="t">GinMode</span> <span class="t">string</span> <span class="c">// "GIN_MODE"：debug / release / test，默认 "debug"</span>
+}
+
+<span class="c">// Load 全站唯一的环境变量读取点。</span>
+<span class="c">// 非法值返回 error 而不是静默回落默认：配置错误最便宜的暴露时刻是启动那一秒。</span>
+<span class="c">// 返回 error 而非 panic：怎么死由调用方（main）决定；测试也能拿 error 断言非法路径。</span>
+<span class="k">func</span> <span class="t">Load</span>() (<span class="t">Config</span>, <span class="t">error</span>) {
+    cfg := <span class="t">Config</span>{
+        <span class="t">Port</span>:    os.<span class="t">Getenv</span>(<span class="s">"PORT"</span>),
+        <span class="t">GinMode</span>: os.<span class="t">Getenv</span>(<span class="s">"GIN_MODE"</span>),
+    }
+
+    <span class="c">// —— PORT：空 = 用默认；一旦有值，必须是合法端口号 ——</span>
+    <span class="k">if</span> cfg.<span class="t">Port</span> == <span class="s">""</span> {
+        cfg.<span class="t">Port</span> = <span class="s">"8080"</span>
+    }
+    <span class="k">if</span> n, err := strconv.<span class="t">Atoi</span>(cfg.<span class="t">Port</span>); err != <span class="k">nil</span> || n &lt; <span class="n">1</span> || n &gt; <span class="n">65535</span> {
+        <span class="k">return</span> <span class="t">Config</span>{}, fmt.<span class="t">Errorf</span>(<span class="s">"config: 非法的 PORT %q：必须是 1-65535 的整数"</span>, cfg.<span class="t">Port</span>)
+    }
+
+    <span class="c">// —— GIN_MODE：空 = 用默认；只认三个值，拼错不回落 ——</span>
+    <span class="k">if</span> cfg.<span class="t">GinMode</span> == <span class="s">""</span> {
+        cfg.<span class="t">GinMode</span> = <span class="s">"debug"</span>
+    }
+    <span class="k">switch</span> cfg.<span class="t">GinMode</span> {
+    <span class="k">case</span> <span class="s">"debug"</span>, <span class="s">"release"</span>, <span class="s">"test"</span>:
+    <span class="k">default</span>:
+        <span class="k">return</span> <span class="t">Config</span>{}, fmt.<span class="t">Errorf</span>(<span class="s">"config: 非法的 GIN_MODE %q：只允许 debug/release/test"</span>, cfg.<span class="t">GinMode</span>)
+    }
+
+    <span class="k">return</span> cfg, <span class="k">nil</span>
+}
+
+<span class="c">// Addr 拼监听地址——main 里从此不再手写 ":"+port。</span>
+<span class="k">func</span> (c <span class="t">Config</span>) <span class="t">Addr</span>() <span class="t">string</span> { <span class="k">return</span> <span class="s">":"</span> + c.<span class="t">Port</span> }</code></pre>
+    <div class="callout note"><p>错误信息里「变量名 + 实际值」两个都要有（<code>%q</code> 把空串、空格都显形）。这和 D10 的 <code>%w</code> 包装把上下文写足是同一种手感：报错是给人读的线索，不是给人添的谜。</p></div>
+
+    <h3>步骤 2 · main 换血：端口与模式从 config 取</h3>
+    <pre><span class="code-label">片段 · server/cmd/homecube/main.go 的 main 函数（改后完整替换；newRouter 不动）</span><code><span class="k">func</span> <span class="t">main</span>() {
+    cfg, err := config.<span class="t">Load</span>()
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        log.<span class="t">Fatalf</span>(<span class="s">"拒绝启动: %v"</span>, err) <span class="c">// fail fast：配置不对不营业</span>
+    }
+
+    <span class="c">// 模式在构造路由之前钉死（gin.SetMode 只影响之后创建的 engine）。</span>
+    <span class="c">// Gin 框架自己也会读 GIN_MODE，但本站不躺平：config 是唯一读取点，这里显式落定。</span>
+    <span class="k">switch</span> cfg.<span class="t">GinMode</span> {
+    <span class="k">case</span> <span class="s">"release"</span>: gin.<span class="t">SetMode</span>(gin.<span class="t">ReleaseMode</span>)
+    <span class="k">case</span> <span class="s">"test"</span>:    gin.<span class="t">SetMode</span>(gin.<span class="t">TestMode</span>)
+    <span class="k">default</span>:        gin.<span class="t">SetMode</span>(gin.<span class="t">DebugMode</span>)
+    }
+
+    log.<span class="t">Println</span>(<span class="s">"homecube listening on"</span>, cfg.<span class="t">Addr</span>(), <span class="s">"mode"</span>, cfg.<span class="t">GinMode</span>)
+    <span class="k">if</span> err := http.<span class="t">ListenAndServe</span>(cfg.<span class="t">Addr</span>(), <span class="t">newRouter</span>()); err != <span class="k">nil</span> {
+        log.<span class="t">Fatal</span>(err)
+    }
+}</code></pre>
+    <p>对照改前：<code>addr := ":8080"</code> 那行连同「D11 起从 env 读」的注释一起退役——欠了十天的注释今天还清。main 里 <code>os.Getenv</code> 零出现、字面端口零出现；将来要加新环境变量，先在 config 加字段、加校验，调用处永远只读 <code>cfg.X</code>。</p>
+
+    <h3>步骤 3 · 验收并提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test    <span class="c"># 分类 6 条矩阵、场景测试一字未改照样绿——今天没碰契约</span>
+make lint
+
+PORT=9090 GIN_MODE=release make run  <span class="c"># 终端 1：无 [GIN-debug] 横幅；日志一行 listening on :9090 mode release</span>
+curl -i http://localhost:9090/healthz   <span class="c"># 终端 2：200——PORT 真的生效</span>
+curl -i http://localhost:8080/healthz   <span class="c"># 拒绝连接——写死端口的时代结束了</span>
+
+PORT=abc make run        <span class="c"># 当场退出：非法的 PORT "abc"，错误信息点名变量与实际值</span>
+GIN_MODE=realse make run <span class="c"># 同样拒启：非法值不静默回落</span>
+make run                 <span class="c"># 什么 env 都不给：默认 8080 + debug，与昨天行为一致</span>
+
+grep -rn <span class="s">"os.Getenv"</span> server/cmd/homecube/          <span class="c"># 零命中：main 不再亲自读 env</span>
+grep -rn <span class="s">"\":8080\""</span> server/cmd/homecube/            <span class="c"># 零命中：字面端口绝迹</span>
+
+git add server
+git status
+git commit -m "feat(s2d11): platform/config 雏形——main 从 env 读 PORT 与 GIN_MODE，删除写死端口"</code></pre>
+    <div class="callout tip"><p>注意今天的验收没有「去读某个文档」：三段式、两张校验表、一段包代码，判据全部当场可跑。S3·D11（<a href="../s3/w06d5.html">连接池与 DB 配置</a>）会把今天的包定稿——那时新增的每个字段，都长得和 <code>Port</code> 一模一样：有来源、有默认、有校验、有报错。</p></div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>以为 <code>Getenv</code> 没设置会报错</td><td>兴冲冲写 <code>v, err := os.Getenv(...)</code>——编译都过不了；或等 err 等到天荒地老</td><td>它只返回空串。用 <code>== ""</code> 判「没给」，给默认；要分辨「没设 vs 设为空」才知道 <code>LookupEnv</code></td></tr>
+      <tr><td>空串直接拼 <code>":"+port</code></td><td><code>ListenAndServe(":")</code> 报 <code>missing port in address</code>——连默认端口都不剩，服务起不来还看不懂为什么</td><td>先补默认再拼；拼地址只发生在 <code>cfg.Addr()</code> 一处</td></tr>
+      <tr><td>把密钥/口令写进代码「反正本地跑」</td><td>连库口令、签名密钥进了源码，跟着 commit 推上仓——白纸黑字永久公开</td><td>密钥永远只从 env 进代码，不落盘不入库；今天 PORT 是开胃菜，S3 的 <code>DB_PASS</code>、S4 的 <code>JWT_SECRET</code> 按同一纪律走（.env 由 .gitignore 拦着）</td></tr>
+      <tr><td>用 <code>init()</code> 读配置存全局变量</td><td><code>init</code> 在包 import 时就跑完：测试里 <code>t.Setenv</code> 换值再调一次 Load 的机会都没有，默认值/非法值路径全测不了</td><td>配置是 <code>Load()</code> 的返回值不是全局变量；谁要用谁拿，测试随时「重当一次启动现场」</td></tr>
+      <tr><td>非法 GIN_MODE 静默回落 debug</td><td><code>realse</code> 拼错，服务顶着 debug 横幅跑半年，路由与警告全在外泄</td><td>非法 = 返回错误拒绝启动，不回落（与时间窗非法 1007 不回落同一个脾气：错误输入不配被惯成默认值）</td></tr>
+      <tr><td>PORT 校验只看 <code>Atoi</code> 的 err</td><td><code>PORT=0</code>、<code>PORT=99999</code> 是合法整数、非法端口，照样放行</td><td>两道闸：能转整数 && 在 1–65535 内</td></tr>
+      <tr><td>把 config 当百宝箱，随手再加 <code>os.Getenv</code> 散落各处</td><td>三个包各自读同一个变量、默认值抄三遍、校验只有一处有——散落的读取点</td><td>新变量先进 config：加字段、加校验、加测试；调用处只读 <code>cfg.X</code>。收口思路与 D10「错误出口只有 FailErr」同款</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>运行配置（env 配置）</td><td>从代码外置出来、随环境而变的值；代码管「怎么跑」，环境管「在哪跑、用什么值」</td></tr>
+      <tr><td><code>os.Getenv</code></td><td>按名读环境变量；未设置返回<b>空串</b>而非错误——「读取 → 默认 → 校验」三段式的起点</td></tr>
+      <tr><td>默认值</td><td>不设时照样跑的值（8080、debug）；必须显式写在 Load 里，不许藏在调用处</td></tr>
+      <tr><td>fail fast</td><td>配置非法就在启动那一秒拒绝——比带着错端口、错模式跑到事故现场再暴露便宜一百倍</td></tr>
+      <tr><td><code>GIN_MODE</code></td><td>Gin 运行模式三档：debug（打路由与警告）/ release（静音）/ test（测试静音档）</td></tr>
+      <tr><td>雏形 vs 定稿</td><td>今天两变量一包叫雏形；S3·D11 补 DB_* 拼 DSN、连接池、AUTO_MIGRATE 叫定稿——读法不变，只长字段</td></tr>
+      <tr><td>唯一读取点</td><td>全仓只有 config 碰 <code>os.Getenv</code>；与「错误翻译只有 FailErr 一个出口」同构的收口纪律</td></tr>
+      <tr><td>注入</td><td>配置以 <code>Load()</code> 返回值交给消费方，不是全局变量；测试可以 <code>t.Setenv</code> 后重新 Load</td></tr>
+      <tr><td>横切住户</td><td>不属于任何业务模块的公共设施，住 <code>internal/platform/</code>——config 是继 middleware 之后的第二位</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有两种情况出去查：</p>
+    <ul>
+      <li><b>Gin 的运行模式与默认行为</b>：<a href="https://pkg.go.dev/github.com/gin-gonic/gin#SetMode" target="_blank">gin 包文档 · SetMode</a>（可选）——重点确认它自带的 env 读取与本站「config 唯一读取点」并不冲突，我们只是不让框架替我们静默决定。</li>
+      <li><b><code>os.Getenv</code> / <code>strconv.Atoi</code> 的签名</b>：<a href="https://pkg.go.dev/os#Getenv" target="_blank">os 包文档</a>、<a href="https://pkg.go.dev/strconv#Atoi" target="_blank">strconv 包文档</a>（可选）。</li>
+    </ul>
+    <p>站内回看：写死端口与那条「D11 起从 env 读」的注释立在 <a href="w03d1.html">S2·D1</a>；<code>gin.TestMode</code> 与 GIN_MODE 的前缘在 <a href="w03d3.html">S2·D3</a>；config 为什么住 <code>platform/</code> 在 <a href="w03d4.html">S2·D4</a>；收口思路的上一课是 <a href="w04d4.html">S2·D10</a>；今天的雏形何时定稿、长成什么样，见 <a href="../s3/w06d5.html">S3·D11</a>（DB_* 口径的出处在 <a href="../s3/w05d1.html">S3·D1</a>）。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w04d5c1"><code>internal/platform/config</code> 落盘：<code>Load()</code> 读 PORT/GIN_MODE，空值给默认（8080/debug），非法返回点名变量与值的 error——两处都拒绝启动、不静默回落</label></li>
+      <li><label><input type="checkbox" data-key="w04d5c2">main 换血完成：无 <code>os.Getenv</code>、无字面 <code>":8080"</code>（两条 grep 零命中）；addr 来自 <code>cfg.Addr()</code>，模式由 <code>cfg.GinMode</code> 显式 <code>gin.SetMode</code></label></li>
+      <li><label><input type="checkbox" data-key="w04d5c3">现场三验跑过：<code>PORT=9090 GIN_MODE=release</code> 起在 9090 且无 debug 横幅；<code>PORT=abc</code> 与 <code>GIN_MODE=realse</code> 都当场拒启；裸跑回默认 8080+debug</label></li>
+      <li><label><input type="checkbox" data-key="w04d5c4"><code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，分类 6 条矩阵一字未改照样绿，commit 带卡号 <code>s2d11</code></label></li>
+      <li><label><input type="checkbox" data-key="w04d5c5"><code>notes/</code> 写三行：Getenv 的空串为什么不是错误、init() 读配置会堵死哪条测试路、S3·D11 定稿时 config 要长出的三样东西（DB_* 拼 DSN / 池四参数 / AUTO_MIGRATE 门禁）</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w04d4.html"><span class="hint">← 昨天 · S2·D10</span>错误处理收口：FailErr 与哨兵映射</a>
+    <a href="w04d6.html"><span class="hint">明天 · S2·D12 →</span>周六 · S2 收口与费曼自测</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w04d5 · 明天见 ⟩</footer>
+</body>
+</html>

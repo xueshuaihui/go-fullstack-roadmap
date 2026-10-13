@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S5·D11 · httptest.NewServer：给接口上 50 路并发 | HomeCube 修炼手册</title>
+<meta name="description" content="兑现 S1·D6「NewServer 留给 S5」的欠条：NewRecorder 与 NewServer 的分工、真 URL 上的 50 路并发 /healthz 测试（WaitGroup + 缓冲错误通道收尾），以及 -race 全量回归为什么绿 ≠ 无竞争。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w11d5">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S5</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S5</a> / w11d5</div>
+  <div class="day-meta">
+    <span class="chip">S5 · DAY 11</span>
+    <span class="chip alt">预计 25 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>httptest.NewServer：给接口上 50 路并发</h1>
+  <p>S1·D6 的名词卡写过：「<code>httptest.NewRecorder</code>——进程内假请求，S2 起天天用；<code>httptest.NewServer</code>——真监听真端口，<b>S5 讲并发时再见</b>」。今天还这张欠条。前四个阶段的接口测试全是 NewRecorder：handler 被当普通函数调，请求不过网络。这对单请求逻辑够用——但 D1 学的东西是「同一个服务被几十路并发打」，Recorder 根本不走真实连接，测不到。今天用 NewServer 给 <code>/healthz</code> 上 50 路并发，并用 <code>make test</code> 的 <code>-race</code> 全量收口。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w11d5g1">说得出 Recorder 与 NewServer 的分工：测 handler 逻辑用前者（快、零端口），测完整 HTTP 链路与并发用后者</label></li>
+      <li><label><input type="checkbox" data-key="w11d5g2">会用 NewServer 三件套：<code>srv.URL</code> 发真请求、<code>defer srv.Close()</code> 收摊、端口由系统随机分配</label></li>
+      <li><label><input type="checkbox" data-key="w11d5g3">掌握并发测试的收错模式：WaitGroup 等全员 + 缓冲错误通道收集 + 主 goroutine 统一断言</label></li>
+      <li><label><input type="checkbox" data-key="w11d5g4">/healthz 50 路并发测试落盘且绿；能解释 <code>-race</code> 全量回归里「红是铁证、绿只是证据」</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 分工表：Recorder 管逻辑，NewServer 管链路</h3>
+    <table>
+      <tr><th></th><td><code>httptest.NewRecorder</code>（S2/S4 的老朋友）</td><td><code>httptest.NewServer</code>（今天）</td></tr>
+      <tr><th>本质</th><td>进程内直接调 <code>router.ServeHTTP(w, req)</code>——不过网络</td><td>起一个<b>真实监听</b>的 HTTP 服务，用真 <code>http.Get</code> 打过去</td></tr>
+      <tr><th>端口</th><td>不需要</td><td>内部就是 D9 坑表那招：<code>127.0.0.1:0</code> 系统随机分配，永不撞车</td></tr>
+      <tr><th>覆盖范围</th><td>路由匹配、中间件、handler、响应体</td><td>以上全部 <b>+ 真实连接管理、序列化传输、并发调度</b></td></tr>
+      <tr><th>并发测试</th><td>不合适——Recorder 不是为并发写设计的</td><td>正路——每路 goroutine 各发各的真请求</td></tr>
+      <tr><th>成本</th><td>近乎零</td><td>多一个监听与真实往返，仍然很快（本机 loopback）</td></tr>
+    </table>
+    <p>选择规则一句话：<b>逻辑断言用 Recorder，链路与并发用 NewServer</b>。不是谁取代谁——S2 起的 Recorder 测试一个都不删，今天是补上另一半。</p>
+
+    <h3>2. NewServer 三件套</h3>
+    <pre><span class="code-label">片段 · 标准姿势</span><code>srv := httptest.NewServer(newRouter(...)) <span class="c">// ① 真监听；地址在 srv.URL，形如 http://127.0.0.1:54321</span>
+<span class="k">defer</span> srv.Close()                        <span class="c">// ② 收摊：关监听、断连接——忘了它就是测试间的泄漏源</span>
+resp, err := http.Get(srv.URL + <span class="s">"/healthz"</span>) <span class="c">// ③ 用标准 http 客户端打真请求</span></code></pre>
+    <p><code>newRouter(...)</code> 就是你仓里 D9 用过的装配函数——测试与生产共用同一份路由装配，测的才是真东西。<code>/healthz</code> 不碰 DB，装配参数给什么以你仓库的签名为准。</p>
+
+    <h3>3. 并发收错：D1 + D2 的组合收尾</h3>
+    <p>50 路 goroutine 各发一次请求，结果怎么收？本周学的两件兵器正好拼上：</p>
+    <ul>
+      <li><b>WaitGroup</b>（D1）：主 goroutine <code>wg.Wait()</code> 等全员跑完——Add 在 go 之前，纪律不变。</li>
+      <li><b>缓冲错误通道</b>（D2）：<code>errs := make(chan error, n)</code>，容量 = goroutine 总数，每路<b>至多</b>塞一条错误——发送永不阻塞，于是连 D5 的 closer goroutine 都省了。</li>
+    </ul>
+    <p>断言放哪？<b>全部挪回主 goroutine</b>：<code>wg.Wait()</code> 之后 <code>close(errs)</code>，range 出来用 <code>t.Error</code> 逐条报。这比在 50 个 goroutine 里散着 <code>t.Errorf</code> 更好读（错误集中出现在测试末尾），也彻底绕开「goroutine 里不许 <code>t.Fatalf</code>」的雷（D1 坑表）。</p>
+
+    <h3>4. -race 全量：红是铁证，绿只是证据</h3>
+    <p><code>make test</code> 从 S1·D1 起就带着 <code>-race</code>，今天是第一次有资格说「<b>全量</b> -race 回归」——因为仓库里终于有了足量的并发代码（D1 的并发 Save、D3 的并发聚合、D5 的池、D9 的关闭、今天的 50 路并发）。两条认知钉死：</p>
+    <ul>
+      <li><b>红 = 铁证</b>：race detector 报出来的竞争 100% 是真问题（它追踪的是实际发生的内存访问顺序，不靠猜）。</li>
+      <li><b>绿 ≠ 无竞争</b>：它只报<b>这次运行里实际撞上的</b>竞争。测试并发压力不够、调度没撞上，漏网之鱼照样绿。所以并发测试要给足路数（50 路起步），且关键并发路径要有专门用例——今天这个测试就是给 <code>/healthz</code> 链路「制造撞车机会」的。</li>
+    </ul>
+    <p>代价也讲清楚：-race 让测试慢 5~10 倍、吃内存成倍涨——这是<b>测试期</b>的价格，生产构建不带 -race，一分钱不花。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>③：测试补齐</b>——给 <code>/healthz</code> 补一个 50 路并发的 NewServer 测试，不改任何产品代码。收工时 <code>make build</code> / <code>make test</code>（含 -race 全量）必须绿。</p>
+
+    <h3>步骤 1 · 并发测试落盘</h3>
+    <pre><span class="code-label">可跑 · server 仓内与 newRouter 同包（目录以你仓库为准；newRouter 为你 D9 已有的装配函数）</span><code><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"encoding/json"</span>
+    <span class="s">"fmt"</span>
+    <span class="s">"net/http"</span>
+    <span class="s">"net/http/httptest"</span>
+    <span class="s">"sync"</span>
+    <span class="s">"testing"</span>
+)
+
+<span class="k">func</span> <span class="n">TestHealthzUnderConcurrency</span>(t *<span class="t">testing</span>.<span class="t">T</span>) {
+    srv := httptest.NewServer(newRouter(<span class="k">nil</span>)) <span class="c">// /healthz 不碰 DB；装配参数以你仓库签名为准</span>
+    <span class="k">defer</span> srv.Close()
+
+    <span class="k">const</span> n = <span class="t">50</span>
+    <span class="k">var</span> wg <span class="t">sync</span>.<span class="t">WaitGroup</span>
+    errs := <span class="n">make</span>(<span class="k">chan</span> <span class="t">error</span>, n) <span class="c">// 容量=路数：每路至多塞一条，发送永不阻塞</span>
+
+    <span class="k">for</span> i := <span class="t">0</span>; i &lt; n; i++ {
+        wg.Add(<span class="t">1</span>) <span class="c">// Add 在 go 之前（D1 纪律）</span>
+        <span class="k">go</span> <span class="k">func</span>() {
+            <span class="k">defer</span> wg.Done()
+            resp, err := http.Get(srv.URL + <span class="s">"/healthz"</span>)
+            <span class="k">if</span> err != <span class="k">nil</span> {
+                errs &lt;- fmt.Errorf(<span class="s">"GET /healthz: %w"</span>, err)
+                <span class="k">return</span>
+            }
+            <span class="k">defer</span> resp.Body.Close()
+            <span class="k">if</span> resp.StatusCode != http.StatusOK {
+                errs &lt;- fmt.Errorf(<span class="s">"status = %d, want 200"</span>, resp.StatusCode)
+                <span class="k">return</span>
+            }
+            <span class="k">var</span> body <span class="k">struct</span> {
+                Code <span class="t">int</span> <span class="s">`json:"code"`</span>
+            }
+            <span class="k">if</span> err := json.NewDecoder(resp.Body).Decode(&amp;body); err != <span class="k">nil</span> {
+                errs &lt;- fmt.Errorf(<span class="s">"decode: %w"</span>, err)
+                <span class="k">return</span>
+            }
+            <span class="k">if</span> body.Code != <span class="t">0</span> { <span class="c">// 响应信封：code 0 = CodeOK</span>
+                errs &lt;- fmt.Errorf(<span class="s">"code = %d, want 0"</span>, body.Code)
+            }
+        }()
+    }
+
+    wg.Wait()  <span class="c">// 等全员收工——此刻所有发送已完成</span>
+    <span class="k">close</span>(errs) <span class="c">// 主 goroutine 关，安全</span>
+    <span class="k">for</span> err := <span class="k">range</span> errs {
+        t.Error(err) <span class="c">// 断言集中在主 goroutine：不散、不 race、不用碰 Fatalf 雷区</span>
+    }
+}</code></pre>
+
+    <h3>步骤 2 · 单点跑，再全量跑</h3>
+    <pre><span class="code-label">验收命令</span><code>cd &lt;你的学习仓根目录&gt;/server
+go test -race -run TestHealthzUnderConcurrency ./... -v   <span class="c"># 单用例：PASS，且 -v 里没有 WARNING: DATA RACE</span>
+make test                                                 <span class="c"># 全量 -race 回归：本周所有并发用例一起过</span></code></pre>
+    <p>跑完留意两件事：<b>①</b> 全量 -race 的耗时——和平时比慢出 5~10 倍的部分，就是「铁证保险」的价格；<b>②</b> 输出末尾的 <code>ok</code> 列表里，D1/D3/D4/D5/D9 的用例应该全在——这一屏绿，是 S5 十一天并发代码的集体体检报告。</p>
+
+    <h3>步骤 3 · 把并发压力拧大跑一次（可选，30 秒）</h3>
+    <p>把 <code>n</code> 临时改成 200 再跑一遍单用例。绿了改回 50（仓库里留 50，CI 时间要省）；红了——恭喜，你抓到了真问题，顺着 WARNING 三段式（D3）读栈定位。<b>无论红绿，改动都不进提交</b>：这一步是体验，不是增量。</p>
+    <div class="callout note"><b>为什么只测 /healthz？</b>它是当前唯一不属于任何业务域的探活接口。报表与流水的接口要 S6 才登记——那时它们的并发测试会照今天这个模子写（NewServer + WaitGroup + 缓冲收错），今天把模子造好就够了。<b>S5 不新增任何业务接口</b>。</div>
+  </section>
+
+  <section>
+    <h2>常见坑</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>忘 <code>defer srv.Close()</code></td><td>监听与连接泄漏，测试越跑越慢，偶发端口/句柄耗尽</td><td>NewServer 下一行就写 defer Close——成对出现，像锁一样</td></tr>
+      <tr><td>自己起服务写死端口</td><td>CI 上两个测试撞端口，时红时绿</td><td>别自己 <code>net/http.ListenAndServe</code>；NewServer 内部已是 <code>127.0.0.1:0</code> 随机分配，直接用 <code>srv.URL</code></td></tr>
+      <tr><td>goroutine 里 <code>t.Fatalf</code></td><td>FailNow 调 runtime.Goexit，死在错误的 goroutine 上，测试结果错乱</td><td>断言收进 errs 通道，<code>wg.Wait()</code> 后在主 goroutine 统一 <code>t.Error</code>（今天的写法）</td></tr>
+      <tr><td>无缓冲 errs 通道</td><td>主 goroutine 在 Wait，子 goroutine 卡在发送——死锁</td><td>容量 = goroutine 总数；「每路至多一条」是容量够用的前提</td></tr>
+      <tr><td>拿 Recorder 测并发</td><td>50 路共写一个 Recorder，结果互相踩，测了个寂寞</td><td>Recorder 是单请求的逻辑探针；并发一律 NewServer</td></tr>
+      <tr><td>把 -race 绿当免死金牌</td><td>「测试全绿所以没有竞争」——漏网之鱼偷笑</td><td>绿 ≠ 无竞争：只报实际撞上的；给足并发路数、关键路径专测，红才是铁证</td></tr>
+      <tr><td>只跑新用例就收工</td><td>新测试绿了，老并发代码被今天的改动带崩没人知道</td><td>收工必须 <code>make test</code> 全量 -race——回归的意义就在「全」</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td><code>httptest.NewServer</code></td><td>起一个真监听的测试服务（随机端口），返回带 <code>URL</code> 的句柄；S5 起负责并发与全链路测试</td></tr>
+      <tr><td><code>httptest.NewRecorder</code></td><td>进程内假请求假响应，S2/S4 的逻辑测试主力——不下岗，只分工</td></tr>
+      <tr><td><code>srv.URL</code></td><td>测试服务的真实地址（http://127.0.0.1:随机端口），拼路径直接打</td></tr>
+      <tr><td><code>srv.Close()</code></td><td>关监听断连接；与 NewServer 成对出现，defer 上</td></tr>
+      <tr><td>缓冲错误通道</td><td><code>make(chan error, n)</code> 收并发结果：容量=路数则发送永不阻塞，Wait 后 close 再 range</td></tr>
+      <tr><td>race detector</td><td><code>-race</code> 打开的运行时检测器：追踪实际内存访问顺序，报真撞车，不报猜测</td></tr>
+      <tr><td>全量回归</td><td><code>make test</code> 把所有包的用例带 -race 跑一遍——收工仪式，不是可选项</td></tr>
+      <tr><td>响应信封</td><td><code>{code, message, data}</code>；并发测试断言 <code>code == 0</code> 就是在验信封完好</td></tr>
+      <tr><td>loopback</td><td>127.0.0.1——本机回环；NewServer 的流量不出机器，快且稳</td></tr>
+      <tr><td>探活接口（前瞻）</td><td>/healthz 今天当并发靶子，S8 部署后给编排系统摘流量用——一岗双责</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有两种情况出去查：</p>
+    <ul>
+      <li><b>NewServer/Close 的权威语义</b>：<a href="https://pkg.go.dev/net/http/httptest#NewServer" target="_blank">net/http/httptest · NewServer</a>（可选，几行注释讲完全部行为）。</li>
+      <li><b>并发测试里 t.Fatal 为什么不能用</b>：<a href="https://pkg.go.dev/testing#T" target="_blank">testing · T</a>（可选，文档明说 FailNow 必须来自跑测试的那个 goroutine）。</li>
+    </ul>
+    <p>并发测试红了别慌，按 D3 的三段式读 WARNING：先找两个 goroutine 各自的栈，再定位共享变量，最后想「这里该用锁还是该用通道」。若红的是<b>产品代码</b>而不是测试代码——今天赚大了，这正是把并发靶场搭起来的全部意义。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w11d5c1">TestHealthzUnderConcurrency 落盘：NewServer + defer Close、50 路 goroutine、缓冲 errs 通道、主 goroutine 集中断言</label></li>
+      <li><label><input type="checkbox" data-key="w11d5c2">单用例 <code>go test -race -run TestHealthzUnderConcurrency ./... -v</code> 绿；n 临时拧到 200 再跑一次仍绿（然后改回 50）</label></li>
+      <li><label><input type="checkbox" data-key="w11d5c3"><code>make test</code> 全量 -race 绿，亲眼看到本周 D1/D3/D4/D5/D9 的并发用例都在输出里；说得出慢 5~10 倍的原因</label></li>
+      <li><label><input type="checkbox" data-key="w11d5c4"><code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，commit 带卡号 <code>s5d11</code></label></li>
+      <li><label><input type="checkbox" data-key="w11d5c5"><code>notes/</code> 里写两句：Recorder/NewServer 的分工规则、「-race 绿 ≠ 无竞争」为什么成立</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w11d4.html"><span class="hint">← 昨天 · S5·D10</span>config 加载定稿</a>
+    <a href="w11d6.html"><span class="hint">明天 · S5·D12 →</span>S5 收口：CI 最小版与判据自测</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w11d5 · 明天见 ⟩</footer>
+</body>
+</html>

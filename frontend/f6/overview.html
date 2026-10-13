@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>F6 阶段总览 · 调试、定位与前端线毕业 | HomeCube 修炼手册</title>
+<meta name="description" content="F6（2 张周日卡，对应服务端 S8 收口）：三段定位法（Console / Network / 服务端日志 + request_id）、容器化后的前端连线、三个硬能力逐条验收、全站红线复测与 F1-F6 全 22 张卡判据总核账；硬判据是「agent 留一个 bug，你不靠 agent 说出它在哪一层、为什么」。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body>
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="../f5/overview.html">← 上一阶段 F5</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / 前端辅线 / F6</div>
+  <div class="day-meta">
+    <span class="chip">STAGE F6</span>
+    <span class="chip alt">2 张周日卡 · 对应服务端 S8</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>F6 · 调试、定位与前端线毕业</h1>
+  <p>前端辅线的最后一段，与服务端 S8（收口与部署）并行，同时收拢贯穿 F1-F5 的全部定位练习。F6 <b>不新增功能面</b>，只做两件事：① 把定位能力练成方法论——<b>三段定位法</b>（Console / Network / 服务端日志 + <code>request_id</code>），顺带解决「服务跑进容器之后前端怎么连」；② 把整条前端线收口——三个硬能力逐条验收、全站红线复测、F1-F6 全 22 张卡判据总核账，并产出你以后长期要用的「快速复核检查单」。</p>
+
+  <section>
+    <h2>F6 的硬判据只有一句话</h2>
+    <div class="callout js"><p><b>agent 故意留一个 bug（或真出现一个），你能不靠 agent 说出它在哪一层、为什么。</b>这就是前端辅线三条硬能力（① 能读懂任意一页 ② 能改字段与样式 ③ 能独立定位一个 bug 在前端还是服务端）的终点验收。作答格式是证据句式：「我判定 X 层，因为在 Network/日志/Console 看到了 Y，排除了 Z」——没有分界物证据的「感觉是后端问题」一律不算。</p></div>
+  </section>
+
+  <section>
+    <h2>阶段产物（F6 结束时必须有的东西）</h2>
+    <table>
+      <tr><th>产物</th><th>说明</th></tr>
+      <tr><td><code>notes/f6w1/</code> request_id 闭环记录</td><td>失败请求显示 <code>request_id</code> 的改造 + 一次「界面复制 id → 服务端日志 grep 命中」的完整证据</td></tr>
+      <tr><td><code>notes/f6w1/</code> 排查表</td><td>「保存转圈后弹参数错误」的三步顺序与每步排除逻辑</td></tr>
+      <tr><td><code>notes/f6w2/review.md</code></td><td>F1-F6 六段判据总核账表（手抄 + 脱稿填「能 / 不能」）</td></tr>
+      <tr><td><code>notes/f6w2/定位案例集.md</code></td><td>22 张卡全部定位题按「分界物」归类的合订本——定位能力本体</td></tr>
+      <tr><td><code>notes/f6w2/recheck-checklist.md</code></td><td>「agent 改了前端，我怎么快速复核」四步检查单（红线 grep → 冒烟 → 抽查一页讲链路 → diff 扫架构位）</td></tr>
+      <tr><td><code>notes/f6w2/</code> 重构记录</td><td>行为基线 → 重构 → 对照验证的完整三步 + 自出定位题一道</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>阶段判据（全过才算 F6 通过，前端线才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="f6o1">能默画三段定位法：三段各看什么、两条分界线在哪（请求发没发 / <code>code</code> 是否为 0）、每段排除哪一类原因</label></li>
+      <li><label><input type="checkbox" data-key="f6o2">能讲清 <code>request_id</code> 的完整旅程（中间件 → 日志 → 响应头 → 拦截器 → 界面 → grep），以及容器化后「<code>baseURL</code> 恒为 <code>'/api'</code>、变的是转发方式」（dev 代理 / 生产 nginx 反代）</label></li>
+      <li><label><input type="checkbox" data-key="f6o3"><b>硬判据</b>：agent 留一个 bug，不靠 agent 说出它在哪一层、为什么——用证据句式作答</label></li>
+      <li><label><input type="checkbox" data-key="f6o4">三个硬能力逐条验收：随机一页讲清三段数据链路；改一个字段与一处样式并「先列后验」影响面；未知 bug 判层有分界物依据</label></li>
+      <li><label><input type="checkbox" data-key="f6o5">全站红线复测六条全过且每条能说出背后的病：<code>pages.json</code> 无 <code>tabBar</code> / <code>faces[]</code> 无客户端硬编码 / 无硬编码色值 / 游标分页不重不漏 / 金额不在前端浮点累加 / PIN 无服务端接口</label></li>
+      <li><label><input type="checkbox" data-key="f6o6">F1-F6 全 22 张卡判据总核账完成（脱稿），「快速复核检查单」已产出并试用过至少一次</label></li>
+    </ul>
+    <div class="callout warn"><p><b>不通过就原地重做，不跳阶段</b>——而且这是最后一段，没有下一段可跳。核账表里任何一行「不能」，回对应阶段的卡重做；前端落后不许裁剪判据来保服务端进度，两条线各自顺延。</p></div>
+  </section>
+
+  <section>
+    <h2>两张周日卡</h2>
+    <table>
+      <tr><th>卡</th><th>知识点</th><th>动手改 / 定位题</th></tr>
+      <tr><td><a href="w21f1.html">w21f1</a></td><td>三段定位法、<code>request_id</code>、sourcemap、错误码表用法（1001 同形是故意的）、容器化连线（devServer 代理 / nginx 反代）、uni-app 跨端坑</td><td>给失败请求加上显示 <code>request_id</code> 的能力并 grep 闭环 / 「保存转圈后弹参数错误」写出三步排查表</td></tr>
+      <tr><td><a href="w22f1.html">w22f1</a></td><td>三个硬能力验收法、红线复测六条、22 张卡总核账、快速复核检查单</td><td>重构一处 agent 写得最绕的代码且行为不变（基线 → 重构 → 对照验证）/ 自己出一道定位题（症状 / 结论 / 排除依据）</td></tr>
+    </table>
+    <p>同期的服务端卡在 <a href="../../server/s8/overview.html">S8</a>（收口与部署：Dockerfile、compose、nginx、CI 全量 + 覆盖率、对账与冒烟）；F6 只学「前端怎么连上它、怎么验收它」，部署产物本身是服务端线的活。</p>
+  </section>
+
+  <section>
+    <h2>本阶段不做什么（明确划掉，免得手滑）</h2>
+    <ul>
+      <li>不学新功能面、新框架、新状态方案——F6 只收口，任何「顺便学一下」都是对 2 小时预算的超支</li>
+      <li>不亲手写部署脚本——Dockerfile / compose / nginx 配置是 S8 服务端卡的产物，前端侧只要求「看得懂连线、能冒烟」</li>
+      <li>不为毕业放松任何红线——六条红线复测不过，判据就是不过，与「整体完成度很高」无关</li>
+      <li>不拿「agent 写的代码一直没问题」当硬判据的替代——埋 bug 验收必须真做一次，没埋过 bug 的定位能力是没验证过的能力</li>
+      <li>不做课程范围外的前瞻（离线重放的服务端侧、事件总线、远程 .wgt 下发链路）——它们只存在于服务端线的前瞻句里</li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../f5/overview.html"><span class="hint">← 上一阶段</span>F5 · app 壳基座前端</a>
+    <a href="w21f1.html"><span class="hint">开始 →</span>w21f1 · 三段定位法与容器化后的前端连线</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · F6 阶段总览 ⟩</footer>
+</body>
+</html>

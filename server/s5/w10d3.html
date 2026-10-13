@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S5·D3 · Mutex/RWMutex 与 -race：亲手抓一次数据竞争 | HomeCube 修炼手册</title>
+<meta name="description" content="数据竞争的可复现样例与修复：Mutex 的机理、RWMutex 的读多写少、-race 的 WARNING 怎么读、为什么绿了不等于没有竞争。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w10d3">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S5</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S5</a> / w10d3</div>
+  <div class="day-meta">
+    <span class="chip">S5 · DAY 3</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>Mutex/RWMutex 与 -race：亲手抓一次数据竞争</h1>
+  <p>D1 你已经远远看过一次 <code>WARNING: DATA RACE</code>，今天走到近处：一个<b>百分百能复现</b>的竞争样例、一次逐行阅读 WARNING、一个「先红后绿」的完整修复，再把 <code>RWMutex</code> 这档「读多写少」的变体装上。<code>-race</code> 从 S1·D1 就在 Makefile 里躺着，今天它正式成为主角——本阶段的判据「能指出自己代码里的数据竞争并用 -race 证明修好了」，就在这一天兑现。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w10d3g1">跑通可复现的竞争样例，能逐段读懂 <code>-race</code> 的 WARNING：谁在读、谁在写、两段堆栈各指哪</label></li>
+      <li><label><input type="checkbox" data-key="w10d3g2">说得出 Mutex 的三条纪律：defer Unlock、不可重入、含锁 struct 按指针流转</label></li>
+      <li><label><input type="checkbox" data-key="w10d3g3">说得出 RWMutex 什么时候划算、什么时候反而亏</label></li>
+      <li><label><input type="checkbox" data-key="w10d3g4">并发聚合收集器完成「先红后绿」：无锁版被 -race 抓住，Mutex 版全绿</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 一个百分百能复现的竞争</h3>
+    <p>D1 的 <code>counter++</code> 要碰运气才丢数，今天这个样例把冲突概率拉满：两个 goroutine 各加十万次，无锁版几乎必然丢，<code>-race</code> 必报：</p>
+    <pre><span class="code-label">可跑 · server/playground/s5d3/race/main.go（自带 go.mod）</span><code><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"fmt"</span>
+    <span class="s">"sync"</span>
+)
+
+<span class="t">type</span> <span class="t">UnsafeCounter</span> <span class="k">struct</span> {
+    n <span class="t">int</span>            <span class="c">// 共享状态，裸奔</span>
+}
+
+<span class="k">func</span> <span class="t">main</span>() {
+    c := <span class="t">UnsafeCounter</span>{}
+    <span class="k">var</span> wg sync.<span class="t">WaitGroup</span>
+    <span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="n">2</span>; i++ {
+        wg.<span class="t">Add</span>(<span class="n">1</span>)
+        <span class="k">go</span> <span class="k">func</span>() {
+            <span class="k">defer</span> wg.<span class="t">Done</span>()
+            <span class="k">for</span> j := <span class="n">0</span>; j &lt; <span class="n">100000</span>; j++ {
+                c.n++          <span class="c">// 读-改-写，两个 goroutine 同时进来就互相踩</span>
+            }
+        }()
+    }
+    wg.<span class="t">Wait</span>()
+    fmt.<span class="t">Println</span>(<span class="s">"c.n ="</span>, c.n)  <span class="c">// 经常 &lt; 200000，且每次不一样</span>
+}</code></pre>
+    <pre><span class="code-label">可跑</span><code>cd server/playground/s5d3/race
+go mod init s5d3race
+go run .         <span class="c"># 多跑几次，看数字漂移</span>
+go run -race .   <span class="c"># 必报 WARNING: DATA RACE，退出码非 0</span></code></pre>
+    <p>WARNING 长这样（节选骨架，你的行号会不同），三段式逐行读：</p>
+    <pre><span class="code-label">输出 · -race 报告怎么读</span><code>WARNING: DATA RACE
+Write at 0x00c00001c0a8 by goroutine 8:        <span class="c">← ① 谁在写：动作、地址、goroutine 号</span>
+  main.main.func1()
+      .../s5d3/race/main.go:24 +0x64          <span class="c">← ② 写的现场：c.n++ 那行</span>
+Previous write at 0x00c00001c0a8 by goroutine 7:  <span class="c">← ③ 和它冲突的另一次访问</span>
+  main.main.func1()
+      .../s5d3/race/main.go:24 +0x64
+...
+Found 1 data race(s)                           <span class="c">← 汇总；exit status 66</span></code></pre>
+    <p>读法就一句话：<b>「Write at」和「Previous write/read at」是同一块内存的两次无同步访问</b>，两段堆栈直接告诉你冲突双方的代码行。修它：</p>
+    <pre><span class="code-label">可跑 · server/playground/s5d3/fixed/main.go（自带 go.mod）</span><code><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"fmt"</span>
+    <span class="s">"sync"</span>
+)
+
+<span class="t">type</span> <span class="t">Counter</span> <span class="k">struct</span> {
+    mu sync.<span class="t">RWMutex</span>      <span class="c">// 含锁 → 整个 struct 按指针用（S1·D3 军规第 3 条）</span>
+    n  <span class="t">int</span>
+}
+
+<span class="k">func</span> (c *<span class="t">Counter</span>) <span class="t">Inc</span>() {
+    c.mu.<span class="t">Lock</span>()
+    <span class="k">defer</span> c.mu.<span class="t">Unlock</span>()   <span class="c">// Lock 的下一行就是 defer Unlock——肌肉记忆</span>
+    c.n++
+}
+
+<span class="k">func</span> (c *<span class="t">Counter</span>) <span class="t">Value</span>() <span class="t">int</span> {
+    c.mu.<span class="t">RLock</span>()            <span class="c">// 只读走读锁：多个读者可同时进</span>
+    <span class="k">defer</span> c.mu.<span class="t">RUnlock</span>()
+    <span class="k">return</span> c.n
+}
+
+<span class="k">func</span> <span class="t">main</span>() {
+    c := &amp;<span class="t">Counter</span>{}
+    <span class="k">var</span> wg sync.<span class="t">WaitGroup</span>
+    <span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="n">2</span>; i++ {
+        wg.<span class="t">Add</span>(<span class="n">1</span>)
+        <span class="k">go</span> <span class="k">func</span>() {
+            <span class="k">defer</span> wg.<span class="t">Done</span>()
+            <span class="k">for</span> j := <span class="n">0</span>; j &lt; <span class="n">100000</span>; j++ {
+                c.<span class="t">Inc</span>()
+            }
+        }()
+    }
+    wg.<span class="t">Add</span>(<span class="n">1</span>)
+    <span class="k">go</span> <span class="k">func</span>() {             <span class="c">// 再加一个纯读者，验证读写并发也干净</span>
+        <span class="k">defer</span> wg.<span class="t">Done</span>()
+        <span class="k">for</span> j := <span class="n">0</span>; j &lt; <span class="n">1000</span>; j++ {
+            _ = c.<span class="t">Value</span>()
+        }
+    }()
+    wg.<span class="t">Wait</span>()
+    fmt.<span class="t">Println</span>(<span class="s">"c.Value() ="</span>, c.<span class="t">Value</span>()) <span class="c">// 恒等于 200000</span>
+}</code></pre>
+    <pre><span class="code-label">可跑</span><code>cd server/playground/s5d3/fixed
+go mod init s5d3fixed &amp;&amp; go run -race .   <span class="c"># 恒 200000，零 WARNING</span></code></pre>
+
+    <h3>2. Mutex 三条纪律 + RWMutex 的账</h3>
+    <ul>
+      <li><b>defer Unlock</b>：中途 return、panic 都不会把锁忘在手里。</li>
+      <li><b>Go 的锁不可重入</b>：同一个 goroutine 对着已持有的锁再 Lock，当场死锁。方法 A（持锁）调方法 B（也 Lock）是经典自杀——把公共部分抽成不加锁的私有函数。</li>
+      <li><b>含锁 struct 只按指针流转</b>：复制 struct = 复制出一把新锁，保护失效（<code>go vet</code> 的 copylocks 会拦）。</li>
+    </ul>
+    <p><code>RWMutex</code> 把锁分两档：<code>RLock</code> 读者之间共享，<code>Lock</code> 写者独占（挡住一切读写）。账要这么算：<b>读远多于写</b>（内存仓储的 FindByID vs Save）时 RWMutex 划算；写频繁时它的内部记账反而比 Mutex 慢。两条硬规矩：<b>不存在「读锁升级写锁」</b>（RUnlock 后重新 Lock，中间状态可能已变）；持有写锁时再 RLock 也是死锁。</p>
+
+    <h3>3. -race 的原理与边界：为什么「绿」不等于「没有」</h3>
+    <p><code>-race</code> 在编译期给每次内存访问插桩，运行时维护「happens-before」关系：两次访问同一地址、至少一个是写、又没有任何同步关系（锁、channel、WaitGroup 都算同步）——就报。边界必须背下来：</p>
+    <table>
+      <tr><th>性质</th><th>含义</th></tr>
+      <tr><td>只报「这次真跑出来的」</td><td>竞争代码没被并发执行到，就不报。<b>绿 ≠ 无竞争，红 = 铁证有竞争</b></td></tr>
+      <tr><td>零漏报换不来，零误报做得到</td><td>它报出来的每一条都是真问题，不用怀疑「是不是检测器错了」</td></tr>
+      <tr><td>代价：慢 5-10 倍、吃内存</td><td>所以生产构建不开、<code>make test</code> 恒开——测试就该慢一点换确定性</td></tr>
+      <tr><td>覆盖靠测试设计</td><td>想让 -race 帮你，测试必须真的并发（D1 的 100 路 Save、今天的并发聚合）；串行测试跑一万遍也抓不到</td></tr>
+    </table>
+    <div class="callout warn"><p>还有一种连 <code>-race</code> 都来不及报的死法：<b><code>fatal error: concurrent map writes</code></b>——map 自带的自我保护，直接崩进程，recover 都兜不住（S1·D9）。看到它和看到 DATA RACE 同等对待：你的共享 map 裸奔了。</p></div>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>③：补测试用例</b>——给 <code>finance/service</code> 加并发聚合收集器与「并发 == 串行」对拍测试，按<b>先红后绿</b>走完：先交无锁版让 <code>-race</code> 抓个正着，再上 Mutex 修复。收工时仓库必须是绿的：红只发生在本地实验，注释状态不进 commit。</p>
+
+    <h3>步骤 1 · 无锁版收集器（本地实验用，先红）</h3>
+    <pre><span class="code-label">片段 · server/internal/finance/service/agg_concurrent.go 的第一版</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"sort"</span>
+    <span class="s">"sync"</span>
+)
+
+<span class="c">// CategoryIDs 提取去重后的分类 id，升序返回——并发版与串行版共用同一份维度清单。</span>
+<span class="k">func</span> <span class="t">CategoryIDs</span>(rows []<span class="t">AggInput</span>) []<span class="t">int64</span> {
+    seen := <span class="k">map</span>[<span class="t">int64</span>]<span class="t">bool</span>{}
+    ids := []<span class="t">int64</span>{}
+    <span class="k">for</span> _, r := <span class="k">range</span> rows {
+        <span class="k">if</span> !seen[r.CategoryID] {
+            seen[r.CategoryID] = <span class="k">true</span>
+            ids = <span class="k">append</span>(ids, r.CategoryID)
+        }
+    }
+    sort.<span class="t">Slice</span>(ids, <span class="k">func</span>(i, j <span class="t">int</span>) <span class="t">bool</span> { <span class="k">return</span> ids[i] &lt; ids[j] })
+    <span class="k">return</span> ids
+}
+
+<span class="c">// SumByCategoryConcurrent 每个分类一个 goroutine，结果并进共享 map。</span>
+<span class="c">// ！！！第一版故意不给 totals 上锁——让 -race 抓一次现行。</span>
+<span class="k">func</span> <span class="t">SumByCategoryConcurrent</span>(rows []<span class="t">AggInput</span>) []<span class="t">AggResult</span> {
+    ids := <span class="t">CategoryIDs</span>(rows)
+    totals := <span class="k">map</span>[<span class="t">int64</span>]<span class="t">int64</span>{}
+    <span class="k">var</span> wg sync.<span class="t">WaitGroup</span>
+    <span class="k">for</span> _, id := <span class="k">range</span> ids {
+        wg.<span class="t">Add</span>(<span class="n">1</span>)
+        <span class="k">go</span> <span class="k">func</span>() {
+            <span class="k">defer</span> wg.<span class="t">Done</span>()
+            <span class="k">var</span> sum <span class="t">int64</span>
+            <span class="k">for</span> _, r := <span class="k">range</span> rows {     <span class="c">// rows 只读不写，多 goroutine 共读是安全的</span>
+                <span class="k">if</span> r.CategoryID == id {
+                    sum += r.AmountCents
+                }
+            }
+            totals[id] = sum              <span class="c">// ← 无锁写共享 map：事故就在这一行</span>
+        }()
+    }
+    wg.<span class="t">Wait</span>()
+
+    out := <span class="k">make</span>([]<span class="t">AggResult</span>, <span class="n">0</span>, <span class="k">len</span>(totals))
+    <span class="k">for</span> id, cents := <span class="k">range</span> totals {
+        out = <span class="k">append</span>(out, <span class="t">AggResult</span>{ID: id, TotalCents: cents})
+    }
+    sort.<span class="t">Slice</span>(out, <span class="k">func</span>(i, j <span class="t">int</span>) <span class="t">bool</span> { <span class="k">return</span> out[i].ID &lt; out[j].ID })
+    <span class="k">return</span> out
+}</code></pre>
+    <p>配一个对拍测试（这份直接是最终版，绿红只取决于上面那个函数加没加锁）：</p>
+    <pre><span class="code-label">完整 · server/internal/finance/service/agg_concurrent_test.go</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"reflect"</span>
+    <span class="s">"testing"</span>
+)
+
+<span class="c">// fakeRows 生成确定性假数据：4 个账户 × 6 个分类 × 每类 50 行。</span>
+<span class="c">// 假数据只活在测试里（S5 纪律：不碰接口、不碰库）。</span>
+<span class="k">func</span> <span class="t">fakeRows</span>() []<span class="t">AggInput</span> {
+    rows := []<span class="t">AggInput</span>{}
+    <span class="k">for</span> acc := <span class="t">int64</span>(<span class="n">1</span>); acc &lt;= <span class="n">4</span>; acc++ {
+        <span class="k">for</span> cat := <span class="t">int64</span>(<span class="n">10</span>); cat &lt;= <span class="n">15</span>; cat++ {
+            <span class="k">for</span> k := <span class="n">0</span>; k &lt; <span class="n">50</span>; k++ {
+                rows = <span class="k">append</span>(rows, <span class="t">AggInput</span>{
+                    AccountID:   acc,
+                    CategoryID:  cat,
+                    AmountCents: acc*<span class="n">1000</span> + cat*<span class="n">100</span> + <span class="t">int64</span>(k),
+                })
+            }
+        }
+    }
+    <span class="k">return</span> rows
+}
+
+<span class="k">func</span> <span class="t">TestSumByCategoryConcurrentMatchesSerial</span>(t *testing.T) {
+    rows := <span class="t">fakeRows</span>()
+    want := <span class="t">SumByCategory</span>(rows)          <span class="c">// D2 的串行对照组</span>
+    got := <span class="t">SumByCategoryConcurrent</span>(rows)
+    <span class="k">if</span> !reflect.<span class="t">DeepEqual</span>(got, want) {
+        t.<span class="t">Fatalf</span>(<span class="s">"并发版与串行版不一致:\ngot  %+v\nwant %+v"</span>, got, want)
+    }
+}</code></pre>
+    <pre><span class="code-label">可跑 · 先看它红</span><code>cd server
+go test -race -count=1 ./internal/finance/service/
+<span class="c"># WARNING: DATA RACE（或 concurrent map writes 直接 fatal）——把报告原文存进 notes/，这是你的第一份事故报告</span></code></pre>
+
+    <h3>步骤 2 · 上锁修复（后绿）</h3>
+    <p>只动 <code>SumByCategoryConcurrent</code> 两处——加一把锁、圈住写：</p>
+    <pre><span class="code-label">片段 · 修复后的差异部分</span><code>totals := <span class="k">map</span>[<span class="t">int64</span>]<span class="t">int64</span>{}
+<span class="k">var</span> mu sync.<span class="t">Mutex</span>                 <span class="c">// ① 给共享 map 配站岗的</span>
+...
+        <span class="c">// goroutine 里，totals[id] = sum 改成：</span>
+        mu.<span class="t">Lock</span>()
+        totals[id] = sum              <span class="c">// ② 临界区只圈写这一行，求和过程不持锁</span>
+        mu.<span class="t">Unlock</span>()</code></pre>
+    <div class="callout tip"><p><b>临界区越小越好</b>：求和那 300 次循环是各算各的，不需要锁；只有并入共享 map 的一瞬间需要。锁圈大了不出错但白排队，圈小了才既对又快。这里没用 <code>defer Unlock</code> 是因为临界区只有一行且不会 panic——两行的地方 defer 也行，风格统一即可。</p></div>
+
+    <h3>步骤 3 · 选做：内存仓储读路径换 RWMutex</h3>
+    <p>S1·D5 的 <code>MemoryFamilyRepo</code> 读多写少（FindByID 远多于 Save），是 RWMutex 的标准客户：<code>mu sync.Mutex</code> 改成 <code>mu sync.RWMutex</code>，<code>FindByID</code> 里 <code>Lock/Unlock</code> 换 <code>RLock/RUnlock</code>，<code>Save</code> 保持写锁不动。改完 <code>make test</code>——D1 的并发测试还在，正好替你验收。这是单点等价替换，不算重构；改不动就记进 notes/ 放着，不影响今天毕业。</p>
+
+    <h3>步骤 4 · 验收并提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test    <span class="c"># 全仓 -race，零 WARNING；对拍测试绿</span>
+make lint
+
+git add server/internal/finance/service
+git status   <span class="c"># 确认进 commit 的是上锁版——无锁状态一个字都不许提交</span>
+git commit -m "feat(s5d3): 并发聚合收集器（先红后绿，Mutex 修复数据竞争）"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>持锁再 Lock（重入）</td><td>当场死锁，所有 goroutine  asleep</td><td>Go 的锁不可重入；持锁方法要调别的加锁方法，先抽无锁私有函数</td></tr>
+      <tr><td>锁了写没锁读</td><td>-race 照样报：读写冲突也是冲突</td><td>同一块共享内存的<b>所有</b>访问路径都要在同一把锁下</td></tr>
+      <tr><td>RLock 里想升级成 Lock</td><td>死锁或竞态，Go 不提供升级</td><td>RUnlock → Lock 重新来，且要重查状态（中间可能被人改过）</td></tr>
+      <tr><td>写频繁还用 RWMutex</td><td>比 Mutex 还慢（内部记账更贵）</td><td>读远多于写才换 RWMutex；拿不准就 Mutex</td></tr>
+      <tr><td>-race 绿了就宣布没竞争</td><td>上线换个调度顺序照样炸</td><td>绿只说明「这次没跑到」；判据是并发测试设计得够狠 + 恒开 -race</td></tr>
+      <tr><td>把含锁 struct 按值传递</td><td><code>go vet</code> 报 copylocks；锁被复制保护失效</td><td>指针流转（S1·D3 军规），<code>make lint</code> 恒查</td></tr>
+      <tr><td>无锁版红着就 commit 了</td><td>仓库带病过夜，违反「收工必须绿」</td><td>先红后绿是本地实验流程；进 git 的永远是绿的那版</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>数据竞争（data race）</td><td>无同步的并发访问同一内存且至少一写；未定义行为</td></tr>
+      <tr><td><code>sync.Mutex</code></td><td>互斥锁：同一时刻一个持有者；不可重入</td></tr>
+      <tr><td><code>sync.RWMutex</code></td><td>读写锁：读者共享、写者独占；读多写少才划算；无升级</td></tr>
+      <tr><td>临界区最小化</td><td>只把「必须互斥的那几行」圈进锁里，别抱着锁干重活</td></tr>
+      <tr><td>竞态检测器（-race）</td><td>编译插桩 + happens-before 分析；只报真跑出来的，报了必真</td></tr>
+      <tr><td>happens-before</td><td>「A 的效果对 B 可见且有序」的关系；锁/channel/WaitGroup 都能建立它</td></tr>
+      <tr><td><code>concurrent map writes</code></td><td>map 的自我保护 fatal，recover 兜不住；与 DATA RACE 同等对待</td></tr>
+      <tr><td>copylocks</td><td><code>go vet</code> 检查项：含锁类型被复制即告警</td></tr>
+      <tr><td>先红后绿</td><td>先让测试暴露问题、再修复到绿的流程；S4 的越权测试用过，今天用在竞争上</td></tr>
+      <tr><td>worker pool</td><td>固定数量 worker 消费任务队列的并发模式。<b>后天 D5 正式讲</b></td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有两种情况出去查：</p>
+    <ul>
+      <li><b>-race 报告的完整字段含义</b>：<a href="https://go.dev/doc/articles/race_detector" target="_blank">Go 官方 · Data Race Detector</a>（可选，读「Usage」与示例报告两节就够）。</li>
+      <li><b>RWMutex 的语义细节</b>：<a href="https://pkg.go.dev/sync#RWMutex" target="_blank">sync · RWMutex 文档</a>（可选，注意它明说了「blocked Lock call excludes new readers」）。</li>
+    </ul>
+    <p>调试顺序：竞争问题一律<b>先 <code>go test -race -count=1</code> 拿报告</b>，把 WARNING 整段贴进 <code>notes/</code>，再对着两段堆栈找那块共享内存——最后才决定用锁还是改用 channel 传递。先证据后动手，别反过来。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w10d3c1">playground 两个样例都跑过：race 版数字漂移 + WARNING，fixed 版恒 200000 零警告</label></li>
+      <li><label><input type="checkbox" data-key="w10d3c2">能逐段讲出 -race WARNING 的三段式：Write at / Previous write at / 汇总行各说什么</label></li>
+      <li><label><input type="checkbox" data-key="w10d3c3">增量完成先红后绿：无锁版报告原文存进 <code>notes/</code>，Mutex 版对拍测试绿，进 commit 的是绿版</label></li>
+      <li><label><input type="checkbox" data-key="w10d3c4"><code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，commit 带卡号 <code>s5d3</code></label></li>
+      <li><label><input type="checkbox" data-key="w10d3c5"><code>notes/</code> 里写下三行：-race 为什么「绿不等于没有」、RWMutex 什么时候反而亏、锁为什么不可重入</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w10d2.html"><span class="hint">← 昨天 · S5·D2</span>channel 与 select</a>
+    <a href="w10d4.html"><span class="hint">明天 · S5·D4 →</span>context：超时与取消</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w10d3 · 明天见 ⟩</footer>
+</body>
+</html>

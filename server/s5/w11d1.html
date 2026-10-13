@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S5·D7 · 批量导入流水：部分失败语义 | HomeCube 修炼手册</title>
+<meta name="description" content="批量导入的并发骨架：逐行校验、逐行报错、整批不静默吞；错误码只用全站唯一表；行行有结果的三条不变式与测试。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w11d1">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S5</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S5</a> / w11d1</div>
+  <div class="day-meta">
+    <span class="chip">S5 · DAY 7</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>批量导入流水：部分失败语义</h1>
+  <p>新的一周从批量导入开始。它是上周知识的反面应用：报表聚合用 errgroup 式「一损俱损」，导入却必须<b>收集每一行的下场</b>——第 3 行金额是负数，不该让第 4 行陪葬，更不该被静默吞掉。「部分失败语义」这三条不变式（行行有结果、失败必带行号与码、坏行不拖累好行）今天用并发骨架立起来。老规矩：<b>不注册路由、不写库</b>——导入的落库与挂载点属 S6 的流水域，今天只做「解析 → 校验 → 报错」这半程。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w11d1g1">背出部分失败语义的三条不变式，并说得出它和 errgroup 快速失败的分工</label></li>
+      <li><label><input type="checkbox" data-key="w11d1g2">掌握「各写各的格子」模式：按索引写各自槽位，无锁也无竞争</label></li>
+      <li><label><input type="checkbox" data-key="w11d1g3">行级错误码全部取自全站唯一错误码表（1004/4001/1001），不自造新码</label></li>
+      <li><label><input type="checkbox" data-key="w11d1g4"><code>ParseImport</code> 落盘：10 行输入坏 4 行的测试全绿，-race 零警告</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 部分失败语义：整批不静默吞</h3>
+    <p>批量操作有三种收场方式，导入必须选第三种：</p>
+    <table>
+      <tr><th>语义</th><th>行为</th><th>适用</th></tr>
+      <tr><td>全或无（事务）</td><td>一行坏，整批回滚</td><td>转账这类一致性优先的写；导入选它 = 用户改一行要重传整份文件</td></tr>
+      <tr><td>快速失败（errgroup）</td><td>第一个错误出现即取消其余</td><td>聚合这类「缺一块就没意义」的读；导入选它 = 用户只看到第一个错，修完再传又爆第二个，折磨人</td></tr>
+      <tr><td><b>部分失败（今天）</b></td><td>行行独立判定，好坏各自记账，最后交完整报告</td><td>导入：用户一次拿到<b>全部</b>问题清单，改一遍就能全对</td></tr>
+    </table>
+    <p>「静默吞」是部分失败的头号天敌：<code>if err != nil { continue }</code> 一行代码就能把用户的 200 条数据吞成 187 条还报「导入成功」。<b>三条不变式</b>钉死它：</p>
+    <ul>
+      <li><b>行行有结果</b>：<code>Total == len(Accepted) + len(Failures)</code>，测试里直接断言这个等式。</li>
+      <li><b>失败必带行号与码</b>：没有行号的错误等于没说；码只许用全站唯一错误码表里的——行级失败也是接口语言的一部分。</li>
+      <li><b>坏行不拖累好行</b>：任何一行的错误都不改变其他行的判定结果。</li>
+    </ul>
+
+    <h3>2. 行级错误码怎么选（只用唯一表）</h3>
+    <table>
+      <tr><th>行的毛病</th><th>码</th><th>常量（S1·D4 已落）</th></tr>
+      <tr><td>段数不对、整数解析失败等格式问题</td><td>1004</td><td><code>response.CodeInvalidParam</code></td></tr>
+      <tr><td>金额 ≤ 0</td><td>4001</td><td><code>response.CodeAmountInvalid</code></td></tr>
+      <tr><td>分类 id 不在合法集合里</td><td>1001</td><td><code>response.CodeNotFound</code></td></tr>
+    </table>
+    <p>注意最后一条的口径：<b>越权与不存在同形</b>的纪律（S4）在这里的体现是——不管这个分类是「真没有」还是「别的家庭的」，行级报告一律 1001「分类不存在」，不泄露存在性。S6 接线时，合法分类集合从分类仓储按 <code>WHERE family_id = ?</code> 取，天然只有本家庭的。</p>
+
+    <h3>3. 「各写各的格子」：一种不需要锁的并发收集</h3>
+    <p>上周收集结果用了两条路：Mutex 保护共享 map（D3）、channel 汇总（D5）。今天给第三条：<b>预分配一个与输入等长的结果切片，每个 goroutine 只写自己索引的槽位</b>。不同索引是不同的内存地址，各写各的、互不相碰——没有共享写就没有竞争，<code>-race</code> 自然安静。收集完再串行压缩成 Accepted/Failures 两摞，输出天然按行号有序，连排序都省了。适用条件背下来：<b>任务数事先已知、结果与任务一一对应</b>。任务数未知（流式读文件）就回 channel 那路。</p>
+    <div class="callout note"><p>那为什么还要并发？校验是纯 CPU 活，十行八行确实不值得。但 S6 的真实导入里每行要查分类、查账户（IO），几千行文件串行校验会让请求超时——今天把骨架立对，到时候只换 <code>validateLine</code> 的内脏。这是「骨架先行」的又一次演练。</p></div>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>①：加 struct</b>——<code>finance/service</code> 加导入三件套 struct 与 <code>ParseImport</code> 骨架 + 测试。<b>不注册路由、不写库</b>；落库动作等 S6 流水域接线。收工时 <code>make build</code> / <code>make test</code> 必须绿。</p>
+
+    <h3>步骤 1 · 三件套 struct 与逐行校验</h3>
+    <pre><span class="code-label">完整 · server/internal/finance/service/import.go</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"strconv"</span>
+    <span class="s">"strings"</span>
+    <span class="s">"sync"</span>
+
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="c">// ImportRow 是一行解析合格的导入数据。金额一律 *_cents int64（S3 起的老规矩）。</span>
+<span class="k">type</span> <span class="t">ImportRow</span> <span class="k">struct</span> {
+    Line        <span class="t">int</span>
+    OccurredAt  <span class="t">string</span> <span class="c">// 原样保留日期串；入库解析属 S6，今天只校验格式段数</span>
+    CategoryID  <span class="t">int64</span>
+    AmountCents <span class="t">int64</span>
+}
+
+<span class="c">// ImportFailure 是一行的失败下场：行号 + 全站唯一表里的业务码 + 人话。</span>
+<span class="k">type</span> <span class="t">ImportFailure</span> <span class="k">struct</span> {
+    Line    <span class="t">int</span>    <span class="s">`json:"line"`</span>
+    Code    <span class="t">int</span>    <span class="s">`json:"code"`</span>
+    Message <span class="t">string</span> <span class="s">`json:"message"`</span>
+}
+
+<span class="c">// ImportReport 是整批的报告。不变式：Total == len(Accepted) + len(Failures)。</span>
+<span class="k">type</span> <span class="t">ImportReport</span> <span class="k">struct</span> {
+    Total    <span class="t">int</span>             <span class="s">`json:"total"`</span>
+    Accepted []<span class="t">ImportRow</span>     <span class="s">`json:"accepted"`</span>
+    Failures []<span class="t">ImportFailure</span> <span class="s">`json:"failures"`</span>
+}
+
+<span class="c">// lineOutcome 是单行判定的中间形态：ok 决定进哪一摞。</span>
+<span class="k">type</span> <span class="t">lineOutcome</span> <span class="k">struct</span> {
+    row     <span class="t">ImportRow</span>
+    failure <span class="t">ImportFailure</span>
+    ok      <span class="t">bool</span>
+}
+
+<span class="k">func</span> <span class="t">failLine</span>(lineNo, code <span class="t">int</span>, msg <span class="t">string</span>) <span class="t">lineOutcome</span> {
+    <span class="k">return</span> <span class="t">lineOutcome</span>{failure: <span class="t">ImportFailure</span>{Line: lineNo, Code: code, Message: msg}}
+}
+
+<span class="c">// validateLine 单行判定：格式 1004、金额 4001、分类 1001——只用唯一表里的码。</span>
+<span class="k">func</span> <span class="t">validateLine</span>(lineNo <span class="t">int</span>, raw <span class="t">string</span>, knownCategories <span class="k">map</span>[<span class="t">int64</span>]<span class="t">bool</span>) <span class="t">lineOutcome</span> {
+    fields := strings.<span class="t">Split</span>(raw, <span class="s">","</span>)
+    <span class="k">if</span> <span class="k">len</span>(fields) != <span class="n">3</span> {
+        <span class="k">return</span> <span class="t">failLine</span>(lineNo, response.<span class="t">CodeInvalidParam</span>, <span class="s">"应为 occurred_at,category_id,amount_cents 三段"</span>)
+    }
+    categoryID, err := strconv.<span class="t">ParseInt</span>(strings.<span class="t">TrimSpace</span>(fields[<span class="n">1</span>]), <span class="n">10</span>, <span class="n">64</span>)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="t">failLine</span>(lineNo, response.<span class="t">CodeInvalidParam</span>, <span class="s">"分类 id 必须是整数"</span>)
+    }
+    amountCents, err := strconv.<span class="t">ParseInt</span>(strings.<span class="t">TrimSpace</span>(fields[<span class="n">2</span>]), <span class="n">10</span>, <span class="n">64</span>)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="t">failLine</span>(lineNo, response.<span class="t">CodeInvalidParam</span>, <span class="s">"金额必须是整数（分）"</span>)
+    }
+    <span class="k">if</span> amountCents &lt;= <span class="n">0</span> {
+        <span class="k">return</span> <span class="t">failLine</span>(lineNo, response.<span class="t">CodeAmountInvalid</span>, <span class="s">"金额必须大于 0"</span>)
+    }
+    <span class="k">if</span> !knownCategories[categoryID] {
+        <span class="c">// 「真没有」与「不是本家庭的」同形返回 1001——不泄露存在性</span>
+        <span class="k">return</span> <span class="t">failLine</span>(lineNo, response.<span class="t">CodeNotFound</span>, <span class="s">"分类不存在"</span>)
+    }
+    <span class="k">return</span> <span class="t">lineOutcome</span>{row: <span class="t">ImportRow</span>{
+        Line:        lineNo,
+        OccurredAt:  strings.<span class="t">TrimSpace</span>(fields[<span class="n">0</span>]),
+        CategoryID:  categoryID,
+        AmountCents: amountCents,
+    }, ok: <span class="k">true</span>}
+}</code></pre>
+
+    <h3>步骤 2 · ParseImport：各写各的格子</h3>
+    <pre><span class="code-label">完整 · server/internal/finance/service/import.go（续，同一个文件）</span><code><span class="c">// ParseImport 并发校验整批行，返回完整报告。</span>
+<span class="c">// 并发模式：预分配 outcomes，每个 goroutine 只写自己索引的槽位——</span>
+<span class="c">// 不同索引是不同内存地址，无共享写即无竞争，不需要锁也不需要 channel。</span>
+<span class="k">func</span> <span class="t">ParseImport</span>(lines []<span class="t">string</span>, knownCategories <span class="k">map</span>[<span class="t">int64</span>]<span class="t">bool</span>) *<span class="t">ImportReport</span> {
+    outcomes := <span class="k">make</span>([]<span class="t">lineOutcome</span>, <span class="k">len</span>(lines))
+    <span class="k">var</span> wg sync.<span class="t">WaitGroup</span>
+    <span class="k">for</span> i, line := <span class="k">range</span> lines {
+        wg.<span class="t">Add</span>(<span class="n">1</span>)
+        <span class="k">go</span> <span class="k">func</span>() {
+            <span class="k">defer</span> wg.<span class="t">Done</span>()
+            outcomes[i] = <span class="t">validateLine</span>(i+<span class="n">1</span>, line, knownCategories) <span class="c">// 行号从 1 起，跟用户的文件对齐</span>
+        }()
+    }
+    wg.<span class="t">Wait</span>()
+
+    rep := &amp;<span class="t">ImportReport</span>{Total: <span class="k">len</span>(lines), Accepted: []<span class="t">ImportRow</span>{}, Failures: []<span class="t">ImportFailure</span>{}}
+    <span class="k">for</span> _, o := <span class="k">range</span> outcomes {   <span class="c">// 串行压缩：天然按行号有序，不用排序</span>
+        <span class="k">if</span> o.ok {
+            rep.Accepted = <span class="k">append</span>(rep.Accepted, o.row)
+        } <span class="k">else</span> {
+            rep.Failures = <span class="k">append</span>(rep.Failures, o.failure)
+        }
+    }
+    <span class="k">return</span> rep
+}</code></pre>
+
+    <h3>步骤 3 · 部分失败测试：坏 4 行，行行有下场</h3>
+    <pre><span class="code-label">完整 · server/internal/finance/service/import_test.go</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"testing"</span>
+
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="k">func</span> <span class="t">TestParseImportPartialFailure</span>(t *testing.T) {
+    known := <span class="k">map</span>[<span class="t">int64</span>]<span class="t">bool</span>{<span class="n">10</span>: <span class="k">true</span>, <span class="n">11</span>: <span class="k">true</span>}
+    lines := []<span class="t">string</span>{
+        <span class="s">"2026-01-01,10,1500"</span>,   <span class="c">// 行1 好</span>
+        <span class="s">"2026-01-02,11,2500"</span>,   <span class="c">// 行2 好</span>
+        <span class="s">"2026-01-03,10,-5"</span>,     <span class="c">// 行3 坏：金额 ≤ 0 → 4001</span>
+        <span class="s">"2026-01-04,99,800"</span>,    <span class="c">// 行4 坏：分类不存在 → 1001</span>
+        <span class="s">"2026-01-05,10,1200"</span>,   <span class="c">// 行5 好</span>
+        <span class="s">"2026-01-06,11"</span>,        <span class="c">// 行6 坏：段数不对 → 1004</span>
+        <span class="s">"2026-01-07,10,900"</span>,    <span class="c">// 行7 好</span>
+        <span class="s">"2026-01-08,11,abc"</span>,    <span class="c">// 行8 坏：金额不是整数 → 1004</span>
+        <span class="s">"2026-01-09,10,700"</span>,    <span class="c">// 行9 好</span>
+        <span class="s">"2026-01-10,11,600"</span>,    <span class="c">// 行10 好</span>
+    }
+
+    rep := <span class="t">ParseImport</span>(lines, known)
+
+    <span class="c">// 不变式一：行行有结果，整批不静默吞</span>
+    <span class="k">if</span> rep.Total != <span class="k">len</span>(rep.Accepted)+<span class="k">len</span>(rep.Failures) {
+        t.<span class="t">Fatalf</span>(<span class="s">"Total=%d 但 Accepted=%d + Failures=%d 对不上"</span>, rep.Total, <span class="k">len</span>(rep.Accepted), <span class="k">len</span>(rep.Failures))
+    }
+    <span class="c">// 不变式二：坏行不拖累好行——6 好 4 坏，一条不多一条不少</span>
+    <span class="k">if</span> <span class="k">len</span>(rep.Accepted) != <span class="n">6</span> || <span class="k">len</span>(rep.Failures) != <span class="n">4</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"Accepted=%d(want 6) Failures=%d(want 4)"</span>, <span class="k">len</span>(rep.Accepted), <span class="k">len</span>(rep.Failures))
+    }
+    <span class="c">// 不变式三：失败必带行号与码，且码来自唯一表</span>
+    wantFailures := []<span class="t">ImportFailure</span>{
+        {Line: <span class="n">3</span>, Code: response.<span class="t">CodeAmountInvalid</span>},
+        {Line: <span class="n">4</span>, Code: response.<span class="t">CodeNotFound</span>},
+        {Line: <span class="n">6</span>, Code: response.<span class="t">CodeInvalidParam</span>},
+        {Line: <span class="n">8</span>, Code: response.<span class="t">CodeInvalidParam</span>},
+    }
+    <span class="k">for</span> i, want := <span class="k">range</span> wantFailures {
+        got := rep.Failures[i]
+        <span class="k">if</span> got.Line != want.Line || got.Code != want.Code {
+            t.<span class="t">Fatalf</span>(<span class="s">"Failures[%d] = {行%d 码%d}, want {行%d 码%d}"</span>, i, got.Line, got.Code, want.Line, want.Code)
+        }
+        <span class="k">if</span> got.Message == <span class="s">""</span> {
+            t.<span class="t">Fatalf</span>(<span class="s">"行 %d 的失败没有人话 message"</span>, got.Line)
+        }
+    }
+    <span class="c">// 输出有序：失败按行号升序（各写各的格子 + 串行压缩的自然结果）</span>
+    <span class="k">for</span> i := <span class="n">1</span>; i &lt; <span class="k">len</span>(rep.Failures); i++ {
+        <span class="k">if</span> rep.Failures[i-<span class="n">1</span>].Line &gt;= rep.Failures[i].Line {
+            t.<span class="t">Fatalf</span>(<span class="s">"Failures 未按行号升序"</span>)
+        }
+    }
+}
+
+<span class="k">func</span> <span class="t">TestParseImportEmpty</span>(t *testing.T) {
+    rep := <span class="t">ParseImport</span>(<span class="k">nil</span>, <span class="k">nil</span>)
+    <span class="k">if</span> rep.Total != <span class="n">0</span> || <span class="k">len</span>(rep.Accepted) != <span class="n">0</span> || <span class="k">len</span>(rep.Failures) != <span class="n">0</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"空输入应得到空报告: %+v"</span>, rep)
+    }
+}</code></pre>
+    <div class="callout note"><p>S6 接线时，这份 <code>ImportReport</code> 会原样进统一响应信封的 <code>data</code>：HTTP 200 + code 0——<b>「有坏行」不是接口失败</b>，报告本身就是成功的响应；用户界面按 <code>failures</code> 逐行标红。真正 400 + 1004 的是「整个文件没法读」这类批级错误，两层语义别搅在一起。</p></div>
+
+    <h3>步骤 4 · 验收并提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test    <span class="c"># -race 全量：导入测试绿且零 WARNING——「各写各的格子」经得起检测器</span>
+make lint
+
+git add server/internal/finance/service
+git status   <span class="c"># 确认没有顺手注册任何路由</span>
+git commit -m "feat(s5d7): 批量导入骨架——部分失败语义与行级错误码"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td><code>if err != nil { continue }</code></td><td>坏行凭空消失，Total 对不上账</td><td>错误也是结果：进 Failures，带行号带码</td></tr>
+      <tr><td>只报「失败了 N 行」</td><td>用户不知道是哪 N 行、为什么</td><td>行号 + 码 + 人话三件套缺一不可</td></tr>
+      <tr><td>并发 append 共享切片不加锁</td><td>-race 报 DATA RACE，或数据悄悄丢</td><td>append 不是原子的；用「各写各的格子」或 Mutex/channel</td></tr>
+      <tr><td>自造行级错误码（如 6001）</td><td>错误码表失去唯一性，前端映射表崩了</td><td>行级码也只从全站唯一表里选：1004/4001/1001</td></tr>
+      <tr><td>拿 errgroup 收集行错误</td><td>只拿到第一个错，其余行白跑</td><td>快速失败与全量收集是两种语义；导入永远选后者</td></tr>
+      <tr><td>把「有坏行」当成接口失败返回 400</td><td>好行也一起被拒，用户以为全没导入</td><td>批级 200 + 报告；400 留给「文件根本没法读」</td></tr>
+      <tr><td>行号从 0 起</td><td>用户对着编辑器的第 1 行找「行 0」</td><td>行号永远跟用户的文件对齐：从 1 起</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>部分失败语义</td><td>行行独立判定、好坏各自记账、交完整报告；批量导入的唯一正确姿势</td></tr>
+      <tr><td>三条不变式</td><td>Total = Accepted + Failures；失败带行号与码；坏行不拖累好行</td></tr>
+      <tr><td>静默吞</td><td><code>continue</code> 掉错误不记账——数据事故的头号来源</td></tr>
+      <tr><td>各写各的格子</td><td>预分配结果切片、按索引写各自槽位；无共享写即无竞争</td></tr>
+      <tr><td>行级码 vs 批级码</td><td>行错误进报告（HTTP 仍 200）；文件级错误才走 400 + 1004</td></tr>
+      <tr><td><code>strconv.ParseInt</code></td><td>字符串转整数，带位宽与进制；错误必须接住</td></tr>
+      <tr><td>存在性同形</td><td>「真没有」与「无权看」都报 1001——S4 越权口径在导入里的延伸</td></tr>
+      <tr><td>快速失败（对照）</td><td>errgroup 的语义：第一个错误即取消全体；与导入互斥的另一种收场</td></tr>
+      <tr><td>骨架先行</td><td>解析/校验/报告今天立对，落库与路由 S6 接——切分点即测试边界</td></tr>
+      <tr><td>CSV（前瞻）</td><td>今天手写三段解析；S6 导入导出用标准库 <code>encoding/csv</code> 正经处理引号与转义</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有两种情况出去查：</p>
+    <ul>
+      <li><b>ParseInt 的签名细节</b>：<a href="https://pkg.go.dev/strconv#ParseInt" target="_blank">strconv · ParseInt</a>（可选，bitSize 64 对应 int64）。</li>
+      <li><b>错误码常量对不上</b>：翻你仓库的 <code>server/pkg/response/code.go</code>（S1·D4 落的全表）——数值是唯一权威，常量名以仓里为准。</li>
+    </ul>
+    <p>部分失败类 bug 的调试顺序：先断言不变式一（Total 等式），它红了说明有行被吞；再对 Failures 逐条打印行号与码，跟输入文件逐行比对。<b>把「账」对齐了，逻辑错误藏不住。</b></p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w11d1c1">能背出部分失败三条不变式，并说清它与 errgroup 快速失败各适用什么场景</label></li>
+      <li><label><input type="checkbox" data-key="w11d1c2"><code>import.go</code> 落盘：三件套 struct + validateLine + ParseImport，行级码只用 1004/4001/1001</label></li>
+      <li><label><input type="checkbox" data-key="w11d1c3">10 行输入坏 4 行的测试全绿：Total 等式、6 好 4 坏、行号与码逐条对上、输出按行号有序</label></li>
+      <li><label><input type="checkbox" data-key="w11d1c4"><code>make build</code> / <code>make test</code>（-race）/ <code>make lint</code> 全绿，commit 带卡号 <code>s5d7</code>；仓库里没多出任何路由</label></li>
+      <li><label><input type="checkbox" data-key="w11d1c5"><code>notes/</code> 里写下三行：「各写各的格子」为什么不需要锁、行级码与批级码的分界、S6 接线时还差哪半程</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../frontend/f4/w10f1.html"><span class="hint">← 上周日 · F4·w10</span>组件拆分实战：把流水列表页拆成四块</a>
+    <a href="w11d2.html"><span class="hint">明天 · S5·D8 →</span>结构化日志：slog 与 request-id 串成一条线</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w11d1 · 明天见 ⟩</footer>
+</body>
+</html>

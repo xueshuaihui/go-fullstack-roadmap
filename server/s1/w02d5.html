@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S1·D11 · internal/ 分层与收口前的重构 | HomeCube 修炼手册</title>
+<meta name="description" content="讲清 internal/ 的分层意义与 handler/service/repo 三层职责，把 handler 从 main.go 归置进 internal/homeos/handler，中间件归置进 internal/platform/middleware，main.go 只剩装配。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w02d5">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S1</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S1</a> / w02d5</div>
+  <div class="day-meta">
+    <span class="chip">S1 · DAY 11</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>internal/ 分层与收口前的重构</h1>
+  <p>main.go 已经胖了：路由、五个 handler、两个中间件、DTO 全挤在一个包里。明天就收口，今天做 S1 唯一一次<b>纯重构</b>——不加任何新功能，只把代码搬进它该住的房间，顺便把「三层」这件事一次讲清。三层的完整教学（service 层、DTO 与模型分离、依赖注入）在 S2；今天的目标是<b>讲清 + 归置</b>，让你明天收口时看到的仓库长得像 S2 要用的样子。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w02d5g1">说清 handler / service / repo 三层各自负责什么、彼此的依赖方向为什么只能单向</label></li>
+      <li><label><input type="checkbox" data-key="w02d5g2">说清 <code>internal/</code> 的编译器强制在分层里扮演什么角色（不只是「藏起来」）</label></li>
+      <li><label><input type="checkbox" data-key="w02d5g3">理解「搬代码 = 改包名 + 改导出 + 测试跟着走」三步，且一次搬完仓库仍绿</label></li>
+      <li><label><input type="checkbox" data-key="w02d5g4">main.go 瘦成纯装配（30 行以内），全部测试绿</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 三层：翻译层、规则层、存取层</h3>
+    <p>一个请求从进来到落库，经过三种性质完全不同的工作。把它们混在一个函数里，就是「大泥球」的起点；分成三层，每层只干一种事：</p>
+    <table>
+      <tr><th>层</th><th>职责</th><th>允许 import</th><th>禁止</th></tr>
+      <tr><td><b>handler</b>（翻译层）</td><td>HTTP ↔ 业务的双向翻译：解析请求（D8）、调 service、把 error 翻译成统一信封（D6/D7）</td><td>service、model、<code>pkg/response</code>、net/http</td><td>写业务规则、碰数据存储细节</td></tr>
+      <tr><td><b>service</b>（规则层）</td><td>业务规则的唯一住所：「余额非 0 不许归档」「唯一 owner 不许移除」都住这里</td><td>repo 接口、model</td><td><b>import net/http、认识 response.Body</b>——它只说 error，不说 HTTP</td></tr>
+      <tr><td><b>repo</b>（存取层）</td><td>数据存取：S1 是内存 map（D5），S3 换 Postgres，接口不变</td><td>model</td><td>写业务规则、import net/http</td></tr>
+    </table>
+    <p>依赖方向永远<b>从外往里</b>：handler → service → repo → model。内层不知道外层存在——repo 不知道自己被 Gin 还是 net/http 调用，这正是 S3「换数据库只写一个新实现」与 S2「换框架只动 handler」的底层原理（D5 讲接口时说过的「消费方约定」，今天落成目录）。</p>
+    <div class="callout warn"><p><b>今天你只有两层</b>：handler（D6-D9 写的那些函数）与 repo（D5 的 FamilyRepository）。<b>service 层 S2 才出生</b>——现在没有业务规则，凭空造一个空的 service 层是过度设计。分层是「规则长出来时给它准备的房间」，不是仪式。</p></div>
+    <p>还有一个横切住户：<b>middleware</b>。它不属于任何业务模块（homeos / finance 都要用），所以归 <code>internal/platform/</code>——D1 的目录骨架里 platform 的定位「配置、日志、鉴权、跨模块」今天落进第一件实物。</p>
+
+    <h3>2. internal/ 不只是「藏」，是编译器执法</h3>
+    <p>D1 说过 <code>internal/</code> 外部模块 import 会编译失败。今天看它的第二重意义：<b>分层纪律有了执法者</b>。约定「repo 不许碰 HTTP」如果只写在文档里，三个月后一定被违反；而当 repo 住在 <code>internal/</code>、handler 住在另一个包，跨层乱 import 至少要在文件头上留下一行明晃晃的证据，review 时一眼抓获。Go 社区的共识：<b>目录结构就是架构文档，编译器就是架构警察</b>。</p>
+    <p>顺带认识一个新敌人：<b>import cycle（循环依赖）</b>。Go 禁止 A import B、B 又 import A——哪怕只是间接的。循环依赖几乎总是分层被打破的信号（service 反过来 import handler 之类），编译器会在你犯错的第一时间拦下。前端里循环 import 常常悄悄活着，Go 里它活不过编译。</p>
+
+    <h3>3. 搬代码的标准三步</h3>
+    <ul>
+      <li><b>改包名</b>：文件挪进新目录后，第一行 <code>package</code> 必须等于新目录名（一个目录一个包，D1）。同目录的文件是一家人，互相直接用，不 import。</li>
+      <li><b>改导出</b>：搬家前是小写（包内私有）的名字，要被别的包用就得改成大写——<code>withRecover</code> 变 <code>WithRecover</code>。搬完 <code>make build</code>，编译器会把所有「你忘了导出」的地方逐个报错给你看，照着改。</li>
+      <li><b>测试跟着代码走</b>：<code>middleware_test.go</code> 和 <code>middleware.go</code> 住同一个包。<b>删掉原文件</b>，别让旧副本留下重复定义的编译错误。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>①：归置与重构</b>（不加新功能）。目标结构：</p>
+    <pre><span class="code-label">结构 · 改动后</span><code>&lt;repo&gt;/server/
+├── cmd/homecube/
+│   ├── main.go              只剩装配：建 router、包中间件、ListenAndServe
+│   ├── main_test.go         TestHealthz（原样保留）
+│   └── routes_test.go       TestRoutesCanonical + TestMethodNotAllowed（原样保留——它们测的是「装配结果」）
+├── internal/
+│   ├── homeos/
+│   │   ├── handler/         handler.go：五个 handler + EchoReq（今天从 main.go 搬来）
+│   │   ├── model/           （D3 已就位）
+│   │   └── repository/      （D5 已就位）
+│   └── platform/
+│       └── middleware/      middleware.go + middleware_test.go（今天从 cmd 搬来）
+└── pkg/response/            （D4/D6/D10 已就位，今天不动）</code></pre>
+
+    <h3>步骤 1 · 中间件搬进 platform</h3>
+    <pre><span class="code-label">片段 · server/internal/platform/middleware/middleware.go（函数体与 D9 逐字一致，只改包名与导出名）</span><code><span class="k">package</span> middleware
+
+<span class="k">import</span> (
+    <span class="s">"crypto/rand"</span>
+    <span class="s">"encoding/hex"</span>
+    <span class="s">"log"</span>
+    <span class="s">"net/http"</span>
+    <span class="s">"runtime/debug"</span>
+
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="c">// WithRequestID 给每个响应盖 X-Request-ID：客户端带了合法的就沿用，否则生成。</span>
+<span class="c">// （实现与 D9 完全一致，仅改包名与导出——搬家的纪律：不顺手改逻辑。）</span>
+<span class="k">func</span> <span class="t">WithRequestID</span>(next http.<span class="t">Handler</span>) http.<span class="t">Handler</span> {
+    <span class="k">return</span> http.<span class="t">HandlerFunc</span>(<span class="k">func</span>(w http.<span class="t">ResponseWriter</span>, r *http.<span class="t">Request</span>) {
+        id := r.<span class="t">Header</span>.<span class="t">Get</span>(<span class="s">"X-Request-ID"</span>)
+        <span class="k">if</span> id == <span class="s">""</span> || <span class="t">len</span>(id) &gt; <span class="n">64</span> {
+            id = <span class="t">newRequestID</span>()
+        }
+        w.<span class="t">Header</span>().<span class="t">Set</span>(<span class="s">"X-Request-ID"</span>, id)
+        next.<span class="t">ServeHTTP</span>(w, r)
+    })
+}
+
+<span class="k">func</span> <span class="t">newRequestID</span>() <span class="t">string</span> { <span class="c">/* 小写：包内私有，没变 */</span> }
+
+<span class="c">// WithRecover 兜住 handler 的 panic → 500 + 5000 统一信封 + 堆栈进日志。</span>
+<span class="k">func</span> <span class="t">WithRecover</span>(next http.<span class="t">Handler</span>) http.<span class="t">Handler</span> { <span class="c">/* 实现与 D9 一致 */</span> }</code></pre>
+    <p>把 D9 的两个函数体原样拷进对应位置（上面为省篇幅折叠了两处），<code>middleware_test.go</code> 一并搬来、改包名为 <code>middleware</code>、函数名改大写引用。<b>唯一实质改动</b>：原 <code>TestWithRequestID</code> 里借用了 <code>newRouter()</code>——它住在 cmd 包，搬过来就够不着了（也不该够：middleware 不该知道全站路由长什么样）。换成哑 handler：</p>
+    <pre><span class="code-label">片段 · middleware_test.go 里的替换（前置：搬来的测试文件）</span><code>h := <span class="t">WithRequestID</span>(http.<span class="t">HandlerFunc</span>(<span class="k">func</span>(w http.<span class="t">ResponseWriter</span>, r *http.<span class="t">Request</span>) {
+    response.<span class="t">OK</span>(w, <span class="k">nil</span>)
+}))   <span class="c">// 测中间件只需要一个「必定 200」的哑 handler——这就是层与层解耦后的测试自由</span></code></pre>
+    <p>然后<b>删除</b> <code>cmd/homecube/middleware.go</code> 与 <code>cmd/homecube/middleware_test.go</code>。</p>
+
+    <h3>步骤 2 · handler 搬进 homeos</h3>
+    <pre><span class="code-label">片段 · server/internal/homeos/handler/handler.go（函数体从 main.go 原样拷入，仅首字母大写）</span><code><span class="k">package</span> handler
+
+<span class="k">import</span> (
+    <span class="s">"encoding/json"</span>
+    <span class="s">"net/http"</span>
+    <span class="s">"strconv"</span>
+    <span class="s">"strings"</span>
+
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="c">// Healthz 健康检查。它的长期住处在 platform 侧，S2·D1 换 Gin 归置三层时一并处理；</span>
+<span class="c">// 教学期先随大部队住这里，不为它单独发明目录。</span>
+<span class="k">func</span> <span class="t">Healthz</span>(w http.<span class="t">ResponseWriter</span>, r *http.<span class="t">Request</span>) { <span class="c">/* 原样拷入 */</span> }
+
+<span class="c">// —— 教学期练手 handler：S2·D1 整个家族删除 ——</span>
+<span class="k">func</span> <span class="t">Ping</span>(w http.<span class="t">ResponseWriter</span>, r *http.<span class="t">Request</span>)     { <span class="c">/* 原样拷入 */</span> }
+<span class="k">func</span> <span class="t">PingByID</span>(w http.<span class="t">ResponseWriter</span>, r *http.<span class="t">Request</span>)  { <span class="c">/* 原样拷入 */</span> }
+<span class="k">func</span> <span class="t">PingEcho</span>(w http.<span class="t">ResponseWriter</span>, r *http.<span class="t">Request</span>)  { <span class="c">/* 原样拷入 */</span> }
+
+<span class="c">// EchoReq 是 PingEcho 的请求 DTO，跟着 handler 走。</span>
+<span class="k">type</span> <span class="t">EchoReq</span> <span class="k">struct</span> {
+    Name <span class="t">string</span> <span class="s">`json:"name"`</span>
+}
+
+<span class="c">// NotFound 是 404 兜底：任何未知路径 → 404 + 1001 统一信封。</span>
+<span class="k">func</span> <span class="t">NotFound</span>(w http.<span class="t">ResponseWriter</span>, r *http.<span class="t">Request</span>) { <span class="c">/* 原样拷入 */</span> }</code></pre>
+    <p>五个函数体与 D8 版本一字不改，只是首字母大写（导出）——<b>重构日只搬家，不改行为</b>，这是重构的铁律：行为改动与结构改动混在一次提交里，出了 bug 你分不清是谁干的。</p>
+
+    <h3>步骤 3 · main.go 瘦成装配</h3>
+    <pre><span class="code-label">完整 · server/cmd/homecube/main.go（覆盖 D8 版本）</span><code><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"log"</span>
+    <span class="s">"net/http"</span>
+
+    <span class="s">"homecube/internal/homeos/handler"</span>
+    <span class="s">"homecube/internal/platform/middleware"</span>
+)
+
+<span class="k">func</span> <span class="t">newRouter</span>() http.<span class="t">Handler</span> {
+    mux := http.<span class="t">NewServeMux</span>()
+    mux.<span class="t">HandleFunc</span>(<span class="s">"GET /healthz"</span>, handler.Healthz)
+
+    <span class="c">// —— 教学期练手路由：S2·D1 删除 ——</span>
+    mux.<span class="t">HandleFunc</span>(<span class="s">"GET /api/ping"</span>, handler.Ping)
+    mux.<span class="t">HandleFunc</span>(<span class="s">"GET /api/ping/{id}"</span>, handler.PingByID)
+    mux.<span class="t">HandleFunc</span>(<span class="s">"POST /api/ping/echo"</span>, handler.PingEcho)
+
+    mux.<span class="t">HandleFunc</span>(<span class="s">"/"</span>, handler.NotFound)
+    <span class="k">return</span> middleware.<span class="t">WithRequestID</span>(middleware.<span class="t">WithRecover</span>(mux))
+}
+
+<span class="k">func</span> <span class="t">main</span>() {
+    addr := <span class="s">":8080"</span>
+    log.<span class="t">Println</span>(<span class="s">"homecube listening on"</span>, addr)
+    <span class="k">if</span> err := http.<span class="t">ListenAndServe</span>(addr, <span class="t">newRouter</span>()); err != <span class="k">nil</span> {
+        log.<span class="t">Fatal</span>(err)
+    }
+}</code></pre>
+    <p>数一下：main.go 只剩 40 行不到，<b>没有一行业务</b>。这就是 cmd/ 的岗位说明书（D1）：「读配置 → 连库 → 装配路由 → 启动」，S3 加配置、S5 加优雅关闭，加的全是装配动作。</p>
+
+    <h3>步骤 4 · 验收并提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test    <span class="c"># 全部包 ok——重构成功的唯一标准：测试一个不用改断言就全绿</span>
+make lint
+
+make run     <span class="c"># 终端 1</span>
+curl -i http://localhost:8080/healthz      <span class="c"># 终端 2：与重构前分毫不差</span>
+curl -i http://localhost:8080/whatever     <span class="c"># 404 + 1001，X-Request-ID 也在</span>
+
+git add -A server
+git status   <span class="c"># 重构提交尤其要看清：删了哪些、加了哪些，一对一对应</span>
+git commit -m "refactor(s1d11): handler 归置 internal/homeos/handler，中间件归置 platform，main.go 只剩装配"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>搬了文件忘删原件</td><td><code>withRecover redeclared in this block</code></td><td>搬家 = 复制 + <b>删除</b>；git status 里新旧文件应一一对应</td></tr>
+      <tr><td>忘了改导出</td><td>main.go 里 <code>undefined: handler.Healthz</code>（或反过来 undefined: handler.healthz）</td><td>跨包使用的名字必须大写；编译器会逐个报给你</td></tr>
+      <tr><td>包名 ≠ 目录名</td><td><code>found packages middleware and main in …</code></td><td>一个目录一个包；测试文件的包名也要跟目录走</td></tr>
+      <tr><td>重构时顺手「优化」逻辑</td><td>测试红了，分不清是搬坏的还是改坏的</td><td>重构提交零行为改动。想改逻辑？下一个提交，单独红绿</td></tr>
+      <tr><td>让 service/repo import net/http</td><td>今天不疼，S3 换存储、S2 换框架时全身疼</td><td>HTTP 词汇只许出现在 handler 与 middleware；里层只说 error 和 model</td></tr>
+      <tr><td>造出空的 service 层「占位」</td><td>三层变三层转发，每层啥也不干</td><td>S1 没有业务规则就没有 service；S2 规则出生时再建</td></tr>
+      <tr><td>出现 import cycle</td><td><code>import cycle not allowed</code></td><td>这是架构报警：说明依赖方向反了。把共用的东西下沉（model / pkg），而不是把 import 删了绕过去</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>三层架构</td><td>handler（翻译）→ service（规则）→ repo（存取）；S2 完整教学，今天归置出雏形</td></tr>
+      <tr><td>依赖方向</td><td>只许从外往里；内层不认识外层，才能被随便替换</td></tr>
+      <tr><td>装配根（composition root）</td><td>唯一知道「全部零件」的地方 = main.go；只有它做拼装</td></tr>
+      <tr><td>横切关注点</td><td>不属于任何模块的事（中间件、日志、配置），住 <code>internal/platform/</code></td></tr>
+      <tr><td>import cycle</td><td>循环依赖，Go 编译期禁止；几乎总是分层被打破的信号</td></tr>
+      <tr><td>导出（复习）</td><td>首字母大写跨包可见；搬家后编译器帮你清点该导出谁</td></tr>
+      <tr><td>重构</td><td>只改结构不改行为；测试全绿是重构完成的唯一标准</td></tr>
+      <tr><td>哑 handler（stub）</td><td>测试中间件用的最小替身；层解耦后测试才这么轻</td></tr>
+      <tr><td>大泥球（big ball of mud）</td><td>所有逻辑纠缠在一个包/文件里的反模式；今天搬的家就是防它</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有两种情况出去查：</p>
+    <ul>
+      <li><b>internal 机制的官方说明</b>：<a href="https://go.dev/doc/go1.4#internal" target="_blank">Go 1.4 Release Notes · internal packages</a>（可选，三段话，讲清编译器执法的来历）。</li>
+      <li><b>项目布局想看看别人怎么摆</b>：<a href="https://github.com/golang-standards/project-layout" target="_blank">golang-standards/project-layout</a>（可选，<b>只看不抄</b>——它面向大项目，本项目的目录以 D1 骨架为准，别被带偏）。</li>
+    </ul>
+    <p>搬家类重构出错的调试铁律：<b>一次只搬一个包，搬完立刻 <code>make test</code></b>。全搬完才跑测试，红了就是五处嫌疑人站一排。今天先搬 middleware（带测试）、绿了、再搬 handler、再绿——两次小步永远比一次大步便宜。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w02d5c1">main.go 只剩装配（40 行内、零业务），handler 五函数 + EchoReq 住进 <code>internal/homeos/handler</code>，两个中间件住进 <code>internal/platform/middleware</code>，cmd 下旧文件已删</label></li>
+      <li><label><input type="checkbox" data-key="w02d5c2">middleware 的测试跟着搬了家，且对 newRouter 的依赖换成了哑 handler——测试套件里没有跨包的暗中依赖</label></li>
+      <li><label><input type="checkbox" data-key="w02d5c3">能不看资料讲清三层职责、依赖方向，以及「为什么 service/repo 不许 import net/http」</label></li>
+      <li><label><input type="checkbox" data-key="w02d5c4"><code>make build</code> 与 <code>make test</code> 全绿且断言零改动，curl 行为与重构前一致，commit 带卡号 <code>s1d11</code></label></li>
+      <li><label><input type="checkbox" data-key="w02d5c5"><code>notes/</code> 写三行：三层各自负责什么、internal/ 在分层里的第二重意义、重构日为什么不许改行为</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w02d4.html"><span class="hint">← 昨天 · S1·D10</span>表驱动测试与 httptest</a>
+    <a href="w02d6.html"><span class="hint">明天 · S1·D12 →</span>S1 收口与费曼自测</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w02d5 · 明天见 ⟩</footer>
+</body>
+</html>

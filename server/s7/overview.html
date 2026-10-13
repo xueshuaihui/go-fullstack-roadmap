@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S7 阶段总览 · 壳基座服务端 | HomeCube 修炼手册</title>
+<meta name="description" content="S7（w17-w20，24 张日卡）：app 壳基座的 18 条服务端接口——面目录与四层合成、分包清单与契约测试、首页 summary 与未读口径唯一、到期中心 DueRegistry、通知三分型、个人与家庭设置。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body>
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="../s8/overview.html">下一阶段 S8 →</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / 服务端主线 / S7</div>
+  <div class="day-meta">
+    <span class="chip">STAGE S7</span>
+    <span class="chip alt">w17-w20 · 24 张日卡</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>S7 · 壳基座服务端</h1>
+  <p>前六个阶段造的是「一个能记账的后端」。这四周造的是<b>那个 app 壳</b>：它启动后只知道一件事——<b>该显示哪些面、每个面有没有新东西</b>，其余全由服务端告诉它。18 条接口打完，「面集合在服务端一处合成、客户端零裁剪」这条纪律就真的立住了，壳基座与财务两个业务模块也第一次在同一个进程里协作。</p>
+
+  <section>
+    <h2>为什么壳基座放在财务之后</h2>
+    <div class="callout note"><p>壳的三个核心能力——<b>面清单、未读口径、到期中心</b>——都必须有真实业务数据才有意义。没有 S6 的预算与周期记账，到期中心就只能注册一条假待办；没有财务流水，未读红点无从算起。<b>先有被聚合的业务，再来做聚合的壳</b>，反过来你会把接口设计成「猜业务要什么」。另一个原因很实际：壳基座是这个项目里最容易做出「看起来能跑、其实是硬编码」那类东西的一段，而 S5-S6 已经把你训练成先写判据再写代码的人。</p></div>
+  </section>
+
+  <section>
+    <h2>本阶段立住的三条纪律</h2>
+    <table>
+      <tr><th>纪律</th><th>口径</th><th>兑现卡</th></tr>
+      <tr><td>面集合四层只在服务端合成</td><td>代码即配置的<b>面目录</b> → 家庭级<b>启用配置</b> → <b>角色可见性</b> → <b>版本/契约能力</b>，四层在一个函数里合成，<code>faces[]</code> 是它唯一的出口。客户端不得再裁一次、不得硬编码面清单</td><td><a href="w17d1.html">w17d1</a> → <a href="w17d3.html">w17d3</a> → <a href="w17d5.html">w17d5</a></td></tr>
+      <tr><td>未读口径全站唯一</td><td>一个 <code>count</code> 函数、一处谓词。<b>三个出口同值</b>：<code>home/summary</code>、通知列表、到期/待办列表读到的未读数必须来自同一个实现，各返各的算就是分叉</td><td><a href="w18d3.html">w18d3</a> / <a href="w20d2.html">w20d2</a></td></tr>
+      <tr><td>跨模块调用只走 platform 接口</td><td>财务模块不 select 壳的表，壳也不 select <code>finance_*</code>。<a href="w19d2.html">DueRegistry</a> 是这条纪律的实物：日后要换成进程间总线，<b>只换实现、接口与调用点零改动</b></td><td><a href="w19d2.html">w19d2</a> / <a href="w19d5.html">w19d5</a></td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>伏笔兑现表（本阶段集中还债）</h2>
+    <table>
+      <tr><th>伏笔</th><th>埋在哪</th><th>兑现卡</th></tr>
+      <tr><td>「到期注册走进程内接口，S7 建 <code>DueRegistry</code> 时兑现『日后换总线只需换实现』」</td><td>S4 跨模块接口</td><td><a href="w19d2.html">w19d2</a>：接口在 <code>platform</code>，实现在进程内</td></tr>
+      <tr><td><code>FamilyDirectory</code>：跨模块调用点一律收在接口后面</td><td>S4 跨模块接口</td><td><a href="w17d3.html">w17d3</a> 四层合成里读成员与角色</td></tr>
+      <tr><td>预算告警钩子 <code>notify.Notifier</code> 占位</td><td>S6·D22</td><td><a href="w20d1.html">w20d1</a> 换成真通知写入 + 三分型</td></tr>
+      <tr><td>周期记账的到期跑批不在财务模块起定时器</td><td>S6·D23</td><td><a href="w19d5.html">w19d5</a> 规则注册进到期中心，由壳统一触发</td></tr>
+      <tr><td>角色矩阵与字段级可见性只有一份实现</td><td>S4 鉴权与隔离</td><td><a href="w17d2.html">w17d2</a> 面启用配置、<a href="w20d5.html">w20d5</a> 家庭设置段</td></tr>
+      <tr><td>「已退出成员」是 <code>status</code> 取值，不是第五个角色</td><td>S1·D3 的 Role 枚举</td><td><a href="w18d4.html">w18d4</a> 动态流的作者展示</td></tr>
+      <tr><td>游标分页的不透明游标</td><td>S3·D8</td><td><a href="w18d4.html">w18d4</a> 动态流按天分组 + 游标续读</td></tr>
+      <tr><td><code>CORS_ORIGIN</code>（环境变量表里早就登记了，一直没接）</td><td>S3·D1</td><td><a href="../s8/w21d5.html">S8·D5</a> 与可信代理一起兑现</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>阶段产物（S7 结束时仓库里必须有的东西）</h2>
+    <table>
+      <tr><th>产物</th><th>说明</th></tr>
+      <tr><td>面目录与启用配置</td><td>代码内 registry（新增一个面只改一处）+ 家庭级启用开关（乐观锁 epoch + 变更审计）+ 停用面的三条语义与「最后一个面不可停」保护（1010）</td></tr>
+      <tr><td>面清单与分包清单</td><td><code>GET /api/homeos/faces</code> 四层合成结果、<code>bundles</code> 清单与校验回退；未出生 / 未启用 / 无权三种状态各有明确编码</td></tr>
+      <tr><td>契约测试</td><td>钉死「客户端不得二次裁剪」：<code>faces[]</code> 的字段集合、顺序、以及停用面在响应里的形状</td></tr>
+      <tr><td>首页 summary</td><td>首屏<b>只有一个业务请求</b>；<code>faces[]</code> 与面清单同源；未出生/未启用的面在客户端<b>零请求</b>由服务端保证</td></tr>
+      <tr><td>动态流</td><td>按天分组、按面筛选、游标分页；作者名走 <code>FamilyDirectory</code></td></tr>
+      <tr><td>到期中心</td><td>三对象（到期项 / 提醒 / 待办）+ <code>DueRegistry</code> 注册与撤销（<code>registered</code> / <code>revoked</code>）+ 触发与完成回写 + 财务侧接入</td></tr>
+      <tr><td>通知与设置</td><td>通知表与三分型、列表与红点、已读回写、推送设备注册；个人设置（主题三态、日期格式）与家庭设置（币种只存不算）两段各自独立 <code>version</code></td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>阶段判据（全过才算 S7 通过）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="s7o1">施工清单上壳基座段的 18 条接口<b>逐条核销</b>：面配置 3 + 首页 2 + 到期 8 + 通知 3 + 设置 2，每条过三关（单测绿、手工能演示、错误码走表）</label></li>
+      <li><label><input type="checkbox" data-key="s7o2">能<b>不看资料</b>讲清面集合的四层各挡什么，并演示：把一个面停用后，<code>faces[]</code>、<code>bundles</code>、首屏请求三处<b>同时</b>变</label></li>
+      <li><label><input type="checkbox" data-key="s7o3">未读口径三个出口同值：契约测试同时打三个接口，断言同一个数；改谓词只改一处</label></li>
+      <li><label><input type="checkbox" data-key="s7o4">grep 判据零命中：客户端契约里没有硬编码的面清单；<code>finance_*</code> 与 <code>homeos_*</code> 之间没有任何跨模块 SQL，调用全走 <code>platform</code> 接口</label></li>
+      <li><label><input type="checkbox" data-key="s7o5">能<b>不看资料</b>讲清：<code>DueRegistry</code> 换成消息总线时哪三个文件要动、哪十个不用动，以及为什么「注册/撤销」必须是幂等的</label></li>
+      <li><label><input type="checkbox" data-key="s7o6">到期触发有测试覆盖三种情形：正常到期、勾选完成回写、停机后补跑不重复</label></li>
+      <li><label><input type="checkbox" data-key="s7o7">设置两段（个人 / 家庭）各自独立 <code>version</code>；member 改家庭段 → 403+1003，owner 改 → 200 且只有家庭行 <code>version</code> +1</label></li>
+      <li><label><input type="checkbox" data-key="s7o8"><code>make build</code> / <code>make test</code>（<code>-race</code>）/ <code>make lint</code> 全绿，收官提交带卡号 <code>s7d24</code></label></li>
+    </ul>
+    <div class="callout warn"><p><b>不通过就原地重做，不跳阶段。</b>S8 只做部署与门禁，不补功能；S7 漏掉的接口在 S8 不会被发现，只会在「干净机器复现」时以另一种形态出现——那时你要同时 debug 部署和业务，成本是现在的三倍。</p></div>
+  </section>
+
+  <section>
+    <h2>24 张日卡</h2>
+    <table>
+      <tr><th>卡</th><th>知识点</th><th>当天增量</th></tr>
+      <tr><td><a href="w17d1.html">w17d1</a></td><td>registry 面目录：代码即配置</td><td>① 面描述 struct + 目录常量表（新增一个面只改这一处）</td></tr>
+      <tr><td><a href="w17d2.html">w17d2</a></td><td>面启用配置：乐观锁 epoch 与变更审计</td><td>④+①+② 启用表迁移 + 配置 struct + 读写两条路由骨架</td></tr>
+      <tr><td><a href="w17d3.html">w17d3</a></td><td>面清单接口：四层合成在服务端一处</td><td>⑤+② 把目录与启用合成 <code>faces[]</code>，一个函数出口</td></tr>
+      <tr><td><a href="w17d4.html">w17d4</a></td><td>分包清单接口：bundles 与校验回退</td><td>②+③ <code>bundles</code> 路由 + 三种状态（未出生/未启用/无权）的编码测试</td></tr>
+      <tr><td><a href="w17d5.html">w17d5</a></td><td>契约测试：客户端不得二次裁剪</td><td>③ 钉死 <code>faces[]</code> 字段集合与顺序的契约测试</td></tr>
+      <tr><td><a href="w17d6.html">w17d6</a></td><td><b>周六</b> · 停用面的三条语义与最后一面保护</td><td>把本周五条串成「改一处配置，三个接口同步变」的可演示链路</td></tr>
+      <tr><td><a href="w18d1.html">w18d1</a></td><td>home/summary 骨架：<code>faces[]</code> 与面清单同源</td><td>② summary handler，<code>faces[]</code> 复用同一个合成函数</td></tr>
+      <tr><td><a href="w18d2.html">w18d2</a></td><td>首屏只有一个业务请求：summary 塞什么、不塞什么</td><td>⑤ 把首屏需要的数据一次算完，砍掉平行接口</td></tr>
+      <tr><td><a href="w18d3.html">w18d3</a></td><td>未读口径唯一：三个出口同值的第一个出口</td><td>④+①+⑤ 未读表或列的迁移 + 唯一 count 函数 + summary 接它</td></tr>
+      <tr><td><a href="w18d4.html">w18d4</a></td><td>动态流：按天分组、按面筛选、游标分页</td><td>④+②+⑤ 分组查询 + 路由 + 走真数据</td></tr>
+      <tr><td><a href="w18d5.html">w18d5</a></td><td>未出生/未启用面的零请求服务端保证</td><td>③ 断言「不出现即不请求」的负样本测试</td></tr>
+      <tr><td><span class="todo">w18d6 · 待生成</span></td><td><b>周六</b> · 首页 summary 与动态流串联</td><td>把 w18 五条串成一次首屏请求的完整演示 + 测试补齐</td></tr>
+      <tr><td><a href="w19d1.html">w19d1</a></td><td>到期中心三对象与注册表</td><td>④+① 三张表迁移 up/down + 三个 struct</td></tr>
+      <tr><td><a href="w19d2.html">w19d2</a></td><td><code>DueRegistry</code>：跨模块调用收在 platform 接口后面</td><td>①+③ 接口定义 + 进程内实现的替身测试</td></tr>
+      <tr><td><a href="w19d3.html">w19d3</a></td><td>注册与撤销：<code>registered</code> / <code>revoked</code> 语义</td><td>②+⑤ stub 换真实现，撤销幂等</td></tr>
+      <tr><td><a href="w19d4.html">w19d4</a></td><td>到期触发与完成回写</td><td>④+①+② 触发列迁移 + 调度器 + 两条待办接口</td></tr>
+      <tr><td><a href="w19d5.html">w19d5</a></td><td>财务侧接入：预算周期与周期记账规则注册</td><td>①+② finance 侧调用注册，不新增跨模块 SQL</td></tr>
+      <tr><td><a href="w19d6.html">w19d6</a></td><td><b>周六</b> · 提醒/待办 CRUD 串通与勾选完成</td><td>注册 → 触发 → 展示 → 回写一条链跑通</td></tr>
+      <tr><td><a href="w20d1.html">w20d1</a></td><td>通知表与三分型</td><td>①+④+⑤ 分型常量与唯一 count 函数 + CHECK 迁移 + 调度器去硬编码</td></tr>
+      <tr><td><a href="w20d2.html">w20d2</a></td><td>通知列表与未读红点</td><td>②+③ 列表路由 + 与 summary <b>同值</b>的契约测试</td></tr>
+      <tr><td><a href="w20d3.html">w20d3</a></td><td>已读回写与推送设备注册</td><td>②+④ 两条路由 + 设备表迁移</td></tr>
+      <tr><td><a href="w20d4.html">w20d4</a></td><td>设置：主题三态与日期格式</td><td>④+② 设置迁移 + GET/PUT 两个 handler 真实现</td></tr>
+      <tr><td><a href="w20d5.html">w20d5</a></td><td>家庭设置：币种只存不算汇率</td><td>②+③ family 段扩出真实现 + 权限与「只存不算」契约测试</td></tr>
+      <tr><td><span class="todo">w20d6 · 待生成</span></td><td><b>周六</b> · S7 收口：18 条划掉与壳基座判据自测</td><td>③ 端到端收口测试 + 判据逐条自测记进 <code>notes/</code></td></tr>
+    </table>
+    <p>四周的周日卡（<a href="../../frontend/f5/w17f1.html">w17f1</a> … <a href="../../frontend/f5/w20f1.html">w20f1</a>）属 F5「壳基座前端」，与本阶段并行、互不挪用时间。</p>
+  </section>
+
+  <section>
+    <h2>本阶段不做什么（明确划掉，免得手滑）</h2>
+    <ul>
+      <li><b>不引入消息总线、不引入 Redis</b>。<code>DueRegistry</code> 和 <code>Notifier</code> 都是进程内接口调用——换总线的成本留成「一句前瞻」，不做</li>
+      <li>不做真正的推送服务。设备注册只存 token、只写通知记录，发送留给平台侧，不在本课程范围内</li>
+      <li>不做「家庭级覆盖 + 对象级 ACL」两层权限。判定顺序仍然是：显式拒绝 &gt; 角色默认矩阵 &gt; 字段级可见性</li>
+      <li>不做面商店、不做动态下发面配置的新增面能力——面目录是代码，新增一个面是一次提交</li>
+      <li>不动前端。<code>web/</code> 的壳在这四周由 F5 的周日卡读，底栏自绘与主题令牌都在那边</li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../index.html"><span class="hint">← 回到</span>22 周路线总览</a>
+    <a href="w17d1.html"><span class="hint">开始 →</span>w17d1 · registry 面目录：代码即配置</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · S7 阶段总览 ⟩</footer>
+</body>
+</html>

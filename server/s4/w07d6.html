@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S4·D6 · 周六 · 忘记/重置密码，登录全链路测试 | HomeCube 修炼手册</title>
+<meta name="description" content="周六大增量：forgot-password 与 reset-password 两条接口（防枚举 + 重置后全部 refresh 作废），再把本周五条微增量串成一条注册到重置的全链路测试。认证 7 条今天清账。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w07d6">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S4</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S4</a> / w07d6</div>
+  <div class="day-meta">
+    <span class="chip">S4 · DAY 6</span>
+    <span class="chip alt">预计 4 小时</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>周六 · 忘记/重置密码，登录全链路测试</h1>
+  <p>本周收尾。上午两条新接口：<code>POST /api/homeos/auth/forgot-password</code> 与 <code>POST /api/homeos/auth/reset-password</code>——认证 7 条到此全部落地。下午把 D1-D5 的五个微增量串成一条<b>全链路测试</b>：注册 → 发码 → 登录 → 刷新轮换 → 登出 → 忘记 → 重置 → 新密码重登 → 旧 refresh 作废。这条测试以后每次改动都要跑，它是你认证域的回归防线。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w07d6g1">forgot-password 防枚举落地：手机号注册与否，响应一字不差</label></li>
+      <li><label><input type="checkbox" data-key="w07d6g2">reset-password 落地：验证码 3003、密码策略 1004、成功后该用户<b>所有</b> refresh token 作废</label></li>
+      <li><label><input type="checkbox" data-key="w07d6g3">全链路测试绿：九步一气呵成，每步断言业务码</label></li>
+      <li><label><input type="checkbox" data-key="w07d6g4">认证 7 条对照 S4 总览的「接口 → 日卡」表逐条核销，<code>make build</code> / <code>make test</code> 绿</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 忘记密码：一场「不能说出真相」的接口设计</h3>
+    <p>忘记流程分两步：forgot 发重置验证码，reset 带码和新密码来换。难点全在 forgot 的<b>防枚举</b>上——它比登录更凶险：登录还要先知道密码格式，forgot 只要一个手机号就能问。规则只有一条：<b>无论手机号是否注册，响应完全一致</b>：</p>
+    <pre><span class="code-label">片段 · 两种真相一个响应</span><code>HTTP/1.1 200 OK
+{"code":0,"message":"ok","data":{"sent":true}}   <span class="c">// 号在：真发码。号不在：也回这个，什么都不做</span></code></pre>
+    <p>注意连状态码和业务码都不给差异——「号不存在」返回 1001 或任何 distinguishing 信息都等于开放注册名单查询。限流照旧（60 秒一条，走 D2 的 CodeStore），限流拒绝的响应同样不透露号码存在性。</p>
+
+    <h3>2. 重置成功 = 全设备下线</h3>
+    <p>用户为什么要重置密码？大概率是「怀疑密码泄露」。所以 reset 成功的瞬间，必须把该用户<b>所有</b> refresh token 撤销（<code>RevokeAllByUser</code>）——偷密码的人即使已经登录，7 天的续命通道也被一刀切断。access token 呢？它无状态、撤不回，但最多再活 15 分钟，且中间件还压着成员状态与 pver 两道校验。这是「短 TTL + 有状态 refresh」组合拳第一次完整亮相：<b>access 管性能，refresh 管撤销，TTL 管兜底</b>。</p>
+    <p>reset 的错误出口分三档，别混：验证码错/过期 → <b>3003</b>（400，手机号已在明面，无枚举可防）；新密码不合策略 → <b>1004</b>（400）；手机号压根没注册还带着「正确格式」的码来重置 → 验证码在 store 里对不上号，仍走 <b>3003</b>。全程不出现 1001/1002——这两个码属于「登录与查询」语境。</p>
+
+    <h3>3. 全链路测试怎么组织</h3>
+    <p>认证域的九个动作有严格的先后依赖，适合写成<b>一个长测试函数按序断言</b>（不是表驱动——步骤间有状态传递）。装配用 httptest：内存 repo 全家桶 + 随机测试密钥 + 真路由，进程内直调，毫秒级跑完。每步只断言两件事：HTTP 状态 + body 里的 <code>code</code>。这条测试的另一个身份是<b>活文档</b>：新读者跑一遍、读一遍，就懂你的认证域全貌。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>周六专属增量：<b>两条新接口（类型②）+ 把本周微增量串成完整能力（全链路测试，类型③）</b>。</p>
+
+    <h3>步骤 1 · service：Forgot 与 Reset</h3>
+    <pre><span class="code-label">片段 · server/internal/homeos/service/auth.go 追加（前置：本周的 AuthService / CodeStore / hashToken）</span><code><span class="c">// ForgotPassword 发重置验证码。防枚举：号在不在，响应与耗时形态都一致。</span>
+<span class="k">func</span> (s *<span class="t">AuthService</span>) <span class="t">ForgotPassword</span>(ctx context.<span class="t">Context</span>, phone <span class="t">string</span>) <span class="t">error</span> {
+    <span class="k">if</span> !phoneRE.<span class="t">MatchString</span>(phone) {
+        <span class="k">return</span> response.<span class="t">ErrInvalidParam</span> <span class="c">// 格式都不对 → 1004，这不算泄露（与具体号码无关）</span>
+    }
+    u, err := s.users.<span class="t">FindByPhone</span>(ctx, phone)
+    <span class="k">if</span> err != <span class="t">nil</span> &amp;&amp; !errors.<span class="t">Is</span>(err, response.ErrNotFound) {
+        <span class="k">return</span> fmt.<span class="t">Errorf</span>(<span class="s">"forgot: %w"</span>, err) <span class="c">// 系统错 → 5000</span>
+    }
+    <span class="k">if</span> u == <span class="t">nil</span> {
+        <span class="k">return</span> <span class="t">nil</span> <span class="c">// 号不存在：静默成功。不发码、不报错、不留差异</span>
+    }
+    <span class="k">if</span> !s.codes.<span class="t">Send</span>(phone) {
+        <span class="k">return</span> response.<span class="t">ErrRateLimited</span> <span class="c">// 限流与号码存在性无关，两种号码同形，可安全返回</span>
+    }
+    <span class="k">return</span> <span class="t">nil</span>
+}
+
+<span class="c">// ResetPassword 验码 → 换哈希 → 撤销该用户全部 refresh。</span>
+<span class="k">func</span> (s *<span class="t">AuthService</span>) <span class="t">ResetPassword</span>(ctx context.<span class="t">Context</span>, phone, code, newPassword <span class="t">string</span>) <span class="t">error</span> {
+    <span class="k">if</span> !passutil.<span class="t">ValidPassword</span>(newPassword) {
+        <span class="k">return</span> response.<span class="t">ErrInvalidParam</span> <span class="c">// → 1004</span>
+    }
+    <span class="k">if</span> !s.codes.<span class="t">Verify</span>(phone, code) {
+        <span class="k">return</span> response.<span class="t">ErrCaptchaInvalid</span> <span class="c">// → 3003：码错/过期/号不存在，同一出口</span>
+    }
+    u, err := s.users.<span class="t">FindByPhone</span>(ctx, phone)
+    <span class="k">if</span> err != <span class="t">nil</span> || u == <span class="t">nil</span> {
+        <span class="c">// 码都对上了号却不在？store 与库不一致，属系统错，不冒充 3003</span>
+        <span class="k">return</span> fmt.<span class="t">Errorf</span>(<span class="s">"reset: user vanished: %w"</span>, response.<span class="t">ErrInternal</span>)
+    }
+    hash, err := passutil.<span class="t">HashPassword</span>(newPassword)
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        <span class="k">return</span> fmt.<span class="t">Errorf</span>(<span class="s">"reset: %w"</span>, err)
+    }
+    <span class="k">if</span> err := s.users.<span class="t">UpdatePasswordHash</span>(ctx, u.ID, hash); err != <span class="t">nil</span> {
+        <span class="k">return</span> fmt.<span class="t">Errorf</span>(<span class="s">"reset: update: %w"</span>, err)
+    }
+    <span class="k">if</span> err := s.refreshTokens.<span class="t">RevokeAllByUser</span>(ctx, u.ID); err != <span class="t">nil</span> { <span class="c">// 全设备下线</span>
+        <span class="k">return</span> fmt.<span class="t">Errorf</span>(<span class="s">"reset: revoke all: %w"</span>, err)
+    }
+    <span class="k">return</span> <span class="t">nil</span>
+}</code></pre>
+    <p>上面的 <code>ForgotPassword</code> 有一处要你动手想：限流分支返回什么才「对两种号码同形」？答案写在注释里了——限流与号码存在性无关，两种号码都会撞限流，所以返回 <code>ErrRateLimited</code> 是安全的；把那一行 <code>return nil</code> 改成 <code>return response.ErrRateLimited</code> 落盘。<code>RefreshTokenRepo</code> 接口今天补齐第四个方法 <code>RevokeAllByUser</code>（GORM 一条 <code>UPDATE ... WHERE user_id=? AND revoked_at IS NULL</code>）。</p>
+
+    <h3>步骤 2 · handler 与路由</h3>
+    <pre><span class="code-label">片段 · server/internal/homeos/handler/auth.go 追加（前置：本周的 AuthHandler）</span><code><span class="k">type</span> <span class="t">forgotReq</span> <span class="k">struct</span> {
+    Phone <span class="t">string</span> <span class="s">`json:"phone" binding:"required"`</span>
+}
+
+<span class="k">type</span> <span class="t">resetReq</span> <span class="k">struct</span> {
+    Phone       <span class="t">string</span> <span class="s">`json:"phone" binding:"required"`</span>
+    Code        <span class="t">string</span> <span class="s">`json:"code" binding:"required"`</span>
+    NewPassword <span class="t">string</span> <span class="s">`json:"new_password" binding:"required"`</span>
+}
+
+<span class="c">// ForgotPassword 处理 POST /api/homeos/auth/forgot-password</span>
+<span class="k">func</span> (h *<span class="t">AuthHandler</span>) <span class="t">ForgotPassword</span>(c *gin.<span class="t">Context</span>) {
+    <span class="k">var</span> req forgotReq
+    <span class="k">if</span> err := c.<span class="t">ShouldBindJSON</span>(&amp;req); err != <span class="t">nil</span> {
+        response.<span class="t">Fail</span>(c, <span class="n">400</span>, response.CodeInvalidParam, <span class="s">"参数错误"</span>)
+        <span class="k">return</span>
+    }
+    <span class="k">if</span> err := h.auth.<span class="t">ForgotPassword</span>(c.<span class="t">Request</span>().<span class="t">Context</span>(), req.Phone); err != <span class="t">nil</span> {
+        response.<span class="t">FailErr</span>(c, err)
+        <span class="k">return</span>
+    }
+    response.<span class="t">OK</span>(c, gin.<span class="t">H</span>{<span class="s">"sent"</span>: <span class="t">true</span>}) <span class="c">// 号在号不在，都是这一句</span>
+}
+
+<span class="c">// ResetPassword 处理 POST /api/homeos/auth/reset-password</span>
+<span class="k">func</span> (h *<span class="t">AuthHandler</span>) <span class="t">ResetPassword</span>(c *gin.<span class="t">Context</span>) {
+    <span class="k">var</span> req resetReq
+    <span class="k">if</span> err := c.<span class="t">ShouldBindJSON</span>(&amp;req); err != <span class="t">nil</span> {
+        response.<span class="t">Fail</span>(c, <span class="n">400</span>, response.CodeInvalidParam, <span class="s">"参数错误"</span>)
+        <span class="k">return</span>
+    }
+    <span class="k">if</span> err := h.auth.<span class="t">ResetPassword</span>(c.<span class="t">Request</span>().<span class="t">Context</span>(), req.Phone, req.Code, req.NewPassword); err != <span class="t">nil</span> {
+        response.<span class="t">FailErr</span>(c, err)
+        <span class="k">return</span>
+    }
+    response.<span class="t">OK</span>(c, gin.<span class="t">H</span>{<span class="s">"reset"</span>: <span class="t">true</span>})
+}</code></pre>
+    <p>公开组再加两行路由。至此 <code>/api/homeos/auth</code> 下 7 条：register、sms-code、login、refresh、logout、forgot-password、reset-password——对照总览表逐条打勾。</p>
+
+    <h3>步骤 3 · 全链路测试（本周串联的主角）</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/handler/auth_flow_test.go</span><code><span class="k">package</span> handler
+
+<span class="k">import</span> (
+    <span class="s">"encoding/json"</span>
+    <span class="s">"net/http/httptest"</span>
+    <span class="s">"strings"</span>
+    <span class="s">"testing"</span>
+
+    <span class="s">"github.com/gin-gonic/gin"</span>
+)
+
+<span class="c">// do 发一个 JSON 请求，返回 HTTP 状态与统一响应体的 code。</span>
+<span class="k">func</span> <span class="t">do</span>(t *testing.T, r *gin.<span class="t">Engine</span>, method, path, body <span class="t">string</span>) (<span class="t">int</span>, <span class="t">int</span>, <span class="t">string</span>) {
+    t.<span class="t">Helper</span>()
+    w := httptest.<span class="t">NewRecorder</span>()
+    req := httptest.<span class="t">NewRequest</span>(method, path, strings.<span class="t">NewReader</span>(body))
+    req.Header.<span class="t">Set</span>(<span class="s">"Content-Type"</span>, <span class="s">"application/json"</span>)
+    r.<span class="t">ServeHTTP</span>(w, req)
+    <span class="k">var</span> env <span class="k">struct</span> {
+        Code <span class="t">int</span>    <span class="s">`json:"code"`</span>
+        Data <span class="k">map</span>[<span class="t">string</span>]<span class="t">any</span> <span class="s">`json:"data"`</span>
+    }
+    <span class="k">if</span> err := json.<span class="t">Unmarshal</span>(w.Body.<span class="t">Bytes</span>(), &amp;env); err != <span class="t">nil</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"响应不是统一信封: %s"</span>, w.Body.<span class="t">String</span>())
+    }
+    raw, _ := env.Data[<span class="s">"refresh_token"</span>].(<span class="t">string</span>)
+    <span class="k">return</span> w.Code, env.Code, raw
+}
+
+<span class="k">func</span> <span class="t">TestAuthFullFlow</span>(t *testing.T) {
+    r, codes := newTestRouter(t) <span class="c">// 测试辅助：内存 repo + 随机密钥 + 真路由装配</span>
+    <span class="k">const</span> phone = <span class="s">"13800000001"</span>
+    peek := <span class="k">func</span>() <span class="t">string</span> { <span class="k">return</span> codes.<span class="t">PeekForTest</span>(phone) }
+
+    <span class="c">// 1 发注册码 → 2 注册（下面八步照此接线，见「抄前必读」）</span>
+    <span class="k">if</span> _, c, _ := <span class="t">do</span>(t, r, <span class="s">"POST"</span>, <span class="s">"/api/homeos/auth/sms-code"</span>,
+        `{<span class="s">"phone":"13800000001","scene":"register"</span>}`); c != <span class="n">0</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"sms-code 应成功, got code=%d"</span>, c)
+    }
+    <span class="k">if</span> _, c, _ := <span class="t">do</span>(t, r, <span class="s">"POST"</span>, <span class="s">"/api/homeos/auth/register"</span>,
+        `{<span class="s">"phone":"13800000001","code":"`</span>+peek()+<span class="s">`","password":"secret99"</span>}`); c != <span class="n">0</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"register 应成功, got code=%d"</span>, c)
+    }
+    <span class="c">// 3-9：登录 → refresh 轮换与重放 → logout → forgot（含未注册号对照）→ reset → 新旧密码登录对照</span>
+}</code></pre>
+    <div class="callout warn"><p><b>抄前必读</b>：骨架只给你接好了前两步，第 3-9 步亲手接——串测试的价值就在接线本身。每步都形如上面 <code>do(...)</code> 的三行断言，逐步要求：登录断言拿到 access/refresh（<code>data</code> 里两个 token 非空）；refresh 断言轮换成功且旧票重放 <code>c == 1005</code>；logout 后再 refresh 断言 <code>1005</code>；forgot 对注册过的号断言 <code>c == 0</code>、对 <code>13999999999</code> 也断言 <code>c == 0</code>（防枚举对照）；reset 用错码断言 <code>3003</code>、用 <code>peek()</code> 真码断言成功；旧密码登录断言 <code>1002</code>、新密码登录断言成功；最后拿 reset 之前签发的 refresh 再刷新，断言 <code>1005</code>（全设备下线生效）。</p></div>
+
+    <h3>步骤 4 · 验收 + 提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>make build &amp;&amp; make test &amp;&amp; make lint
+grep -rn "TODO(S4" server/    <span class="c"># 必须零命中：本周所有占位（验证码、token、primarySession）已清</span>
+
+make run    <span class="c"># 手工冒烟一遍九步（curl），日志里抄 [sms-mock] 验证码</span>
+psql -U homecube -d homecube -c \
+  "SELECT count(*) AS live FROM homeos_refresh_token WHERE revoked_at IS NULL"
+<span class="c"># reset 之后该用户的 live 行数应为 0</span>
+
+git add server
+git status
+git commit -m "feat(s4d6): forgot/reset-password + 认证全链路测试，A1 七条清账"</code></pre>
+    <div class="callout tip"><p><b>本周串联复盘（费曼预演，周日下午正式做）</b>：对着仓库说出认证域的五层防线各是哪天的产物——bcrypt 哈希（D1）、验证码四性质与 1002 防枚举（D2）、双密钥六 claim（D3）、refresh 哈希存库与轮换（D4）、成员状态 + pver 中间件校验（D5），今天的全链路测试把它们缝在一起。再答一题：<b>「重置密码后，攻击者手里的 access token 还能用多久？为什么我们接受这个窗口？」</b>答不上来，回 D4/D5 的两张讲义重读。</p></div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>forgot 对未注册号返回 1001</td><td>接口变成注册名单探测器</td><td>号在号不在都是 200 + <code>{"sent":true}</code></td></tr>
+      <tr><td>reset 只撤当前设备的 refresh</td><td>用户以为改密码就全下线了，其他设备的会话还活着</td><td><code>RevokeAllByUser</code>：重置 = 全设备下线</td></tr>
+      <tr><td>reset 成功复用旧验证码</td><td>Verify 没消费，码还能再重置一次</td><td>验证码一次性（D2 的性质三），reset 成功前 Verify 已删码</td></tr>
+      <tr><td>新密码与旧密码相同不拦</td><td>「重置」了个寂寞</td><td>教学期可不拦（清单没要求）；要拦就在 service 加一条 CheckPassword(old) 判断，别写进 handler</td></tr>
+      <tr><td>全链路测试步骤间共享错变量</td><td>第三步用了第一步的旧 refresh，断言假绿</td><td>每步的产物立刻赋给命名清晰的变量（access1/refresh1/refresh2…）</td></tr>
+      <tr><td>测试里用生产 .env 的密钥</td><td>测试机密钥泄露进断言输出</td><td>测试密钥用随机生成或固定 test-secret，与 .env 无关</td></tr>
+      <tr><td>把 3003 用到登录接口</td><td>登录的验证码错回了 3003，枚举通道重开</td><td>登录语境一律 1002；3003 只属于注册/重置</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>forgot / reset 二段式</td><td>先发码后换密；两步分开才能各自限流、各自定错误语义</td></tr>
+      <tr><td>静默成功</td><td>forgot 对未注册号照常回 200：不确认、不否认、不区分</td></tr>
+      <tr><td>RevokeAllByUser</td><td>一条 UPDATE 撤销该用户全部未撤销 refresh；重置密码的标配动作</td></tr>
+      <tr><td>全设备下线</td><td>refresh 全撤 + access 15 分钟自然死 + pver/状态兜底，三件事合起来的口语名</td></tr>
+      <tr><td>全链路测试</td><td>按真实使用顺序串起多条接口的进程内测试；步骤有依赖，不表驱动</td></tr>
+      <tr><td>活文档</td><td>跑得通的测试即最新文档；读 README 不如读 auth_flow_test.go</td></tr>
+      <tr><td>回归防线</td><td>此后任何改动跑一遍九步，认证域的旧行为没被改坏才算过</td></tr>
+      <tr><td>认证 7 条清账</td><td>register / sms-code / login / refresh / logout / forgot-password / reset-password 全部真实现 + 测试覆盖</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足。本周内容忘了就回本周的卡：<a href="w07d2.html">D2 验证码四性质</a>、<a href="w07d3.html">D3 六 claim</a>、<a href="w07d4.html">D4 轮换顺序</a>、<a href="w07d5.html">D5 中间件四步</a>。外部资料只有一条可选：<a href="https://pkg.go.dev/net/http/httptest" target="_blank">httptest 文档</a>——全链路测试的装配手法 S1·D6 就教过，今天只是变长。</p>
+    <p>九步测试红了别慌：从红的那一步<b>单独</b>重现（curl 打一遍真服务），确认是测试接线错还是实现错——先分诊，再动刀。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w07d6c1">forgot / reset 两条接口跑通：未注册号静默 200、错码 3003、弱密码 1004、成功后全部 refresh 撤销</label></li>
+      <li><label><input type="checkbox" data-key="w07d6c2">全链路测试九步全绿（含防枚举对照、旧 refresh 重放 1005、reset 后旧密码 1002 新密码成功）</label></li>
+      <li><label><input type="checkbox" data-key="w07d6c3"><code>grep -rn "TODO(S4" server/</code> 零命中；认证 7 条对照总览表逐条核销；<code>make build</code> / <code>make test</code> 绿，commit 带卡号 <code>s4d6</code></label></li>
+      <li><label><input type="checkbox" data-key="w07d6c4">能口述：重置密码后攻击者手里的 access 还能活多久、哪三层机制兜住它</label></li>
+      <li><label><input type="checkbox" data-key="w07d6c5">周日下午：前端线 2h + 费曼复盘（认证域五层防线各讲一遍）+ <code>notes/</code> 写下周一第一件事——建家庭</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w07d5.html"><span class="hint">← 昨天 · S4·D5</span>鉴权中间件 middleware.Auth 与 contex</a>
+    <a href="../../frontend/f3/w07f1.html"><span class="hint">本周日 · F3·w07 →</span>Pinia 与 token 持久化</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w07d6 · 明天见 ⟩</footer>
+</body>
+</html>

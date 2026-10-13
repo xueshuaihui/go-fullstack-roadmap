@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S4·D14 · platform/authz：判定唯一实现 | HomeCube 修炼手册</title>
+<meta name="description" content="建 internal/platform/authz 包：一张矩阵一个 Allow，把前六天散落在 invite、成员编辑、退出各处的角色分支全部搬走并删掉，仓里 grep 不到第二份判定；顺手落 GET /api/homeos/permissions（前端按钮的唯一来源）与 POST /api/homeos/family/disband（仅 owner，先清场再解散）。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w09d2">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S4</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S4</a> / w09d2</div>
+  <div class="day-meta">
+    <span class="chip">S4 · DAY 14</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>platform/authz：判定唯一实现</h1>
+  <p>前六天你一直在欠同一笔账：每个接口都要问一句「这个角色能不能干这事」，而每一次都就地写了一个 <code>if role != model.RoleOwner</code>，后面挂一句 <code>TODO(S4·D14)</code>。今天还账。<b>判定只有一份实现，住在 <code>internal/platform/authz</code>；业务代码只问「能不能」，不许自己算「能不能」。</b>今天把它建起来、把六处散落点搬空并删掉注释，再用两条新接口验收这份地基：<code>GET /api/homeos/permissions</code>（把同一份矩阵导出给前端）与 <code>POST /api/homeos/family/disband</code>（矩阵里最重的那一行）。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w09d2g1">建出 <code>platform/authz</code>：<code>Action</code> 类型 + 一张矩阵 + 一个 <code>Allow</code>，三条 fail-closed 规则能脱稿讲清</label></li>
+      <li><label><input type="checkbox" data-key="w09d2g2">把 invite / 成员编辑 / 移除 / 转让 / 退出里的角色分支换成 <code>authz.Allow</code> 调用，<code>grep -rn "TODO(S4·D14)" server/internal/</code> 零命中</label></li>
+      <li><label><input type="checkbox" data-key="w09d2g3"><code>GET permissions</code> 从矩阵导出，仓里<b>没有</b>第二份动作清单；<code>POST family/disband</code> 仅 owner：member 403+1003、没清场 409+1010、fam=0 404+3001</label></li>
+      <li><label><input type="checkbox" data-key="w09d2g4">能口述三条边界：authz 不管定界（scope 的活）、不管业务状态（1010 的活）、不管字段级可见性（明天的活）</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 先看清这笔账欠在哪</h3>
+    <p>把散落的判定数一遍，今天的搬运清单就有了（行号以你仓为准，用 <code>grep</code> 找，别照抄我的位置）：</p>
+    <table>
+      <tr><th>出处</th><th>现在长这样</th><th>今天变成</th></tr>
+      <tr><td><a href="w08d1.html">D7</a> 建家庭</td><td>无判定（任何人都能建自己的第一个家庭）</td><td>不进矩阵：它不需要角色，「本人自助」不是权限</td></tr>
+      <tr><td><a href="w08d2.html">D8</a> <code>CreateInvite</code></td><td><code>if role != model.RoleOwner</code> + TODO</td><td><code>Allow(role, ActionInviteCreate)</code></td></tr>
+      <tr><td><a href="w08d2.html">D8</a> <code>RevokeInvite</code></td><td>同上，第二条 TODO</td><td><code>Allow(role, ActionInviteRevoke)</code></td></tr>
+      <tr><td><a href="w08d6.html">D12</a> <code>canEditMember</code></td><td>一个 switch，返回可改字段集</td><td>拆两半：「能不能动这个人」进矩阵，<b>字段集留给 D16</b></td></tr>
+      <tr><td><a href="w08d6.html">D12</a> <code>RemoveMember</code></td><td><code>if actor.Role != model.RoleOwner</code> + TODO</td><td><code>Allow(role, ActionMemberRemove, 是否本人)</code></td></tr>
+      <tr><td><a href="w08d6.html">D12</a> <code>TransferOwner</code></td><td>两处 owner 判定 + TODO</td><td><code>Allow(role, ActionFamilyTransfer)</code></td></tr>
+      <tr><td><a href="w09d1.html">D13</a> <code>canLeave</code></td><td>switch 三级角色返 1003 / 1010</td><td>资格问 <code>Allow(role, ActionMemberLeave)</code>；owner 那条 1010 换成模型谓词 <code>IsOwner()</code>，不进矩阵</td></tr>
+      <tr><td><b>今天新增</b></td><td>—</td><td><code>ActionFamilyDisband</code>：owner 一行</td></tr>
+    </table>
+    <p>注意最后两行：搬进矩阵的<b>只有角色判定</b>。昨天 <code>canLeave</code> 里 owner 那一支返的是 409 + 1010（「家庭不能没主人」是<b>状态</b>问题，不是「member 不许退出」那种<b>资格</b>问题），那一句留在 service 里。<b>把状态门塞进矩阵</b>，矩阵就会开始掺库里的数据、掺「谁先查谁后查」，最后没人说得清 <code>Allow</code> 为什么返回 false——是角色不行，还是这行状态不对？两者各自的码也就糊在一起了。</p>
+
+    <h3>2. 为什么要费这个劲</h3>
+    <p>三份理由，一份比一份贵：</p>
+    <ol>
+      <li><b>改一条口径要改六处</b>。下周产品说「ward 也能自己改头像」，漏改一处就是线上口子；漏改的那处还特别难测——它的测试恰好在你没补的那条路径上。</li>
+      <li><b>测试测不到规则，只测到 handler</b>。判定散在 handler 里，你得为每条路由各配一组角色用例；判定在一张表里，一组表驱动测试就把四级角色全扫完（明天 D15 就做这组）。</li>
+      <li><b>前端要同一份答案</b>。<code>GET /permissions</code> 必须能从「那份实现」里导出，否则前端自己写一份 <code>role===1</code> 的判断——两份规则第一次分叉的那天，就是「按钮显示了、点了却 403」的那天。</li>
+    </ol>
+    <div class="callout warn"><p><b>反例长什么样，昨天已经写过一遍，今天给判据</b>：业务包里出现角色比较就是违例。收工时跑两条 grep，两条都必须零命中：<br>
+      <code>grep -rn "role != model.Role\|role == model.Role" server/internal/homeos/handler server/internal/homeos/service server/internal/finance 2>/dev/null</code><br>
+      <code>grep -rn "TODO(S4·D14)" server/internal/</code><br>
+      唯一的豁免是 <code>platform/authz</code> 自己，以及测试里为了 seed 出某个角色而写的赋值（赋值不是判定）。</p></div>
+
+    <h3>3. 包的地基：一个类型、一张表、一个函数</h3>
+    <p>位置在 <code>internal/platform/authz</code>——和 <code>platform/scope</code> 同层。这个位置关系昨天讲过：<b>platform 是跨模块共用的地基，homeos 与 finance 都是它的住户</b>。所以 S6 的财务导出闸、S7 的面可见判定，将来都是往这张表里加一行，而不是各自再建一份。</p>
+    <p>API 只有一个：<code>Allow(role, act, conds ...bool) bool</code>。第三个参数是<b>调用方算好的事实</b>（「是不是本人」「是不是他的监护人」），authz 不查库、不看请求，只把「角色 + 事实」折成一个布尔。这个形态从今天就定死，因为后面阶段要往矩阵里加需要事实的行——现在留好口子，将来 handler 只加一句调用。</p>
+    <p>conds 之间是 <b>AND</b>：全真才过。所以同一行里有几种合格关系时（本人、监护人），<b>调用方先把它折成一个布尔再递进来</b>：<code>Allow(actor.Role, ActionMemberUpdate, 是本人 || 是监护人)</code>。别把两组语义不同的条件并列递上去——那样「本人改自己」会因为「不是监护人」被拒，你会以为是矩阵写错了，其实是调用点把 AND 当成了 OR。</p>
+    <table>
+      <tr><th>fail-closed 规则</th><th>为什么</th></tr>
+      <tr><td>动作没登记在矩阵里 → false</td><td>新增动作忘了加行，结果是「谁都干不了」而不是「谁都干得了」；忘加行的 bug 一秒就暴露</td></tr>
+      <tr><td>角色不在这一行里 → false</td><td>四级封闭（D13），值域外的角色（比如没经过 Auth 取到的 0）必然被拒</td></tr>
+      <tr><td>这一行需要事实，但调用方一个都没递 → false</td><td>最容易漏的一条：<code>Allow(role, ActionMemberRemove)</code> 少写了「是不是本人」，若空条件算通过，就等于 owner 之外的人也能删自己</td></tr>
+    </table>
+
+    <h3>4. 判定顺序里它站在哪一格</h3>
+    <p>三道门从 D11 起就钉了顺序，今天加上第四道半：</p>
+    <ol>
+      <li><b>认证</b>（D5 中间件）：票不对 → 401 + 1005。</li>
+      <li><b>定界</b>（D10 <code>scope.InFamily</code>，D13 <code>scope.OnFile</code>）：这行不在你的在档名单里 → 404 + 1001。家庭入口用 3001。</li>
+      <li><b>判权</b>（<b>今天</b> authz）：在你家里、在档，但矩阵没这条边 → 403 + 1003。</li>
+      <li><b>业务状态</b>（S2 起）：有资格、行也对，但当前状态不允许 → 409 + 1010。</li>
+    </ol>
+    <p>本站基准给的排序是三档：<b>显式拒绝 &gt; 角色默认矩阵 &gt; 字段级可见性</b>。今天落中间那档，前两档与第三档各归各位：「显式拒绝」在本阶段只有两个真实来源——<b>不在档</b>（D13 的 status）与<b>访客限时只读</b>（角色本身，矩阵里它就是只读一行），不需要额外一张拒绝表；「字段级可见性」是明天 D16 的正课。至于「家庭级覆盖」与「对象级 ACL」这两层，本站明确<b>不做</b>：一张家庭级开关表加一层对象级授权表，换来的是没人能一眼说出「这个人到底能不能干这件事」。</p>
+
+    <h3>5. <code>GET /permissions</code>：导出的必须是同一份数据</h3>
+    <p>它是前端「按钮该不该显示」的唯一来源，入参一个都没有——<b>只答你自己</b>（角色从 context 取，没有 <code>member_id</code> 入参；能问别人的权限就等于泄露别人的身份关系）。响应分两栏：</p>
+    <pre><span class="code-label">片段 · 响应形状（member 视角）</span><code>{
+  <span class="s">"code"</span>: <span class="n">0</span>, <span class="s">"message"</span>: <span class="s">"ok"</span>,
+  <span class="s">"data"</span>: {
+    <span class="s">"role"</span>: <span class="n">2</span>,
+    <span class="s">"actions"</span>: [<span class="s">"finance:write"</span>, <span class="s">"member:leave"</span>],     <span class="c">// 无条件可过</span>
+    <span class="s">"conditional"</span>: [<span class="s">"member:avatar"</span>, <span class="s">"member:update"</span>] <span class="c">// 有资格，但要看对象是不是本人</span>
+  }
+}</code></pre>
+    <p>两栏的必要性：矩阵里有一类行是「member 仅本人」。<b>只导出无条件那栏，前端会把「我能改自己的头像」显示成没入口</b>；把条件行也算成放行，就等于前端替服务端做了判定——那才是第二份实现。正确分工：两栏都给，前端拿它画界面；<b>真正写操作时服务端每次重跑 <code>Allow</code>，前端显示了不代表放行</b>。</p>
+    <div class="callout note"><p>Go 的 map 遍历顺序随机，导出的两个列表<b>必须排序</b>，否则同样的角色每次返回不同顺序，前端快照测试天天红、日志 diff 天天有噪音。这是今天最容易漏的一行代码。</p></div>
+    <p>fam=0（注册了但还没进家庭）时，<code>role</code> 快照就是 0，两栏都是空数组——<b>这不算错误，不返 3001</b>。它答的是「你这个角色能干什么」，跟你在不在某个家庭无关；前端拿空数组画「还没进家庭」的空态。家庭入口那些接口（<code>GET /family</code>）才用 3001。</p>
+
+    <h3>6. <code>POST /family/disband</code>：矩阵里最重的一行</h3>
+    <p>owner 独有的动作。三条语义要钉死：</p>
+    <ul>
+      <li><b>先清场</b>：除了发起人自己，家庭里还有别的在档成员 → 409 + 1010。要么移除（D12），要么让他们退出（D13）。<b>不搞「连带解散全家」</b>：一条接口顺手清掉六个身份，谁都没法在审计里解释这件事。</li>
+      <li><b>解散只软删家庭行</b>：给 <code>homeos_family</code> 写 <code>deleted_at</code> + <code>deleted_by</code>，成员行只把 owner 自己那条按 D12 的 repo 方法清掉。历史业务数据留在库里——「数据留家庭」这条从 D7 就立的规矩，不该被一个管理动作破掉。</li>
+      <li><b>此后各接口怎么答</b>：<code>GET /family</code> 查不到家庭行 → <b>404 + 3001</b>（D9 早就写了这句口径，今天让它真的可达）；这个家庭里其他人的票 → 下一次请求 401 + 1005，因为他们的成员行已不在档。</li>
+    </ul>
+    <p>和 D7 的 <code>ErrFamilyLimit</code>（3004）接得上：家庭数上限数的是「该用户名下在档成员行涉及的家庭」，解散后 owner 的身份行清了，名额就腾出来了，可以重建。<b>「解散」不会把人从 <code>homeos_user</code> 上抹掉</b>——账号是账号，身份是身份，这条分层是 D5 立的。</p>
+    <div class="callout warn"><p><b>别忘了那笔 pver 的账</b>：转让与解散都会让手里的 <code>role</code> 快照过时。今天能立刻作废靠的是<b>在档校验</b>（人不在档，票就死）。但「人还在档、角色变了」那一类（明天矩阵管不到它），要 <code>pver</code>+1 才治得住——那是 <a href="overview.html">S4·D17</a> 那条接口的正课，今天只记不修，<b>不许提前把 pver 逻辑塞进 authz</b>：一个是「有没有资格」，一个是「这张票还算不算数」，混在一起两边都讲不清。</p></div>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>②+③：新增两条路由（permissions / disband）+ 补一组表驱动测试，把散落判定搬成一处</b>（搬运本身是重构，不算新类型，落在 ② 的骨架改造里）。仓库根 = 你 clone 出来的学习仓根目录。</p>
+
+    <h3>步骤 1 · authz 包落地</h3>
+    <pre><span class="code-label">完整 · &lt;repo&gt;/server/internal/platform/authz/authz.go</span><code><span class="k">package</span> authz
+
+<span class="k">import</span> (
+    <span class="s">"sort"</span>
+
+    <span class="s">"homecube/internal/homeos/model"</span>
+)
+
+<span class="c">// Action 动作名。命名规则 模块:动作，小写，冒号分隔——它是契约字符串，
+// 会出现在 GET /permissions 的响应里，改名等于改接口，别随手改。</span>
+<span class="k">type</span> <span class="t">Action</span> <span class="t">string</span>
+
+<span class="k">const</span> (
+    <span class="t">ActionInviteCreate</span>   Action = <span class="s">"invite:create"</span>
+    <span class="t">ActionInviteRevoke</span>   Action = <span class="s">"invite:revoke"</span>
+    <span class="t">ActionMemberUpdate</span>   Action = <span class="s">"member:update"</span>
+    <span class="t">ActionMemberRemove</span>   Action = <span class="s">"member:remove"</span>
+    <span class="t">ActionMemberAvatar</span>   Action = <span class="s">"member:avatar"</span>
+    <span class="t">ActionMemberLeave</span>    Action = <span class="s">"member:leave"</span>
+    <span class="t">ActionFamilyTransfer</span> Action = <span class="s">"family:transfer"</span>
+    <span class="t">ActionFamilyDisband</span>  Action = <span class="s">"family:disband"</span>
+)
+
+<span class="c">// rule 矩阵一行。full = 这些角色无条件可过；cond = 这些角色要调用方递上来的
+// 事实全为真才过（「是不是本人」「是不是他的监护人」）。</span>
+<span class="k">type</span> <span class="t">rule</span> <span class="k">struct</span> {
+    full []model.<span class="t">Role</span>
+    cond []model.<span class="t">Role</span>
+}
+
+<span class="c">// matrix 全站唯一判定数据源。没登记的动作一律拒绝（fail-closed）。
+// 明天的 D15 把「面配置」「时间与协作」两组行补进来，并给整张表配表驱动测试。</span>
+<span class="k">var</span> matrix = <span class="k">map</span>[<span class="t">Action</span>]<span class="t">rule</span>{
+    <span class="t">ActionInviteCreate</span>:   {full: []model.<span class="t">Role</span>{model.RoleOwner}},
+    <span class="t">ActionInviteRevoke</span>:   {full: []model.<span class="t">Role</span>{model.RoleOwner}},
+    <span class="t">ActionMemberUpdate</span>:   {full: []model.<span class="t">Role</span>{model.RoleOwner}, cond: []model.<span class="t">Role</span>{model.RoleMember, model.RoleWard}},
+    <span class="t">ActionMemberRemove</span>:   {full: []model.<span class="t">Role</span>{model.RoleOwner}, cond: <span class="t">nil</span>},
+    <span class="t">ActionMemberAvatar</span>:   {full: []model.<span class="t">Role</span>{model.RoleOwner}, cond: []model.<span class="t">Role</span>{model.RoleMember, model.RoleWard}},
+    <span class="t">ActionMemberLeave</span>:    {full: []model.<span class="t">Role</span>{model.RoleMember}},
+    <span class="t">ActionFamilyTransfer</span>: {full: []model.<span class="t">Role</span>{model.RoleOwner}},
+    <span class="t">ActionFamilyDisband</span>:  {full: []model.<span class="t">Role</span>{model.RoleOwner}},
+}
+
+<span class="c">// Allow 全站唯一判定入口。handler/service 只调它，不自写角色分支。</span>
+<span class="k">func</span> <span class="t">Allow</span>(role model.<span class="t">Role</span>, act <span class="t">Action</span>, conds ...<span class="t">bool</span>) <span class="t">bool</span> {
+    r, ok := matrix[act]
+    <span class="k">if</span> !ok {
+        <span class="k">return</span> <span class="t">false</span> <span class="c">// 动作没登记：拒</span>
+    }
+    <span class="k">if</span> has(r.full, role) {
+        <span class="k">return</span> <span class="t">true</span>
+    }
+    <span class="k">if</span> has(r.cond, role) {
+        <span class="k">if</span> <span class="t">len</span>(conds) == <span class="n">0</span> {
+            <span class="k">return</span> <span class="t">false</span> <span class="c">// 需要事实却没递：拒，绝不默认放行</span>
+        }
+        <span class="k">for</span> _, ok := <span class="k">range</span> conds {
+            <span class="k">if</span> !ok {
+                <span class="k">return</span> <span class="t">false</span>
+            }
+        }
+        <span class="k">return</span> <span class="t">true</span>
+    }
+    <span class="k">return</span> <span class="t">false</span>
+}
+
+<span class="c">// Permit GET /permissions 的响应体。两栏分开：见讲义 5。</span>
+<span class="k">type</span> <span class="t">Permit</span> <span class="k">struct</span> {
+    Role        <span class="t">model</span>.<span class="t">Role</span>  <span class="s">`json:"role"`</span>
+    Actions     []<span class="t">Action</span>  <span class="s">`json:"actions"`</span>
+    Conditional []<span class="t">Action</span>  <span class="s">`json:"conditional"`</span>
+}
+
+<span class="c">// Of 从同一张表导出某角色的动作集。这里不写第二份清单，只跑 Allow / 查行。</span>
+<span class="k">func</span> <span class="t">Of</span>(role model.<span class="t">Role</span>) <span class="t">Permit</span> {
+    p := <span class="t">Permit</span>{Role: role, Actions: []<span class="t">Action</span>{}, Conditional: []<span class="t">Action</span>{}}
+    <span class="k">for</span> act, r := <span class="t">range</span> matrix {
+        <span class="k">switch</span> {
+        <span class="k">case</span> has(r.full, role):
+            p.Actions = <span class="t">append</span>(p.Actions, act)
+        <span class="k">case</span> has(r.cond, role):
+            p.Conditional = <span class="t">append</span>(p.Conditional, act)
+        }
+    }
+    <span class="c">// map 遍历顺序随机：不排序就是「同一角色每次返回不同顺序」。</span>
+    <span class="t">sort</span>.<span class="t">Slice</span>(p.Actions, <span class="k">func</span>(i, j <span class="t">int</span>) <span class="t">bool</span> { <span class="k">return</span> p.Actions[i] &lt; p.Actions[j] })
+    <span class="t">sort</span>.<span class="t">Slice</span>(p.Conditional, <span class="k">func</span>(i, j <span class="t">int</span>) <span class="t">bool</span> { <span class="k">return</span> p.Conditional[i] &lt; p.Conditional[j] })
+    <span class="k">return</span> p
+}
+
+<span class="k">func</span> <span class="t">has</span>(rs []model.<span class="t">Role</span>, role model.<span class="t">Role</span>) <span class="t">bool</span> {
+    <span class="k">for</span> _, r := <span class="k">range</span> rs {
+        <span class="k">if</span> r == role {
+            <span class="k">return</span> <span class="t">true</span>
+        }
+    }
+    <span class="k">return</span> <span class="t">false</span>
+}</code></pre>
+    <p><code>ActionMemberRemove</code> 那行的 <code>cond</code> 留空是有意的：D12 定过「member/ward/guest 把自己移除 = 这条边不存在（1003）」，移除只有 owner 一个角色有资格，而 owner 删自己撞的是<b>状态门</b> 1010——留在 service，别塞进矩阵。</p>
+
+    <h3>步骤 2 · 把六处散落点搬空</h3>
+    <pre><span class="code-label">片段 · 搬运姿势（三处同一形状，删掉 TODO 与角色分支）</span><code><span class="c">// ① D8 invite.go：CreateInvite / RevokeInvite 各一处</span>
+<span class="k">if</span> !authz.<span class="t">Allow</span>(role, authz.ActionInviteCreate) {
+    <span class="k">return</span> <span class="t">nil</span>, response.ErrForbidden
+}
+
+<span class="c">// ② D12 member_edit.go：RemoveMember 的判权那一行</span>
+<span class="k">if</span> !authz.<span class="t">Allow</span>(actor.Role, authz.ActionMemberRemove) {
+    <span class="k">return</span> response.ErrForbidden <span class="c">// ② 判权 → 403 + 1003；状态门 assertRemovable 原样保留</span>
+}
+
+<span class="c">// ③ D13 member_edit.go：canLeave 拆成两问 —— 处境问模型，资格问 authz</span>
+<span class="k">func</span> <span class="t">canLeave</span>(self *model.<span class="t">Member</span>) <span class="t">error</span> {
+    <span class="k">if</span> self.<span class="t">IsOwner</span>() {
+        <span class="k">return</span> response.ErrStateNotAllowed <span class="c">// 处境：这个家庭不能没主人，先转让（D12）</span>
+    }
+    <span class="k">if</span> !authz.<span class="t">Allow</span>(self.Role, authz.ActionMemberLeave) {
+        <span class="k">return</span> response.ErrForbidden       <span class="c">// 资格：ward/guest 没有「自己走」这条边</span>
+    }
+    <span class="k">return</span> <span class="t">nil</span>
+}</code></pre>
+    <p>上面那句 <code>self.IsOwner()</code> 是今天要往 <code>model</code> 里补的一个三行谓词（<code>func (m *Member) IsOwner() bool { return m.Role == RoleOwner }</code>）——它和 authz 的区别值得抠清楚：<b>authz 答「这个角色有没有这条边」，<code>IsOwner()</code> 答「这一行现在是什么处境」</b>。前者返 false 就该发 1003，后者为真才触发 1010。<code>assertRemovable</code> 里那两句「owner 行不能被干掉」「唯一 owner 不许自删」今天同样换成 <code>target.IsOwner()</code>，判定部分换成 <code>Allow</code>。</p>
+    <p><code>canEditMember</code> 今天只把「这个 actor 能不能动这个 target」问 authz（<code>Allow(actor.Role, authz.ActionMemberUpdate, actor.ID == target.ID || 是监护人)</code>），<b>返回的字段集原样留在 service</b>，注释写 <code>TODO(S4·D16)：字段级白名单收进字段可见性机制</code>——那是明天的活，今天不越界。</p>
+
+    <h3>步骤 3 · 两条新接口</h3>
+    <pre><span class="code-label">完整 · &lt;repo&gt;/server/internal/homeos/handler/permission.go</span><code><span class="k">package</span> handler
+
+<span class="k">import</span> (
+    <span class="s">"github.com/gin-gonic/gin"</span>
+
+    <span class="s">"homecube/internal/platform/authz"</span>
+    <span class="s">"homecube/internal/platform/middleware"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="c">// Permissions 处理 GET /api/homeos/permissions —— 只答当前会话角色，无入参。</span>
+<span class="c">// 认证即可，不判权：读自己的权限不是越权。</span>
+<span class="k">func</span> (h *<span class="t">MemberHandler</span>) <span class="t">Permissions</span>(c *gin.<span class="t">Context</span>) {
+    response.<span class="t">OK</span>(c, authz.<span class="t">Of</span>(middleware.<span class="t">RoleOf</span>(c)))
+}</code></pre>
+    <pre><span class="code-label">片段 · &lt;repo&gt;/server/internal/homeos/service/family.go 追加（前置：D7 的 FamilyService、D12 的 memberRepo.SoftDeleteInFamily）</span><code><span class="c">// Disband 解散：判权（authz）→ 状态门（先清场）→ 软删家庭行 + 清自己的身份行。
+// familyID 只来自 token；一个入参都没有。</span>
+<span class="k">func</span> (s *<span class="t">FamilyService</span>) <span class="t">Disband</span>(ctx context.<span class="t">Context</span>, familyID, actorID <span class="t">int64</span>, role model.<span class="t">Role</span>) <span class="k">error</span> {
+    <span class="k">if</span> familyID &lt;= <span class="n">0</span> {
+        <span class="k">return</span> response.ErrFamilyNoAccess <span class="c">// fam=0：家庭入口口径 → 404 + 3001</span>
+    }
+    <span class="k">if</span> !authz.<span class="t">Allow</span>(role, authz.ActionFamilyDisband) {
+        <span class="k">return</span> response.ErrForbidden   <span class="c">// 判权 → 403 + 1003</span>
+    }
+    <span class="k">if</span> _, err := s.families.<span class="t">FindByID</span>(ctx, familyID); err != <span class="t">nil</span> {
+        <span class="k">return</span> response.ErrFamilyNoAccess <span class="c">// 已经解散过：GET /family 的同一口径</span>
+    }
+    onFile, err := s.members.<span class="t">ListInFamily</span>(ctx, familyID) <span class="c">// 已挂 scope.OnFile（D13）</span>
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        <span class="k">return</span> err
+    }
+    <span class="k">if</span> <span class="t">len</span>(onFile) &gt; <span class="n">1</span> {
+        <span class="k">return</span> response.ErrStateNotAllowed <span class="c">// 状态门 → 409 + 1010：先移除或让其退出</span>
+    }
+    <span class="k">if</span> err := s.members.<span class="t">SoftDeleteInFamily</span>(ctx, familyID, actorID, actorID); err != <span class="t">nil</span> {
+        <span class="k">return</span> err <span class="c">// owner 自己的身份行走 D12 那条路：status=removed + 软删留痕</span>
+    }
+    <span class="k">return</span> s.families.<span class="t">SoftDelete</span>(ctx, familyID, actorID) <span class="c">// deleted_at + deleted_by 成对</span>
+}</code></pre>
+    <pre><span class="code-label">片段 · 路由装配（受保护组，与 D7-D13 同组）</span><code>g.<span class="t">GET</span>(<span class="s">"/permissions"</span>, mh.Permissions)
+g.<span class="t">POST</span>(<span class="s">"/family/disband"</span>, fh.Disband) <span class="c">// handler 同 leave 的形状：无 body，两个 context 值 + FailErr</span></code></pre>
+    <div class="callout tip"><p>handler 里那句 <code>fh.Disband(c.Request().Context(), c.GetInt64("familyID"), c.GetInt64("memberID"), middleware.RoleOf(c))</code> 就是「身份三件套」的标准取法：<b>家庭、成员、角色全从 context 来</b>，一个参数都不读。三条禁令（裸键、<code>GetInt8</code> 读角色、从请求取 family_id）今天一条都不能破——收工时的 grep 判据里包含它们。</p></div>
+
+    <h3>步骤 4 · 测试：一张角色表 + 两条接口</h3>
+    <pre><span class="code-label">完整 · &lt;repo&gt;/server/internal/platform/authz/authz_test.go</span><code><span class="k">package</span> authz
+
+<span class="k">import</span> (
+    <span class="s">"testing"</span>
+
+    <span class="s">"homecube/internal/homeos/model"</span>
+)
+
+<span class="c">// TestAllowMatrix 一张表扫完四级角色 × 八个动作。这就是判定收口后的红利：
+// 规则在数据里，测试只比数据，不用为每条路由配一组用例。</span>
+<span class="k">func</span> <span class="t">TestAllowMatrix</span>(t *testing.<span class="t">T</span>) {
+    roles := []model.<span class="t">Role</span>{model.RoleOwner, model.RoleMember, model.RoleWard, model.RoleGuest}
+    cases := []<span class="k">struct</span> {
+        act   <span class="t">Action</span>
+        want  []<span class="t">bool</span> <span class="c">// 依次对应 owner/member/ward/guest，无条件判定时 conds 传 true</span>
+    }{
+        {ActionInviteCreate, []<span class="t">bool</span>{<span class="t">true</span>, <span class="t">false</span>, <span class="t">false</span>, <span class="t">false</span>}},
+        {ActionMemberLeave, []<span class="t">bool</span>{<span class="t">false</span>, <span class="t">true</span>, <span class="t">false</span>, <span class="t">false</span>}},
+        {ActionMemberRemove, []<span class="t">bool</span>{<span class="t">true</span>, <span class="t">false</span>, <span class="t">false</span>, <span class="t">false</span>}},
+        {ActionFamilyDisband, []<span class="t">bool</span>{<span class="t">true</span>, <span class="t">false</span>, <span class="t">false</span>, <span class="t">false</span>}},
+        {Action(<span class="s">"not.registered"</span>), []<span class="t">bool</span>{<span class="t">false</span>, <span class="t">false</span>, <span class="t">false</span>, <span class="t">false</span>}}, <span class="c">// fail-closed</span>
+    }
+    <span class="k">for</span> _, tc := <span class="k">range</span> cases {
+        <span class="k">for</span> i, role := <span class="k">range</span> roles {
+            <span class="k">if</span> got := <span class="t">Allow</span>(role, tc.act, <span class="t">true</span>); got != tc.want[i] {
+                t.<span class="t">Errorf</span>(<span class="s">"Allow(%d, %q) = %v, want %v"</span>, role, tc.act, got, tc.want[i])
+            }
+        }
+    }
+}
+
+<span class="c">// TestAllowNeedsCond 第三条 fail-closed：cond 行没递事实必须拒。</span>
+<span class="k">func</span> <span class="t">TestAllowNeedsCond</span>(t *testing.<span class="t">T</span>) {
+    <span class="k">if</span> <span class="t">Allow</span>(model.RoleMember, ActionMemberUpdate) {
+        t.<span class="t">Fatal</span>(<span class="s">"member 改别人：没递事实却放行了"</span>)
+    }
+    <span class="k">if</span> !<span class="t">Allow</span>(model.RoleMember, ActionMemberUpdate, <span class="t">true</span>) {
+        <span class="c">// 「是不是本人」为真才该过</span>
+        t.<span class="t">Fatal</span>(<span class="s">"member 改自己却被拒"</span>)
+    }
+    <span class="k">if</span> <span class="t">Allow</span>(model.RoleMember, ActionMemberUpdate, <span class="t">false</span>) {
+        t.<span class="t">Fatal</span>(<span class="s">"递了 false 还放行"</span>)
+    }
+    <span class="k">if</span> <span class="t">Allow</span>(model.Role(0), ActionFamilyDisband, <span class="t">true</span>) {
+        t.<span class="t">Fatal</span>(<span class="s">"零角色（没过 Auth）竟能解散"</span>)
+    }
+}
+
+<span class="c">// TestOfSortedAndComplete 导出必须是矩阵的投影，不是第二份清单。</span>
+<span class="k">func</span> <span class="t">TestOfSortedAndComplete</span>(t *testing.<span class="t">T</span>) {
+    p := <span class="t">Of</span>(model.RoleMember)
+    <span class="k">if</span> !<span class="t">isSorted</span>(p.Actions) || !<span class="t">isSorted</span>(p.Conditional) {
+        t.<span class="t">Fatalf</span>(<span class="s">"导出没排序：前端快照测试天天红"</span>)
+    }
+    <span class="k">for</span> _, a := <span class="k">range</span> p.Actions {
+        <span class="k">if</span> !<span class="t">Allow</span>(model.RoleMember, a) {
+            t.<span class="t">Fatalf</span>(<span class="s">"%s 在 actions 里却不该放行：导出与判定分叉了"</span>, a)
+        }
+    }
+    <span class="k">for</span> _, a := <span class="k">range</span> p.Conditional {
+        <span class="k">if</span> <span class="t">Allow</span>(model.RoleMember, a, <span class="t">false</span>) {
+            t.<span class="t">Fatalf</span>(<span class="s">"%s 在 conditional 里却是无条件放行"</span>, a)
+        }
+    }
+}</code></pre>
+    <p><code>isSorted</code> 是测试侧五行内的小 helper（逐个比相邻元素）；别从生产包里借排序函数来断言——<b>断言要比的正是「你有没有在自己的代码里排序」</b>。接口侧再补三条 httptest 断言（用 D11 那套 fixture 与 <code>envelope</code>）：owner 打 <code>disband</code> 前先清场（<code>200</code>）与没清场（<code>409</code> 业务码 1010）、member 打（<code>403</code> 业务码 1003）、解散后 <code>GET /family</code>（<code>404</code> 业务码 3001）、解散后其他人的票打成员列表（<code>401</code> 业务码 1005）。</p>
+
+    <h3>步骤 5 · 收工</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>make build &amp;&amp; make test &amp;&amp; make lint
+
+<span class="c"># 判定只剩一份：三条 grep 全零命中（最后一条是收口判据，写进 notes/）</span>
+grep -rn <span class="s">"TODO(S4·D14)"</span> server/internal/ ; echo <span class="s">"exit=$?"</span>
+grep -rn <span class="s">"role != model.Role\|role == model.Role"</span> server/internal/homeos server/internal/finance ; echo <span class="s">"exit=$?"</span>
+grep -rn <span class="s">"c.GetInt8\|\"uid\"\|\"fid\""</span> server/internal/ ; echo <span class="s">"exit=$?"</span>
+
+make run
+<span class="c"># 1) 拿 member 的票读自己的权限：两栏动作名，与控制台里它的角色一致</span>
+curl -s http://localhost:8080/api/homeos/permissions -H "Authorization: Bearer &lt;member 的 token&gt;"
+<span class="c"># 2) member 解散家庭：期望 403，业务码 1003</span>
+curl -s -o /dev/null -w 'member disband: %{http_code}\n' -X POST \
+  http://localhost:8080/api/homeos/family/disband -H "Authorization: Bearer &lt;member 的 token&gt;"
+<span class="c"># 3) owner 名下还有别的在档成员就解散：期望 409，业务码 1010</span>
+curl -s -o /dev/null -w '未清场: %{http_code}\n' -X POST \
+  http://localhost:8080/api/homeos/family/disband -H "Authorization: Bearer &lt;owner 的 token&gt;"
+<span class="c"># 4) 清场后解散 → 200；紧接着 GET /family → 404 + 3001；再建一个新家庭 → 200（名额已腾出）</span>
+
+psql <span class="s">"$DB_URL"</span> -c <span class="s">"SELECT id, name, deleted_at, deleted_by, version FROM homeos.homeos_family ORDER BY id"</span>
+psql <span class="s">"$DB_URL"</span> -c <span class="s">"SELECT id, family_id, role, status, deleted_at FROM homeos.homeos_member ORDER BY family_id, id"</span>
+<span class="c"># 看两件事：家庭行软删成对（deleted_at + deleted_by）；业务数据一行都没被删——解散不是清库</span>
+
+git add server
+git status
+git commit -m "feat(s4d14): platform/authz 唯一判定实现 + GET permissions + POST family/disband，散落角色分支清零"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>authz 里顺手查库「看看这行归谁」</td><td>判权与定界糊在一起，1003 与 1001 的分工当天作废</td><td>authz 只吃 <code>role + 事实 bool</code>；归属由 repo 的 scope 决定，事实由 service 算好递进来</td></tr>
+      <tr><td>把业务状态门搬进矩阵</td><td><code>Allow</code> 返回 false，没人知道是角色不行还是状态不对，码开始乱发</td><td>矩阵只管资格（1003）；「行在但不允许」留在 service（1010）</td></tr>
+      <tr><td>cond 行调用时少递事实</td><td>看起来在用它，实际走了 <code>len(conds)==0</code> 那条放行分支</td><td>没递事实一律拒（第三条 fail-closed）+ <code>TestAllowNeedsCond</code> 钉住</td></tr>
+      <tr><td>前端自己写 <code>role === 1</code></td><td>矩阵改了一行，前端没改，出现「按钮显示了却 403」</td><td>入口从 <code>GET /permissions</code> 拿；显示不等于放行，服务端每次重判</td></tr>
+      <tr><td>permissions 里手写一份动作清单</td><td>第二份实现出生，且它比真矩阵更久不更新</td><td>只遍历矩阵（<code>Of</code>），并让测试断言导出与 <code>Allow</code> 一致</td></tr>
+      <tr><td>导出列表没排序</td><td>同一角色每次返回顺序不同，前端测试与日志 diff 全是噪音</td><td><code>sort.Slice</code> 两栏都排；断言用测试侧的 <code>isSorted</code></td></tr>
+      <tr><td>解散时连带硬删全家数据</td><td>历史流水没了作者、没了账，且不可回滚</td><td>只软删家庭行 + 清 owner 身份行；数据留家庭（从 D7 就定的口径）</td></tr>
+      <tr><td>解散不要求先清场</td><td>五个人的身份被一个人一键抹掉，审计里说不清</td><td>还有其它在档成员 → 409 + 1010；移除或退出是前置动作</td></tr>
+      <tr><td>搬完不还删 TODO 注释</td><td>判据说零命中，收口那天卡在同一行 grep 上</td><td>每个搬运点当场删注释；<code>grep -rn "TODO(S4·D14)"</code> 必须零命中</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>判定唯一实现</td><td>「这个角色能不能干这件事」只写在 <code>platform/authz</code> 一处；业务代码只问不许自算</td></tr>
+      <tr><td>Action（动作名）</td><td>形如 <code>member:remove</code> 的契约字符串，矩阵的行键，也会出现在 <code>GET /permissions</code> 响应里</td></tr>
+      <tr><td>事实参数（conds）</td><td>调用方算好递进来的布尔（是不是本人、是不是监护人）；authz 不查库、不看请求</td></tr>
+      <tr><td>fail-closed</td><td>三处默认拒绝：动作没登记 / 角色不在行里 / cond 行没递事实</td></tr>
+      <tr><td>资格 vs 状态</td><td>矩阵管资格（无资格 → 403 + 1003），service 管业务状态（状态不对 → 409 + 1010）</td></tr>
+      <tr><td>三档判定序</td><td>显式拒绝 &gt; 角色默认矩阵 &gt; 字段级可见性；今天落中间那档，第三档是 D16</td></tr>
+      <tr><td>conditional 栏</td><td>「有角色资格但要看对象是不是本人」的动作集；前端照它显示入口，服务端仍每次重判</td></tr>
+      <tr><td>清场</td><td>解散的前置：除发起人外没有在档成员；没清就 409 + 1010</td></tr>
+      <tr><td>解散 vs 删数据</td><td>解散只软删家庭行并清 owner 身份，历史业务数据留在库里不可查</td></tr>
+      <tr><td>15 分钟窗口的另一半</td><td>不在档的人靠 <code>scope.OnFile</code> 当场死票；在档但角色变了要靠 <code>pver</code>（D17）</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，四种情况出去查：</p>
+    <ul>
+      <li><b>三道门的顺序与 1001/1003 的分工</b>：回 <a href="w08d5.html">S4·D11</a>；边界写法在 <a href="w08d4.html">S4·D10</a>，昨天的在档口径在 <a href="w09d1.html">S4·D13</a>。</li>
+      <li><b>被搬的那几处原本怎么写</b>：邀请两处 <a href="w08d2.html">S4·D8</a>、移除与转让 <a href="w08d6.html">S4·D12</a>、退出 <a href="w09d1.html">S4·D13</a>。</li>
+      <li><b>3001 与 fam=0 的口径</b>：回 <a href="w08d3.html">S4·D9</a>；哨兵与码表常量名回 <a href="../s1/w01d4.html">S1·D4</a>。</li>
+      <li><b>context 六键取法与三条禁令</b>：回 <a href="w07d5.html">S4·D5</a>，收工 grep 里那条 <code>c.GetInt8</code> 判据就是它立的。</li>
+    </ul>
+    <p>红了先分诊：<code>Allow</code> 单测红而接口测试绿 → 搬运时把状态门一起搬走了（去 service 里找 1010 那句）；<code>403</code> 变 <code>404</code> → 有人在判权前面写了角色判断，回 D11 那条顺序；<code>permissions</code> 两栏内容每天不一样 → 忘了排序；解散后 <code>GET /family</code> 返 1001 而不是 3001 → 家庭入口的哨兵用错了，<code>3001</code> 只给家庭入口，业务行才是 <code>1001</code>。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w09d2c1"><code>platform/authz</code> 落盘：<code>Action</code> 类型 + 一张 <code>matrix</code> + <code>Allow</code>，三条 fail-closed 各有对应测试且全绿</label></li>
+      <li><label><input type="checkbox" data-key="w09d2c2">六处散落角色分支全部换成 <code>authz.Allow</code> 调用并删掉注释：<code>grep -rn "TODO(S4·D14)" server/internal/</code> 与 handler/service 里的角色比较 grep 均零命中</label></li>
+      <li><label><input type="checkbox" data-key="w09d2c3"><code>GET /api/homeos/permissions</code> 两栏（<code>actions</code> / <code>conditional</code>）导出自矩阵、都排过序；仓里没有第二份动作清单，测试断言导出与 <code>Allow</code> 一致</label></li>
+      <li><label><input type="checkbox" data-key="w09d2c4"><code>POST /api/homeos/family/disband</code> 四态全绿：owner 清场后 200、未清场 409+1010、member 403+1003、fam=0 404+3001；解散后 <code>GET /family</code> 404+3001、其他人的旧票 401+1005、库里业务数据一行未删</label></li>
+      <li><label><input type="checkbox" data-key="w09d2c5"><code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，commit 带卡号 <code>s4d14</code>；<code>notes/</code> 写三行：资格与状态各返什么码、前端两栏怎么用、为什么 authz 不许查库</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w09d1.html"><span class="hint">← 昨天 · S4·D13</span>四级角色与成员 status：退出不是删除</a>
+    <a href="w09d3.html"><span class="hint">明天 · S4·D15 →</span>角色默认矩阵落地</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w09d2 · 明天见 ⟩</footer>
+</body>
+</html>

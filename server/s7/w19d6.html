@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S7·D18 · 周六 · 提醒/待办 CRUD 串通与勾选完成 | HomeCube 修炼手册</title>
+<meta name="description" content="周六大增量：A6 剩余五条接口全部真实现——提醒列表/编辑、待办列表、日历三视图与事件详情；角色矩阵新增「时间与协作对象」行，member 可建可勾不可删他人。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w19d6">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S7</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S7</a> / w19d6</div>
+  <div class="day-meta">
+    <span class="chip">S7 · DAY 18</span>
+    <span class="chip alt">预计 4 小时</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>周六 · 提醒/待办 CRUD 串通与勾选完成</h1>
+  <p>本周把到期中心从表建成了系统：D13 三张表、D14 契约、D15 注册与撤销、D16 触发与回写、D17 财务接入。今天串通 A6 剩余五条接口——提醒列表与编辑、待办列表、日历三视图与事件详情——并给角色矩阵补上「时间与协作对象」这一行：<b>member 可建、可勾，不可删他人</b>。做完今天，A6 到期中心 8 条全部划掉。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w19d6g1">五条接口真实现：<code>GET/PUT /api/homeos/reminders</code>、<code>GET /api/homeos/todos</code>、<code>GET /api/homeos/calendar/events</code>、<code>GET /api/homeos/calendar/events/{id}</code></label></li>
+      <li><label><input type="checkbox" data-key="w19d6g2">说清角色矩阵「时间与协作对象」行：建/勾/删三种动作在四级角色上的口径，判定只走 authz 一处</label></li>
+      <li><label><input type="checkbox" data-key="w19d6g3">说清日历三视图的聚合口径：注册表投影、born 面过滤、revoked 不出现、非法编码 1007 不回落</label></li>
+      <li><label><input type="checkbox" data-key="w19d6g4">契约测试绿：越权 404、删他人 403、暂停即撤销、日历不含未出生面；<code>make build</code> / <code>make test</code> 绿</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 角色矩阵新行：时间与协作对象</h3>
+    <p>S4 建的权限矩阵是全站唯一判定处（<code>internal/platform/authz</code>），handler 不自写角色分支。今天给矩阵加一行「时间与协作对象」：</p>
+    <table>
+      <tr><th>动作</th><th>owner</th><th>member</th><th>ward</th><th>guest</th></tr>
+      <tr><td>建提醒 / 建待办</td><td>✓</td><td>✓</td><td>✗（由监护人代建）</td><td>✗</td></tr>
+      <tr><td>勾选完成（含他人建的、分配给自己的）</td><td>✓</td><td>✓</td><td>✓（仅分配给自己的）</td><td>✗</td></tr>
+      <tr><td>编辑 / 改派</td><td>✓</td><td>仅自己建的或分配给自己的</td><td>✗</td><td>✗</td></tr>
+      <tr><td>归档（≈删除，软删留痕）</td><td>✓</td><td><b>仅自己建的</b>——删他人 → 403 + 1003</td><td>✗</td><td>✗</td></tr>
+      <tr><td>读列表 / 详情</td><td>✓</td><td>✓（本家庭）</td><td>✓（本家庭）</td><td>✓（只读）</td></tr>
+    </table>
+    <p>两条老纪律照旧：<b>越权读返 404 + 1001</b>（与不存在同形）；<b>越权写才返 403 + 1003</b>。「member 可勾他人建的待办」是协作语义——家务是分配给我的，我勾了算数；但「删」是所有权语义，只有创建者与 owner 有。</p>
+
+    <h3>2. 日历三视图 = 注册表的一次投影</h3>
+    <p><code>GET /api/homeos/calendar/events?view=day|week|month&amp;date=…</code> 没有自己的表（D13 的决定），查询就是对注册表的过滤：</p>
+    <pre><span class="code-label">片段 · 聚合口径四条件</span><code>WHERE family_id = ?                          <span class="c">-- scope helper 注入，永不手写</span>
+  AND status IN ('registered', 'fired')      <span class="c">-- revoked 不上日历</span>
+  AND due_at 落在 date 参数解出的时间区间内    <span class="c">-- 日/周/月三种区间</span>
+  AND source_system IN (已出生面的 code 集)   <span class="c">-- 面目录（S7 前半）里 born 的那几个</span></code></pre>
+    <ul>
+      <li><b>born 过滤</b>：未出生面就算有历史注册行也不显示——与「未启用/未出生面客户端零请求」判据同源：服务端先做到「不给数据」，客户端才可能「不发请求」。</li>
+      <li><b>date 编码沿用时间窗五档</b>：day=<code>YYYY-MM-DD</code>、week=<code>YYYY-Wnn</code>、month=<code>YYYY-MM</code>；解析失败 <b>400 + 1007，不回落</b>到「默认今天」——回落会把编码 bug 藏起来。</li>
+      <li><b>返回不带游标</b>：单月事件是小集合，直接 <code>{"list":[…]}</code>（S3 起的老规矩：小集合不带 next_cursor）。</li>
+    </ul>
+
+    <h3>3. 事件详情与「前往源对象」</h3>
+    <p><code>GET /api/homeos/calendar/events/{id}</code> 返回注册行全量，其中 <code>source_system</code> / <code>source_id</code> / payload 里的 <code>deep_link</code>（D17 财务侧写的那个页面路径）供前端做「前往源对象」跳转：日历上点「周期记账 · 房租」，直达财务面的规则详情页。服务端不拼页面、不判断前端路由，只把三元组原样给出。</p>
+
+    <h3>4. PUT reminders：一条接口串起本周所有语义</h3>
+    <p>编辑提醒是本周知识点的合流处：改时间/提前量 → 同键再 Register（upsert 更新触发时刻）；改周期 → 重算下次触发；<code>paused=true</code> → Revoke（注册行变 revoked，日历消失）；<code>paused=false</code> → 再 Register（复活）。全程不需要新接口、不需要新方法——这就是把语义设计对的红利。version 乐观锁照 S6 手艺：不匹配 409 + 1009。</p>
+    <p>周期编码今天定最小文法：<code>repeat_rule</code> 取 <code>daily</code> / <code>weekly</code> / <code>monthly</code> 三值之一或 NULL（一次性）。调度器 fire 时发现 repeat_rule 非空，就把 due_at 推到下一周期并保持 registered（补上 D16 留的那半句）。非法值 400 + 1004。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>周六属<b>串通日</b>：把 D13-D17 的五个微增量串成「到期中心完整能力」。五条接口 + authz 一行 + fire 补改排 + 契约测试。</p>
+
+    <h3>步骤 1 · authz 矩阵加行</h3>
+    <pre><span class="code-label">片段 · internal/platform/authz（S4 建的唯一判定处，加常量与矩阵行）</span><code><span class="k">const</span> (
+    ActionTimeCreate  = <span class="s">"time:create"</span>   <span class="c">// owner/member 允许</span>
+    ActionTimeCheck   = <span class="s">"time:check"</span>    <span class="c">// 勾选完成：owner/member 允许；ward 仅分配给自己的（mine 判定）</span>
+    ActionTimeEdit    = <span class="s">"time:edit"</span>     <span class="c">// owner 恒允许；member 需 mine（建的或分给自己的）</span>
+    ActionTimeArchive = <span class="s">"time:archive"</span>  <span class="c">// owner 恒允许；member 仅自己建的</span>
+)
+<span class="c">// handler 侧只有一句，永不出现 if role == ... 分支：</span>
+<span class="k">if</span> !authz.Allow(role, authz.ActionTimeArchive, todo.CreatedBy == memberID) {
+    response.Fail(c, http.StatusForbidden, response.CodeForbidden, <span class="s">"权限不足"</span>)
+    <span class="k">return</span>
+}</code></pre>
+    <div class="callout note"><p>常量名与 <code>Allow</code> 的入参形态以你 S4 落地的 authz 为准——判据只有一条：<b>矩阵加一行，handler 加一句调用，别处零改动</b>。如果你 S4 的实现长得完全不像，把这一行挪进你的矩阵数据结构即可。</p></div>
+
+    <h3>步骤 2 · 日历聚合（核心查询）</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/service/calendar.go</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"time"</span>
+
+    <span class="s">"gorm.io/gorm"</span>
+
+    <span class="s">"homecube/internal/homeos/model"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="k">type</span> <span class="t">CalendarService</span> <span class="k">struct</span> {
+    db    *gorm.DB
+    faces FaceCatalog <span class="c">// S7 前半建的面目录查询（born 面集合），接口形态以你本地为准</span>
+}
+
+<span class="c">// Range 解析 view+date 为 [start, end)。非法编码返回 1007，不回落。</span>
+<span class="k">func</span> <span class="t">CalendarRange</span>(view, date <span class="t">string</span>) (time.Time, time.Time, error) {
+    <span class="k">switch</span> view {
+    <span class="k">case</span> <span class="s">"day"</span>:
+        d, err := time.Parse(<span class="s">"2006-01-02"</span>, date)
+        <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> time.Time{}, time.Time{}, response.ErrBadTimeWindow }
+        <span class="k">return</span> d, d.AddDate(<span class="n">0</span>, <span class="n">0</span>, <span class="n">1</span>), <span class="k">nil</span>
+    <span class="k">case</span> <span class="s">"week"</span>: <span class="c">// date=YYYY-Wnn：ISO 周，解析到周一 00:00 起 7 天</span>
+        y, w, ok := parseISOWeek(date) <span class="c">// 形如 2026-W42 → (2026, 42)；S6 报表周档写过同款</span>
+        <span class="k">if</span> !ok { <span class="k">return</span> time.Time{}, time.Time{}, response.ErrBadTimeWindow }
+        start := isoWeekStart(y, w)
+        <span class="k">return</span> start, start.AddDate(<span class="n">0</span>, <span class="n">0</span>, <span class="n">7</span>), <span class="k">nil</span>
+    <span class="k">case</span> <span class="s">"month"</span>:
+        m, err := time.Parse(<span class="s">"2006-01"</span>, date)
+        <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> time.Time{}, time.Time{}, response.ErrBadTimeWindow }
+        <span class="k">return</span> m, m.AddDate(<span class="n">0</span>, <span class="n">1</span>, <span class="n">0</span>), <span class="k">nil</span>
+    }
+    <span class="k">return</span> time.Time{}, time.Time{}, response.ErrBadTimeWindow <span class="c">// view 不在三视图内同样 1007</span>
+}
+
+<span class="k">func</span> (s *CalendarService) <span class="t">Events</span>(ctx context.Context, familyID <span class="t">int64</span>, view, date <span class="t">string</span>) ([]model.DueRegistry, error) {
+    start, end, err := <span class="t">CalendarRange</span>(view, date)
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="k">nil</span>, err }
+    born := s.faces.BornCodes(ctx) <span class="c">// 已出生面 code 集，如 ["homeos","finance"]</span>
+
+    <span class="k">var</span> list []model.DueRegistry
+    err = s.db.WithContext(ctx).
+        Where(<span class="s">"family_id = ? AND status IN ? AND due_at &gt;= ? AND due_at &lt; ? AND source_system IN ?"</span>,
+            familyID, []string{model.DueStatusRegistered, model.DueStatusFired}, start, end, born).
+        Order(<span class="s">"due_at, id"</span>).
+        Find(&amp;list).Error
+    <span class="k">return</span> list, err
+}</code></pre>
+    <p><code>parseISOWeek</code> / <code>isoWeekStart</code> 用你 S6 报表周档写过的同款工具（当时为 <code>YYYY-Wnn</code> 建过解析）；如果没留档，今天照 <code>time.Parse("2006-01-02")</code> 的思路补一个，判据是 <code>2026-W42</code> 能解出周一零点、非法串返回 false。</p>
+
+    <h3>步骤 3 · 其余四条接口</h3>
+    <table>
+      <tr><th>接口</th><th>要点</th><th>失败口径</th></tr>
+      <tr><td><code>GET /api/homeos/reminders</code></td><td>本家庭列表，<code>WHERE family_id=?</code>（scope helper 注入）；游标分页</td><td>—</td></tr>
+      <tr><td><code>PUT /api/homeos/reminders/{id}</code></td><td>时间/周期/提前量/渠道/暂停；version 乐观锁；按讲义 4 联动 Register/Revoke；编辑权走 <code>authz.ActionTimeEdit</code></td><td>1001 / 1003 / 1004 / 1009</td></tr>
+      <tr><td><code>GET /api/homeos/todos</code></td><td><code>?view=assigned|created|archived</code>：分配给我 / 我创建的 / 已归档；游标分页</td><td>view 非法 → 1004</td></tr>
+      <tr><td><code>GET /api/homeos/calendar/events/{id}</code></td><td>注册行全量 + payload（deep_link）；<b>跨家庭 id → 404 + 1001</b></td><td>1001</td></tr>
+    </table>
+    <pre><span class="code-label">片段 · GET todos 的 view 过滤（service 层）</span><code><span class="k">switch</span> view {
+<span class="k">case</span> <span class="s">"assigned"</span>: q = q.Where(<span class="s">"assignee_member_id = ? AND status = 'open'"</span>, memberID)
+<span class="k">case</span> <span class="s">"created"</span>:  q = q.Where(<span class="s">"created_by = ? AND status IN ('open','done')"</span>, memberID)
+<span class="k">case</span> <span class="s">"archived"</span>: q = q.Where(<span class="s">"status = 'archived'"</span>)
+<span class="k">default</span>: <span class="k">return</span> response.ErrInvalidParam <span class="c">// 400 + 1004</span>
+}</code></pre>
+
+    <h3>步骤 4 · fire 补上周期改排</h3>
+    <pre><span class="code-label">片段 · duecenter/scheduler.go 的 fire 内，置 fired 之前加</span><code><span class="k">if</span> row.Kind == <span class="s">"reminder"</span> {
+    <span class="k">var</span> rem model.Reminder
+    <span class="k">if</span> err := tx.Where(<span class="s">"id = ?"</span>, row.SourceID).First(&amp;rem).Error; err == <span class="k">nil</span> &amp;&amp; rem.RepeatRule != <span class="k">nil</span> {
+        <span class="c">// 周期提醒：本次照常写通知，但注册行改排下一轮而不是置 fired</span>
+        next := nextOccurrence(row.DueAt, *rem.RepeatRule) <span class="c">// daily/weekly/monthly 三值，非法值在 PUT 已被 1004 拦住</span>
+        <span class="k">return</span> tx.Model(&amp;model.DueRegistry{}).Where(<span class="s">"id = ? AND status = ?"</span>, row.ID, model.DueStatusRegistered).
+            Updates(map[string]<span class="k">any</span>{<span class="s">"due_at"</span>: next, <span class="s">"updated_at"</span>: gorm.Expr(<span class="s">"now()"</span>), <span class="s">"version"</span>: gorm.Expr(<span class="s">"version + 1"</span>)}).Error
+    }
+}</code></pre>
+
+    <h3>步骤 5 · 契约测试与验收</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/service/calendar_test.go（骨架，断言四件事）</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"errors"</span>
+    <span class="s">"testing"</span>
+    <span class="s">"time"</span>
+
+    <span class="s">"homecube/internal/homeos/model"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="k">func</span> <span class="t">TestCalendarAggregation</span>(t *testing.T) {
+    db := openTestDB(t)
+    svc := newTestCalendarService(t, db, []string{<span class="s">"homeos"</span>, <span class="s">"finance"</span>}) <span class="c">// born 面集合注入</span>
+    ctx := context.Background()
+    month := time.Date(<span class="n">2026</span>, <span class="n">11</span>, <span class="n">1</span>, <span class="n">0</span>, <span class="n">0</span>, <span class="n">0</span>, <span class="n">0</span>, time.UTC).Format(<span class="s">"2006-01"</span>)
+
+    seed := []model.DueRegistry{
+        {FamilyID: <span class="n">1</span>, SourceSystem: <span class="s">"homeos"</span>, SourceID: <span class="n">1</span>, Kind: <span class="s">"reminder"</span>, Title: <span class="s">"在册"</span>,
+            DueAt: time.Date(<span class="n">2026</span>, <span class="n">11</span>, <span class="n">5</span>, <span class="n">9</span>, <span class="n">0</span>, <span class="n">0</span>, <span class="n">0</span>, time.UTC), Status: model.DueStatusRegistered, Version: <span class="n">1</span>},
+        {FamilyID: <span class="n">1</span>, SourceSystem: <span class="s">"homeos"</span>, SourceID: <span class="n">2</span>, Kind: <span class="s">"reminder"</span>, Title: <span class="s">"已撤销"</span>,
+            DueAt: time.Date(<span class="n">2026</span>, <span class="n">11</span>, <span class="n">6</span>, <span class="n">9</span>, <span class="n">0</span>, <span class="n">0</span>, <span class="n">0</span>, time.UTC), Status: model.DueStatusRevoked, Version: <span class="n">1</span>},
+        {FamilyID: <span class="n">1</span>, SourceSystem: <span class="s">"shopping"</span>, SourceID: <span class="n">3</span>, Kind: <span class="s">"reminder"</span>, Title: <span class="s">"未出生面"</span>,
+            DueAt: time.Date(<span class="n">2026</span>, <span class="n">11</span>, <span class="n">7</span>, <span class="n">9</span>, <span class="n">0</span>, <span class="n">0</span>, <span class="n">0</span>, time.UTC), Status: model.DueStatusRegistered, Version: <span class="n">1</span>},
+        {FamilyID: <span class="n">2</span>, SourceSystem: <span class="s">"homeos"</span>, SourceID: <span class="n">4</span>, Kind: <span class="s">"reminder"</span>, Title: <span class="s">"别人家"</span>,
+            DueAt: time.Date(<span class="n">2026</span>, <span class="n">11</span>, <span class="n">8</span>, <span class="n">9</span>, <span class="n">0</span>, <span class="n">0</span>, <span class="n">0</span>, time.UTC), Status: model.DueStatusRegistered, Version: <span class="n">1</span>},
+    }
+    <span class="k">for</span> i := <span class="k">range</span> seed { <span class="k">if</span> err := db.Create(&amp;seed[i]).Error; err != <span class="k">nil</span> { t.Fatal(err) } }
+
+    list, err := svc.Events(ctx, <span class="n">1</span>, <span class="s">"month"</span>, month)
+    <span class="k">if</span> err != <span class="k">nil</span> { t.Fatal(err) }
+    <span class="k">if</span> len(list) != <span class="n">1</span> || list[<span class="n">0</span>].Title != <span class="s">"在册"</span> {
+        t.Fatalf(<span class="s">"聚合 = %+v, want 只有「在册」一行"</span>, list)
+    }
+
+    <span class="c">// 非法编码 1007，不回落（2026-13：月份越界）</span>
+    _, err = svc.Events(ctx, <span class="n">1</span>, <span class="s">"month"</span>, <span class="s">"2026-13"</span>)
+    <span class="k">if</span> !errors.Is(err, response.ErrBadTimeWindow) { t.Fatalf(<span class="s">"err = %v, want 1007 哨兵"</span>, err) }
+}</code></pre>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build &amp;&amp; make test &amp;&amp; make lint
+make run
+TOKEN=&lt;member 角色账号的 access_token&gt;
+curl -i "http://localhost:8080/api/homeos/calendar/events?view=month&amp;date=2026-11" -H "Authorization: Bearer $TOKEN"
+curl -i "http://localhost:8080/api/homeos/calendar/events?view=month&amp;date=2026-13" -H "Authorization: Bearer $TOKEN"  <span class="c"># 400 + 1007</span>
+curl -i "http://localhost:8080/api/homeos/todos?view=assigned" -H "Authorization: Bearer $TOKEN"
+<span class="c"># 用 member 账号 PUT 归档他人建的待办：403 + 1003；用 A 家庭 token 读 B 家庭事件 id：404 + 1001</span>
+
+git add server
+git commit -m "feat(s7d18): A6 五条接口串通 + authz 时间与协作对象行 + 日历 born 过滤"</code></pre>
+    <div class="callout tip"><p><b>本周串联复盘（费曼预演，周日下午正式做）</b>：对着仓库把链路讲一遍——创建提醒（D15 的事务两写）→ 注册表一行 registered（D13 的幂等键）→ finance 的规则也躺进来（D17 的接口注入）→ 调度器扫到、写通知、置 fired（D16）→ 日历三视图把它们投影出来（今天）→ 待办勾选、Complete 回写、失败进对账（D16）。讲不顺的那一天，就是周日第一个要补的。</p></div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>handler 里写 <code>if role == RoleMember</code></td><td>矩阵散落在十几个 handler，改一处漏九处</td><td>判定只在 authz 一处；handler 只调 <code>Allow</code></td></tr>
+      <tr><td>把「勾他人待办」也拦成 403</td><td>分配给我的家务我勾不了，协作语义死亡</td><td>勾选是协作动作（可勾），归档才是所有权动作（不可删他人）</td></tr>
+      <tr><td>日历 date 解析失败回落成「今天」</td><td>前端传错编码永远发现不了</td><td>400 + 1007，不回落——错误要响</td></tr>
+      <tr><td>聚合忘了 born 过滤</td><td>未出生面的历史注册行上了日历，客户端点进去 404</td><td>source_system ∈ born 面集合，测试里种一行未出生面的数据盯着它</td></tr>
+      <tr><td>暂停提醒只改了 reminder 行</td><td>paused=true 但日历上还挂着、照样触发</td><td>暂停 = Revoke 注册行；两个状态必须联动</td></tr>
+      <tr><td>周期提醒触发后忘了改排</td><td>每日提醒只响一天就永远沉默</td><td>fire 里 repeat_rule 非空 → 推下一轮 due_at、保持 registered</td></tr>
+      <tr><td>事件详情把 payload 拆开挑着返回</td><td>deep_link 丢了，「前往源对象」断头</td><td>source_system/source_id/payload 原样给全</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>角色矩阵行</td><td>authz 里「动作 × 角色 × 归属（mine）」的一条判定；今天加的是「时间与协作对象」</td></tr>
+      <tr><td>协作动作 vs 所有权动作</td><td>勾选人人可为（被分配即有权），归档仅创建者与 owner</td></tr>
+      <tr><td>born 过滤</td><td>日历只显示已出生面的注册项；与「未出生面零请求」判据同源</td></tr>
+      <tr><td>三视图</td><td>day/week/month 三种时间区间；date 编码沿用时间窗五档文法</td></tr>
+      <tr><td>1007</td><td>时间窗编码非法专用码；不回落默认档</td></tr>
+      <tr><td>改排（reschedule）</td><td>周期项触发后推下一轮 due_at、保持 registered</td></tr>
+      <tr><td><code>repeat_rule</code> 最小文法</td><td><code>daily</code> / <code>weekly</code> / <code>monthly</code> / NULL 四值；非法 1004</td></tr>
+      <tr><td>deep_link</td><td>payload 里的前端页面路径；服务端只透传，不拼页面</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足。往回翻的四种情况：</p>
+    <ul>
+      <li><b>authz 的矩阵结构长什么样</b>：回 S4 权限矩阵卡；今天只加一行。</li>
+      <li><b>游标分页的编码细节</b>：回 S3 分页卡；提醒与待办列表沿用同一套 helper。</li>
+      <li><b>周档编码 <code>YYYY-Wnn</code> 的解析</b>：回 S6 报表时间窗卡。</li>
+      <li><b>乐观锁 PUT 的完整姿势</b>：回 S6 流水编辑卡，双版本口径同款。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w19d6c1">A6 八条接口全部真实现：reminders POST/GET/PUT、todos POST/GET/PUT、calendar/events、events/{id}，假数据清零</label></li>
+      <li><label><input type="checkbox" data-key="w19d6c2">角色矩阵「时间与协作对象」行落进 authz；member 归档他人待办得 403 + 1003，勾选他人建、分配给自己的待办成功</label></li>
+      <li><label><input type="checkbox" data-key="w19d6c3">日历聚合测试绿：revoked 不出现、未出生面不出现、别人家庭不出现、非法编码 1007</label></li>
+      <li><label><input type="checkbox" data-key="w19d6c4">暂停提醒后注册行变 revoked、恢复后再 Register 复活；<code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿</label></li>
+      <li><label><input type="checkbox" data-key="w19d6c5">commit 带卡号 <code>s7d18</code>；<code>notes/</code> 里对着仓库把「创建→注册→触发→投影→回写」整条链路讲一遍并写下卡壳点</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w19d5.html"><span class="hint">← 昨天 · S7·D17</span>财务侧接入：预算周期与周期记账规则注册</a>
+    <a href="../../frontend/f5/w19f1.html"><span class="hint">本周日 · F5·w19 →</span>subPackages 分包与按需加载</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w19d6 · 明天见 ⟩</footer>
+</body>
+</html>

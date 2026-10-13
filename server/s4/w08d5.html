@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S4·D11 · 越权测试先红后绿：404+1001 不是 403 | HomeCube 修炼手册</title>
+<meta name="description" content="写一组「本来就该失败」的越权断言：A 家庭 token 读 B 家庭资源必须 404+1001，同家庭内无权写才是 403+1003。先看它红在哪，红的位置就是漏洞的位置。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w08d5">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S4</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S4</a> / w08d5</div>
+  <div class="day-meta">
+    <span class="chip">S4 · DAY 11</span>
+    <span class="chip alt">预计 25 分钟</span>
+    <span class="chip">难度 ★★☆☆☆</span>
+  </div>
+  <h1>越权测试先红后绿：404+1001 不是 403</h1>
+  <p>今天写一组<b>你期望它一开始就红</b>的测试。功能测试证明「该能用的能用」，越权测试证明「不该能用的真的不能用」——前者红了你当天就知道，后者红了你可能永远不知道，直到用户 A 在群里贴出用户 B 的账单截图。今天的判据一句话：<b>A 家庭的 token 读 B 家庭的资源，得到 404 + 1001，与「这行不存在」完全同形；只有同家庭内看得见却没权限的写操作，才允许 403 + 1003</b>。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w08d5g1">建好双用户双家庭的越权 fixture：A 是家庭 1 的 owner，B 是家庭 2 的 owner，各自手里只有自家的 token</label></li>
+      <li><label><input type="checkbox" data-key="w08d5g2">八条表驱动断言先跑一遍，把红的抄下来——红在哪一层，漏洞就在哪一层</label></li>
+      <li><label><input type="checkbox" data-key="w08d5g3">修到全绿：跨家庭读 → 404 + 1001；跨家庭写 → 404 + 1001（不是 403）；同家庭无权写 → 403 + 1003</label></li>
+      <li><label><input type="checkbox" data-key="w08d5g4">能口述判定顺序「先定界，再判权」，并说清顺序颠倒为什么会泄露资源存在性</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 「先红后绿」不是仪式，是取证</h3>
+    <p>普通做法是写完实现补测试，测出来永远是绿的——因为你只测了自己想到的路径。今天的顺序反过来：</p>
+    <ol>
+      <li>把断言写成<b>你认为正确的行为</b>（跨家庭读 → 404 + 1001），不看实现；</li>
+      <li>跑一遍。<b>凡是红的，都是现有代码真实的越权口子</b>；</li>
+      <li>逐条修，修完再跑，直到全绿；</li>
+      <li>把「红的时候是什么码」记进 <code>notes/</code>——那是你这次学到的东西，比绿更值钱。</li>
+    </ol>
+    <p>如果第 2 步一条都没红，只有两种可能：你的实现真的干净（少见但可能，昨天刚做过 scope 收口），或者<b>你的断言写得不够狠</b>（常见）。后者怎么判断：把断言里的期望值临时改成 <code>200</code>，如果测试还是绿的，说明你的断言根本没在检查状态码——这种测试叫安慰剂。</p>
+
+    <h3>2. 三种红的形态，各自暴露什么</h3>
+    <table>
+      <tr><th>实际返回</th><th>说明代码是这么写的</th><th>怎么修</th></tr>
+      <tr><td><code>200 + 数据</code></td><td>查询完全没有家庭边界（按主键 <code>First(&amp;x, id)</code>）</td><td>回昨天的 <code>scope.InFamily</code>，把边界塞进 where</td></tr>
+      <tr><td><code>403 + 1003</code></td><td>先判角色/归属再定界：捞到了行，才发现不是你的</td><td>把 scope 提到最前；捞不到就是 1001，不给 403 的机会</td></tr>
+      <tr><td><code>404 + 3001</code></td><td>把「家庭无权访问」码用在了业务行上</td><td>3001 只用于家庭入口（switch / 当前家庭）；业务行一律 1001</td></tr>
+      <tr><td><code>500 + 5000</code></td><td>边界查空后没处理 <code>ErrRecordNotFound</code>，直接抛给兜底</td><td>repo 里 <code>errors.Is(err, gorm.ErrRecordNotFound)</code> → <code>response.ErrNotFound</code></td></tr>
+    </table>
+    <p>注意第二行是今天最容易踩的：<b>403 是一种信息泄露</b>。探测者拿一串 id 扫你的接口，404 与 403 的分布就等于给他一张「哪些 id 真实存在」的地图。所以规则是「不属于你的家庭 → 它对你不存在」，而不是「属于别人 → 禁止你访问」。</p>
+
+    <h3>3. 判定顺序：先定界，再判权</h3>
+    <p>一个请求进来，依次过三道门，<b>顺序不能换</b>：</p>
+    <ol>
+      <li><b>认证</b>（中间件，D5）：你是谁？票不对 → 401 + 1005。</li>
+      <li><b>定界</b>（scope，D10）：这东西在你的家庭里吗？不在 → 404 + 1001。</li>
+      <li><b>判权</b>（authz，D14 起）：在你家里，你这个角色能做吗？不能 → 403 + 1003。</li>
+    </ol>
+    <p>第 3 道门下周才建，但今天必须把顺序钉死，否则 D14 一写 authz，很多人会顺手把角色判断加在 handler 最前面（「先拦掉 member 再说」），于是第 2 道门被跳过，跨家庭请求又变回 403 了。<b>今天这组测试就是给 D14 上的锁</b>：将来谁把判权提到定界前面，这八条断言立刻红给他看。</p>
+    <div class="callout note"><p>本站基准的原话：<b>越权读返 404 + 1001（与不存在同形），不是 403；越权写才返 403 + 1003</b>。这里的「读 / 写」指的是<b>同一个家庭内</b>的可见性差异——跨家庭时，无论读写都是「不存在」，都是 404 + 1001。别把两句话读反了。</p></div>
+
+    <h3>4. fixture 怎么摆</h3>
+    <p>越权测试的 fixture 有一个铁律：<b>两个家庭的资源必须都真实存在于同一个库里</b>，且主键相邻。如果 B 家庭的行压根没建，你的测试就只是在验证「查不到不存在的行」，那当然是 404，绿得毫无意义。</p>
+    <ul>
+      <li>用户 A：注册 → 建家庭 1（A 是 owner）→ 建一个 ward 成员（id 相邻）→ 发一条邀请（invite id 相邻）。</li>
+      <li>用户 B：注册 → 建家庭 2（B 是 owner）→ 同样建成员与邀请。</li>
+      <li>拿 A 在家庭 1 的 token，去打 B 家庭那几个 id；再拿 A 家庭里 ward 成员的 token，去打 owner-only 的写接口。</li>
+    </ul>
+    <p>全部走内存 repo + <code>httptest.NewRecorder</code>，不连库（S1·D5 立的约定，<code>make test</code> 不需要 Postgres）。真库那一遍在验收命令里用 curl 手工补。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>③+⑤：补一组越权测试用例 + 把红的那几处从「先判权」换成「先定界」的真实现</b>。仓库根 = 你 clone 出来的学习仓根目录，命令一律 <code>cd &lt;你的学习仓根目录&gt;</code> 后执行。</p>
+
+    <h3>步骤 1 · 先把断言写完，再跑（这一步不许提前修代码）</h3>
+    <pre><span class="code-label">可跑 · 完整 &lt;repo&gt;/server/internal/homeos/handler/boundary_test.go（前置：同包的 newTestRouter / newTestAuthService，见 D4、D5）</span><code><span class="k">package</span> handler_test
+
+<span class="k">import</span> (
+    <span class="s">"encoding/json"</span>
+    <span class="s">"net/http"</span>
+    <span class="s">"net/http/httptest"</span>
+    <span class="s">"strings"</span>
+    <span class="s">"testing"</span>
+)
+
+<span class="c">// envelope 响应信封：断言业务码只认这里，不去猜 message 文案。</span>
+<span class="k">type</span> <span class="t">envelope</span> <span class="k">struct</span> {
+    Code    <span class="t">int</span>             <span class="s">`json:"code"`</span>
+    Message <span class="t">string</span>          <span class="s">`json:"message"`</span>
+    Data    json.RawMessage <span class="s">`json:"data"`</span>
+}
+
+<span class="c">// twoFamilies 越权 fixture：A 在家庭 1 当 owner，B 在家庭 2 当 owner，</span>
+<span class="c">// 两边的成员与邀请都真实建出来（主键相邻），否则「查不到」毫无意义。</span>
+<span class="k">func</span> <span class="t">twoFamilies</span>(t *testing.<span class="t">T</span>) *<span class="t">boundaryFixture</span> {
+    t.<span class="t">Helper</span>()
+    f := <span class="t">newBoundaryFixture</span>(t) <span class="c">// 同包 helper：装配内存 repo + service + router</span>
+    f.<span class="t">seedFamily</span>(t, <span class="s">"13800000001"</span>, <span class="s">"A 家"</span>) <span class="c">// 建家庭、一个 ward 成员、一条邀请</span>
+    f.<span class="t">seedFamily</span>(t, <span class="s">"13800000002"</span>, <span class="s">"B 家"</span>)
+    <span class="k">return</span> f
+}
+
+<span class="c">// TestCrossFamilyBoundary 八条断言，先跑一遍看哪几条红。</span>
+<span class="k">func</span> <span class="t">TestCrossFamilyBoundary</span>(t *testing.<span class="t">T</span>) {
+    f := <span class="t">twoFamilies</span>(t)
+
+    tests := []<span class="k">struct</span> {
+        name       <span class="t">string</span>
+        token      <span class="t">string</span>
+        method     <span class="t">string</span>
+        path       <span class="t">string</span>
+        body       <span class="t">string</span>
+        wantStatus <span class="t">int</span>
+        wantCode   <span class="t">int</span>
+    }{
+        {<span class="s">"A 读 B 家的成员：不存在"</span>, f.TokenA, http.MethodGet, <span class="s">"/api/homeos/members/"</span> + f.MemberB, <span class="s">""</span>, <span class="n">404</span>, <span class="n">1001</span>},
+        {<span class="s">"A 撤销 B 家的邀请：跨家庭写也是不存在，不是 403"</span>, f.TokenA, http.MethodDelete, <span class="s">"/api/homeos/family/invites/"</span> + f.InviteB, <span class="s">""</span>, <span class="n">404</span>, <span class="n">1001</span>},
+        {<span class="s">"A 的成员列表里没有 B 家的人"</span>, f.TokenA, http.MethodGet, <span class="s">"/api/homeos/members"</span>, <span class="s">""</span>, <span class="n">200</span>, <span class="n">0</span>},
+        {<span class="s">"A 看当前家庭：只可能是 A 家"</span>, f.TokenA, http.MethodGet, <span class="s">"/api/homeos/family"</span>, <span class="s">""</span>, <span class="n">200</span>, <span class="n">0</span>},
+        {<span class="s">"A 切到 B 家：家庭入口用 3001，仍是 404"</span>, f.TokenA, http.MethodPost, <span class="s">"/api/homeos/families/switch"</span>, <span class="s">`{"family_id":`</span> + f.FamilyB + <span class="s">`}`</span>, <span class="n">404</span>, <span class="n">3001</span>},
+        {<span class="s">"A 家的 ward 发起邀请：同家庭无权写，才是 403+1003"</span>, f.TokenAWard, http.MethodPost, <span class="s">"/api/homeos/members/invite"</span>, <span class="s">`{"role":2}`</span>, <span class="n">403</span>, <span class="n">1003</span>},
+        {<span class="s">"B 家的 ward 发起邀请：同上，两边口径一致"</span>, f.TokenBWard, http.MethodPost, <span class="s">"/api/homeos/members/invite"</span>, <span class="s">`{"role":2}`</span>, <span class="n">403</span>, <span class="n">1003</span>},
+        {<span class="s">"没有票：一律 401+1005，不许先泄露资源存在性"</span>, <span class="s">""</span>, http.MethodGet, <span class="s">"/api/homeos/members/"</span> + f.MemberB, <span class="s">""</span>, <span class="n">401</span>, <span class="n">1005</span>},
+    }
+
+    <span class="k">for</span> _, tt := <span class="k">range</span> tests {
+        t.<span class="t">Run</span>(tt.name, <span class="k">func</span>(t *testing.<span class="t">T</span>) {
+            <span class="k">var</span> body *strings.<span class="t">Reader</span>
+            <span class="k">if</span> tt.body != <span class="s">""</span> {
+                body = strings.<span class="t">NewReader</span>(tt.body)
+            } <span class="k">else</span> {
+                body = strings.<span class="t">NewReader</span>(<span class="s">""</span>)
+            }
+            req := httptest.<span class="t">NewRequest</span>(tt.method, tt.path, body)
+            req.Header.<span class="t">Set</span>(<span class="s">"Content-Type"</span>, <span class="s">"application/json"</span>)
+            <span class="k">if</span> tt.token != <span class="s">""</span> {
+                req.Header.<span class="t">Set</span>(<span class="s">"Authorization"</span>, <span class="s">"Bearer "</span>+tt.token)
+            }
+            w := httptest.<span class="t">NewRecorder</span>()
+            f.Router.<span class="t">ServeHTTP</span>(w, req)
+
+            <span class="k">var</span> env envelope
+            <span class="k">if</span> err := json.<span class="t">Unmarshal</span>(w.Body.<span class="t">Bytes</span>(), &amp;env); err != <span class="t">nil</span> {
+                t.<span class="t">Fatalf</span>(<span class="s">"响应不是信封格式：%s"</span>, w.Body.<span class="t">String</span>())
+            }
+            <span class="k">if</span> w.Code != tt.wantStatus || env.Code != tt.wantCode {
+                t.<span class="t">Fatalf</span>(<span class="s">"want %d+%d, got %d+%d（message=%q body=%s）"</span>,
+                    tt.wantStatus, tt.wantCode, w.Code, env.Code, env.Message, w.Body.<span class="t">String</span>())
+            }
+        })
+    }
+
+    <span class="c">// 列表隔离单独断言：A 家列表里绝不能出现 B 家的名字</span>
+    <span class="k">if</span> strings.<span class="t">Contains</span>(f.<span class="t">get</span>(t, <span class="s">"/api/homeos/members"</span>, f.TokenA), <span class="s">"B 家"</span>) {
+        t.<span class="t">Fatal</span>(<span class="s">"A 家成员列表混进了 B 家的人"</span>)
+    }
+}
+
+<span class="c">// TestSameIDDifferentFamily 同主键、不同家庭上下文：结果必须不同。</span>
+<span class="c">// 这条是 scope 的对照实验——如果两边都 404，说明 B 家的行没建出来，测试无效。</span>
+<span class="k">func</span> <span class="t">TestSameIDDifferentFamily</span>(t *testing.<span class="t">T</span>) {
+    f := <span class="t">twoFamilies</span>(t)
+    path := <span class="s">"/api/homeos/members/"</span> + f.MemberB
+    <span class="k">if</span> code := f.<span class="t">status</span>(t, path, f.TokenB); code != <span class="n">200</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"B 读自己家的成员应 200，got %d（fixture 没建对，测试无效）"</span>, code)
+    }
+    <span class="k">if</span> code := f.<span class="t">status</span>(t, path, f.TokenA); code != <span class="n">404</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"A 读 B 家的成员应 404，got %d"</span>, code)
+    }
+}</code></pre>
+    <p>fixture 的 <code>seedFamily</code> / <code>get</code> / <code>status</code> 是三个十行以内的小 helper：注册一个用户、建家庭、建一个 ward 成员、发一条邀请，然后把 token 与三个 id 存进结构体。<code>TokenAWard</code> 要用「A 家 ward 成员的账号」签一张票——ward 也可以有账号（<code>user_id</code> 非空），这条正好顺手验证。</p>
+    <div class="callout warn"><p><b>先跑一遍，把红的抄下来。</b>期望看到的典型红：撤销 B 家邀请返回 <code>403+1003</code>（D8 里 <code>RevokeInvite</code> 先判了 owner 角色，才轮到 scope），读 B 家成员返回 <code>500+5000</code>（<code>ErrRecordNotFound</code> 没映射成 <code>ErrNotFound</code>）。这两种红都不是测试写错了，是代码的顺序错了。</p></div>
+
+    <h3>步骤 2 · 把红的修绿：调整判定顺序</h3>
+    <pre><span class="code-label">片段 · &lt;repo&gt;/server/internal/homeos/service/invite.go 修正（前置：D8 的 RevokeInvite）</span><code><span class="c">// RevokeInvite 顺序：先定界（这邀请在不在这个家庭里），再判权（你是不是 owner）。</span>
+<span class="c">// 反过来写就会用 403 泄露「这条邀请存在」。</span>
+<span class="k">func</span> (s *<span class="t">InviteService</span>) <span class="t">RevokeInvite</span>(ctx context.<span class="t">Context</span>, familyID, inviteID, byMemberID <span class="t">int64</span>, role model.<span class="t">Role</span>) <span class="k">error</span> {
+    inv, err := s.invites.<span class="t">FindByID</span>(ctx, familyID, inviteID) <span class="c">// ① 定界：别家的邀请在这里就捞不到</span>
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        <span class="k">return</span> err <span class="c">// ErrNotFound → 404 + 1001</span>
+    }
+    <span class="k">if</span> inv == <span class="t">nil</span> {
+        <span class="k">return</span> response.ErrNotFound
+    }
+    <span class="k">if</span> role != model.RoleOwner { <span class="c">// ② 判权：看得见，但你不能动 → 403 + 1003</span>
+        <span class="k">return</span> response.ErrForbidden <span class="c">// TODO(S4·D14)：收进 platform/authz 唯一实现</span>
+    }
+    <span class="k">return</span> s.invites.<span class="t">SoftDeleteInFamily</span>(ctx, familyID, inviteID, byMemberID)
+}</code></pre>
+    <p>同一条顺序规则套到所有「先查后判」的地方：成员编辑、成员移除、角色变更（D17）、家庭转让（D12）。<b>凡是 handler 或 service 里出现「先判角色再查行」的，今天一并翻过来。</b></p>
+    <pre><span class="code-label">片段 · &lt;repo&gt;/server/internal/homeos/repo/member.go 错误映射（500 转 404 的那一处）</span><code>err := r.db.<span class="t">WithContext</span>(ctx).
+    <span class="t">Scopes</span>(scope.<span class="t">InFamily</span>(familyID)).
+    <span class="t">Where</span>(<span class="s">"id = ?"</span>, id).
+    <span class="t">First</span>(&amp;m).Error
+<span class="k">switch</span> {
+<span class="k">case</span> errors.<span class="t">Is</span>(err, gorm.ErrRecordNotFound):
+    <span class="k">return</span> <span class="t">nil</span>, response.ErrNotFound <span class="c">// → 404 + 1001，与真不存在同形</span>
+<span class="k">case</span> err != <span class="t">nil</span>:
+    <span class="k">return</span> <span class="t">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"find member: %w"</span>, err) <span class="c">// 别的错才交给 5000 兜底</span>
+}
+<span class="k">return</span> &amp;m, <span class="t">nil</span></code></pre>
+
+    <h3>步骤 3 · 真库上手工复核一遍</h3>
+    <p>内存 repo 绿了不等于 GORM 侧绿了（两套实现）。真库那一遍只跑两条，用 <code>-w</code> 打状态码，不用管道截断：</p>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>make build &amp;&amp; make test &amp;&amp; make lint
+
+make run    <span class="c"># 终端 1；终端 2 里先拿 A、B 两个账号各自的 access_token</span>
+
+<span class="c"># 1) A 的 token 读 B 家的成员 id → 期望 404，业务码 1001</span>
+curl -s -o /dev/null -w 'A 读 B 家成员: %{http_code}\n' \
+  http://localhost:8080/api/homeos/members/&lt;B 家成员 id&gt; -H "Authorization: Bearer &lt;A 的 token&gt;"
+curl -s http://localhost:8080/api/homeos/members/&lt;B 家成员 id&gt; -H "Authorization: Bearer &lt;A 的 token&gt;"
+
+<span class="c"># 2) B 自己的 token 读同一行 → 期望 200（证明行真的存在，上面的 404 是边界拦的）</span>
+curl -s -o /dev/null -w 'B 读自家成员: %{http_code}\n' \
+  http://localhost:8080/api/homeos/members/&lt;B 家成员 id&gt; -H "Authorization: Bearer &lt;B 的 token&gt;"
+
+<span class="c"># 3) 对照实验：把 id 换成一个真不存在的号，两条响应必须一模一样</span>
+curl -s http://localhost:8080/api/homeos/members/999999999 -H "Authorization: Bearer &lt;A 的 token&gt;"
+
+git add server
+git status
+git commit -m "test(s4d11): 跨家庭越权测试先红后绿，判定顺序改为先定界再判权"</code></pre>
+    <p>第 1 条与第 3 条的输出<b>逐字节相同</b>才算过关——这就是「与不存在同形」的可操作定义。差一个字符（比如 message 里带了「无权访问」）都算泄露。</p>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>fixture 只建了一个家庭</td><td>「查不到」永远绿，测试等于没写</td><td>两个家庭的行都真实建出来，再拿 A 的票打 B 的 id；配一条 B 自己读得到 200 的对照</td></tr>
+      <tr><td>跨家庭写返 403</td><td>探测者用 403/404 的分布扫出资源存在性</td><td>跨家庭无论读写都是 404 + 1001；403 只留给「同家庭、看得见、没权限」</td></tr>
+      <tr><td>message 文案泄露（<code>404 无权访问该成员</code>）</td><td>码对了，文案把话说漏了</td><td>与真不存在的响应逐字节一致：同一个哨兵、同一句文案</td></tr>
+      <tr><td>先判角色再查行</td><td>member 打 owner-only 接口时返 403，跨家庭也返 403</td><td>顺序固定：认证 → 定界 → 判权</td></tr>
+      <tr><td><code>ErrRecordNotFound</code> 没映射</td><td>越权读变成 500 + 5000，日志里一堆假错误</td><td>repo 层就把它换成 <code>response.ErrNotFound</code></td></tr>
+      <tr><td>只测内存 repo，不测真库</td><td>GORM 侧漏 scope，<code>make test</code> 照样绿</td><td>两套实现同一张断言表 + 真库 curl 手工核一次</td></tr>
+      <tr><td>断言只比状态码不比业务码</td><td>404 可能来自路由没注册，不是边界拦的</td><td>状态码与信封里的 <code>code</code> 一起断言</td></tr>
+      <tr><td>先修代码再写测试</td><td>一路全绿，什么也没学到</td><td>先写断言跑红，把红的位置记进 <code>notes/</code>；这才是取证</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>越权测试</td><td>专测「不该能用的真的不能用」的那组断言；功能测试的补集</td></tr>
+      <tr><td>先红后绿</td><td>断言先写成期望行为，跑红，红处即漏洞；修到绿并记录红的形态</td></tr>
+      <tr><td>判定顺序</td><td>认证（1005）→ 定界（1001）→ 判权（1003），三道门顺序不可换</td></tr>
+      <tr><td>与不存在同形</td><td>越权读的响应与真不存在的响应逐字节一致，不泄露任何存在性信息</td></tr>
+      <tr><td>403 的信息泄露</td><td>「禁止」等于承认「有这东西」；跨家庭一律用 404</td></tr>
+      <tr><td>对照实验</td><td>同一行资源，本家庭读 200、别家庭读 404——两条一起才证明是边界在拦</td></tr>
+      <tr><td>安慰剂测试</td><td>把期望值改成明显错误的值仍然绿：说明断言没在检查你以为它检查的东西</td></tr>
+      <tr><td>1001 / 1003 / 3001</td><td>资源不存在（含越权读）/ 同家庭无权写 / 家庭入口无权访问，前两者 404、1003 是 403</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有三种情况出去查：</p>
+    <ul>
+      <li><b>错误码全表与哨兵名</b>：回 <a href="../s1/w01d4.html">S1·D4</a>（<code>pkg/response</code> 的常量与哨兵就是从那天落盘的）。</li>
+      <li><b>scope 的写法与 fail-closed</b>：回 <a href="w08d4.html">S4·D10</a>，一分钟的事。</li>
+      <li><b>httptest 里怎么造带 header 的请求</b>：<a href="https://pkg.go.dev/net/http/httptest#NewRequest" target="_blank">httptest.NewRequest 文档</a>（可选）；本站的用法在 <a href="../s2/w03d4.html">S2·D4</a> 已经立过。</li>
+    </ul>
+    <p>如果某条断言红了但你确认代码顺序没问题，按这个顺序查：① fixture 是不是真建出了 B 家的行（先跑对照实验那条）；② token 里的 <code>fam</code> 是不是你以為的那个家庭（把 claims 解出来看）；③ 路由是不是压根没注册（404 来自 Gin 而不是你的 repo，此时响应体不是信封格式，<code>json.Unmarshal</code> 会直接报错——这也是为什么断言里要先解信封）。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w08d5c1">八条越权断言全绿，其中跨家庭读与跨家庭写都是 404 + 1001，同家庭无权写是 403 + 1003，无票是 401 + 1005</label></li>
+      <li><label><input type="checkbox" data-key="w08d5c2">对照实验通过：B 自己读自家成员 200，A 读同一行 404；真不存在的 id 与越权 id 响应逐字节相同</label></li>
+      <li><label><input type="checkbox" data-key="w08d5c3">仓里所有「先判角色再查行」的地方已翻成「先定界再判权」，<code>ErrRecordNotFound</code> 在 repo 层就映射成 <code>ErrNotFound</code></label></li>
+      <li><label><input type="checkbox" data-key="w08d5c4"><code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，真库 curl 三条复核过，commit 带卡号 <code>s4d11</code></label></li>
+      <li><label><input type="checkbox" data-key="w08d5c5"><code>notes/</code> 记下先红时的实际返回码（200 / 403 / 500 各是哪种成因），并口述一遍三道门的顺序与各自的错误码</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w08d4.html"><span class="hint">← 昨天 · S4·D10</span>家庭上下文注入：scope helper 强制 family</a>
+    <a href="../../frontend/f3/w08f1.html"><span class="hint">明天 · F3·w08 →</span>路由守卫与登录态</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w08d5 · 明天见 ⟩</footer>
+</body>
+</html>

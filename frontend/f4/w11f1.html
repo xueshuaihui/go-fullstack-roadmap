@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>F4·w11 · 样式与主题令牌：rpx、scoped 与「颜色只能引用令牌」 | HomeCube 修炼手册</title>
+<meta name="description" content="前端辅线 F4 第二张卡：scss 变量与 shell 主题令牌、为什么颜色禁止硬编码、rpx 与 px 的差别、scoped 与 :deep()、uni-app 小程序端用不了的 CSS 能力；动手把一处硬编码色值换成令牌。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w11f1">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">前端线 F1-F6</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / 前端辅线 / F4 / w11</div>
+  <div class="day-meta">
+    <span class="chip">F4 · WEEK 11</span>
+    <span class="chip alt">周日前半 · 约 2 小时</span>
+    <span class="chip">难度 ★★☆☆☆</span>
+  </div>
+  <h1>样式与主题令牌：rpx、scoped 与「颜色只能引用令牌」</h1>
+  <p>上一张卡拆的是结构，这一张拆的是皮肤。目标很具体：以后你看到 agent 写的任何一处样式，都能回答三个问题——<b>这个颜色是从哪来的？这个尺寸为什么用 rpx？这条选择器在小程序端还生效吗？</b>这三个问题也是「改样式而不动别的页」这条阶段判据的全部前置知识。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w11f1g1">说清 scss 变量与主题令牌的分工，以及「颜色只能引用令牌、不许硬编码色值」背后的换肤逻辑</label></li>
+      <li><label><input type="checkbox" data-key="w11f1g2">说清 <code>rpx</code> 与 <code>px</code> 的差别：什么时候用哪个</label></li>
+      <li><label><input type="checkbox" data-key="w11f1g3">看懂 <code>scoped</code> 的隔离原理与 <code>:deep()</code> 的穿透写法，知道小程序端哪些 CSS 能力用不了</label></li>
+      <li><label><input type="checkbox" data-key="w11f1g4">完成「动手改」（硬编码色值换成令牌 + 改一个间距）并回答「定位题」（H5 对、小程序不对）</label></li>
+    </ul>
+    <div class="callout js"><p><b>判据提醒</b>：这张卡的通过标准不是「样式改出来了」，而是你能讲清<b>每一处颜色和尺寸的来源</b>。改完却说不清「为什么这里必须用令牌」，等于没改。不许拿「页面能跑」当自己通过了。</p></div>
+  </section>
+
+  <section>
+    <h2>1. 两套东西：scss 变量（编译期）与主题令牌（运行期）</h2>
+    <p>这个项目里「变量」有两个体系，名字像、性质完全不同：</p>
+    <table>
+      <tr><th></th><th>scss 变量 <code>$x</code></th><th>主题令牌 <code>var(--x)</code>（CSS 变量）</th></tr>
+      <tr><td>生效时机</td><td><b>编译期</b>：构建时被替换成字面量，产物里没有变量</td><td><b>运行期</b>：浏览器/渲染层实时求值，可以被 JS 和主题切换改写</td></tr>
+      <tr><td>能不能运行时换</td><td>不能——换肤对它无效</td><td>能——深色模式全靠它（下一张卡的正题）</td></tr>
+      <tr><td>典型用途</td><td>间距阶梯、字号阶梯、圆角、断点</td><td><b>所有颜色</b>、以及随主题变的阴影/边框色</td></tr>
+    </table>
+    <p>shell 在根部定义了一组主题令牌（示意，以 <code>web/</code> 里 agent 的实现为准）：</p>
+    <pre><span class="code-label">片段 · 主题令牌的定义处（shell 全局样式）</span><code><span class="t">page</span> {
+  <span class="k">--hc-bg</span>: <span class="s">#f5f6f8</span>;        <span class="c">/* 页面底色 */</span>
+  <span class="k">--hc-card-bg</span>: <span class="s">#ffffff</span>;   <span class="c">/* 卡片底色 */</span>
+  <span class="k">--hc-text</span>: <span class="s">#1f2329</span>;      <span class="c">/* 主文字 */</span>
+  <span class="k">--hc-text-dim</span>: <span class="s">#8a919f</span>;  <span class="c">/* 次要文字 */</span>
+  <span class="k">--hc-primary</span>: <span class="s">#3d7fff</span>;   <span class="c">/* 主操作色 */</span>
+  <span class="k">--hc-danger</span>: <span class="s">#e11d48</span>;    <span class="c">/* 支出/警示色 */</span>
+}
+<span class="c">/* 业务组件里只许这样引用： */</span>
+<span class="t">.tx-item__amount</span> { <span class="k">color</span>: <span class="t">var</span>(<span class="k">--hc-danger</span>); }  <span class="c">/* ✅ */</span>
+<span class="t">.tx-item__amount</span> { <span class="k">color</span>: <span class="s">#e11d48</span>; }           <span class="c">/* ❌ 硬编码，CI 要拦的 */</span></code></pre>
+    <div class="callout warn"><p><b>为什么颜色只能引用令牌？</b>因为要换肤。深色模式、以及日后可能的多套主题，实现方式都是「切换时改写根部这一组 <code>--hc-*</code> 的值」——所有引用令牌的组件<b>自动全站跟着变</b>。一处硬编码色值就是一块「换肤时永远不会变」的补丁：白天看不出来，一到深色模式就是一块刺眼的白斑（下一张卡的定位题就是抓这个）。所以这是纪律不是品味问题：<b>色值只在令牌定义处出现一次，其他地方全是引用</b>。</p></div>
+    <p>对照 React：这和你在 React 项目里用 CSS-in-JS 的 theme 对象、或 CSS Modules 配一套 design tokens 是同一件事——「单一事实源 + 全部引用」。差别是 Vue/uni-app 这套用原生 CSS 变量做运行期层，scss 只做编译期层，两层分工。</p>
+  </section>
+
+  <section>
+    <h2>2. rpx 与 px：一个跟着屏幕走，一个钉死</h2>
+    <p><code>rpx</code>（responsive pixel）是小程序体系的相对单位：<b>规定屏幕宽度恒等于 750rpx</b>。375pt 宽的手机上 1rpx = 0.5px；414pt 宽的手机上 1rpx = 0.552px。uni-app 把它带到了全端。</p>
+    <table>
+      <tr><th>场景</th><th>用什么</th><th>理由</th></tr>
+      <tr><td>组件宽高、间距、字号、圆角</td><td><code>rpx</code></td><td>随屏幕等比缩放，小屏不挤大屏不飘</td></tr>
+      <tr><td>1 像素细线（分割线、边框）</td><td><code>px</code></td><td>你要的就是「物理上一根细线」，不该随屏幕变粗</td></tr>
+      <tr><td>不想随屏幕放大的固定元素（如悬浮按钮尺寸有设计上限）</td><td><code>px</code> 或 rpx 配 max-width</td><td>大屏上 750rpx 体系会把东西放得过大</td></tr>
+    </table>
+    <p>换算心算式：<b>设计稿按 750 宽出的，标多少写多少 rpx</b>；按 375 宽出的，乘 2。本项目间距走 scss 的间距阶梯变量（<code>$space-2</code> 之类），阶梯的值本身用 rpx——所以「改间距」的正确姿势是改阶梯引用，而不是就地写死一个数。</p>
+  </section>
+
+  <section>
+    <h2>3. scoped 与 :deep()：隔离是怎么做出来的</h2>
+    <p><code>&lt;style scoped&gt;</code> 的原理（F1 第 1 张卡提过一句，今天讲透）：编译器给<b>本组件模板里的每个元素</b>加一个属性（形如 <code>data-v-7ba5bd90</code>），并把每条选择器改写成带这个属性的形式：</p>
+    <pre><span class="code-label">片段 · scoped 的编译前后</span><code><span class="c">/* 你写的 */</span>          <span class="t">.tx-item__sub</span> { … }
+<span class="c">/* 编译成 */</span>          <span class="t">.tx-item__sub[data-v-7ba5bd90]</span> { … }</code></pre>
+    <p>于是同名类在不同组件里互不打架——相当于 React 里的 CSS Modules，只是自动的。但它带来一个经典麻烦：<b>子组件的内部元素不带父组件的哈希属性</b>，所以父组件的 scoped 样式选不中子组件内部。要穿透，用 <code>:deep()</code>：</p>
+    <pre><span class="code-label">片段 · :deep() 穿透</span><code><span class="c">/* 父组件里想改子组件内部某个类 */</span>
+<span class="t">.filter-bar</span> <span class="k">:deep</span>(<span class="t">.picker__label</span>) { <span class="k">font-size</span>: <span class="n">26rpx</span>; }
+<span class="c">/* 编译后：.filter-bar[data-v-xxx] .picker__label —— 哈希挂在父级锚点上 */</span></code></pre>
+    <div class="callout note"><p>老资料里的 <code>&gt;&gt;&gt;</code> 和 <code>/deep/</code> 都是 <code>:deep()</code> 的废弃前身，新代码一律 <code>:deep()</code>。另外记住穿透是<b>有代价的</b>：你在父组件里改子组件 internals，等于把子组件的内部结构写死在了调用方——子组件一重构你就断。能改子组件自己的样式就别穿透。</p></div>
+  </section>
+
+  <section>
+    <h2>4. uni-app 里哪些 CSS 能力用不了（与浏览器 Vue 的差别）</h2>
+    <p>同一份 <code>.vue</code>，H5 端跑在真浏览器里，什么 CSS 都能用；<b>小程序端跑在受限渲染层里，CSS 是子集</b>。这是「H5 好好的、小程序崩了」这类 bug 的总根源。常用能力清单：</p>
+    <table>
+      <tr><th>能力</th><th>H5</th><th>小程序端</th><th>替代姿势</th></tr>
+      <tr><td>通配选择器 <code>*</code></td><td>✅</td><td>❌ 不支持</td><td>逐个类名写，或挂在 <code>page</code> 上继承</td></tr>
+      <tr><td>属性选择器 <code>[class^="x"]</code></td><td>✅</td><td>❌ 基本不可用</td><td>加显式类名</td></tr>
+      <tr><td>标签选择器 <code>div/span</code></td><td>✅</td><td>❌ 没有这些标签（是 <code>view/text</code>）</td><td>模板里就用 <code>view/text</code>，样式只写类选择器</td></tr>
+      <tr><td>根元素 <code>html/body</code></td><td>✅</td><td>❌ 对应物是 <code>page</code></td><td>全局样式挂 <code>page</code></td></tr>
+      <tr><td>本地图片当 <code>background-image</code></td><td>✅</td><td>❌ 不支持本地路径</td><td>用 <code>&lt;image&gt;</code> 标签、或 base64、或网络图</td></tr>
+      <tr><td>复杂选择器链 <code>a &gt; b + c</code></td><td>✅</td><td>⚠️ 各小程序支持度不一</td><td>拍平成单层类名（BEM 风格）</td></tr>
+      <tr><td><code>position: fixed</code></td><td>✅</td><td>⚠️ 可用但会被原生组件（canvas、video）盖住/穿透异常</td><td>原生组件区域用 <code>cover-view</code> 或避开</td></tr>
+      <tr><td>CSS 变量 <code>var(--x)</code></td><td>✅</td><td>✅ 主流小程序都支持</td><td>——所以主题令牌方案全端成立</td></tr>
+    </table>
+    <p>实在需要按平台分叉时，用 F2 讲过的<b>条件编译</b>（<code>/* #ifdef H5 */ … /* #endif */</code> 在样式里同样可用）——但它是最后手段：每分叉一次，就多一份要双端各测一遍的样式。</p>
+  </section>
+
+  <section>
+    <h2>动手改（今天的判据现场）</h2>
+    <p>在 <code>web/</code> 里全局搜一个十六进制色值（比如搜 <code>#</code> 开头的颜色，排除令牌定义文件本身），挑一处业务组件里的硬编码，做三处改动：</p>
+    <pre><span class="code-label">片段 · 起点（某业务组件里的两行）</span><code><span class="t">.summary__title</span> { <span class="k">color</span>: <span class="s">#8a919f</span>; <span class="k">margin-bottom</span>: <span class="n">16px</span>; }  <span class="c">/* ❌ 两处都违规 */</span></code></pre>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w11f1m1">改动 ①：把硬编码色值换成对应令牌（<code>var(--hc-text-dim)</code> 或 agent 实际定义的令牌名），并口述「为什么这里不许写色值」——答案要包含「换肤时全站跟着变」这层因果</label></li>
+      <li><label><input type="checkbox" data-key="w11f1m2">改动 ②：把 <code>margin-bottom: 16px</code> 换成间距阶梯（scss 变量）+ rpx 单位；说清这个值为什么用 rpx 而分割线为什么该用 px</label></li>
+      <li><label><input type="checkbox" data-key="w11f1m3">改动 ③：找一个用了 <code>:deep()</code> 的地方（或自己造一个），说清哈希属性挂在谁身上、以及这次穿透的代价是什么</label></li>
+    </ul>
+    <div class="callout note"><p>如果全局搜下来<b>一处硬编码都没有</b>——恭喜 agent 守住了纪律，那就反过来做：故意写一个硬编码色值，起 H5 看一眼，再想清楚它会在深色模式下变成什么样（下一张卡会把这颗雷引爆），然后删掉。</p></div>
+  </section>
+
+  <section>
+    <h2>定位题（bug 在哪一层：双端差异）</h2>
+    <div class="task">
+      <div class="task-title">现象：同一条样式，H5 里正常，小程序端不对（不生效 / 长得完全不一样）。</div>
+      <p>先分清两种可能：<b>选择器问题</b>（规则存在但没选中元素）还是<b>平台能力问题</b>（这条 CSS 能力小程序端根本没有）。判断顺序：</p>
+      <ol>
+        <li><b>微信开发者工具 → WXML 面板选中该元素 → Styles/Computed</b>：你那条规则出现在列表里吗？<b>出现了但被划掉</b> → 是优先级/覆盖问题（scoped 哈希、选择器权重），不是平台问题。</li>
+        <li><b>规则压根不在列表里</b> → 看编译产物：这条选择器是不是用了小程序端不存在的形式——标签选择器（<code>div</code>）、<code>*</code>、属性选择器、<code>html/body</code>？是 → <b>选择器问题</b>，改写成类选择器。</li>
+        <li><b>选择器没问题、规则也在，但效果不对</b> → 对照本课 §4 的能力表：本地 <code>background-image</code>、复杂选择器链、fixed 与原生组件的层叠——命中 → <b>平台能力问题</b>，走替代姿势；确认双端行为无法统一时才用条件编译。</li>
+        <li><b>都排除后</b>：检查是不是只在模拟器不对、真机对（或反过来）——开发者工具模拟器与真机渲染有版本差，换真机预览复测再下结论。</li>
+      </ol>
+      <p>这一题的收获是排查工具切换：H5 用浏览器 devtools，小程序端用<b>微信开发者工具的 WXML/Styles 面板</b>——同一个「看 computed 样式」的动作，两个工具里各练一遍。把双端差异排查链记进 <code>notes/f4/</code>。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>业务组件里硬编码色值</td><td>换肤/深色模式时那块永远不变</td><td>颜色只引用令牌；色值只在令牌定义处出现</td></tr>
+      <tr><td>把间距写死成 px 魔法数</td><td>改一次全站间距要搜几十处</td><td>走 scss 间距阶梯变量，改阶梯一处生效</td></tr>
+      <tr><td>全屏用 px 或全屏用 rpx</td><td>px 多屏不一致；rpx 把 1px 细线放大变粗</td><td>尺寸间距 rpx，细线与特殊固定值 px</td></tr>
+      <tr><td>父组件 scoped 选不中子组件内部，就地删掉 scoped</td><td>样式泄漏，别的页被污染</td><td>保留 scoped，用 <code>:deep()</code> 精准穿透</td></tr>
+      <tr><td>用 <code>&gt;&gt;&gt;</code> / <code>/deep/</code></td><td>新构建链下直接报错或不生效</td><td>统一 <code>:deep()</code></td></tr>
+      <tr><td>只在 H5 里验收样式</td><td>小程序端 <code>*</code>、标签选择器、本地背景图静默失效</td><td>双端各过一遍；能力表贴在手边</td></tr>
+      <tr><td>一上来就条件编译分叉</td><td>双端样式两份，维护成本翻倍</td><td>先找全端都成立的写法，分叉是最后手段</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>主题令牌（design token）</td><td>有语义名的颜色/阴影变量（<code>--hc-danger</code>），运行期可整体改写——换肤的单一事实源</td></tr>
+      <tr><td>scss 变量</td><td>编译期替换的字面量别名，适合间距/字号阶梯；运行时换不掉</td></tr>
+      <tr><td><code>rpx</code></td><td>小程序体系的响应式单位：屏宽恒为 750rpx，随设备等比缩放</td></tr>
+      <tr><td><code>scoped</code></td><td>编译时给元素加 <code>data-v-*</code> 属性并改写选择器，实现组件级样式隔离</td></tr>
+      <tr><td><code>:deep()</code></td><td>scoped 样式的穿透语法：哈希挂父级锚点，选中子组件内部元素</td></tr>
+      <tr><td>BEM 风格类名</td><td><code>block__element--modifier</code>：单层类名，天然避开小程序端不支持的复杂选择器链</td></tr>
+      <tr><td>条件编译</td><td><code>#ifdef H5 / MP-WEIXIN</code> 按平台保留代码分支，模板/脚本/样式三处都可用</td></tr>
+      <tr><td><code>page</code> 选择器</td><td>小程序端 <code>html/body</code> 的对应物，全局底色与字色的挂载点</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <ul>
+      <li>scoped 是什么、SFC 三段结构：<b>F1 第 1 张</b></li>
+      <li>条件编译、H5 与 App/小程序差异的第一次系统讲解：<b>F2 的两张卡</b></li>
+      <li>上一张卡的组件边界（穿透改子组件前先想清楚边界）：<b>F4 第 1 张</b></li>
+      <li>令牌在深色模式下的运行机制、canvas 为什么不吃 CSS 变量：<b>F4 第 3 张</b>（下一张卡）</li>
+      <li>颜色令牌的服务端持久化落点（设置接口，S7 才建）：<b>S7 的设置域卡</b>；F4 期间主题选择先存本地</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w11f1c1">能不看资料说清 scss 变量与主题令牌的分工，以及「颜色只能引用令牌」的换肤因果链</label></li>
+      <li><label><input type="checkbox" data-key="w11f1c2">能说清 rpx 的定义（屏宽 = 750rpx）、三个该用 px 的例外场景</label></li>
+      <li><label><input type="checkbox" data-key="w11f1c3">能讲清 scoped 的编译原理（属性哈希）与 <code>:deep()</code> 穿透的代价</label></li>
+      <li><label><input type="checkbox" data-key="w11f1c4">动手改三处已完成，且能指出改动只落在哪个文件、为什么不波及别的页</label></li>
+      <li><label><input type="checkbox" data-key="w11f1c5">定位题的双端排查链已写进 <code>notes/f4/</code>，并能口述「规则不在 Styles 列表里」指向哪类问题</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../server/s5/w11d6.html"><span class="hint">← 本周六 · S5·D12</span>S5 收口：CI 最小版与判据自测</a>
+    <a href="../../server/s6/w12d1.html"><span class="hint">下周一 · S6·D1 →</span>流水表与创建：client_request_id 幂等三态</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w11f1 · 下周见 ⟩</footer>
+</body>
+</html>

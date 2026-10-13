@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S4·D9 · 多家庭与切换家庭 = 重签 token | HomeCube 修炼手册</title>
+<meta name="description" content="落地 GET /api/homeos/families、POST /api/homeos/families/switch 与 GET /api/homeos/family：切换家庭不是在进程里换变量，而是重新签发一份 fam/mid/role/pver 全新的 token。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w08d3">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S4</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S4</a> / w08d3</div>
+  <div class="day-meta">
+    <span class="chip">S4 · DAY 9</span>
+    <span class="chip alt">预计 25 分钟</span>
+    <span class="chip">难度 ★★☆☆☆</span>
+  </div>
+  <h1>多家庭与切换家庭 = 重签 token</h1>
+  <p>一个账号至多 5 个家庭：自家、爸妈家、合租屋。今天三条接口把「多家庭」闭环：<code>GET /api/homeos/families</code> 看我加入的所有家庭、<code>POST /api/homeos/families/switch</code> 切换当前会话家庭、<code>GET /api/homeos/family</code> 看当前会话家庭详情。核心只有一句话，也是全站基准钉死的一句话：<b>切换家庭 = 重新签发 token</b>，不做进程内切上下文。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w08d3g1">说清为什么切换家庭必须重签 token，而不是服务端记一个「当前家庭」变量</label></li>
+      <li><label><input type="checkbox" data-key="w08d3g2">三条接口跑通：家庭列表（含每个家庭里我的角色与称谓）、切换（响应与登录同形）、当前家庭详情</label></li>
+      <li><label><input type="checkbox" data-key="w08d3g3">切换目标非我所属家庭 → 404 + 3001，不泄露该家庭是否存在</label></li>
+      <li><label><input type="checkbox" data-key="w08d3g4">login 的 primarySession 补真：默认会话家庭 = 第一个在档成员身份</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 为什么不在服务端存「当前家庭」</h3>
+    <p> tempting 的做法：库里给 user 加一列 <code>current_family_id</code>，切换就是 UPDATE 一列。三个理由否决它：</p>
+    <ul>
+      <li><b>多端打架</b>：手机切到爸妈家、平板还停在自家——「当前」到底是谁的？服务端存会话状态，就得给每个端各存一份，session 管理的老麻烦全回来了；</li>
+      <li><b>与无状态架构逆行</b>：你的鉴权是「验签即认人」，加一个库内会话状态等于在快车道上设收费站；</li>
+      <li><b>token 即会话</b>：fam 本来就在 claims 里。切换 = 用旧 token 的合法身份换一张 fam 不同的新 token——客户端拿新 token 替换旧的，天然多端各自独立：这台设备切了，那台不受影响。</li>
+    </ul>
+    <p>所以 switch 接口的响应<b>与登录同形</b>：<code>{user, member, family, access_token, refresh_token}</code>——它本质上就是「不验密码的重新登录」。前端侧的纪律（F3 会学）：当前家庭只归壳管理，业务页面永远从 token 会话读上下文，不自存一份。</p>
+
+    <h3>2. 3001：跨家庭的「不存在」</h3>
+    <p>switch 入参 <code>{family_id}</code> 是客户端给的——可伪造。规则：该 family_id 下<b>没有你的在档成员身份</b>，一律 <b>404 + 3001</b>（家庭不存在或当前账号无权访问）。注意这和上周的 1005 分工：token 本身不合法 → 1005；token 合法但想去的家庭与你无关 → 3001。两者都做到了「不泄露目标家庭是否存在」。</p>
+
+    <h3>3. 三条接口的数据形状</h3>
+    <table>
+      <tr><th>接口</th><th>响应 data</th><th>要点</th></tr>
+      <tr><td><code>GET /families</code></td><td><code>{"list":[{family, member}]}</code></td><td>每项是「家庭 + 我在其中的成员身份（role/relation/status）」；小集合不分页；只列在档身份</td></tr>
+      <tr><td><code>POST /families/switch</code></td><td>与登录同形</td><td>新 token 的 fam/mid/role/pver 全部来自目标家庭的成员行；旧 refresh 照常轮换入库</td></tr>
+      <tr><td><code>GET /family</code></td><td><code>{family}</code></td><td>当前会话家庭（token 的 fam）详情；fam=0 或家庭已解散 → 3001</td></tr>
+    </table>
+    <div class="callout note"><p>switch 时旧的一对 token 怎么办？access 让它自然过期（15 分钟窗口内旧 token 仍然合法——它指向旧家庭，读旧家庭数据本来就有权限，不算漏洞）；refresh 走正常轮换：签发新对时把当前会话的旧 refresh 撤销，避免 refresh 越积越多。这些取舍周日的费曼复盘要能自己讲出来。</p></div>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>②+⑤：加三条路由与 handler + 把 login 的 primarySession 从占位换成真查询</b>。</p>
+
+    <h3>步骤 1 · service</h3>
+    <pre><span class="code-label">片段 · server/internal/homeos/service/family.go 追加（前置：昨天的 FamilyService 与 IssueForSession）</span><code><span class="k">type</span> <span class="t">FamilyBrief</span> <span class="k">struct</span> {
+    Family *model.<span class="t">Family</span> <span class="s">`json:"family"`</span>
+    Member *model.<span class="t">Member</span> <span class="s">`json:"member"`</span> <span class="c">// 我在该家庭的身份：role/relation/status</span>
+}
+
+<span class="c">// ListFamilies 我加入的全部家庭（在档身份）。小集合，不分页。</span>
+<span class="k">func</span> (s *<span class="t">FamilyService</span>) <span class="t">ListFamilies</span>(ctx context.<span class="t">Context</span>, userID <span class="t">int64</span>) ([]<span class="t">FamilyBrief</span>, <span class="t">error</span>) {
+    members, err := s.members.<span class="t">ListActiveByUser</span>(ctx, userID)
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        <span class="k">return</span> <span class="t">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"list families: %w"</span>, err)
+    }
+    out := <span class="k">make</span>([]<span class="t">FamilyBrief</span>, <span class="n">0</span>, <span class="t">len</span>(members))
+    <span class="k">for</span> _, m := <span class="k">range</span> members {
+        fam, err := s.families.<span class="t">FindByID</span>(ctx, m.FamilyID)
+        <span class="k">if</span> err != <span class="t">nil</span> || fam == <span class="t">nil</span> {
+            <span class="k">continue</span> <span class="c">// 家庭已解散而身份还没清干净：跳过，不炸整个列表</span>
+        }
+        out = <span class="t">append</span>(out, <span class="t">FamilyBrief</span>{Family: fam, Member: m})
+    }
+    <span class="k">return</span> out, <span class="t">nil</span>
+}
+
+<span class="c">// SwitchFamily 校验成员身份 → 重签 token。会话家庭一变，token 必须整套换。</span>
+<span class="k">func</span> (s *<span class="t">FamilyService</span>) <span class="t">SwitchFamily</span>(ctx context.<span class="t">Context</span>, userID, familyID <span class="t">int64</span>) (*<span class="t">LoginResult</span>, <span class="t">error</span>) {
+    mem, err := s.members.<span class="t">FindActiveByUserAndFamily</span>(ctx, userID, familyID)
+    <span class="k">if</span> err != <span class="t">nil</span> &amp;&amp; !errors.<span class="t">Is</span>(err, response.ErrNotFound) {
+        <span class="k">return</span> <span class="t">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"switch: %w"</span>, err)
+    }
+    <span class="k">if</span> mem == <span class="t">nil</span> {
+        <span class="k">return</span> <span class="t">nil</span>, response.<span class="t">ErrFamilyNoAccess</span> <span class="c">// → 3001 / 404：不是你家的门，装不存在</span>
+    }
+    <span class="k">return</span> s.auth.<span class="t">IssueForSession</span>(ctx, userID, mem) <span class="c">// 与登录同形的响应从这来</span>
+}
+
+<span class="c">// CurrentFamily token 里 fam 指向的家庭详情。</span>
+<span class="k">func</span> (s *<span class="t">FamilyService</span>) <span class="t">CurrentFamily</span>(ctx context.<span class="t">Context</span>, familyID <span class="t">int64</span>) (*model.<span class="t">Family</span>, <span class="t">error</span>) {
+    <span class="k">if</span> familyID == <span class="n">0</span> {
+        <span class="k">return</span> <span class="t">nil</span>, response.<span class="t">ErrFamilyNoAccess</span> <span class="c">// 还没进任何家庭：3001，前端据此引导建家庭/受邀</span>
+    }
+    fam, err := s.families.<span class="t">FindByID</span>(ctx, familyID)
+    <span class="k">if</span> err != <span class="t">nil</span> || fam == <span class="t">nil</span> {
+        <span class="k">return</span> <span class="t">nil</span>, response.<span class="t">ErrFamilyNoAccess</span>
+    }
+    <span class="k">return</span> fam, <span class="t">nil</span>
+}</code></pre>
+    <p>哨兵集补 <code>ErrFamilyNoAccess</code>（→ 3001 / 404）。同时把上周 login 里的 <code>primarySession</code> 占位换成真实现：取该用户 <code>status</code> 在档的第一个成员及其家庭——没有则 <code>(nil, nil)</code>，token 的 fam/mid 为 0。</p>
+
+    <h3>步骤 2 · handler 与路由</h3>
+    <pre><span class="code-label">片段 · server/internal/homeos/handler/family.go 追加（前置：昨天的 FamilyHandler）</span><code><span class="k">type</span> <span class="t">switchReq</span> <span class="k">struct</span> {
+    FamilyID <span class="t">int64</span> <span class="s">`json:"family_id" binding:"required"`</span>
+}
+
+<span class="c">// ListFamilies 处理 GET /api/homeos/families</span>
+<span class="k">func</span> (h *<span class="t">FamilyHandler</span>) <span class="t">ListFamilies</span>(c *gin.<span class="t">Context</span>) {
+    list, err := h.families.<span class="t">ListFamilies</span>(c.<span class="t">Request</span>().<span class="t">Context</span>(), c.<span class="t">GetInt64</span>(<span class="s">"userID"</span>))
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        response.<span class="t">FailErr</span>(c, err)
+        <span class="k">return</span>
+    }
+    response.<span class="t">OK</span>(c, gin.<span class="t">H</span>{<span class="s">"list"</span>: list}) <span class="c">// 小集合：只有 list 键，没有 next_cursor</span>
+}
+
+<span class="c">// SwitchFamily 处理 POST /api/homeos/families/switch</span>
+<span class="k">func</span> (h *<span class="t">FamilyHandler</span>) <span class="t">SwitchFamily</span>(c *gin.<span class="t">Context</span>) {
+    <span class="k">var</span> req switchReq
+    <span class="k">if</span> err := c.<span class="t">ShouldBindJSON</span>(&amp;req); err != <span class="t">nil</span> {
+        response.<span class="t">Fail</span>(c, <span class="n">400</span>, response.CodeInvalidParam, <span class="s">"参数错误"</span>)
+        <span class="k">return</span>
+    }
+    res, err := h.families.<span class="t">SwitchFamily</span>(c.<span class="t">Request</span>().<span class="t">Context</span>(), c.<span class="t">GetInt64</span>(<span class="s">"userID"</span>), req.FamilyID)
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        response.<span class="t">FailErr</span>(c, err)
+        <span class="k">return</span>
+    }
+    response.<span class="t">OK</span>(c, res)
+}
+
+<span class="c">// CurrentFamily 处理 GET /api/homeos/family：fam 只从 context 来，不接受参数</span>
+<span class="k">func</span> (h *<span class="t">FamilyHandler</span>) <span class="t">CurrentFamily</span>(c *gin.<span class="t">Context</span>) {
+    fam, err := h.families.<span class="t">CurrentFamily</span>(c.<span class="t">Request</span>().<span class="t">Context</span>(), c.<span class="t">GetInt64</span>(<span class="s">"familyID"</span>))
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        response.<span class="t">FailErr</span>(c, err)
+        <span class="k">return</span>
+    }
+    response.<span class="t">OK</span>(c, gin.<span class="t">H</span>{<span class="s">"family"</span>: fam})
+}</code></pre>
+    <p>路由三条挂受保护组。注意 <code>GET /family</code>（单数）与 <code>GET /families</code>（复数）是两个不同端点，Gin 的树不冲突；别把 switch 挂成 <code>GET</code>——它改会话状态，语义上是写操作。</p>
+
+    <h3>步骤 3 · 测试与验收</h3>
+    <pre><span class="code-label">片段 · 测试要点（前置：newTestRouter；用户 A 建两个家庭，用户 B 只在家庭 1）</span><code><span class="c">// 1) A 的 families 列表：2 项，各带自己的 member.role/relation</span>
+<span class="c">// 2) A switch 到家庭 2 → 200；解码新 access：fam=家庭2、mid/role/pver 全换成家庭 2 那行成员的</span>
+<span class="c">// 3) B switch 到家庭 2（B 不在其中）→ 404 + 3001，不是 403——不泄露家庭 2 存在与否</span>
+<span class="c">// 4) 用家庭 2 的新 token 调 GET /family → 详情是家庭 2；用旧 token 调 → 详情还是家庭 1（两张票各自有效，多端互不干扰）</span>
+<span class="c">// 5) fam=0 的新注册用户调 GET /family → 404 + 3001</span></code></pre>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>make build &amp;&amp; make test &amp;&amp; make lint
+
+make run    <span class="c"># 终端 1；A 登录后：</span>
+curl -s http://localhost:8080/api/homeos/families -H "Authorization: Bearer &lt;token&gt;"
+curl -s -X POST http://localhost:8080/api/homeos/families/switch \
+  -H "Authorization: Bearer &lt;token&gt;" -H 'Content-Type: application/json' \
+  -d '{"family_id":&lt;另一个家庭 id&gt;}'
+<span class="c"># switch 响应里拿新 access_token 解码：fam 已经变了。用新 token 调 GET /family 核对</span>
+
+git add server
+git status
+git commit -m "feat(s4d9): 多家庭列表/切换/当前家庭，切换 = 重签 token"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>switch 只回 <code>{"ok":true}</code> 不发新 token</td><td>客户端 fam 还是旧家庭，切换等于没切</td><td>switch 响应与登录同形，新 token 是响应的灵魂</td></tr>
+      <tr><td>库里存 current_family_id</td><td>多端切换互相打架</td><td>会话状态只活在 token 里；库不知道也不该知道「你当前在哪」</td></tr>
+      <tr><td>switch 不验成员身份</td><td>传谁的 family_id 就切进谁家</td><td>FindActiveByUserAndFamily 查无 → 3001；身份行是唯一门票</td></tr>
+      <tr><td>跨家庭切换失败返回 403</td><td>探测者用响应差异扫出你有哪些家庭</td><td>3001 / 404，与「家庭不存在」同形</td></tr>
+      <tr><td>GET /family 接受 ?id= 参数</td><td>参数一传就能看别人家详情</td><td>fam 只从 context（token）来，接口不收家庭 id 参数</td></tr>
+      <tr><td>families 列表把已退出身份也列出来</td><td>切进去才发现进不去，体验断裂</td><td>只列 status 在档的；已退出身份留在库里给历史数据署名用</td></tr>
+      <tr><td>switch 后旧 refresh 不撤销</td><td>refresh 表越积越多，撤销语义模糊</td><td>IssueForSession 里把该用户当前未撤销的 refresh 一并撤掉再发新票</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>当前会话家庭</td><td>token 里 fam 指向的那个家庭；一切家庭域查询的边界</td></tr>
+      <tr><td>切换 = 重签</td><td>switch 不改服务端任何状态，只是换发一张 fam 不同的新 token</td></tr>
+      <tr><td>3001</td><td>家庭不存在或当前账号无权访问，404；与「真不存在」同形</td></tr>
+      <tr><td>token 即会话</td><td>会话状态全部由签名的 claims 承载，服务端无状态；多端天然独立</td></tr>
+      <tr><td>FamilyBrief</td><td>「家庭 + 我的成员身份」的成对结构：列表页一次拿全，不用二次请求</td></tr>
+      <tr><td>primarySession</td><td>登录时的默认会话家庭：第一个在档成员身份；没有则 fam=0</td></tr>
+      <tr><td>fam=0 状态</td><td>已注册未进家庭：认证全过、家庭域全 404/3001，前端引导建家庭或受邀</td></tr>
+      <tr><td>写语义的 POST</td><td>switch 改会话所以用 POST；GET 一律无副作用</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有两种情况出去查：</p>
+    <ul>
+      <li><b>claims 六键的含义忘了</b>：回 <a href="w07d3.html">S4·D3</a> 的讲义表，一分钟的事。</li>
+      <li><b>Gin 路由树对 <code>/family</code> 与 <code>/families</code> 的匹配规则</b>：<a href="https://pkg.go.dev/github.com/gin-gonic/gin#RouterGroup" target="_blank">gin.RouterGroup 文档</a>（可选）；实在疑惑，测试里各打一发看响应。</li>
+    </ul>
+    <p>切换后「数据还是旧家庭的」十有八九是客户端没换 token——curl 手工验收时把新旧两张 token 分别解码对比 fam，一眼定位问题在票还是在查询。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w08d3c1">三条接口跑通：列表 <code>{"list":[...]}</code> 无游标字段、switch 响应与登录同形、GET /family 只认 context 的 fam</label></li>
+      <li><label><input type="checkbox" data-key="w08d3c2">五条切换测试绿：新 token 的 fam/mid/role/pver 全换、非所属家庭 404+3001、fam=0 → 3001、新旧 token 各自有效</label></li>
+      <li><label><input type="checkbox" data-key="w08d3c3">login 的 primarySession 已换真查询（占位清零），登录后 token 的 fam 指向第一个在档家庭</label></li>
+      <li><label><input type="checkbox" data-key="w08d3c4"><code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，commit 带卡号 <code>s4d9</code></label></li>
+      <li><label><input type="checkbox" data-key="w08d3c5"><code>notes/</code> 写三行：为什么不在库存 current_family_id、3001 与 1005 的分工、switch 后旧 access 为什么可以继续活 15 分钟</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w08d2.html"><span class="hint">← 昨天 · S4·D8</span>邀请：发起、列表、接受与撤销</a>
+    <a href="w08d4.html"><span class="hint">明天 · S4·D10 →</span>家庭上下文注入：scope helper 强制 family</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w08d3 · 明天见 ⟩</footer>
+</body>
+</html>

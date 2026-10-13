@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S7·D1 · registry 面目录：代码即配置 | HomeCube 修炼手册</title>
+<meta name="description" content="S7 壳基座服务端开工：把 7 个面 code 全登记进代码级 registry，只有 homeos 与 finance 两个面已出生，理解「面目录为什么不用数据库表存」。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w17d1">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S7</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S7</a> / w17d1</div>
+  <div class="day-meta">
+    <span class="chip">S7 · DAY 1</span>
+    <span class="chip alt">预计 25 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>registry 面目录：代码即配置</h1>
+  <p>S1-S6 你把一个完整的财务面从三层写到报表。从今天起的这个阶段做<b>壳基座的服务端</b>：首页、面（功能模块）的目录与开关、分包清单、到期、通知、设置。壳的世界观只有一句话——<b>面是插件，壳负责表达「哪些面存在、哪些面出生了、这个家庭开了哪些面、你这个角色能看见哪些面」</b>。今天落第一块基石：面目录 registry，7 个 code 全部登记，但只有 2 个已出生。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w17d1g1">说得出 7 个面 code，以及「一个 code 决定七处命名」的同源规则</label></li>
+      <li><label><input type="checkbox" data-key="w17d1g2">讲清 registry 为什么是代码而不是数据库表</label></li>
+      <li><label><input type="checkbox" data-key="w17d1g3">区分 <code>born</code>（出生）与 <code>enabled</code>（家庭启用）两个正交概念</label></li>
+      <li><label><input type="checkbox" data-key="w17d1g4">registry 落盘 + 目录不变量测试绿（7 条、恰 2 个 born、code 不重复）</label></li>
+    </ul>
+    <div class="callout note"><p>↑ 这四条是「学习目标」。页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 七个面 code，一个 code 决定七处命名</h3>
+    <p>整个 app 由「壳 + 若干功能面」组成。面的全集是 7 个，每个面有一个全小写的 <code>code</code>，它同时决定七处命名：</p>
+    <pre><span class="code-label">结构</span><code>svc-{code}        服务名（拆服务时用，现在是模块化单体，只有一个进程）
+schema {code}     数据库 schema（homeos / finance 两个已建）
+/api/{code}/*     路由域（没有版本号段）
+{code}_ 表前缀    表名（homeos_member、finance_transaction…）
+pages/{code}      前端分包目录
+{code}_{seq}_…    迁移文件名（两个 code 各自独立计数）
+{code}. 前缀      进程内调用的来源标识（到期中心那几天会用到）</code></pre>
+    <table>
+      <tr><th>code</th><th>名称</th><th>born（已出生）</th><th>说明</th></tr>
+      <tr><td><code>homeos</code></td><td>家庭基座</td><td><b>是</b></td><td>家庭、成员、首页、通知、设置的宿主；它的页面在前端<b>主包</b>，不分包</td></tr>
+      <tr><td><code>finance</code></td><td>家庭财务</td><td><b>是</b></td><td>S6 全阶段写完的那个面</td></tr>
+      <tr><td><code>purchase</code></td><td>采购</td><td>否</td><td rowspan="5">规划中的面。<b>code 必须现在就登记</b>，但服务端没有任何它们的业务代码——壳要能表达「面没出生」，而不是假装它们不存在</td></tr>
+      <tr><td><code>diet</code></td><td>饮食</td><td>否</td></tr>
+      <tr><td><code>kin</code></td><td>家人</td><td>否</td></tr>
+      <tr><td><code>growth</code></td><td>成长</td><td>否</td></tr>
+      <tr><td><code>trip</code></td><td>出行</td><td>否</td></tr>
+    </table>
+
+    <h3>2. born 与 enabled 是两个正交的开关</h3>
+    <table>
+      <tr><th>维度</th><th>谁决定</th><th>存哪</th><th>变的频率</th></tr>
+      <tr><td><code>born</code> 出生</td><td><b>发版</b>：这个面的服务端代码写完并上线了</td><td>代码（今天的 registry）</td><td>随版本，一年几次</td></tr>
+      <tr><td><code>enabled</code> 启用</td><td><b>每个家庭自己</b>：这家人开不开这个面</td><td>数据库表（明天建 <code>homeos_family_module</code>）</td><td>随用户操作，随时</td></tr>
+    </table>
+    <p>两个开关加上后天的「角色可见」，一个面要出现在某个用户的首页上，需要同时通过多层过滤——这就是本阶段反复出现的<b>四层合成</b>：registry ∩ 家庭启用 ∩ 已出生 ∩ 角色可见集。今天先把第一层（registry）钉死。</p>
+    <div class="callout warn"><p><b>没出生的面也可以被家庭「预约开通」（enabled=true），但它不渲染、不下发分包</b>——渲染必须叠加 born。这个口径明天写配置表时会用到，今天先记住：born 是硬边界，enabled 是软配置。</p></div>
+
+    <h3>3. 为什么面目录是代码，不是数据库表</h3>
+    <p>直觉上「目录」像数据，该进表。但想清楚三件事就不会这么做：</p>
+    <ul>
+      <li><b>目录随发版变，不随运行时变。</b>一个新面出生 = 它的 schema、迁移、路由、handler 全部随二进制上线。目录条目只有在这个时候才有意义——它天然和代码同一个生命周期，就该和代码住在一起。</li>
+      <li><b>进表会制造假入口。</b>如果 purchase 在表里有一行，管理台就能「启用」它、客户端就能请求它，但服务端一行 purchase 的业务代码都没有——注册了但没实现的假入口，是本课程从 S1 就点名的反模式。代码级 registry 让「目录里有」和「二进制里有」永远同源：<b>编译不过 = 登记不上</b>。</li>
+      <li><b>表要存的其实是「选择」，不是「目录」。</b>每个家庭开了哪些面，这是运行时数据，明天进 <code>homeos_family_module</code> 表。目录本身（7 个 code、名字、图标、born）是常量。常量进代码、选择进数据库，两边各归各位。</li>
+    </ul>
+    <div class="callout note"><p>这和「分包清单也是代码即配置」（S7·D4）是同一个思想：凡是<b>只有发版才能改变</b>的东西，都不要给它建表。</p></div>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>①：加一个 struct/枚举</b>（外加 ③ 一个不变量测试）。落一个 <code>faces</code> 包：registry + 目录不变量测试。收工时 <code>make build</code> / <code>make test</code> 必须绿。</p>
+
+    <h3>步骤 1 · registry 本体</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/faces/registry.go</span><code><span class="k">package</span> faces
+
+<span class="k">import</span> <span class="s">"homecube/internal/homeos/model"</span>
+
+<span class="c">// Meta 是面目录里的一项。目录是代码即配置：增删面随二进制发版，不进数据库表。</span>
+<span class="k">type</span> <span class="t">Meta</span> <span class="k">struct</span> {
+    Code         <span class="t">string</span>        <span class="c">// 七处命名同源的那个 code，全小写</span>
+    Name         <span class="t">string</span>        <span class="c">// 展示名</span>
+    Icon         <span class="t">string</span>        <span class="c">// 图标标识符（前端主题令牌体系里的名字，不是色值）</span>
+    Born         <span class="t">bool</span>          <span class="c">// 服务端代码是否已实现并随本版上线</span>
+    VisibleRoles []model.<span class="t">Role</span>  <span class="c">// 角色可见集；owner 恒真、不查此列表（S7·D3 经 authz 收口）</span>
+}
+
+<span class="k">var</span> registry = []<span class="t">Meta</span>{
+    {Code: <span class="s">"homeos"</span>, Name: <span class="s">"家庭基座"</span>, Icon: <span class="s">"home"</span>, Born: <span class="k">true</span>,
+        VisibleRoles: []model.<span class="t">Role</span>{model.RoleOwner, model.RoleMember, model.RoleWard, model.RoleGuest}},
+    {Code: <span class="s">"finance"</span>, Name: <span class="s">"家庭财务"</span>, Icon: <span class="s">"wallet"</span>, Born: <span class="k">true</span>,
+        VisibleRoles: []model.<span class="t">Role</span>{model.RoleOwner, model.RoleMember, model.RoleGuest}}, <span class="c">// ward 不可见</span>
+    {Code: <span class="s">"purchase"</span>, Name: <span class="s">"采购"</span>, Icon: <span class="s">"cart"</span>, Born: <span class="k">false</span>, VisibleRoles: allRoles()},
+    {Code: <span class="s">"diet"</span>, Name: <span class="s">"饮食"</span>, Icon: <span class="s">"dish"</span>, Born: <span class="k">false</span>, VisibleRoles: allRoles()},
+    {Code: <span class="s">"kin"</span>, Name: <span class="s">"家人"</span>, Icon: <span class="s">"people"</span>, Born: <span class="k">false</span>, VisibleRoles: allRoles()},
+    {Code: <span class="s">"growth"</span>, Name: <span class="s">"成长"</span>, Icon: <span class="s">"sprout"</span>, Born: <span class="k">false</span>, VisibleRoles: allRoles()},
+    {Code: <span class="s">"trip"</span>, Name: <span class="s">"出行"</span>, Icon: <span class="s">"compass"</span>, Born: <span class="k">false</span>, VisibleRoles: allRoles()},
+}
+
+<span class="k">func</span> <span class="t">allRoles</span>() []model.<span class="t">Role</span> {
+    <span class="k">return</span> []model.<span class="t">Role</span>{model.RoleOwner, model.RoleMember, model.RoleWard, model.RoleGuest}
+}
+
+<span class="c">// All 返回目录副本。直接暴露包级 slice，调用方一个 append 就能改花你的常量。</span>
+<span class="k">func</span> <span class="t">All</span>() []<span class="t">Meta</span> {
+    out := <span class="t">make</span>([]<span class="t">Meta</span>, <span class="t">len</span>(registry))
+    <span class="t">copy</span>(out, registry)
+    <span class="k">return</span> out
+}
+
+<span class="c">// Get 按 code 查目录。</span>
+<span class="k">func</span> <span class="t">Get</span>(code <span class="t">string</span>) (<span class="t">Meta</span>, <span class="t">bool</span>) {
+    <span class="k">for</span> _, m := <span class="k">range</span> registry {
+        <span class="k">if</span> m.Code == code {
+            <span class="k">return</span> m, <span class="k">true</span>
+        }
+    }
+    <span class="k">return</span> <span class="t">Meta</span>{}, <span class="k">false</span>
+}</code></pre>
+    <p><code>model.Role</code> 与四个角色常量是 S4 建好的（<code>RoleOwner/RoleMember/RoleWard/RoleGuest</code>），今天直接引用。</p>
+
+    <h3>步骤 2 · 目录不变量测试</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/faces/registry_test.go</span><code><span class="k">package</span> faces
+
+<span class="k">import</span> <span class="s">"testing"</span>
+
+<span class="k">func</span> <span class="t">TestRegistryInvariants</span>(t *testing.<span class="t">T</span>) {
+    all := <span class="t">All</span>()
+
+    <span class="c">// 不变量一：7 个 code 全登记，一个不少</span>
+    <span class="k">if</span> <span class="t">len</span>(all) != <span class="n">7</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"registry 条数 = %d, want 7"</span>, <span class="t">len</span>(all))
+    }
+
+    <span class="c">// 不变量二：code 不重复</span>
+    seen := <span class="t">map</span>[<span class="t">string</span>]<span class="t">bool</span>{}
+    <span class="k">for</span> _, m := <span class="k">range</span> all {
+        <span class="k">if</span> seen[m.Code] {
+            t.<span class="t">Fatalf</span>(<span class="s">"code 重复: %s"</span>, m.Code)
+        }
+        seen[m.Code] = <span class="k">true</span>
+    }
+
+    <span class="c">// 不变量三：恰有两个 born，且是 homeos 与 finance</span>
+    born := []<span class="t">string</span>{}
+    <span class="k">for</span> _, m := <span class="k">range</span> all {
+        <span class="k">if</span> m.Born {
+            born = <span class="t">append</span>(born, m.Code)
+        }
+    }
+    <span class="k">if</span> <span class="t">len</span>(born) != <span class="n">2</span> || born[<span class="n">0</span>] != <span class="s">"homeos"</span> || born[<span class="n">1</span>] != <span class="s">"finance"</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"born 集合 = %v, want [homeos finance]"</span>, born)
+    }
+}
+
+<span class="k">func</span> <span class="t">TestAllReturnsCopy</span>(t *testing.<span class="t">T</span>) {
+    a := <span class="t">All</span>()
+    a[<span class="n">0</span>].Name = <span class="s">"被改花了"</span>
+    <span class="k">if</span> b := <span class="t">All</span>(); b[<span class="n">0</span>].Name == <span class="s">"被改花了"</span> {
+        t.<span class="t">Fatal</span>(<span class="s">"All() 返回了内部 slice 的引用，目录被外部改花"</span>)
+    }
+}</code></pre>
+    <div class="callout tip"><p>第二条测试看着小题大做，其实是在保护「代码即配置」的根基：包级变量一旦被调用方改花，「目录与二进制同源」这句话就作废了。<b>返回副本是 registry 这类包级常量的标配。</b></p></div>
+
+    <h3>步骤 3 · 验收 + 提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test     <span class="c"># faces 包两条测试全绿，已有测试不回归</span>
+make lint
+
+git add server/internal/homeos/faces
+git status
+git commit -m "feat(s7d1): 面目录 registry 代码即配置，7 code 全登记、2 born"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>把目录建进数据库表</td><td>管理台能「启用」一个服务端根本没实现的面，请求过去全是 404</td><td>目录进代码；表只存每个家庭的启用选择（S7·D2）</td></tr>
+      <tr><td><code>All()</code> 直接 <code>return registry</code></td><td>调用方 <code>append</code>/改字段，把包级目录改花，测试时红时绿</td><td>返回副本；用今天的第二条测试钉死</td></tr>
+      <tr><td>把 born 和 enabled 混成一个字段</td><td>「这家人没开财务」和「财务面还没写」分不开，降级表达全乱</td><td>born 在代码、enabled 在表，正交两维</td></tr>
+      <tr><td>没出生的面干脆不登记</td><td>壳无法表达「敬请期待」，日后加面要改一圈客户端</td><td>7 个 code 全登记，born=false 就是「没出生」的表达</td></tr>
+      <tr><td>Icon 存色值或图片 URL</td><td>前端主题令牌体系被绕开，深色模式全花</td><td>Icon 只存标识符字符串，渲染与配色归前端主题层</td></tr>
+      <tr><td>VisibleRoles 里给 owner 特殊分支</td><td>每个消费点都写一遍 <code>if role == owner</code></td><td>owner 恒真的规则收在唯一判定函数里（S7·D3 落进 authz）</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>面（face / module）</td><td>一个可插拔的功能域（财务、采购…），有自己的 schema、路由域、表前缀、分包</td></tr>
+      <tr><td>registry 面目录</td><td>面的全集常量：7 个 code 的 Meta 列表，代码即配置</td></tr>
+      <tr><td>born 已出生</td><td>该面的服务端代码已实现并随本版二进制上线；发版才能改变</td></tr>
+      <tr><td>enabled 已启用</td><td>某个家庭打开了这个面；存 <code>homeos_family_module</code> 表，随时可变</td></tr>
+      <tr><td>availability</td><td>接口下发字段：<code>available</code> / <code>not_born</code>，壳对「面没出生」的降级表达</td></tr>
+      <tr><td>四层合成</td><td>registry ∩ 家庭启用 ∩ 已出生 ∩ 角色可见集，服务端一处算完（S7·D3 落地）</td></tr>
+      <tr><td>七处命名同源</td><td>一个 code 同时决定服务名、schema、路由域、表前缀、分包目录、迁移名、来源标识</td></tr>
+      <tr><td>代码即配置</td><td>只有发版才能改变的东西放代码里，与二进制能力永远同源</td></tr>
+      <tr><td>包级变量副本返回</td><td><code>All()</code> 返回 copy，防止调用方改花常量</td></tr>
+      <tr><td>假入口</td><td>注册了但没实现/没用了的入口；目录进数据库表就会批量制造它</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <ul>
+      <li><b>Role 四级枚举想不起来了</b>：回 S4 的角色与权限矩阵那几天（<code>model.Role</code> 首次落盘在 S1·D3，四级语义在 S4 定版）。</li>
+      <li><b>slice 副本 / <code>copy</code> 语义模糊</b>：回 S1·D4（slice、map 那课）。</li>
+      <li><b>表驱动测试怎么写</b>：回 S1·D2 的第一个表驱动测试。</li>
+    </ul>
+    <p>今天的代码没有任何新语法；卡壳只可能卡在「概念分不清」——把 born/enabled 那张表抄进 <code>notes/</code>，用自己的话各写一句。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w17d1c1"><code>faces</code> 包落盘：7 个 code 全登记，homeos 与 finance 恰为 born，<code>All()</code> 返回副本</label></li>
+      <li><label><input type="checkbox" data-key="w17d1c2">目录不变量测试两条全绿，<code>make build</code> / <code>make test</code> / <code>make lint</code> 无回归</label></li>
+      <li><label><input type="checkbox" data-key="w17d1c3">能不看资料说出「一个 code 决定七处命名」里至少五处</label></li>
+      <li><label><input type="checkbox" data-key="w17d1c4">能讲清面目录不进数据库表的三条理由（生命周期同源、假入口、表存选择不存目录）</label></li>
+      <li><label><input type="checkbox" data-key="w17d1c5">commit 带卡号 <code>s7d1</code>，<code>notes/</code> 里写下 born 与 enabled 的区别各一句</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../frontend/f4/w16f1.html"><span class="hint">← 上周日 · F4·w16</span>时间窗切换器 + F4 收口</a>
+    <a href="w17d2.html"><span class="hint">明天 · S7·D2 →</span>面启用配置：乐观锁 epoch 与变更审计</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w17d1 · 明天见 ⟩</footer>
+</body>
+</html>

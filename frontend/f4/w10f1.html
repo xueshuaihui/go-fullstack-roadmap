@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>F4·w10 · 组件拆分实战：把流水列表页拆成四块 | HomeCube 修炼手册</title>
+<meta name="description" content="前端辅线 F4 第一张卡：拿真实的流水列表页拆成筛选条 / 列表 / 单行 item / 空态四个组件，划清 props 与 emit 的边界，学会 provide/inject 的启用时机，并用「假数据单独渲染法」确认没拆坏。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w10f1">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">前端线 F1-F6</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / 前端辅线 / F4 / w10</div>
+  <div class="day-meta">
+    <span class="chip">F4 · WEEK 10</span>
+    <span class="chip alt">周日前半 · 约 2 小时</span>
+    <span class="chip">难度 ★★☆☆☆</span>
+  </div>
+  <h1>组件拆分实战：把流水列表页拆成四块</h1>
+  <p>F4 是全课程前端线最长的一段，对应服务端 S5（并发与工程化）+ S6（财务功能面 30 条接口）。和 F1 不一样：<b>现在 <code>web/</code> 里已经有真实页面了</b>——F2 建好了工程与请求层，F3 建好了 Pinia store 与路由守卫，服务端也开始吐出真实的财务数据。F4 的主题只有一句话：<b>把 agent 写出来的这些页面，变成你能拆开、能改、能调的东西</b>。第一刀，砍在财务面最核心的页面上：流水列表页。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w10f1g1">能把流水列表页拆成 筛选条 / 列表 / 单行 item / 空态 四个组件，并对每个组件口述 props 清单与 emits 清单</label></li>
+      <li><label><input type="checkbox" data-key="w10f1g2">说清 <code>provide/inject</code> 的启用时机：什么时候该用，什么时候用了反而是坏味道</label></li>
+      <li><label><input type="checkbox" data-key="w10f1g3">掌握「假数据单独渲染法」：拆完之后怎么确认没拆坏</label></li>
+      <li><label><input type="checkbox" data-key="w10f1g4">完成「动手改」（把 item 的一个字段换成 props 传入）并回答「定位题」（字段显示 undefined 的三步定论）</label></li>
+    </ul>
+    <div class="callout js"><p><b>判据提醒</b>：F 段的判据全是「你能不能讲清 / 能不能改」，不是「代码写没写出来」——页面代码是 agent 写的。<b>不许拿「页面能跑」当自己通过了。</b>今天通过的标准是：对着拆好的四个文件，每个都能说出「输入是什么、对外发什么事件、状态归谁」。</p></div>
+  </section>
+
+  <section>
+    <h2>1. 拆之前：这个页面长什么样、数据从哪来</h2>
+    <p>流水列表页的路由是三段式 <code>pages/finance/tx/list</code>（F2 讲过的 <code>pages/{code}/{feature}/{action}</code> 约定）。它的数据来自 <code>GET /api/finance/transactions</code>，响应是全站统一的信封 + 游标分页结构（分页的前端侧是本阶段第 4、5 张卡的正题，今天只需要知道形状）：</p>
+    <pre><span class="code-label">片段 · 响应形状（字段以 agent 实现为准，这里是示意）</span><code>{ <span class="s">"code"</span>: <span class="n">0</span>, <span class="s">"message"</span>: <span class="s">"ok"</span>, <span class="s">"data"</span>: {
+    <span class="s">"list"</span>: [
+      { <span class="s">"id"</span>: <span class="n">1024</span>, <span class="s">"type"</span>: <span class="s">"expense"</span>, <span class="s">"amount_cents"</span>: <span class="n">3500</span>,
+        <span class="s">"category_name"</span>: <span class="s">"餐饮"</span>, <span class="s">"account_name"</span>: <span class="s">"零钱账户"</span>,
+        <span class="s">"occurred_at"</span>: <span class="s">"…"</span>, <span class="s">"note"</span>: <span class="s">"午饭"</span> }
+    ],
+    <span class="s">"next_cursor"</span>: <span class="s">"…"</span>, <span class="s">"has_more"</span>: <span class="k">true</span>
+} }</code></pre>
+    <p>agent 最初交出来的版本，很可能是「一口锅」：请求、筛选状态、列表渲染、空态、金额格式化全部写在一个几百行的 <code>list.vue</code> 里。能跑，但你改任何一个字段都要在整口锅里找。今天的任务就是把它拆成四块：</p>
+    <pre><span class="code-label">片段 · 拆分目标（文件放在页面同级 components/ 下）</span><code>web/src/pages/finance/tx/
+├── list.vue                 <span class="c">// 页面（容器）：发请求、持有全部状态、组装</span>
+└── components/
+    ├── TxFilterBar.vue      <span class="c">// 筛选条：时间窗 + 分类 + 账户</span>
+    ├── TxList.vue           <span class="c">// 列表：v-for 渲染 item，转发点击</span>
+    ├── TxListItem.vue       <span class="c">// 单行：金额、分类、账户、时间</span>
+    └── EmptyState.vue       <span class="c">// 空态：一张图 + 一句话 + 可选按钮</span></code></pre>
+  </section>
+
+  <section>
+    <h2>2. 边界怎么划：props 往下、emit 往上、状态留在页面</h2>
+    <p>拆分的核心决策只有一个：<b>状态归谁</b>。答案沿用 F1 第 3 张卡立下的判据——「数据的家只有一个，其他人都是租客」。这个页面的所有数据状态（列表、筛选条件、加载态）都有多个消费者，所以<b>全部留在页面（容器）里</b>；四个子组件全是展示组件：只吃 props、只发事件、自己不发请求。</p>
+    <table>
+      <tr><th>组件</th><th>props（下行）</th><th>emits（上行）</th><th>本地状态</th></tr>
+      <tr><td><code>TxFilterBar</code></td><td><code>period</code>、<code>categories</code>（分类可选项）、<code>accounts</code>（账户可选项）</td><td><code>apply</code>（带新筛选条件）</td><td>下拉面板开没开（只有它自己关心，放子）</td></tr>
+      <tr><td><code>TxList</code></td><td><code>items</code>、<code>loading</code>、<code>hasMore</code></td><td><code>item-click</code>（透传被点的 item）</td><td>无</td></tr>
+      <tr><td><code>TxListItem</code></td><td><code>item</code>（一行流水对象）</td><td><code>click</code></td><td>无</td></tr>
+      <tr><td><code>EmptyState</code></td><td><code>text</code>（提示语）</td><td>无（或一个 <code>action</code> 按钮事件）</td><td>无</td></tr>
+    </table>
+    <p>展示组件的样板长这样（注意：<b>没有任何 import http 的行</b>）：</p>
+    <pre><span class="code-label">片段 · TxListItem.vue（展示组件的形）</span><code><span class="t">&lt;template&gt;</span>
+  <span class="t">&lt;view</span> <span class="k">class</span>=<span class="s">"tx-item"</span> <span class="k">@click</span>=<span class="s">"emit('click', item)"</span><span class="t">&gt;</span>
+    <span class="t">&lt;text</span> <span class="k">class</span>=<span class="s">"tx-item__amount"</span><span class="t">&gt;</span>{{ amountYuan }}<span class="t">&lt;/text&gt;</span>
+    <span class="t">&lt;text</span> <span class="k">class</span>=<span class="s">"tx-item__sub"</span><span class="t">&gt;</span>{{ item.category_name }}<span class="t">&lt;/text&gt;</span>
+  <span class="t">&lt;/view&gt;</span>
+<span class="t">&lt;/template&gt;</span>
+
+<span class="t">&lt;script</span> <span class="k">setup</span><span class="t">&gt;</span>
+<span class="k">import</span> { computed } <span class="k">from</span> <span class="s">'vue'</span>
+<span class="k">const</span> props = <span class="t">defineProps</span>({ item: { type: <span class="t">Object</span>, required: <span class="k">true</span> } })
+<span class="k">const</span> emit = <span class="t">defineEmits</span>([<span class="s">'click'</span>])
+<span class="c">// 金额是 *_cents 整数：显示时除以 100，绝不用浮点累加（F4 第 6 张卡展开）</span>
+<span class="k">const</span> amountYuan = <span class="t">computed</span>(() =&gt; (props.item.amount_cents / <span class="n">100</span>).<span class="t">toFixed</span>(<span class="n">2</span>))
+<span class="t">&lt;/script&gt;</span></code></pre>
+    <p>页面这边只剩三件事：<b>发请求、存状态、组装</b>：</p>
+    <pre><span class="code-label">片段 · list.vue（容器：组装四块）</span><code><span class="t">&lt;TxFilterBar</span> <span class="k">:period</span>=<span class="s">"shell.period"</span> <span class="k">:categories</span>=<span class="s">"categories"</span> <span class="k">@apply</span>=<span class="s">"onFilterApply"</span> <span class="t">/&gt;</span>
+<span class="t">&lt;TxList</span> <span class="k">v-if</span>=<span class="s">"items.length"</span> <span class="k">:items</span>=<span class="s">"items"</span> <span class="k">:loading</span>=<span class="s">"loading"</span> <span class="k">@item-click</span>=<span class="s">"goDetail"</span> <span class="t">/&gt;</span>
+<span class="t">&lt;EmptyState</span> <span class="k">v-else-if</span>=<span class="s">"!loading"</span> <span class="k">text</span>=<span class="s">"这个时间窗还没有流水"</span> <span class="t">/&gt;</span></code></pre>
+    <div class="callout warn"><p><b>对照 React</b>：这就是「容器组件 + 展示组件」模式，一模一样——容器管数据与副作用，展示组件是准纯函数（props 进、事件出）。差别只有两处：① React 把回调函数当 props 往下传（<code>onItemClick={fn}</code>），Vue 用显式声明的事件（<code>emit('item-click')</code>）；② React 里你习惯把状态更新写成不可变替换，Vue 里直接 <code>items.value.push(x)</code>（F1 第 1 张卡讲过的心智模型差异）。</p></div>
+  </section>
+
+  <section>
+    <h2>3. provide/inject：什么时候该用，什么时候不该</h2>
+    <p><code>provide/inject</code> 是 Vue 版的 React Context：祖先 <code>provide(key, value)</code>，任意深度的后代 <code>inject(key)</code> 直接取，<b>跳过中间所有层</b>。</p>
+    <pre><span class="code-label">片段 · provide / inject</span><code><span class="c">// 祖先（页面或布局组件）</span>
+<span class="k">import</span> { provide } <span class="k">from</span> <span class="s">'vue'</span>
+<span class="t">provide</span>(<span class="s">'theme'</span>, themeTokens)
+
+<span class="c">// 任意深度的后代</span>
+<span class="k">import</span> { inject } <span class="k">from</span> <span class="s">'vue'</span>
+<span class="k">const</span> theme = <span class="t">inject</span>(<span class="s">'theme'</span>)</code></pre>
+    <p>启用它之前先问两个问题：</p>
+    <table>
+      <tr><th>问题</th><th>答案 → 决策</th></tr>
+      <tr><td>中间层组件<b>消费</b>这个值吗？</td><td>消费 → 老老实实传 props（它本来就要拿到）；纯路过 → 才考虑 provide/inject</td></tr>
+      <tr><td>要穿过几层？</td><td>两三层 → props 完全够，别引入魔法；四五层以上的纯透传 → provide/inject（或干脆进 Pinia）</td></tr>
+      <tr><td>这个值跨<b>页面</b>共享吗？</td><td>是 → 不是 provide/inject 的活，进 Pinia store（比如 <code>period</code> 住在 <code>useShellStore</code>，F3 建好的）</td></tr>
+    </table>
+    <p>套到今天这个页面：页面 → TxList → TxListItem 只有<b>两层</b>，而且每层都消费自己那份 props，所以<b>整页不需要 provide/inject</b>。它真正的用武之地是 shell 级的东西——主题令牌（下一张卡）、全局弹窗服务这类「谁都可能要、中间层不关心」的值。</p>
+    <div class="callout note"><p><b>坏味道路标</b>：如果你在子组件里看到 <code>inject('items')</code> 这种「本该是 props 的业务数据」，说明有人为了省两行绑定把数据流藏进了暗道——排查时要多翻一层才找得到数据的家。业务数据走 props，环境级数据（主题、locale、当前家庭上下文）才走 provide/inject 或 store。</p></div>
+  </section>
+
+  <section>
+    <h2>4. 拆完怎么确认没拆坏：假数据单独渲染法</h2>
+    <p>拆分最常见的事故不是「编译不过」，而是<b>「看着没变，其实某个绑定断了」</b>。给你一个能跑的判断法，两分钟出结论：</p>
+    <ol>
+      <li><b>假数据单独渲染</b>：建一个临时调试页，把每个展示组件单独摆一遍，props 喂手写的固定假数据（三行流水、一个空列表、一个 loading 态）。四个组件各自都能正确渲染 → <b>组件自身的渲染层没坏</b>。这一步把「渲染问题」和「数据流问题」切开了。</li>
+      <li><b>接回真实数据流</b>：调试页没问题后回到真页面。真页面缺什么字段、显示什么怪值，问题必在<b>容器到组件之间的那根线</b>（绑定漏冒号、传错层级、拿 props 初始化本地副本后分家——最后这个是 F1 第 3 张卡定位题的老朋友）。</li>
+      <li><b>单点改动检查</b>：拆分的收益要当场验收——随便改一个显示字段，<code>git diff</code> 应该<b>只动一个文件</b>。如果改一个字段要动三个文件，说明边界划错了（数据或逻辑放错了家）。</li>
+    </ol>
+    <div class="callout tip"><p>对照 React：这套方法和你在 React 里给展示组件写 Storybook story 是同一个思路——<b>先用固定 props 证明组件是纯的，再谈数据流</b>。本项目不引入 Storybook，一个临时调试页就够。</p></div>
+  </section>
+
+  <section>
+    <h2>动手改（今天的判据现场）</h2>
+    <p>打开 <code>web/src/pages/finance/tx/</code> 下的 item 组件（agent 的实现文件名可能略不同，找到渲染「一行流水」的那个）。当前它的副文案显示的是分类名。做三处改动：</p>
+    <pre><span class="code-label">片段 · 起点（TxListItem.vue 的模板节选）</span><code><span class="t">&lt;text</span> <span class="k">class</span>=<span class="s">"tx-item__sub"</span><span class="t">&gt;</span>{{ item.category_name }}<span class="t">&lt;/text&gt;</span></code></pre>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w10f1m1">改动 ①：把副文案从分类名换成<b>账户名</b>——字段必须从 <code>item</code> 这个 props 里来（<code>item.account_name</code>），<b>不许</b>在组件里新增任何请求去查账户</label></li>
+      <li><label><input type="checkbox" data-key="w10f1m2">改动 ②：把「分类 · 账户」两个字段并排显示（中间加个分隔点），改完 <code>git diff</code> 看一眼——应该只有这一个文件变了；如果父组件也被迫改了，说清为什么（提示：假数据调试页里的 fixture 要不要跟着动？）</label></li>
+      <li><label><input type="checkbox" data-key="w10f1m3">改动 ③：如果金额格式化（cents → 元）还写在模板表达式里，把它搬进组件的 <code>computed</code>，并口述「为什么模板里不写复杂表达式」（F1 第 2 张卡的结论）</label></li>
+    </ul>
+    <div class="callout note"><p>改的是 agent 写的真实文件，改完记得跑一遍 <code>cd &lt;你的学习仓根目录&gt;</code> 后按 <code>web/</code> 的 README 起 H5 开发服务看效果；看完可以 <code>git checkout</code> 恢复，也可以留着——<b>判据是你能说清每处改动动了哪一段、影响模板哪一处</b>，不是改动本身留在仓里。</p></div>
+  </section>
+
+  <section>
+    <h2>定位题（bug 在哪一层：F4 的第一道）</h2>
+    <div class="task">
+      <div class="task-title">现象：流水列表里某一行的「账户名」显示成空白，Vue 模板对 undefined 不报错，就这么静静地空着。</div>
+      <p>三个嫌疑人：接口没返、props 没传、模板 key 写错。按数据的流向走，<b>三步定论，每步排除一层</b>：</p>
+      <ol>
+        <li><b>Network 面板</b>：找 <code>/api/finance/transactions</code> 的响应体，<code>list[]</code> 的每个元素里有 <code>account_name</code> 这个字段吗？<b>没有 → 服务端问题</b>（字段没返、名字不一致、或者被外层 <code>data</code> 挡了一层没解开）。到这一步就可以停，前端无辜。</li>
+        <li><b>Vue Devtools 选中 TxListItem 组件实例</b>：看它实际收到的 <code>props.item</code>，字段在吗？响应里有、props 里没有 → <b>断在容器到组件的传线上</b>：绑定漏了冒号（传成字符串字面量）、容器拿错层级（<code>res.list</code> 写成了 <code>res</code>）、或者中途被 map 成了新对象时漏掉了这个字段。</li>
+        <li><b>props 里有 → 模板 key 写错</b>：拼写（<code>accountName</code> vs <code>account_name</code>，服务端是 snake_case）、层级（<code>item.account.name</code> 写成了 <code>item.account_name</code>）。模板里读 undefined 的属性<b>不抛错只显示空</b>，所以这类错永远要靠肉眼比对 key，而不是等报错。</li>
+      </ol>
+      <p>把这条「undefined 三步定论」记进 <code>notes/f4/</code> 的定位笔记——它是 F1 四步法在「拆过组件的页面」上的升级版：多了第 2 步这个「组件边界」检查点。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>展示组件里偷偷发请求</td><td>组件不再「纯」，假数据单独渲染法直接失效</td><td>请求一律收在页面/store；展示组件只吃 props</td></tr>
+      <tr><td>拿 props 初始化本地 ref 后不再同步</td><td>父更新了子不动，<b>不报错</b>（F1 老坑在拆分后高发）</td><td>用 computed 从 props 派生；确需本地副本要 watch 并写清理由</td></tr>
+      <tr><td>两三层也上 provide/inject</td><td>数据流变成暗道，排查多翻一层</td><td>业务数据走 props；provide/inject 只给环境级数据</td></tr>
+      <tr><td>把页面状态全搬进 Pinia「方便共享」</td><td>store 变垃圾场，谁都能改、谁都不负责</td><td>只有跨页面消费的状态进 store；页内状态留在页面</td></tr>
+      <tr><td><code>v-for</code> 的 <code>:key</code> 用 index</td><td>列表增删时 DOM 复用错乱（本阶段第 5 张卡正式展开）</td><td><code>:key="item.id"</code>，用业务 id</td></tr>
+      <tr><td>每个列表页各写一份空态/加载态</td><td>三处样式三个样，改一处漏两处</td><td>抽公共 <code>EmptyState</code>，props 只留文案和按钮事件</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>容器组件</td><td>发请求、持有状态、组装子组件的那一层（本项目里 = 页面 <code>list.vue</code>）</td></tr>
+      <tr><td>展示组件</td><td>只吃 props、只发事件、不发请求的「准纯函数」组件</td></tr>
+      <tr><td>prop drilling</td><td>同一个值穿过多个中间层往下传；层数多了才考虑 provide/inject 或 store</td></tr>
+      <tr><td><code>provide / inject</code></td><td>祖先注入、任意深度后代取用，Vue 版的 React Context；只给环境级数据用</td></tr>
+      <tr><td>事件透传</td><td>TxListItem 发 <code>click</code>，TxList 原样转发 <code>item-click</code>，页面消费——中间层不加工</td></tr>
+      <tr><td>假数据单独渲染法</td><td>用固定 fixture 单独渲染每个展示组件，把「渲染问题」与「数据流问题」切开</td></tr>
+      <tr><td>单点改动检查</td><td>改一个字段应该只动一个文件；动得多说明边界划错</td></tr>
+      <tr><td>Vue Devtools</td><td>浏览器插件：看组件树、每个实例的 props/state、Pinia store 实时值——定位题第 2 步靠它</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <ul>
+      <li>props / emit / slot 的基本盘、状态放父还是放子：<b>F1 第 3 张</b>（组件拆分的地基课）</li>
+      <li>模板里为什么不写复杂表达式、computed 的缓存：<b>F1 第 2 张</b></li>
+      <li>「本地副本分家」的排查链：<b>F1 第 3 张</b>的定位题</li>
+      <li>路由三段式与 <code>pages.json</code>：<b>F2 的两张卡</b>（工程与路由）</li>
+      <li>Pinia store 的边界（什么状态进 store）：<b>F3 的三张卡</b>（状态与对接）</li>
+      <li>流水接口的字段与游标分页信封：<b>S3 阶段</b>建的服务端信封 + <b>S6 的流水域各卡</b>；分页的前端侧本阶段第 4、5 张卡正面讲</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w10f1c1">能不看资料口述四个组件各自的 props 清单、emits 清单，以及「状态为什么全部留在页面」</label></li>
+      <li><label><input type="checkbox" data-key="w10f1c2">能说清 provide/inject 启用前的两问（中间层消费吗、穿几层），以及为什么这个页面不需要它</label></li>
+      <li><label><input type="checkbox" data-key="w10f1c3">动手改三处已完成，且能指出每处改动 <code>git diff</code> 里只动了哪个文件</label></li>
+      <li><label><input type="checkbox" data-key="w10f1c4">能复述「假数据单独渲染法」的三个步骤，并说清它把哪两类问题切开了</label></li>
+      <li><label><input type="checkbox" data-key="w10f1c5">定位题的「undefined 三步定论」已写进 <code>notes/f4/</code>，并能口述第 2 步（组件边界）排除的是哪一层</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../server/s5/w10d6.html"><span class="hint">← 本周六 · S5·D6</span>统计聚合并发版：把本周串起来</a>
+    <a href="../../server/s5/w11d1.html"><span class="hint">下周一 · S5·D7 →</span>批量导入流水：部分失败语义</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w10f1 · 下周见 ⟩</footer>
+</body>
+</html>

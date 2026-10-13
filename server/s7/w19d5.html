@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S7·D17 · 财务侧接入：预算周期与周期记账规则注册 | HomeCube 修炼手册</title>
+<meta name="description" content="finance 不 import homeos：预算周期与周期记账规则通过 platform 的 DueRegistry 接口注册进到期中心，main.go 装配注入，假实现断言协作。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w19d5">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S7</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S7</a> / w19d5</div>
+  <div class="day-meta">
+    <span class="chip">S7 · DAY 17</span>
+    <span class="chip alt">预计 25 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>财务侧接入：预算周期与周期记账规则注册</h1>
+  <p>到期中心自家的提醒、待办都通了，今天轮到这个架构真正要证明的事：<b>另一个模块</b>把到期项交进来。财务面有两类天然带日期的东西——预算周期（周期快结束该提醒）与周期记账规则（下次执行日该上日历）。接入手法只有一条纪律：<b>finance 只认 platform 的 <code>DueRegistry</code> 接口，不 import homeos，不 select <code>homeos_*</code></b>；实现由 main.go 装配时塞进来。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w19d5g1">说清注入姿势：finance 的 service 构造函数收 <code>dueregistry.DueRegistry</code> 接口，main.go 塞 <code>duecenter.Inproc</code></label></li>
+      <li><label><input type="checkbox" data-key="w19d5g2">说清「可见性归到期中心、执行归源面」：自动入账仍由 finance 自己的调度做，到期中心不替 finance 记账</label></li>
+      <li><label><input type="checkbox" data-key="w19d5g3">说清跨模块注册为什么放事务提交之后，失败了靠什么补</label></li>
+      <li><label><input type="checkbox" data-key="w19d5g4">接线落盘，假实现测试断言「建规则 → Register 一次、停用 → Revoke 一次」，<code>make build</code> / <code>make test</code> 绿</label></li>
+    </ul>
+    <div class="callout note"><p>↑ 这四条是「学习目标」。页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 两个接入点，注册什么</h3>
+    <table>
+      <tr><th>源对象</th><th>注册时机</th><th>Kind</th><th>due_at</th><th>撤销时机</th></tr>
+      <tr><td>预算（周期预算）</td><td>创建 / 编辑周期时</td><td><code>budget_cycle</code></td><td>周期结束日（如月度预算的月末）</td><td>预算删除 / 改周期（改 = 同键再 Register）</td></tr>
+      <tr><td>周期记账规则</td><td>创建 / 编辑 / 重新启用时</td><td><code>recurring_entry</code></td><td>下次执行日</td><td>规则停用 / 删除 → Revoke</td></tr>
+    </table>
+    <p>payload 里照 S7·D15 的约定塞两样：<code>member_id</code>（触发时通知谁——规则的创建者）与 <code>deep_link</code>（日历详情「前往源对象」用，S7·D18 消费）。</p>
+
+    <h3>2. 可见性归到期中心，执行归源面</h3>
+    <p>最容易想歪的一点：注册进到期中心，<b>不等于</b>到期中心替 finance 执行自动入账。分工一句话：</p>
+    <ul>
+      <li><b>执行</b>（到日子真的记一笔账）：仍是 finance 自己在 S6 建的进程内调度，靠 <code>client_request_id</code> 幂等键防重复入账——那套原样不动。</li>
+      <li><b>可见性</b>（日历上有这一格、到期前一天有提醒）：今天注册进到期中心的部分。</li>
+    </ul>
+    <p>为什么不让调度器统一执行？因为「执行」是业务语义（记账要开事务、要幂等、要算余额），塞进到期中心就得让 homeos 懂 finance 的账——跨模块纪律瞬间破功。到期中心永远只做三件事：登记、鸣锣（通知）、记账台账（注册表状态）。</p>
+
+    <h3>3. 跨模块注册的位置：提交之后</h3>
+    <p>S7·D15 里 homeos 自家注册用 <code>WithTx</code> 进事务；finance 不行——它的实现隔着接口，事务句柄传不过去（也不该传：那是 homeos 的表）。姿势改为：</p>
+    <pre><span class="code-label">片段 · finance 侧的时序</span><code>① finance 自己的事务：写 finance_recurring 行 → 提交
+② 提交后：due.Register(...)
+③ Register 失败：<b>只写结构化日志（S5），不让请求失败</b>——
+   规则已建成是事实；下次编辑会再 Register（upsert 幂等），自然补齐</code></pre>
+    <p>「先业务后台账」与昨天完成回写是同一个哲学：台账差异可补，业务事实不可回滚。</p>
+
+    <h3>4. 接口的第二个红利：不碰 DB 也能测协作</h3>
+    <p>finance 的 service 只依赖接口，测试里塞一个<b>记录调用的假实现</b>，就能断言「创建规则后 Register 被调了一次、Kind 与 due_at 对不对」——全程不需要数据库，更不需要 homeos 出生。直查表的代码永远测不出这种「协作对不对」。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>①+③：给 finance 的两个 service 加 DueRegistry 字段并在创建/停用点接线 + 补假实现断言测试</b>。</p>
+
+    <h3>步骤 1 · finance 侧接线（以周期记账为例，预算同款）</h3>
+    <div class="callout note"><p>你的 <code>RecurringService</code> 与规则 struct 是 S6 亲手写的，字段名（<code>NextRunAt</code>、金额、启停标志、日志句柄）<b>以你本地为准</b>。下面给出接线的标准形状，把类型名换成你本地的即可——判据在步骤 3 的测试里，不在抄写里。注意 import 列表：<b>只有 platform，没有 homeos</b>，跨模块纪律由编译器站岗。</p></div>
+    <pre><span class="code-label">完整 · 接线标准形状（RecurringRule 换成你 S6 的规则类型）</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"fmt"</span>
+
+    <span class="s">"homecube/internal/platform/dueregistry"</span>
+)
+
+<span class="c">// RecurringService 增加一个字段（S6 的原 struct 上加）：</span>
+<span class="c">//   due dueregistry.DueRegistry</span>
+<span class="c">// 构造函数多收一个参数，main.go 装配时注入。</span>
+
+<span class="k">func</span> (s *RecurringService) <span class="t">registerDue</span>(ctx context.Context, ruleID <span class="t">int64</span>, rule *RecurringRule) {
+    err := s.due.Register(ctx, dueregistry.Entry{
+        FamilyID:     rule.FamilyID,
+        SourceSystem: <span class="s">"finance"</span>,
+        SourceID:     ruleID,
+        Kind:         dueregistry.KindRecurringEntry,
+        Title:        fmt.Sprintf(<span class="s">"周期记账 · %s"</span>, rule.Title),
+        DueAt:        rule.NextRunAt,
+        Payload: map[string]<span class="k">any</span>{
+            <span class="s">"member_id"</span>: rule.CreatedBy,
+            <span class="s">"deep_link"</span>: fmt.Sprintf(<span class="s">"pages/finance/recurring/detail?id=%d"</span>, ruleID),
+        },
+    })
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="c">// 先业务后台账：规则已提交，注册失败只写日志（S5 结构化日志），下次编辑自然补齐</span>
+        s.log.Error(<span class="s">"due register failed"</span>, <span class="s">"rule_id"</span>, ruleID, <span class="s">"err"</span>, err)
+    }
+}
+
+<span class="k">func</span> (s *RecurringService) <span class="t">revokeDue</span>(ctx context.Context, ruleID <span class="t">int64</span>) {
+    <span class="k">if</span> err := s.due.Revoke(ctx, <span class="s">"finance"</span>, ruleID, dueregistry.KindRecurringEntry); err != <span class="k">nil</span> {
+        s.log.Error(<span class="s">"due revoke failed"</span>, <span class="s">"rule_id"</span>, ruleID, <span class="s">"err"</span>, err)
+    }
+}
+
+<span class="c">// 在 S6 已有的 Create / Update / 停用 / 删除方法的「事务提交之后」各加一行：</span>
+<span class="c">//   建/改/启用 → s.registerDue(ctx, rule.ID, rule)</span>
+<span class="c">//   停用/删除 → s.revokeDue(ctx, rule.ID)</span></code></pre>
+
+    <h3>步骤 2 · main.go 装配</h3>
+    <pre><span class="code-label">片段 · cmd/homecube/main.go（在 S6 装配段上改）</span><code>due := duecenter.NewInproc(db)          <span class="c">// homeos 的实现</span>
+go duecenter.NewScheduler(db).Run(ctx)  <span class="c">// 唯一调度器（S7·D16）</span>
+
+recurringSvc := finance.NewRecurringService(db, due, logger)  <span class="c">// finance 只认接口</span>
+budgetSvc    := finance.NewBudgetService(db, due, logger)     <span class="c">// 预算同款接线，注册 KindBudgetCycle</span>
+reminderSvc  := homeos.NewReminderService(db, due)            <span class="c">// homeos 自家可用具体类型（WithTx）</span></code></pre>
+
+    <h3>步骤 3 · 假实现断言协作</h3>
+    <pre><span class="code-label">完整 · server/internal/finance/service/recurring_due_test.go</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"testing"</span>
+
+    <span class="s">"homecube/internal/platform/dueregistry"</span>
+)
+
+<span class="c">// fakeDue 记录调用，不碰数据库——接口化的红利。</span>
+<span class="k">type</span> <span class="t">fakeDue</span> <span class="k">struct</span> {
+    registered []dueregistry.Entry
+    revoked    []dueregistry.Kind
+}
+
+<span class="k">func</span> (f *fakeDue) <span class="t">Register</span>(ctx context.Context, e dueregistry.Entry) error {
+    f.registered = <span class="k">append</span>(f.registered, e)
+    <span class="k">return</span> <span class="k">nil</span>
+}
+<span class="k">func</span> (f *fakeDue) <span class="t">Revoke</span>(ctx context.Context, sys <span class="t">string</span>, id <span class="t">int64</span>, k dueregistry.Kind) error {
+    f.revoked = <span class="k">append</span>(f.revoked, k)
+    <span class="k">return</span> <span class="k">nil</span>
+}
+<span class="k">func</span> (f *fakeDue) <span class="t">Complete</span>(ctx context.Context, sys <span class="t">string</span>, id <span class="t">int64</span>, k dueregistry.Kind) error {
+    <span class="k">return</span> <span class="k">nil</span>
+}
+
+<span class="k">var</span> _ dueregistry.DueRegistry = (*fakeDue)(<span class="k">nil</span>)
+
+<span class="k">func</span> <span class="t">TestCreateRuleRegistersDue</span>(t *testing.T) {
+    fake := &amp;fakeDue{}
+    svc := newTestRecurringService(t, fake) <span class="c">// 你 S6 的测试构造手法，注入 fake</span>
+
+    rule := createTestRule(t, svc)          <span class="c">// 建一条测试规则（S6 的手艺）</span>
+
+    <span class="k">if</span> len(fake.registered) != <span class="n">1</span> {
+        t.Fatalf(<span class="s">"Register 调用次数 = %d, want 1"</span>, len(fake.registered))
+    }
+    e := fake.registered[<span class="n">0</span>]
+    <span class="k">if</span> e.SourceSystem != <span class="s">"finance"</span> || e.Kind != dueregistry.KindRecurringEntry {
+        t.Fatalf(<span class="s">"注册项 = %+v, want finance/recurring_entry"</span>, e)
+    }
+    <span class="k">if</span> e.SourceID != rule.ID || e.DueAt != rule.NextRunAt {
+        t.Fatalf(<span class="s">"source_id/due_at 对不上源规则: %+v"</span>, e)
+    }
+}</code></pre>
+
+    <h3>步骤 4 · 验收 + 提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build &amp;&amp; make test &amp;&amp; make lint
+grep -rn "internal/homeos" server/internal/finance   <span class="c"># 必须零输出——接完线依然零依赖</span>
+grep -rn "homeos_" server/internal/finance           <span class="c"># 必须零输出——一张 homeos 表都没碰</span>
+
+git add server
+git commit -m "feat(s7d17): finance 预算周期与周期记账规则经 DueRegistry 接入到期中心"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>为了「方便」让 finance import duecenter</td><td>今天能跑；依赖方向悄悄变双向，拆服务时全得拆</td><td>finance 只认 platform 契约；实现注入发生在 main.go</td></tr>
+      <tr><td>Register 塞进 finance 自己的事务里</td><td>事务回滚时 homeos 的注册行还在（两个写路径不同库事务）</td><td>跨模块注册放提交之后；失败日志留痕，靠 upsert 补</td></tr>
+      <tr><td>注册失败让整个请求 500</td><td>规则明明建好了，用户看到报错又建一遍</td><td>先业务后台账：台账失败不反噬业务</td></tr>
+      <tr><td>让到期中心触发时替 finance 入账</td><td>homeos 被迫懂余额、幂等、分类——模块边界全破</td><td>执行归源面（finance 自己的调度），可见性归到期中心</td></tr>
+      <tr><td>停用规则忘了 Revoke</td><td>规则停了，日历上还挂着下周的执行日</td><td>停用/删除路径与注册路径成对出现，测试各断言一次</td></tr>
+      <tr><td>deep_link 拼了个服务端路由</td><td>点开跳 404——那是页面路径不是 API 路径</td><td>deep_link 是前端页面三段式路径（pages/{code}/…），不是 /api 接口</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>依赖注入</td><td>service 不自己 new 依赖，构造函数收接口，装配权在 main.go</td></tr>
+      <tr><td>装配根（main.go）</td><td>全进程唯一「知道所有模块」的地方；接口与实现在这里配对</td></tr>
+      <tr><td>假实现（fake）</td><td>测试里记录调用的 DueRegistry；不碰 DB 断言协作，接口化的第二红利</td></tr>
+      <tr><td>可见性 / 执行分离</td><td>到期中心管日历与提醒，业务面管真的干活；谁的业务谁执行</td></tr>
+      <tr><td>提交后注册</td><td>跨模块台账动作放在本地事务之后；失败日志留痕、upsert 补齐</td></tr>
+      <tr><td>deep_link</td><td>payload 里的前端页面路径，日历详情「前往源对象」用（S7·D18）</td></tr>
+      <tr><td><code>budget_cycle</code> / <code>recurring_entry</code></td><td>财务面的两种到期种类：周期结束日 / 下次执行日</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足。往回翻的三种情况：</p>
+    <ul>
+      <li><b>预算与周期记账的字段名、启停语义</b>：回 S6 对应卡——今天只在它们的创建/停用点各加一行接线，不改它们的业务。</li>
+      <li><b>接口注入与假实现的手感</b>：回 S1·D5 与 S4 的 FamilyDirectory 卡，姿势同款。</li>
+      <li><b>结构化日志怎么打</b>：回 S5 日志卡；今天只要求「失败必留一行带 rule_id 的 error 日志」。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w19d5c1">finance 的两个 service（预算、周期记账）各多一个 <code>dueregistry.DueRegistry</code> 字段，main.go 完成注入</label></li>
+      <li><label><input type="checkbox" data-key="w19d5c2">创建/编辑/启用 → Register，停用/删除 → Revoke，全部在事务提交之后；失败只写日志</label></li>
+      <li><label><input type="checkbox" data-key="w19d5c3">假实现测试绿：Register 恰好一次，Kind/SourceID/DueAt 与源规则一致；<code>grep -rn "internal/homeos" server/internal/finance</code> 与 <code>grep -rn "homeos_" server/internal/finance</code> 双双零输出</label></li>
+      <li><label><input type="checkbox" data-key="w19d5c4"><code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿</label></li>
+      <li><label><input type="checkbox" data-key="w19d5c5">commit 带卡号 <code>s7d17</code>，<code>notes/</code> 写下三行：可见性与执行的分工、提交后注册的理由、fake 断言了哪三件事</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w19d4.html"><span class="hint">← 昨天 · S7·D16</span>到期触发与完成回写</a>
+    <a href="w19d6.html"><span class="hint">明天 · S7·D18 →</span>提醒/待办 CRUD 串通与勾选完成</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w19d5 · 明天见 ⟩</footer>
+</body>
+</html>

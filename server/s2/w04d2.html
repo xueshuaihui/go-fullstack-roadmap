@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S2·D8 · 分类停用与恢复：archived 的语义 | HomeCube 修炼手册</title>
+<meta name="description" content="给分类补上生命周期语义：停用不是删除，「有未停用子级不可停用」守门规则落地，第六个哨兵 ErrStateNotAllowed（1010/409）首次生长，恢复不联动子级。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w04d2">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S2</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S2</a> / w04d2</div>
+  <div class="day-meta">
+    <span class="chip">S2 · DAY 8</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★☆☆☆</span>
+  </div>
+  <h1>分类停用与恢复：archived 的语义</h1>
+  <p>周六的 archive/restore 只是「把旗子翻个面」，什么规则都没有。今天给 <code>archived</code> 补上它的真语义：<b>停用不是删除</b>（分类没有 DELETE 接口，永远不会物理消失）、<b>停用有守门规则</b>（一级下还有活着的二级时不许停用），并让错误体系第一次「生长」——新增第六个哨兵 <code>ErrStateNotAllowed</code>，对上码表里 S1 就预留好的 1010。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w04d2g1">说清分类为什么只有停用没有删除：历史流水引用着分类（S6 兑现），删除是数据黑洞；<code>archived</code> 是生命周期开关</label></li>
+      <li><label><input type="checkbox" data-key="w04d2g2">说清 1010 与 1004 的分界：参数合法、资源也存在，只是「当前状态」不允许这个操作 → 409 + 1010</label></li>
+      <li><label><input type="checkbox" data-key="w04d2g3">哨兵 <code>ErrStateNotAllowed</code> 落进 <code>pkg/response</code> 并扩 <code>CodeOf</code>：兑现 S1「哨兵是内部词汇、随阶段生长」的约定</label></li>
+      <li><label><input type="checkbox" data-key="w04d2g4">停用规则「有未停用子级不可停用」测试通过；恢复不联动子级；<code>make build</code> / <code>make test</code> 绿</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 停用 ≠ 删除：被引用的数据不许消失</h3>
+    <p>先看一个事实：分类的 6 条接口里<b>没有 DELETE</b>，这是合同而不是遗漏。原因在 S6——每笔流水都挂着一个分类 id。如果允许删除分类，历史流水就会指向一个不存在的 id：报表按分类汇总时这笔钱算谁的？这叫<b>数据黑洞</b>：删掉的瞬间看似干净，之后每个读它的地方都在漏。</p>
+    <p>所以分类只有生命周期开关：<code>archived:false</code>（在用，可以被新流水选择）⇄ <code>archived:true</code>(停用，新流水不能再选它，但<b>历史流水照常引用、照常统计、照常在报表里出现</b>)。GET 列表永远返回全部（含已停用、带 <code>archived</code> 标记），前端据此决定「记账选分类时过滤掉、看历史时正常显示」。</p>
+    <p>还要分清第三个词：<b>软删（<code>deleted_at</code>）</b>。那是 S3 数据库层的另一回事——整行标记删除、默认查询排除，用于「用户真的想撤掉一条数据」的场景。分类不用软删，用状态旗：停用是它的<b>正常业务状态</b>，不是「这条数据作废了」。</p>
+
+    <h3>2. 状态不许 → 1010，参数不对 → 1004</h3>
+    <p>今天出现第三类失败，先摆清楚三兄弟的分界：</p>
+    <table>
+      <tr><th>码</th><th>HTTP</th><th>含义</th><th>分类里的例子</th></tr>
+      <tr><td>1004</td><td>400</td><td>请求本身不合法：参数缺失、越界、枚举不对</td><td><code>name</code> 空、<code>kind</code> 拼错、挂出第三级</td></tr>
+      <tr><td>1006</td><td>409</td><td>唯一约束冲突：换个名字/换个时机就能成</td><td>（S6 账户名重名用它；分类今天没有唯一约束）</td></tr>
+      <tr><td>1010</td><td>409</td><td>业务状态不允许：请求合法、资源也在，但「现在」不行</td><td>一级下还有未停用子级，却要停用这个一级</td></tr>
+    </table>
+    <p>判断口诀：<b>把请求原样重发一遍，有没有可能成功？</b>1004 永远不可能（请求就是错的）；1010 可能——先把子级停用了再发，就成功了。「状态」是资源的属性，不是请求的属性，所以 1010 用 409（Conflict：请求与资源当前状态冲突），不用 400。</p>
+    <p>码表侧不用动：<code>CodeStateNotAllowed = 1010</code> 和它的 409 映射 S1·D4 就写好了。今天缺的是<b>哨兵</b>——service 往上抛错误时需要一个「内部通用语」，让 <code>FailErr</code> 认出这是状态问题。</p>
+
+    <h3>3. 哨兵第一次生长</h3>
+    <p>S1·D4 立哨兵时只给了 5 个（NotFound/Forbidden/InvalidParam/Conflict/Internal），并写明约定：<b>码表是对外契约，一次定死；哨兵是内部词汇，随阶段生长</b>。今天第一次兑现：新增 <code>ErrStateNotAllowed</code>，并在 <code>CodeOf</code> 里补一条 <code>errors.Is</code> 分支。生长是「加一个 var + 加一个 case」，不是改契约——1010 从 S1 起就在码表里等着。</p>
+
+    <h3>4. 停用的守门规则，恢复的自由</h3>
+    <p><b>停用</b>有一条规则：一级分类下还有<b>未停用</b>的二级时，不许停用它。为什么？否则树上会出现「父已死、子还活」的悬空状态——记账时这个二级还能被选中，可它的父级已经停用了，前端展示与筛选逻辑全得为这种畸形状态写特例。规则逼用户按顺序来：<b>先停子级，再停父级</b>。</p>
+    <p><b>恢复</b>则什么规则都没有，也不联动：恢复父级不会自动恢复它的子级。两个理由：其一，联动 = 一次点击悄悄改了一堆数据，用户没要求的不做；其二，恢复顺序无关紧要——父级恢复后，仍停用的子级在树上照常显示（带标记），不产生悬空。每个节点的状态由用户逐个、显式地管理。</p>
+    <div class="callout note"><p>「有子级不可停用」的检查今天用 <code>repo.List</code> 全量扫描实现——内存 map 时代这是最直白的写法。S3 换成数据库后，它会变成一条 <code>WHERE parent_id = ? AND archived = false LIMIT 1</code> 的存在性查询，规则本身一个字不改：<b>规则住在 service，存储怎么查是 repo 的事</b>（D4 分层的回报）。</p></div>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>①：加哨兵与状态规则</b>——<code>ErrStateNotAllowed</code> 进 <code>pkg/response</code>，<code>CodeOf</code> 扩一条分支，service 的 <code>setArchived</code> 加停用守门规则。<b>handler 一行不改</b>：错误从 service 抛上来，<code>FailErr</code> 自动翻译成 409 + 1010。</p>
+
+    <h3>步骤 1 · 哨兵生长：errors.go</h3>
+    <pre><span class="code-label">完整 · server/pkg/response/errors.go（覆盖 S1·D4 版本；code.go 不动）</span><code><span class="k">package</span> response
+
+<span class="k">import</span> <span class="s">"errors"</span>
+
+<span class="c">// 哨兵错误集：repo/service 层往上抛的就是这些值，</span>
+<span class="c">// FailErr 用 errors.Is 认出它们并翻译成对应错误码。</span>
+<span class="c">// 码表是对外契约一次定死；哨兵是内部词汇，随阶段生长（S2·D8 第一次生长）。</span>
+<span class="k">var</span> (
+    <span class="t">ErrNotFound</span>         = errors.<span class="t">New</span>(<span class="s">"not found"</span>)          <span class="c">// → 1001 / 404</span>
+    <span class="t">ErrForbidden</span>        = errors.<span class="t">New</span>(<span class="s">"forbidden"</span>)          <span class="c">// → 1003 / 403</span>
+    <span class="t">ErrInvalidParam</span>     = errors.<span class="t">New</span>(<span class="s">"invalid param"</span>)      <span class="c">// → 1004 / 400</span>
+    <span class="t">ErrConflict</span>         = errors.<span class="t">New</span>(<span class="s">"conflict"</span>)           <span class="c">// → 1006 / 409</span>
+    <span class="t">ErrStateNotAllowed</span>  = errors.<span class="t">New</span>(<span class="s">"state not allowed"</span>)  <span class="c">// → 1010 / 409</span>
+    <span class="t">ErrInternal</span>         = errors.<span class="t">New</span>(<span class="s">"internal error"</span>)     <span class="c">// → 5000 / 500</span>
+)
+
+<span class="c">// CodeOf 把哨兵错误翻译成业务码；认不出来的一律 5000。</span>
+<span class="c">// 注意 errors.Is 而不是 ==——链被包装过也要认得出来。</span>
+<span class="k">func</span> <span class="t">CodeOf</span>(err <span class="t">error</span>) <span class="t">int</span> {
+    <span class="k">switch</span> {
+    <span class="k">case</span> err == <span class="k">nil</span>:
+        <span class="k">return</span> <span class="t">CodeOK</span>
+    <span class="k">case</span> errors.<span class="t">Is</span>(err, <span class="t">ErrNotFound</span>):
+        <span class="k">return</span> <span class="t">CodeNotFound</span>
+    <span class="k">case</span> errors.<span class="t">Is</span>(err, <span class="t">ErrForbidden</span>):
+        <span class="k">return</span> <span class="t">CodeForbidden</span>
+    <span class="k">case</span> errors.<span class="t">Is</span>(err, <span class="t">ErrInvalidParam</span>):
+        <span class="k">return</span> <span class="t">CodeInvalidParam</span>
+    <span class="k">case</span> errors.<span class="t">Is</span>(err, <span class="t">ErrConflict</span>):
+        <span class="k">return</span> <span class="t">CodeConflict</span>
+    <span class="k">case</span> errors.<span class="t">Is</span>(err, <span class="t">ErrStateNotAllowed</span>):
+        <span class="k">return</span> <span class="t">CodeStateNotAllowed</span>
+    <span class="k">default</span>:
+        <span class="k">return</span> <span class="t">CodeInternal</span>
+    }
+}</code></pre>
+    <p>给 <code>CodeOf</code> 的测试表补两条用例（老规矩，含一条包装两层的）：</p>
+    <pre><span class="code-label">片段 · errors_test.go 追加（前置：S1·D4 的用例表骨架）</span><code>{<span class="s">"StateNotAllowed → 1010"</span>, <span class="t">ErrStateNotAllowed</span>, <span class="t">CodeStateNotAllowed</span>},
+{<span class="s">"包装两层仍认出 StateNotAllowed"</span>,
+    fmt.<span class="t">Errorf</span>(<span class="s">"archive: %w"</span>, fmt.<span class="t">Errorf</span>(<span class="s">"service: %w"</span>, <span class="t">ErrStateNotAllowed</span>)),
+    <span class="t">CodeStateNotAllowed</span>},</code></pre>
+
+    <h3>步骤 2 · service：停用守门规则</h3>
+    <p><code>setArchived</code> 只在<b>停用</b>分支（<code>v == true</code>）加检查；恢复分支原样直通。Archive/Restore 两个入口函数不动。</p>
+    <pre><span class="code-label">片段 · service.go 的 setArchived 改动（前置：D7 版本，整函数替换）</span><code><span class="c">// setArchived 停用带守门规则；恢复无条件、不联动子级。</span>
+<span class="k">func</span> (s *<span class="t">CategoryService</span>) <span class="t">setArchived</span>(familyID, id <span class="t">int64</span>, v <span class="t">bool</span>) (model.Category, <span class="t">error</span>) {
+    c, err := s.repo.<span class="t">Get</span>(familyID, id)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">return</span> model.Category{}, err
+    }
+    <span class="k">if</span> v { <span class="c">// 只有「停用」需要守门：有未停用子级 → 1010</span>
+        all, err := s.repo.<span class="t">List</span>(familyID)
+        <span class="k">if</span> err != <span class="k">nil</span> {
+            <span class="k">return</span> model.Category{}, err
+        }
+        <span class="k">for</span> _, child := <span class="k">range</span> all {
+            <span class="k">if</span> child.ParentID == id &amp;&amp; !child.Archived {
+                <span class="k">return</span> model.Category{}, fmt.<span class="t">Errorf</span>(
+                    <span class="s">"分类 %d 下有未停用子级 %d，不能停用: %w"</span>,
+                    id, child.ID, response.<span class="t">ErrStateNotAllowed</span>)
+            }
+        }
+    }
+    c.Archived = v
+    <span class="k">if</span> err := s.repo.<span class="t">Update</span>(c); err != <span class="k">nil</span> {
+        <span class="k">return</span> model.Category{}, err
+    }
+    <span class="k">return</span> s.repo.<span class="t">Get</span>(familyID, id)
+}</code></pre>
+
+    <h3>步骤 3 · 测试：一条链走完状态语义</h3>
+    <pre><span class="code-label">片段 · handler_test.go 追加（前置：D6 的 newTestRouter 与 do）</span><code><span class="k">func</span> <span class="t">TestCategoryArchiveRules</span>(t *testing.T) {
+    r := <span class="t">newTestRouter</span>()
+    <span class="t">do</span>(r, <span class="s">"POST"</span>, <span class="s">"/api/finance/categories"</span>, <span class="s">`{"name":"餐饮","kind":"expense"}`</span>)
+    <span class="t">do</span>(r, <span class="s">"POST"</span>, <span class="s">"/api/finance/categories"</span>, <span class="s">`{"name":"早餐","kind":"expense","parent_id":1}`</span>)
+
+    <span class="c">// 子级还活着，停用父级 → 409 + 1010</span>
+    w := <span class="t">do</span>(r, <span class="s">"PUT"</span>, <span class="s">"/api/finance/categories/1/archive"</span>, <span class="s">""</span>)
+    <span class="k">if</span> w.Code != <span class="n">409</span> || !strings.<span class="t">Contains</span>(w.<span class="t">Body</span>.<span class="t">String</span>(), <span class="s">`"code":1010`</span>) {
+        t.<span class="t">Fatalf</span>(<span class="s">"有活子级应拒绝停用: %d %s"</span>, w.Code, w.<span class="t">Body</span>.<span class="t">String</span>())
+    }
+
+    <span class="c">// 先停子级，再停父级 → 都成功</span>
+    <span class="k">if</span> w := <span class="t">do</span>(r, <span class="s">"PUT"</span>, <span class="s">"/api/finance/categories/2/archive"</span>, <span class="s">""</span>); w.Code != <span class="n">200</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"停用子级应成功: %d %s"</span>, w.Code, w.<span class="t">Body</span>.<span class="t">String</span>())
+    }
+    <span class="k">if</span> w := <span class="t">do</span>(r, <span class="s">"PUT"</span>, <span class="s">"/api/finance/categories/1/archive"</span>, <span class="s">""</span>); w.Code != <span class="n">200</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"子级已停用后父级应可停用: %d %s"</span>, w.Code, w.<span class="t">Body</span>.<span class="t">String</span>())
+    }
+
+    <span class="c">// 恢复父级：成功，且不联动——子级仍是 archived:true</span>
+    w = <span class="t">do</span>(r, <span class="s">"POST"</span>, <span class="s">"/api/finance/categories/1/restore"</span>, <span class="s">""</span>)
+    <span class="k">if</span> w.Code != <span class="n">200</span> || !strings.<span class="t">Contains</span>(w.<span class="t">Body</span>.<span class="t">String</span>(), <span class="s">`"archived":false`</span>) {
+        t.<span class="t">Fatalf</span>(<span class="s">"恢复应成功: %d %s"</span>, w.Code, w.<span class="t">Body</span>.<span class="t">String</span>())
+    }
+    w = <span class="t">do</span>(r, <span class="s">"GET"</span>, <span class="s">"/api/finance/categories"</span>, <span class="s">""</span>)
+    body := w.<span class="t">Body</span>.<span class="t">String</span>()
+    <span class="c">// 此刻全树只应有一个 archived:true——就是没被联动的 2 号（1 号刚恢复成 false）</span>
+    <span class="k">if</span> n := strings.<span class="t">Count</span>(body, <span class="s">`"archived":true`</span>); n != <span class="n">1</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"恢复父级不应联动子级，archived:true 应恰好 1 个，实得 %d: %s"</span>, n, body)
+    }
+
+    <span class="c">// 不存在的 id：停用与恢复都是 404 + 1001</span>
+    w = <span class="t">do</span>(r, <span class="s">"PUT"</span>, <span class="s">"/api/finance/categories/999/archive"</span>, <span class="s">""</span>)
+    <span class="k">if</span> w.Code != <span class="n">404</span> || !strings.<span class="t">Contains</span>(w.<span class="t">Body</span>.<span class="t">String</span>(), <span class="s">`"code":1001`</span>) {
+        t.<span class="t">Fatalf</span>(<span class="s">"停用不存在应为 404+1001: %d %s"</span>, w.Code, w.<span class="t">Body</span>.<span class="t">String</span>())
+    }
+}</code></pre>
+    <div class="callout warn"><p>「恢复不联动」这条断言用了 <code>strings.Count</code> 数 <code>"archived":true</code> 的个数——它成立的前提是你知道此刻全树的状态（1 号刚恢复、2 号仍停用）。字符串断言写多了会变成「猜 body 长什么样」，脆且难读。D9 会换成主力写法：把 body 解码进 <code>response.Body</code> 再逐字段断言，今天先用 Count 顶住。</p></div>
+
+    <h3>步骤 4 · 验收并提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test    <span class="c"># response 哨兵新用例 + 分类状态规则测试全绿</span>
+make lint
+
+make run     <span class="c"># 终端 1</span>
+curl -s -X POST http://localhost:8080/api/finance/categories \
+     -H 'Content-Type: application/json' -d '{"name":"餐饮","kind":"expense"}'
+curl -s -X POST http://localhost:8080/api/finance/categories \
+     -H 'Content-Type: application/json' -d '{"name":"早餐","kind":"expense","parent_id":1}'
+curl -i -X PUT http://localhost:8080/api/finance/categories/1/archive
+<span class="c"># ↑ 409 + {"code":1010,...}：有未停用子级</span>
+curl -s -X PUT http://localhost:8080/api/finance/categories/2/archive   <span class="c"># 200 archived:true</span>
+curl -s -X PUT http://localhost:8080/api/finance/categories/1/archive   <span class="c"># 200 archived:true</span>
+curl -s -X POST http://localhost:8080/api/finance/categories/1/restore  <span class="c"># 200 archived:false</span>
+curl -s http://localhost:8080/api/finance/categories
+<span class="c"># ↑ 树里 1 号 archived:false、2 号仍 archived:true：恢复不联动</span>
+
+git add server
+git status
+git commit -m "feat(s2d8): ErrStateNotAllowed 哨兵 + 停用守门规则，恢复不联动子级"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>给分类加 DELETE 接口「顺手清理」</td><td>历史流水指向消失的分类，报表出洞（S6 兑现时爆雷）</td><td>被引用的主数据只有停用；物理删除永远不进合同</td></tr>
+      <tr><td>状态拒绝用 1004 / 400</td><td>客户端把「先停子级」当成「参数写错了」，提示语全错</td><td>请求合法但状态不允许 → 409 + 1010；参数错 → 400 + 1004</td></tr>
+      <tr><td>子级检查忘了 <code>!child.Archived</code></td><td>子级已停用，父级仍被挡——永远停不掉</td><td>只有「未停用子级」才拦；已停用的子级不构成障碍</td></tr>
+      <tr><td>把检查也写进恢复分支</td><td>「父级停用了就不许恢复子级」之类没人要求的规则冒出来</td><td>恢复无条件、不联动；规则只在停用一侧</td></tr>
+      <tr><td>抛错时用 <code>%v</code> 拼哨兵</td><td>链断了，<code>errors.Is</code> 认不出，1010 回落成 5000/500</td><td>一律 <code>fmt.Errorf("…: %w", response.ErrStateNotAllowed)</code></td></tr>
+      <tr><td>在 handler 里自己 <code>errors.Is</code> 判码</td><td>翻译逻辑散落两处，与 <code>FailErr</code> 打架</td><td>handler 的错误出口只有 <code>response.FailErr(c, err)</code> 一个</td></tr>
+      <tr><td>以为 Version 会保持不变</td><td>停用/恢复走 <code>repo.Update</code>，version 照涨</td><td>停用也是修改，涨版本是对的；D10 的乐观锁会用到它</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td><code>archived</code>（停用）</td><td>生命周期开关：新流水不能再选它，历史流水照常引用与统计</td></tr>
+      <tr><td>数据黑洞</td><td>删除被引用的数据后，所有读它的地方开始漏——分类不设 DELETE 的原因</td></tr>
+      <tr><td>软删（<code>deleted_at</code>）</td><td>整行标记删除、默认排除，S3 数据库层的另一回事；与状态旗不是一回事</td></tr>
+      <tr><td><code>ErrStateNotAllowed</code></td><td>第六个哨兵：业务状态不允许 → 1010 / 409；哨兵随阶段生长的第一次兑现</td></tr>
+      <tr><td>1010 vs 1004 vs 1006</td><td>状态不允许（重发可能成）/ 参数不合法（重发永远不成）/ 唯一约束冲突</td></tr>
+      <tr><td>守门规则（guard）</td><td>状态迁移的前置条件：停用父级前必须先停用它的全部子级</td></tr>
+      <tr><td>恢复不联动</td><td>恢复只改自己一个节点；用户没要求的批量修改不做</td></tr>
+      <tr><td>对外契约 vs 内部词汇</td><td>码表一次定死（1010 早在 S1 就位）；哨兵按需生长（今天补上）</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有两种情况出去查：</p>
+    <ul>
+      <li><b><code>errors.Is</code> 的认链规则</b>：回 <a href="../s1/w01d4.html">S1·D4</a> 的哨兵一节——「<code>%w</code> 包装仍认出、<code>%v</code> 拍扁即断链」那两条测试用例就是答案。</li>
+      <li><b>409 Conflict 的原始语义</b>：<a href="https://developer.mozilla.org/zh-CN/docs/Web/HTTP/Status/409" target="_blank">MDN · 409</a>（可选，重点读「与服务器当前资源状态冲突」这句，正好覆盖 1006/1009/1010 三兄弟）。</li>
+    </ul>
+    <p>状态类 bug 的调试铁律：<b>先 GET 把当前状态打出来，再试操作</b>。409 的含义是「请求没错、时机不对」——所以排错不是改请求，而是看资源现在处于什么状态、哪条守门规则拦住了它。curl 一次 GET，对着树上的 <code>archived</code> 标记读一遍，答案通常就在那里。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w04d2c1">停用有活子级的一级 → 409 + <code>"code":1010</code>；先停子级后父级停用成功</label></li>
+      <li><label><input type="checkbox" data-key="w04d2c2">恢复只改自己：恢复父级后 GET 树上子级仍 <code>archived:true</code>；停用/恢复不存在的 id → 404 + 1001</label></li>
+      <li><label><input type="checkbox" data-key="w04d2c3"><code>ErrStateNotAllowed</code> 被包装两层后 <code>CodeOf</code> 仍认出 1010，<code>HTTPStatus(1010)</code> = 409，测试表已补用例</label></li>
+      <li><label><input type="checkbox" data-key="w04d2c4"><code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，commit 带卡号 <code>s2d8</code></label></li>
+      <li><label><input type="checkbox" data-key="w04d2c5"><code>notes/</code> 写三行：分类为什么没有 DELETE、1010 与 1004 与 1006 怎么分、恢复为什么不联动子级</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w04d1.html"><span class="hint">← 昨天 · S2·D7</span>分类的二级树与排序字段</a>
+    <a href="w04d3.html"><span class="hint">明天 · S2·D9 →</span>接口测试：httptest 覆盖 6 条的矩阵</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w04d2 · 明天见 ⟩</footer>
+</body>
+</html>

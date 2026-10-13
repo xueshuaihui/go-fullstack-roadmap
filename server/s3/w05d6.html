@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S3·D6 · 周六 · 分类域从内存 map 换到 DB，接口一行不改 | HomeCube 修炼手册</title>
+<meta name="description" content="周六大增量：写 finance_0001_init_category 迁移（含系统预置默认树），用 GORM 实现 CategoryRepository 替换 S2 的内存实现——路由、DTO、响应信封、错误码全部不变，6 条接口继续走通。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w05d6">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S3</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S3</a> / w05d6</div>
+  <div class="day-meta">
+    <span class="chip">S3 · DAY 6</span>
+    <span class="chip alt">预计 4 小时</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>周六 · 分类域从内存 map 换到 DB，接口一行不改</h1>
+  <p>本周串联轴线：S2 建好的分类域 6 条接口（<code>/api/finance/categories</code> 家族）跑在内存 map 上，今天把 repo 换成 GORM 实现——<b>迁移建表、接口不动、契约不变</b>。这是 S1·D5 抽出 Repository 接口、S2·D4 按消费方归置之后的回报日：换存储那天，service/handler/路由/DTO 一行不改。今天之后，进程重启数据还在，这是项目第一次真正「记住」东西。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w05d6g1"><code>finance_0001_init_category</code> up/down 落盘（含系统预置默认树种子），finance 迁移链可重放</label></li>
+      <li><label><input type="checkbox" data-key="w05d6g2"><code>GormCategoryRepo</code> 实现分类域全部 6 条能力，乐观锁 1009、不存在 1001、唯一冲突 1006 的映射齐活</label></li>
+      <li><label><input type="checkbox" data-key="w05d6g3">main.go 里一行替换内存实现，S2 搬来的 httptest <b>不改一字</b>全绿——能讲清为什么能做到</label></li>
+      <li><label><input type="checkbox" data-key="w05d6g4">说清「预置数据 <code>family_id IS NULL</code>」的读法（读带预置、写只认本家庭）与临时桩 <code>currentFamilyID</code> 的还债时点（S4）</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 换的是哪一层：三层里只动最底下那层</h3>
+    <p>S2 的分层是 handler → service → repo，repo 是接口、内存 map 是它的实现。今天的动作精确到一句话：<b>给同一个接口写第二个实现，然后把装配处的构造函数换掉</b>。HTTP 契约（路径、方法、DTO、响应信封、错误码）全部不动——分类 6 条接口今天之前之后都是这 6 条，接口分母不变。</p>
+    <table>
+      <tr><th>层</th><th>今天动不动</th><th>说明</th></tr>
+      <tr><td>handler / 路由 / 中间件</td><td>不动</td><td>只认 service，感知不到存储换了</td></tr>
+      <tr><td>service / DTO / validator</td><td>不动</td><td>只认 repo 接口</td></tr>
+      <tr><td>repo 实现</td><td><b>新增 GORM 实现</b></td><td>内存实现<b>不删</b>——它是 S2 起 handler 测试的测试替身，无库 CI 全靠它</td></tr>
+      <tr><td>装配（main.go）</td><td>改一行</td><td>接口变量 = 新构造函数；编译期就会检查实现满足接口</td></tr>
+    </table>
+
+    <h3>2. 预置数据：family_id IS NULL 的读法与写法</h3>
+    <p>分类树有「系统预置的默认树」——它不属于任何家庭，任何家庭都可见。本站的表达方式：<b>可空的 <code>family_id</code>，NULL = 系统预置</b>。于是读写规则不对称，今天必须刻进肌肉：</p>
+    <ul>
+      <li><b>读</b>：<code>WHERE family_id = ? OR family_id IS NULL</code>——本家庭的 + 预置的；</li>
+      <li><b>写</b>：<code>WHERE id = ? AND family_id = ?</code>——<b>只认本家庭的行，预置行不可改不可停用</b>。想改预置分类？在自己家庭里建一个同名的自定义分类。</li>
+    </ul>
+    <p>预置行只出自迁移里的种子 INSERT——代码路径永远造不出 <code>family_id NULL</code> 的行，这是「预置」与「自定义」不会互相污染的根本保证。</p>
+
+    <h3>3. 乐观锁与 0 行的两种含义</h3>
+    <p><code>PUT /api/finance/categories/{id}</code> 带 <code>version</code>：更新语句的 WHERE 里加上 <code>version = ?</code>，SET 里 <code>version = version + 1</code>。两个人同时改，先到的成功、后到的 WHERE 匹配不上——<b>RowsAffected = 0</b>。但 0 行有两种含义，必须分辨（S2 内存实现里你大概率写过同样的分支）：</p>
+    <table>
+      <tr><th>0 行的原因</th><th>怎么判定</th><th>响应</th></tr>
+      <tr><td>行真的不存在 / 不属于本家庭</td><td>按 <code>id + family_id</code> COUNT 为 0</td><td>404 + 1001（与不存在同形，不泄露存在性）</td></tr>
+      <tr><td>行存在但 version 过期</td><td>COUNT 为 1</td><td>409 + 1009</td></tr>
+    </table>
+    <p>错误怎么变成这两个响应？走 S1·D4 的老路：repo 返回包装过的哨兵（<code>%w</code>），<code>response.FailErr</code> 用 <code>errors.Is</code> 认出来。今天错误码表里 1009 那一位第一次上岗，需要给哨兵集补一个 <code>ErrVersionConflict</code>。</p>
+
+    <h3>4. 没有鉴权的 S3，familyID 从哪来：临时桩，明账记牢</h3>
+    <p>鉴权是 S4 的事，S3 不写。但 repo 的每个方法都要 <code>familyID</code> 参数——本站的处理是 handler 侧一个<b>临时桩函数</b>：<code>currentFamilyID(c)</code> 固定返回种子家庭 1；S4 建好鉴权中间件后，函数体换成从 context 读真值，<b>签名与所有调用点都不变</b>。这不是「注册了但没实现的假入口」：6 条路由的实现全是真的，只有「当前请求属于哪个家庭」这一个问题记在 S4 的账上。桩要集中一处、注释写明还债时点——散落在各 handler 里的魔法数字 1 才是事故。</p>
+    <div class="callout note"><p>另一个「今天照抄、日后正式讲」：<b>repo 方法签名里的 <code>ctx context.Context</code></b>。它的作用是超时与取消的传递，S5 并发周正式讲；今天你只需要知道两条规矩——handler 里传 <code>c.Request.Context()</code>，repo 里链上 <code>r.db.WithContext(ctx)</code>。</p></div>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天是周六大增量：<b>把本周 5 个微增量串成一条完整能力</b>——库（D1）→ 连接（D2）→ 迁移工具（D3/D4）→ 表与模型（D5 样式）全部就位，今天合成「分类域 DB 化」。涉及类型 ④（一条迁移 up/down）+ ⑤（6 条接口的存储从内存换成真查询）。</p>
+
+    <h3>步骤 1 · 迁移 finance_0001_init_category</h3>
+    <pre><span class="code-label">完整 · server/migrations/finance/finance_0001_init_category.up.sql</span><code><span class="c">-- finance 迁移链的第一条：二级分类。金额列本表没有——分类不存钱（钱在 S3·D9 的账户表登场）。</span>
+<span class="k">CREATE TABLE</span> finance.finance_category (
+    id         <span class="t">BIGSERIAL</span> <span class="k">PRIMARY KEY</span>,
+    family_id  <span class="t">BIGINT</span>,                          <span class="c">-- NULL = 系统预置默认树；非空 = 家庭自定义。不建跨 schema 外键</span>
+    parent_id  <span class="t">BIGINT</span>,                          <span class="c">-- NULL = 一级；非空 = 二级（指向本表 id，两级封顶由应用层校验）</span>
+    name       <span class="t">TEXT</span> <span class="k">NOT NULL</span>,
+    icon       <span class="t">TEXT</span> <span class="k">NOT NULL DEFAULT</span> <span class="s">''</span>,
+    kind       <span class="t">TEXT</span> <span class="k">NOT NULL CHECK</span> (kind <span class="k">IN</span> (<span class="s">'expense'</span>, <span class="s">'income'</span>)),
+    sort       <span class="t">INT</span> <span class="k">NOT NULL DEFAULT</span> <span class="n">0</span>,          <span class="c">-- 排序由服务端返回顺序表达，前端不自排</span>
+    archived   <span class="t">BOOLEAN</span> <span class="k">NOT NULL DEFAULT</span> <span class="k">FALSE</span>,  <span class="c">-- 停用：选择器不返回，历史流水仍可筛可统计</span>
+    created_at <span class="t">TIMESTAMPTZ</span> <span class="k">NOT NULL DEFAULT</span> now(),
+    updated_at <span class="t">TIMESTAMPTZ</span> <span class="k">NOT NULL DEFAULT</span> now(),
+    deleted_at <span class="t">TIMESTAMPTZ</span>,
+    deleted_by <span class="t">BIGINT</span>,
+    version    <span class="t">INT</span> <span class="k">NOT NULL DEFAULT</span> <span class="n">1</span>
+);
+
+<span class="k">CREATE INDEX</span> idx_finance_category_family <span class="k">ON</span> finance.finance_category (family_id);
+<span class="k">CREATE INDEX</span> idx_finance_category_parent <span class="k">ON</span> finance.finance_category (parent_id);
+
+<span class="c">-- 种子：系统预置默认树。预置数据只出自迁移——代码路径永远造不出 family_id NULL 的行。</span>
+<span class="k">INSERT INTO</span> finance.finance_category (family_id, parent_id, name, kind, sort) <span class="k">VALUES</span>
+    (<span class="k">NULL</span>, <span class="k">NULL</span>, <span class="s">'餐饮'</span>, <span class="s">'expense'</span>, <span class="n">1</span>),
+    (<span class="k">NULL</span>, <span class="k">NULL</span>, <span class="s">'交通'</span>, <span class="s">'expense'</span>, <span class="n">2</span>),
+    (<span class="k">NULL</span>, <span class="k">NULL</span>, <span class="s">'购物'</span>, <span class="s">'expense'</span>, <span class="n">3</span>);
+
+<span class="k">INSERT INTO</span> finance.finance_category (family_id, parent_id, name, kind, sort)
+<span class="k">SELECT NULL</span>, p.id, v.name, <span class="s">'expense'</span>, v.sort
+<span class="k">FROM</span> finance.finance_category p,
+     (<span class="k">VALUES</span> (<span class="s">'早餐'</span>, <span class="n">1</span>), (<span class="s">'午餐'</span>, <span class="n">2</span>), (<span class="s">'晚餐'</span>, <span class="n">3</span>)) <span class="k">AS</span> v(name, sort)
+<span class="k">WHERE</span> p.family_id <span class="k">IS NULL AND</span> p.name = <span class="s">'餐饮'</span>;</code></pre>
+    <pre><span class="code-label">完整 · server/migrations/finance/finance_0001_init_category.down.sql</span><code><span class="c">-- 逆序清理：本条只有两张索引随表走，一条 DROP 即净；种子行随表一起退场。</span>
+<span class="k">DROP TABLE IF EXISTS</span> finance.finance_category;</code></pre>
+
+    <h3>步骤 2 · Category 模型与写入参数</h3>
+    <pre><span class="code-label">完整 · server/internal/finance/model/category.go</span><code><span class="k">package</span> model
+
+<span class="k">import</span> (
+    <span class="s">"time"</span>
+
+    <span class="s">"gorm.io/gorm"</span>
+)
+
+<span class="k">type</span> <span class="t">Category</span> <span class="k">struct</span> {
+    <span class="t">ID</span>        <span class="t">int64</span>          <span class="s">`gorm:"column:id;primaryKey" json:"id"`</span>
+    <span class="t">FamilyID</span>  *<span class="t">int64</span>         <span class="s">`gorm:"column:family_id" json:"family_id"`</span> <span class="c">// NULL = 系统预置</span>
+    <span class="t">ParentID</span>  *<span class="t">int64</span>         <span class="s">`gorm:"column:parent_id" json:"parent_id"`</span> <span class="c">// NULL = 一级分类</span>
+    <span class="t">Name</span>      <span class="t">string</span>         <span class="s">`gorm:"column:name" json:"name"`</span>
+    <span class="t">Icon</span>      <span class="t">string</span>         <span class="s">`gorm:"column:icon" json:"icon"`</span>
+    <span class="t">Kind</span>      <span class="t">string</span>         <span class="s">`gorm:"column:kind" json:"kind"`</span>           <span class="c">// expense / income</span>
+    <span class="t">Sort</span>      <span class="t">int</span>            <span class="s">`gorm:"column:sort" json:"sort"`</span>
+    <span class="t">Archived</span>  <span class="t">bool</span>           <span class="s">`gorm:"column:archived" json:"archived"`</span>
+    <span class="t">CreatedAt</span> time.<span class="t">Time</span>      <span class="s">`gorm:"column:created_at" json:"created_at"`</span>
+    <span class="t">UpdatedAt</span> time.<span class="t">Time</span>      <span class="s">`gorm:"column:updated_at" json:"updated_at"`</span>
+    <span class="t">DeletedAt</span> gorm.<span class="t">DeletedAt</span> <span class="s">`gorm:"column:deleted_at" json:"-"`</span>
+    <span class="t">DeletedBy</span> *<span class="t">int64</span>         <span class="s">`gorm:"column:deleted_by" json:"deleted_by"`</span>
+    <span class="t">Version</span>   <span class="t">int</span>            <span class="s">`gorm:"column:version" json:"version"`</span>
+}
+
+<span class="k">func</span> (<span class="t">Category</span>) <span class="t">TableName</span>() <span class="t">string</span> { <span class="k">return</span> <span class="s">"finance.finance_category"</span> }
+
+<span class="c">// CategoryInput 是 repo 的写入参数。与 S2 的 DTO 字段一一对齐，</span>
+<span class="c">// service 层「DTO → Input」的转换代码不变（字段名以你 S2 落盘的为准）。</span>
+<span class="k">type</span> <span class="t">CategoryInput</span> <span class="k">struct</span> {
+    <span class="t">ParentID</span> *<span class="t">int64</span>
+    <span class="t">Name</span>     <span class="t">string</span>
+    <span class="t">Icon</span>     <span class="t">string</span>
+    <span class="t">Kind</span>     <span class="t">string</span>
+    <span class="t">Sort</span>     <span class="t">int</span>
+}</code></pre>
+
+    <h3>步骤 3 · pkg/response 补一个哨兵：ErrVersionConflict</h3>
+    <pre><span class="code-label">片段 · server/pkg/response/errors.go 追加（前置：S1·D4 的哨兵集与 CodeOf 已存在）</span><code><span class="t">ErrVersionConflict</span> = errors.<span class="t">New</span>(<span class="s">"version conflict"</span>) <span class="c">// → 1009 / 409</span>
+
+<span class="c">// CodeOf 的 switch 里追加一个 case（常量名以你 S1·D4 落盘的 1009 那一位为准）：</span>
+<span class="k">case</span> errors.<span class="t">Is</span>(err, <span class="t">ErrVersionConflict</span>):
+    <span class="k">return</span> <span class="t">CodeVersionConflict</span>
+
+<span class="c">// HTTPStatus 若 S1·D4 已把 1009 映射到 409，则无需改动。</span></code></pre>
+    <p>顺手补两条测试用例进 S1 的 <code>CodeOf</code> 表驱动测试（包装两层仍认出 1009、%v 断链回落 5000）——错误码表每扩一位，测试表就跟一行，这是 S1·D4 立下的规矩。</p>
+
+    <h3>步骤 4 · GormCategoryRepo：接口的第二个实现</h3>
+    <pre><span class="code-label">完整 · server/internal/finance/repository/category_gorm.go</span><code><span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"errors"</span>
+    <span class="s">"fmt"</span>
+
+    <span class="s">"gorm.io/gorm"</span>
+
+    <span class="s">"homecube/internal/finance/model"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="c">// GormCategoryRepo 是 CategoryRepository 的 Postgres 实现。</span>
+<span class="c">// 换实现不换契约：service/handler/路由/DTO 一行不改。</span>
+<span class="k">type</span> <span class="t">GormCategoryRepo</span> <span class="k">struct</span>{ db *gorm.<span class="t">DB</span> }
+
+<span class="k">func</span> <span class="t">NewGormCategoryRepo</span>(db *gorm.<span class="t">DB</span>) *<span class="t">GormCategoryRepo</span> {
+    <span class="k">return</span> &amp;<span class="t">GormCategoryRepo</span>{db: db}
+}
+
+<span class="c">// List 全量返回「本家庭自定义 + 系统预置」，排序服务端钉死：sort ASC, id ASC。</span>
+<span class="c">// 分类树是小集合：不分页，响应就是 {"list":[...]}，不带 next_cursor/has_more。</span>
+<span class="k">func</span> (r *<span class="t">GormCategoryRepo</span>) <span class="t">List</span>(ctx context.<span class="t">Context</span>, familyID <span class="t">int64</span>) ([]model.<span class="t">Category</span>, <span class="t">error</span>) {
+    <span class="k">var</span> rows []model.<span class="t">Category</span>
+    err := r.db.<span class="t">WithContext</span>(ctx).
+        <span class="t">Where</span>(<span class="s">"family_id = ? OR family_id IS NULL"</span>, familyID).
+        <span class="t">Order</span>(<span class="s">"sort ASC, id ASC"</span>).
+        <span class="t">Find</span>(&amp;rows).<span class="t">Error</span>
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"list categories: %w"</span>, err)
+    }
+    <span class="k">return</span> rows, <span class="k">nil</span>
+}
+
+<span class="c">// GetByID 读路径带可见域：本家庭的 + 预置的。查不到 → ErrNotFound → 404+1001。</span>
+<span class="k">func</span> (r *<span class="t">GormCategoryRepo</span>) <span class="t">GetByID</span>(ctx context.<span class="t">Context</span>, familyID, id <span class="t">int64</span>) (*model.<span class="t">Category</span>, <span class="t">error</span>) {
+    <span class="k">var</span> row model.<span class="t">Category</span>
+    err := r.db.<span class="t">WithContext</span>(ctx).
+        <span class="t">Where</span>(<span class="s">"id = ? AND (family_id = ? OR family_id IS NULL)"</span>, id, familyID).
+        <span class="t">First</span>(&amp;row).<span class="t">Error</span>
+    <span class="k">if</span> errors.<span class="t">Is</span>(err, gorm.<span class="t">ErrRecordNotFound</span>) {
+        <span class="k">return</span> <span class="k">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"category %d: %w"</span>, id, response.<span class="t">ErrNotFound</span>)
+    }
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"get category %d: %w"</span>, id, err)
+    }
+    <span class="k">return</span> &amp;row, <span class="k">nil</span>
+}
+
+<span class="c">// Create 只能造本家庭的行：FamilyID 由参数钉死，请求体里说什么都没用。</span>
+<span class="k">func</span> (r *<span class="t">GormCategoryRepo</span>) <span class="t">Create</span>(ctx context.<span class="t">Context</span>, familyID <span class="t">int64</span>, in model.<span class="t">CategoryInput</span>) (*model.<span class="t">Category</span>, <span class="t">error</span>) {
+    row := model.<span class="t">Category</span>{
+        <span class="t">FamilyID</span>: &amp;familyID, <span class="t">ParentID</span>: in.<span class="t">ParentID</span>,
+        <span class="t">Name</span>: in.<span class="t">Name</span>, <span class="t">Icon</span>: in.<span class="t">Icon</span>, <span class="t">Kind</span>: in.<span class="t">Kind</span>, <span class="t">Sort</span>: in.<span class="t">Sort</span>,
+        <span class="t">Version</span>: <span class="n">1</span>,
+    }
+    <span class="k">if</span> err := r.db.<span class="t">WithContext</span>(ctx).<span class="t">Create</span>(&amp;row).<span class="t">Error</span>; err != <span class="t">nil</span> {
+        <span class="k">if</span> errors.<span class="t">Is</span>(err, gorm.<span class="t">ErrDuplicatedKey</span>) { <span class="c">// TranslateError（S3·D2）在此兑现</span>
+            <span class="k">return</span> <span class="k">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"create category: %w"</span>, response.<span class="t">ErrConflict</span>) <span class="c">// → 409+1006</span>
+        }
+        <span class="k">return</span> <span class="k">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"create category: %w"</span>, err)
+    }
+    <span class="k">return</span> &amp;row, <span class="k">nil</span>
+}
+
+<span class="c">// Update 带 version 乐观锁；写路径只认本家庭的行（预置行不可改）。</span>
+<span class="k">func</span> (r *<span class="t">GormCategoryRepo</span>) <span class="t">Update</span>(ctx context.<span class="t">Context</span>, familyID, id <span class="t">int64</span>, in model.<span class="t">CategoryInput</span>, version <span class="t">int</span>) (*model.<span class="t">Category</span>, <span class="t">error</span>) {
+    res := r.db.<span class="t">WithContext</span>(ctx).<span class="t">Model</span>(&amp;model.<span class="t">Category</span>{}).
+        <span class="t">Where</span>(<span class="s">"id = ? AND family_id = ? AND version = ?"</span>, id, familyID, version).
+        <span class="t">Updates</span>(<span class="k">map</span>[<span class="t">string</span>]<span class="t">any</span>{
+            <span class="s">"parent_id"</span>: in.<span class="t">ParentID</span>, <span class="s">"name"</span>: in.<span class="t">Name</span>, <span class="s">"icon"</span>: in.<span class="t">Icon</span>,
+            <span class="s">"kind"</span>: in.<span class="t">Kind</span>, <span class="s">"sort"</span>: in.<span class="t">Sort</span>,
+            <span class="s">"updated_at"</span>: gorm.<span class="t">Expr</span>(<span class="s">"now()"</span>),
+            <span class="s">"version"</span>:    gorm.<span class="t">Expr</span>(<span class="s">"version + 1"</span>),
+        })
+    <span class="k">if</span> res.<span class="t">Error</span> != <span class="t">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"update category %d: %w"</span>, id, res.<span class="t">Error</span>)
+    }
+    <span class="k">if</span> res.<span class="t">RowsAffected</span> == <span class="n">0</span> {
+        <span class="k">return</span> <span class="k">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"update category %d: %w"</span>, id, r.<span class="t">zeroRowCause</span>(ctx, familyID, id))
+    }
+    <span class="k">return</span> r.<span class="t">GetByID</span>(ctx, familyID, id)
+}
+
+<span class="c">// SetArchived 停用/恢复共用：archive 与 restore 两条路由在 service 层翻成 archived=true/false。</span>
+<span class="k">func</span> (r *<span class="t">GormCategoryRepo</span>) <span class="t">SetArchived</span>(ctx context.<span class="t">Context</span>, familyID, id <span class="t">int64</span>, archived <span class="t">bool</span>, version <span class="t">int</span>) <span class="t">error</span> {
+    res := r.db.<span class="t">WithContext</span>(ctx).<span class="t">Model</span>(&amp;model.<span class="t">Category</span>{}).
+        <span class="t">Where</span>(<span class="s">"id = ? AND family_id = ? AND version = ?"</span>, id, familyID, version).
+        <span class="t">Updates</span>(<span class="k">map</span>[<span class="t">string</span>]<span class="t">any</span>{
+            <span class="s">"archived"</span>: archived, <span class="s">"updated_at"</span>: gorm.<span class="t">Expr</span>(<span class="s">"now()"</span>), <span class="s">"version"</span>: gorm.<span class="t">Expr</span>(<span class="s">"version + 1"</span>),
+        })
+    <span class="k">if</span> res.<span class="t">Error</span> != <span class="t">nil</span> {
+        <span class="k">return</span> fmt.<span class="t">Errorf</span>(<span class="s">"set archived %d: %w"</span>, id, res.<span class="t">Error</span>)
+    }
+    <span class="k">if</span> res.<span class="t">RowsAffected</span> == <span class="n">0</span> {
+        <span class="k">return</span> fmt.<span class="t">Errorf</span>(<span class="s">"set archived %d: %w"</span>, id, r.<span class="t">zeroRowCause</span>(ctx, familyID, id))
+    }
+    <span class="k">return</span> <span class="k">nil</span>
+}
+
+<span class="c">// Reorder 一次事务按 ids 重写 sort；任何一行不属于本家庭，整个重排回滚。</span>
+<span class="c">// Transaction 的用法今天照抄，S3·D7 正式讲。</span>
+<span class="k">func</span> (r *<span class="t">GormCategoryRepo</span>) <span class="t">Reorder</span>(ctx context.<span class="t">Context</span>, familyID <span class="t">int64</span>, ids []<span class="t">int64</span>) <span class="t">error</span> {
+    <span class="k">return</span> r.db.<span class="t">WithContext</span>(ctx).<span class="t">Transaction</span>(<span class="k">func</span>(tx *gorm.<span class="t">DB</span>) <span class="t">error</span> {
+        <span class="k">for</span> i, id := <span class="k">range</span> ids {
+            res := tx.<span class="t">Model</span>(&amp;model.<span class="t">Category</span>{}).
+                <span class="t">Where</span>(<span class="s">"id = ? AND family_id = ?"</span>, id, familyID).
+                <span class="t">Updates</span>(<span class="k">map</span>[<span class="t">string</span>]<span class="t">any</span>{<span class="s">"sort"</span>: i + <span class="n">1</span>, <span class="s">"updated_at"</span>: gorm.<span class="t">Expr</span>(<span class="s">"now()"</span>)})
+            <span class="k">if</span> res.<span class="t">Error</span> != <span class="t">nil</span> {
+                <span class="k">return</span> res.<span class="t">Error</span>
+            }
+            <span class="k">if</span> res.<span class="t">RowsAffected</span> == <span class="n">0</span> {
+                <span class="k">return</span> fmt.<span class="t">Errorf</span>(<span class="s">"reorder category %d: %w"</span>, id, response.<span class="t">ErrNotFound</span>)
+            }
+        }
+        <span class="k">return</span> <span class="k">nil</span>
+    })
+}
+
+<span class="c">// zeroRowCause 分辨两种 0 行：真不存在/不属于本家庭 → ErrNotFound；version 过期 → ErrVersionConflict。</span>
+<span class="k">func</span> (r *<span class="t">GormCategoryRepo</span>) <span class="t">zeroRowCause</span>(ctx context.<span class="t">Context</span>, familyID, id <span class="t">int64</span>) <span class="t">error</span> {
+    <span class="k">var</span> cnt <span class="t">int64</span>
+    <span class="k">if</span> err := r.db.<span class="t">WithContext</span>(ctx).<span class="t">Model</span>(&amp;model.<span class="t">Category</span>{}).
+        <span class="t">Where</span>(<span class="s">"id = ? AND family_id = ?"</span>, id, familyID).<span class="t">Count</span>(&amp;cnt).<span class="t">Error</span>; err != <span class="t">nil</span> {
+        <span class="k">return</span> err
+    }
+    <span class="k">if</span> cnt == <span class="n">0</span> {
+        <span class="k">return</span> response.<span class="t">ErrNotFound</span>
+    }
+    <span class="k">return</span> response.<span class="t">ErrVersionConflict</span>
+}</code></pre>
+    <div class="callout warn"><p>对照你 S2·D4 定下的 <code>CategoryRepository</code> 方法集：如果签名有小出入（参数名、Input 类型放哪个包），<b>以你手上的为准</b>，原则只有一条——今天只加实现，不改契约。GORM 的 <code>Find</code>/<code>First</code> 默认带软删过滤（模型有 <code>gorm.DeletedAt</code>），所有查询自动排除 <code>deleted_at</code> 非空的行——这件事明天正式算账。</p></div>
+
+    <h3>步骤 5 · 装配：main.go 改一行 + 临时桩集中一处</h3>
+    <pre><span class="code-label">片段 · server/cmd/homecube/main.go 装配段（前置：S2 的 main 已有路由装配与 NewMemoryCategoryRepo 调用点）</span><code><span class="c">// S3·D6 临时接线：DSN 手工拼（S3·D11 收进 platform/config），连不上库就不营业。</span>
+dsn := fmt.<span class="t">Sprintf</span>(<span class="s">"postgres://%s:%s@%s:%s/%s?sslmode=%s"</span>,
+    os.<span class="t">Getenv</span>(<span class="s">"DB_USER"</span>), os.<span class="t">Getenv</span>(<span class="s">"DB_PASS"</span>),
+    os.<span class="t">Getenv</span>(<span class="s">"DB_HOST"</span>), os.<span class="t">Getenv</span>(<span class="s">"DB_PORT"</span>),
+    os.<span class="t">Getenv</span>(<span class="s">"DB_NAME"</span>), os.<span class="t">Getenv</span>(<span class="s">"DB_SSLMODE"</span>))
+gormDB, err := db.<span class="t">Open</span>(dsn)
+<span class="k">if</span> err != <span class="t">nil</span> {
+    log.<span class="t">Fatalf</span>(<span class="s">"open db: %v"</span>, err)
+}
+
+<span class="c">// 全卡唯一的一行替换：接口变量 = 新构造函数（S1·D5 的编译期检查站岗）。</span>
+<span class="c">// import 路径以你 S2 归置的为准；NewMemoryCategoryRepo 不再被 main 引用，但留在仓库里当测试替身。</span>
+<span class="k">var</span> catRepo service.<span class="t">CategoryRepository</span> = repository.<span class="t">NewGormCategoryRepo</span>(gormDB)</code></pre>
+    <pre><span class="code-label">片段 · handler 包内（前置：gin 已在 S2·D1 接入）</span><code><span class="c">// currentFamilyID 是 S3 的临时桩：没有鉴权，固定返回种子家庭 1。</span>
+<span class="c">// S4 建好鉴权中间件后，函数体换成从 context 读真值——签名与调用点都不变。</span>
+<span class="c">// 明账：桩集中这一处；散落各 handler 的魔法数字 1 才是事故。</span>
+<span class="k">func</span> <span class="t">currentFamilyID</span>(c *gin.<span class="t">Context</span>) <span class="t">int64</span> { <span class="k">return</span> <span class="n">1</span> }</code></pre>
+
+    <h3>步骤 6 · 测试：S2 的原样全绿 + repo 真库测试</h3>
+    <p>第一半不需要新代码：<b>S2 的 handler httptest 用的是内存替身，今天一个字不改、照常全绿</b>——它们守的是 HTTP 契约，与存储无关。第二半是给新实现的真库测试（无库自动 Skip，口径同 S3·D2/D5）：</p>
+    <pre><span class="code-label">完整 · server/internal/finance/repository/category_gorm_test.go</span><code><span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"errors"</span>
+    <span class="s">"fmt"</span>
+    <span class="s">"os"</span>
+    <span class="s">"testing"</span>
+
+    <span class="s">"gorm.io/gorm"</span>
+
+    <span class="s">"homecube/internal/finance/model"</span>
+    <span class="s">"homecube/internal/platform/db"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="k">func</span> <span class="t">openTestDB</span>(t *testing.<span class="t">T</span>) *gorm.<span class="t">DB</span> {
+    t.<span class="t">Helper</span>()
+    <span class="k">if</span> os.<span class="t">Getenv</span>(<span class="s">"DB_NAME"</span>) == <span class="s">""</span> {
+        t.<span class="t">Skip</span>(<span class="s">"未设置 DB_NAME，跳过真库测试"</span>)
+    }
+    dsn := fmt.<span class="t">Sprintf</span>(<span class="s">"postgres://%s:%s@%s:%s/%s?sslmode=%s"</span>,
+        os.<span class="t">Getenv</span>(<span class="s">"DB_USER"</span>), os.<span class="t">Getenv</span>(<span class="s">"DB_PASS"</span>),
+        os.<span class="t">Getenv</span>(<span class="s">"DB_HOST"</span>), os.<span class="t">Getenv</span>(<span class="s">"DB_PORT"</span>),
+        os.<span class="t">Getenv</span>(<span class="s">"DB_NAME"</span>), os.<span class="t">Getenv</span>(<span class="s">"DB_SSLMODE"</span>))
+    gdb, err := db.<span class="t">Open</span>(dsn)
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        t.<span class="t">Skipf</span>(<span class="s">"库未就绪（先 make migrate-finance-up）: %v"</span>, err)
+    }
+    <span class="k">return</span> gdb
+}
+
+<span class="k">func</span> <span class="t">TestGormCategoryRepo</span>(t *testing.<span class="t">T</span>) {
+    gdb := <span class="t">openTestDB</span>(t)
+    repo := <span class="t">NewGormCategoryRepo</span>(gdb)
+    ctx := context.<span class="t">Background</span>()
+    <span class="k">const</span> famA, famB = <span class="t">int64</span>(<span class="n">901</span>), <span class="t">int64</span>(<span class="n">902</span>) <span class="c">// 测试专用家庭 id，避开种子家庭 1</span>
+
+    <span class="c">// 造数 + 清场（清场用 Unscoped 物理删，测试数据不过夜也不留软删尸体）</span>
+    t.<span class="t">Cleanup</span>(<span class="k">func</span>() {
+        gdb.<span class="t">Unscoped</span>().<span class="t">Where</span>(<span class="s">"family_id IN (?, ?)"</span>, famA, famB).<span class="t">Delete</span>(&amp;model.<span class="t">Category</span>{})
+    })
+
+    <span class="c">// ① List 看得见系统预置树（迁移种子），看不见别家的行</span>
+    preset, err := repo.<span class="t">List</span>(ctx, famA)
+    <span class="k">if</span> err != <span class="t">nil</span> || <span class="t">len</span>(preset) &lt; <span class="n">6</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"预置树应 ≥6 条（3 一级 + 3 二级）, got %d, err %v"</span>, <span class="t">len</span>(preset), err)
+    }
+
+    <span class="c">// ② Create → 归本家庭；List 能看见；famB 看不见</span>
+    created, err := repo.<span class="t">Create</span>(ctx, famA, model.<span class="t">CategoryInput</span>{<span class="t">Name</span>: <span class="s">"宠物"</span>, <span class="t">Kind</span>: <span class="s">"expense"</span>, <span class="t">Sort</span>: <span class="n">10</span>})
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"create: %v"</span>, err)
+    }
+    <span class="k">if</span> _, err := repo.<span class="t">GetByID</span>(ctx, famB, created.ID); !errors.<span class="t">Is</span>(err, response.<span class="t">ErrNotFound</span>) {
+        t.<span class="t">Fatalf</span>(<span class="s">"跨家庭读应 ErrNotFound, got %v"</span>, err) <span class="c">// → handler 层即 404+1001</span>
+    }
+
+    <span class="c">// ③ Update：对版本成功且 version+1；错版本 → ErrVersionConflict</span>
+    upd, err := repo.<span class="t">Update</span>(ctx, famA, created.ID, model.<span class="t">CategoryInput</span>{<span class="t">Name</span>: <span class="s">"宠物用品"</span>, <span class="t">Kind</span>: <span class="s">"expense"</span>}, created.Version)
+    <span class="k">if</span> err != <span class="t">nil</span> || upd.Version != created.Version+<span class="n">1</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"update: %v, version %d"</span>, err, upd.Version)
+    }
+    <span class="k">if</span> _, err := repo.<span class="t">Update</span>(ctx, famA, created.ID, model.<span class="t">CategoryInput</span>{<span class="t">Name</span>: <span class="s">"再改"</span>, <span class="t">Kind</span>: <span class="s">"expense"</span>}, created.Version); !errors.<span class="t">Is</span>(err, response.<span class="t">ErrVersionConflict</span>) {
+        t.<span class="t">Fatalf</span>(<span class="s">"旧版本更新应 ErrVersionConflict, got %v"</span>, err) <span class="c">// → 409+1009</span>
+    }
+
+    <span class="c">// ④ SetArchived：停用后 List 仍返回（带 archived 标记），历史可筛可统计</span>
+    <span class="k">if</span> err := repo.<span class="t">SetArchived</span>(ctx, famA, created.ID, <span class="k">true</span>, upd.Version); err != <span class="t">nil</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"archive: %v"</span>, err)
+    }
+    rows, _ := repo.<span class="t">List</span>(ctx, famA)
+    found := <span class="k">false</span>
+    <span class="k">for</span> _, c := <span class="k">range</span> rows {
+        <span class="k">if</span> c.ID == created.ID &amp;&amp; c.Archived {
+            found = <span class="k">true</span>
+        }
+    }
+    <span class="k">if</span> !found {
+        t.<span class="t">Fatal</span>(<span class="s">"停用项应仍在 List 中且 archived=true"</span>)
+    }
+
+    <span class="c">// ⑤ Reorder：混入别家 id → 整个重排失败回滚，sort 不变</span>
+    before, _ := repo.<span class="t">GetByID</span>(ctx, famA, created.ID)
+    <span class="k">if</span> err := repo.<span class="t">Reorder</span>(ctx, famA, []<span class="t">int64</span>{created.ID, <span class="n">123456789</span>}); !errors.<span class="t">Is</span>(err, response.<span class="t">ErrNotFound</span>) {
+        t.<span class="t">Fatalf</span>(<span class="s">"混入不存在 id 应整体失败, got %v"</span>, err)
+    }
+    after, _ := repo.<span class="t">GetByID</span>(ctx, famA, created.ID)
+    <span class="k">if</span> after.Sort != before.Sort {
+        t.<span class="t">Fatalf</span>(<span class="s">"回滚失败：sort %d → %d"</span>, before.Sort, after.Sort)
+    }
+}</code></pre>
+
+    <h3>步骤 7 · 验收 + 提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+docker compose up -d postgres
+make migrate-homeos-up &amp;&amp; make migrate-finance-up
+docker compose exec postgres psql -U homecube -d homecube -c \
+  <span class="s">"SELECT id, family_id, parent_id, name, kind, sort FROM finance.finance_category ORDER BY id;"</span>
+                                           <span class="c"># 6 条预置行，family_id 全 NULL，二级行 parent_id 指向「餐饮」</span>
+docker compose exec postgres psql -U homecube -d homecube -c <span class="s">'SELECT * FROM finance.schema_migrations;'</span>
+                                           <span class="c"># finance 自己的账本：version=1, dirty=false</span>
+
+<span class="c"># finance 迁移链重放判据（S3·D4 的三步）</span>
+make migrate-finance-down &amp;&amp; make migrate-finance-up
+
+export DB_HOST=localhost DB_PORT=5432 DB_USER=homecube DB_PASS=homecube123 DB_NAME=homecube DB_SSLMODE=disable
+make test                                  <span class="c"># S2 handler 测试原样绿 + repo 真库测试绿</span>
+
+make run &amp;                                 <span class="c"># 终端 1（env 已 export）</span>
+curl -s http://localhost:8080/api/finance/categories
+                                           <span class="c"># 预置树 + 家庭 1 的自定义分类；响应信封与 S2 一模一样</span>
+curl -s -X POST http://localhost:8080/api/finance/categories \
+  -H <span class="s">'Content-Type: application/json'</span> \
+  -d <span class="s">'{"name":"宠物","icon":"pet","kind":"expense","parent_id":null,"sort":10}'</span>
+                                           <span class="c"># 字段名以你 S2 的 DTO 为准；201 + code 0</span>
+curl -s -X PUT http://localhost:8080/api/finance/categories/{上一步的id} \
+  -H <span class="s">'Content-Type: application/json'</span> \
+  -d <span class="s">'{"name":"宠物用品","icon":"pet","kind":"expense","parent_id":null,"sort":10,"version":999}'</span>
+                                           <span class="c"># 409 + code 1009：乐观锁上岗</span>
+
+<span class="c"># 重启进程再 GET 一次：数据还在——项目第一次「记住」了东西</span>
+make build &amp;&amp; make lint
+git add server
+git status
+git commit -m "feat(s3d6): finance_0001_init_category + GormCategoryRepo 替换内存实现，契约不变"</code></pre>
+    <div class="callout tip"><p><b>本周串联复盘（费曼预演，周日下午正式做）</b>：对着仓库说出每块代码是哪天的产物——D1 给了库、schema 和两个专属账号，D2 的 <code>db.Open</code> 与 <code>TranslateError</code> 今天在 repo 里兑现成 1006，D3 的 migrate 今天建出了 finance_category，D4 的重放判据今天跑在 finance 链上，D5 的模型样式与真库测试口径今天照搬。说不出来的那一天，就是周日复盘第一个要补的。</p></div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>顺手改了接口来适配 GORM</td><td>「repo 方法加个参数嘛」——service/handler 跟着连环改，契约漂移</td><td>方向反了：让实现去满足接口。接口要变是另一件事，走 S2 的评审口径，不夹带在换存储里</td></tr>
+      <tr><td>删掉内存实现</td><td>S2 的 handler 测试全红：它们依赖内存替身</td><td>内存实现留在仓库当测试替身；main 不再引用它而已</td></tr>
+      <tr><td>写路径带上 <code>OR family_id IS NULL</code></td><td>用户能改系统预置分类，全局默认树被一个家庭污染</td><td>读带预置、写只认本家庭——两个 WHERE 长得就是不一样</td></tr>
+      <tr><td>0 行不分因，一律回 1009</td><td>删掉的 id 去 PUT，得到「版本冲突」这种误导响应</td><td>先 COUNT 分辨：不存在 → 1001，版本旧 → 1009（zeroRowCause 的职责）</td></tr>
+      <tr><td><code>gorm.ErrRecordNotFound</code> 直接外抛</td><td><code>FailErr</code> 认不出它，回落 5000</td><td>repo 层就地翻译成 <code>response.ErrNotFound</code> 再包装；GORM 的哨兵不许穿透 repo 边界</td></tr>
+      <tr><td>种子数据写进代码</td><td>handler 启动时 <code>INSERT</code> 预置分类，多实例重复插、环境不一致</td><td>预置行只出自迁移种子；代码路径造不出 <code>family_id NULL</code></td></tr>
+      <tr><td>魔法数字 1 散落各 handler</td><td>S4 接鉴权时要全仓 grep 换值，漏一处就是越权口子</td><td>临时桩集中一个 <code>currentFamilyID</code>，注释写明 S4 还债</td></tr>
+      <tr><td>忘了跑 finance 迁移就 make run</td><td>接口全 500，日志里 <code>relation "finance.finance_category" does not exist</code></td><td>起服务前先 <code>make migrate-*-up</code>；把这条写进 README 的启动步骤（S3·D12 收口时补）</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>换实现不换契约</td><td>接口不动、装配处换一个构造函数——S1·D5 抽接口的全部意义在今天兑现</td></tr>
+      <tr><td>测试替身（test double）</td><td>内存实现的新身份：handler 测试用它隔离数据库，CI 无库也全绿</td></tr>
+      <tr><td>预置数据</td><td><code>family_id IS NULL</code> 的系统默认行；只出自迁移种子，读可见、写不可碰</td></tr>
+      <tr><td>乐观锁（version）</td><td>更新带 <code>version = ?</code> 条件、SET <code>version+1</code>；0 行时分因回 1001 或 1009</td></tr>
+      <tr><td><code>RowsAffected</code></td><td>UPDATE/DELETE 命中的行数；乐观锁与「0 行分因」都看它</td></tr>
+      <tr><td><code>gorm.Expr</code></td><td>把 <code>version + 1</code>、<code>now()</code> 这类 SQL 表达式原样交给数据库算，不经过 Go</td></tr>
+      <tr><td><code>Transaction</code></td><td>GORM 的事务包装：回调返回 error 即整体回滚（S3·D7 正式讲）</td></tr>
+      <tr><td>archived ≠ deleted</td><td>停用是业务状态（历史流水仍可筛可统计）；软删是行级下架（S3·D7）——两个字段两回事</td></tr>
+      <tr><td>currentFamilyID 桩</td><td>S3 的「我是谁」临时答案，集中一处；S4 换成 token 里的真值</td></tr>
+      <tr><td><code>context.Context</code></td><td>超时/取消的传递通道；今天照抄（handler 传 <code>c.Request.Context()</code>），S5 正式讲</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有两种情况出去查：</p>
+    <ul>
+      <li><b>GORM 查询/更新 API 细节</b>：<a href="https://gorm.io/docs/query.html" target="_blank">GORM · Query</a> 与 <a href="https://gorm.io/docs/update.html" target="_blank">GORM · Update</a>（可选）。</li>
+      <li><b>事务语义想提前搞懂</b>：先忍着——<a href="w06d1.html">S3·D7</a> 就是明天的正课。</li>
+    </ul>
+    <p>站内回看：接口与隐式实现在 <a href="../s1/w01d5.html">S1·D5</a>，哨兵与 CodeOf 在 <a href="../s1/w01d4.html">S1·D4</a>，S2 的三层归置与内存实现见 <a href="../s2/overview.html">S2 阶段总览</a>（尤其 S2·D4 那张卡）。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w05d6c1"><code>finance_0001</code> 落盘且重放判据通过；psql 里 6 条预置行 <code>family_id</code> 全 NULL、二级行挂在「餐饮」下；finance 有自己的 <code>schema_migrations</code></label></li>
+      <li><label><input type="checkbox" data-key="w05d6c2"><code>GormCategoryRepo</code> 六个方法齐活，repo 真库测试覆盖：预置可见、跨家庭 1001、版本冲突 1009、archived 仍在 List、Reorder 混入异 id 整体回滚</label></li>
+      <li><label><input type="checkbox" data-key="w05d6c3">main.go 只动了装配一行；S2 的 httptest <b>不改一字</b>全绿；curl 三连（GET 列表 / POST 创建 / PUT 错版本 409+1009）全部复现，响应信封与 S2 一致</label></li>
+      <li><label><input type="checkbox" data-key="w05d6c4">重启进程后数据仍在；<code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，commit 带卡号 <code>s3d6</code></label></li>
+      <li><label><input type="checkbox" data-key="w05d6c5"><code>notes/</code> 写下：为什么 handler 测试不用改、「读带预置写只认本家庭」的两个 WHERE、currentFamilyID 桩在 S4 怎么还——并能在明天开写事务前口述一遍</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w05d5.html"><span class="hint">← 昨天 · S3·D5</span>GORM 一对多关联与 Preload</a>
+    <a href="../../frontend/f2/w05f1.html"><span class="hint">本周日 · F2·w05 →</span>uni-app 工程结构怎么读</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w05d6 · 明天见 ⟩</footer>
+</body>
+</html>

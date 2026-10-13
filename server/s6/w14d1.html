@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S6·D13 · 私密流水 is_private：行级可见性过滤 | HomeCube 修炼手册</title>
+<meta name="description" content="is_private 命中的流水行仅作者与 owner 可读：把行级可见性谓词接进列表与单条查询，越权读私密行与不存在同形 404+1001；判定收在 platform/authz，handler 不写角色分支。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w14d1">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S6</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S6</a> / w14d1</div>
+  <div class="day-meta">
+    <span class="chip">S6 · DAY 13</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>私密流水 is_private：行级可见性过滤</h1>
+  <p>家庭共账，但总有一两笔不想让全家看见的流水——给父母的红包、个人体检费。<code>is_private</code> 列从 S3 建表起就在 <code>finance_transaction</code> 里躺着，今天让它活过来：<b>命中 <code>is_private</code> 的行，仅作者本人与家庭 owner 可读</b>。这是全站权限体系里唯一一个「行级」例外——角色矩阵管到「能不能进这个面」，行级可见性管到「这一行给不给你看」，两层必须分开实现、互不混淆。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w14d1g1">说清行级可见性与角色矩阵的分层：矩阵管入口，行级管单行，谁也不许替谁</label></li>
+      <li><label><input type="checkbox" data-key="w14d1g2">写得出可见性谓词：<code>is_private = false OR member_id = 我 OR 我是 owner</code>，并接进列表与单条两个查询</label></li>
+      <li><label><input type="checkbox" data-key="w14d1g3">说清越权读私密行的响应为什么必须与不存在同形（404 + 1001），写操作为什么反而回 403 + 1003</label></li>
+      <li><label><input type="checkbox" data-key="w14d1g4">可见性矩阵测试（作者/owner/普通成员 × 私密/非私密）全绿，<code>make build</code> / <code>make test</code> 绿</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 可见性规则表（今天的唯一需求）</h3>
+    <table>
+      <tr><th>读者 \ 行</th><th>非私密行</th><th>私密行（作者是 M）</th></tr>
+      <tr><td>作者 M 本人</td><td>可读</td><td>可读</td></tr>
+      <tr><td>家庭 owner</td><td>可读</td><td><b>可读</b></td></tr>
+      <tr><td>其他 member / ward</td><td>可读</td><td><b>不可读 → 404 + 1001（与不存在同形）</b></td></tr>
+      <tr><td>guest（限时只读）</td><td>可读</td><td>不可读 → 404 + 1001</td></tr>
+    </table>
+    <p>写口径顺带钉死：非私密流水家庭内共写（member 可改可删，S4 的角色矩阵早已放行）；<b>私密流水的改/删仅作者与 owner</b>，其他成员动手 → 403 + 1003（「非作者改他人数据」就是错误码表里 1003 的登记场景之一）。读藏存在性、写明确拒绝——读写不同形，是全站一贯口径。</p>
+
+    <h3>2. 谓词进 SQL，而不是进 handler 的 if</h3>
+    <p>错误做法：查出来再在 Go 里逐行过滤。两个致命伤：分页被过滤打穿（一页 20 行滤剩 13 行，游标推进全乱）、COUNT/聚合与列表口径不一致。正确做法：<b>谓词拼进 WHERE，让数据库在分页与聚合之前就把不可见行排除</b>——D6 的游标分页、D3 的余额聚合、后面的导出，天然拿到同一份「可读行集合」。</p>
+    <pre><span class="code-label">片段 · 可见性谓词（判定逻辑只有一份，住在 platform/authz）</span><code><span class="c">// authz.TxReadPredicate 返回一段 SQL 与参数：调用方拼进自己的 WHERE。</span>
+<span class="k">func</span> <span class="t">TxReadPredicate</span>(memberID <span class="t">int64</span>, role model.Role) (<span class="t">string</span>, []<span class="k">any</span>) {
+    <span class="k">if</span> role == model.RoleOwner {
+        <span class="k">return</span> <span class="s">"1 = 1"</span>, <span class="k">nil</span>            <span class="c">// owner 全可见，谓词恒真</span>
+    }
+    <span class="k">return</span> <span class="s">"(is_private = false OR member_id = ?)"</span>, []<span class="k">any</span>{memberID}
+}</code></pre>
+    <div class="callout warn"><p>两条纪律：① 判定<b>只有一份实现</b>，住在 <code>internal/platform/authz</code>——finance 的 handler/service 里不许出现 <code>if role == owner</code> 的自写分支（角色判定散落 = 改一处漏三处）。② finance 拿到的是「谓词字符串 + 参数」，不 import authz 的内部规则细节；跨模块调用点收在 platform 接口后面，老规矩。</p></div>
+
+    <h3>3. 接入点清单：哪些查询要吃这个谓词</h3>
+    <ul>
+      <li><b>列表</b>（D6 的 List，含回收站视角）：WHERE 追加谓词——别人的私密行连回收站都不给你看。</li>
+      <li><b>单条</b>（D7 的 GetByID）：谓词进 WHERE，查不到 → 1001，与不存在同形。</li>
+      <li><b>余额聚合</b>（D3 的 BalanceOf）：<b>不吃</b>谓词。私密行的钱是真实的钱，账户余额与归档判据必须含它——可见性管「看见哪些行」，不管「钱算不算数」。这一条今天专门写进测试，防止顺手把谓词也塞进聚合。</li>
+      <li>附件读取、导出：附件跟随主流水的可见性（今天顺手接）；导出在本阶段后半接，届时同一谓词。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>⑤+③：把列表/单条/附件查询从「不过滤」换成「按谓词过滤」+ 可见性矩阵测试</b>。</p>
+
+    <h3>步骤 1 · repo 接入</h3>
+    <pre><span class="code-label">片段 · server/internal/finance/repo/transaction.go（List 与 GetByID 各加一行）</span><code>pred, args := authz.TxReadPredicate(actor.MemberID, actor.Role)
+q := r.db.WithContext(ctx).Model(&amp;model.Transaction{}).
+    Where(<span class="s">"family_id = ?"</span>, familyID).
+    Where(pred, args...)          <span class="c">// ← 今天的增量就这一行的事，前提是谓词只有一份实现</span></code></pre>
+    <p><code>GetByID</code> 同样追加；附件 List 走「先按谓词取主流水，取不到 → 1001」的链路，不单独造第二套判定。</p>
+
+    <h3>步骤 2 · 可见性矩阵测试</h3>
+    <pre><span class="code-label">完整 · server/internal/finance/service/tx_visibility_test.go</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"errors"</span>
+    <span class="s">"testing"</span>
+
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="k">func</span> <span class="t">TestPrivateTxVisibilityMatrix</span>(t *testing.T) {
+    svc := newTestTxService(t)
+    ctx := t.Context()
+    author := Actor{FamilyID: <span class="n">1</span>, MemberID: <span class="n">10</span>, Role: memberRole()}
+    owner  := Actor{FamilyID: <span class="n">1</span>, MemberID: <span class="n">11</span>, Role: ownerRole()}
+    peer   := Actor{FamilyID: <span class="n">1</span>, MemberID: <span class="n">12</span>, Role: memberRole()}
+
+    priv := mustCreatePrivateTx(t, svc, author)   <span class="c">// is_private=true，作者 author</span>
+    pub  := mustCreateTx(t, svc, author)          <span class="c">// 非私密</span>
+
+    <span class="c">// 单条：作者/owner 可读，peer 与「不存在」同形</span>
+    <span class="k">if</span> _, err := svc.Get(ctx, author, priv.ID); err != <span class="k">nil</span> { t.Fatalf(<span class="s">"作者应可读: %v"</span>, err) }
+    <span class="k">if</span> _, err := svc.Get(ctx, owner, priv.ID); err != <span class="k">nil</span> { t.Fatalf(<span class="s">"owner 应可读: %v"</span>, err) }
+    <span class="k">if</span> _, err := svc.Get(ctx, peer, priv.ID); !errors.Is(err, response.ErrNotFound) {
+        t.Fatalf(<span class="s">"peer 读私密行应与不存在同形 1001: %v"</span>, err)
+    }
+    <span class="k">if</span> _, err := svc.Get(ctx, peer, pub.ID); err != <span class="k">nil</span> { t.Fatalf(<span class="s">"非私密行家庭内可读: %v"</span>, err) }
+
+    <span class="c">// 列表：peer 的列表里没有私密行，作者与 owner 都有</span>
+    peerPage, _ := svc.List(ctx, peer, ListQuery{Limit: <span class="n">10</span>})
+    <span class="k">if</span> <span class="t">len</span>(peerPage.Items) != <span class="n">1</span> { t.Fatalf(<span class="s">"peer 应只见 1 行非私密, got %d"</span>, <span class="t">len</span>(peerPage.Items)) }
+    ownerPage, _ := svc.List(ctx, owner, ListQuery{Limit: <span class="n">10</span>})
+    <span class="k">if</span> <span class="t">len</span>(ownerPage.Items) != <span class="n">2</span> { t.Fatalf(<span class="s">"owner 应见 2 行, got %d"</span>, <span class="t">len</span>(ownerPage.Items)) }
+
+    <span class="c">// 余额：私密行的钱照常计入（谓词不进聚合）</span>
+    bal, _ := svc.BalanceOfAccount(ctx, author, priv.AccountID)
+    <span class="k">if</span> bal == <span class="n">0</span> { t.Fatal(<span class="s">"私密支出必须计入余额，可见性不管钱的账"</span>) }
+
+    <span class="c">// 写：peer 改作者私密行 → 403 + 1003</span>
+    _, err := svc.Update(ctx, peer, priv.ID, &amp;UpdateTxInput{Version: <span class="n">1</span>, Note: <span class="s">"偷改"</span>})
+    <span class="k">if</span> !errors.Is(err, response.ErrForbidden) { t.Fatalf(<span class="s">"非作者改私密行应 1003: %v"</span>, err) }
+}</code></pre>
+
+    <h3>步骤 3 · 验收</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test     <span class="c"># 矩阵测试绿；D6 分页测试必须也绿——谓词进 WHERE 后游标不许乱</span>
+make lint
+
+<span class="c"># 手工三视角：作者 token 建一笔 is_private=true；</span>
+<span class="c"># 换 peer token GET 该 id → 404/1001，GET 列表 → 不含该行；换 owner token → 都能看</span>
+
+git add server
+git commit -m "feat(s6d13): is_private 行级可见性，谓词收在 platform/authz"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>查出来再在 Go 里过滤</td><td>一页 20 行滤剩 13 行，游标推进错乱</td><td>谓词进 WHERE，分页与聚合之前生效</td></tr>
+      <tr><td>handler 里写 <code>if role == owner</code></td><td>判定散落，改规则漏改</td><td>判定只有一份，住 platform/authz</td></tr>
+      <tr><td>越权读私密行回 403</td><td>泄露「这行存在且是私密的」</td><td>读 → 404 + 1001 同形；写才 403 + 1003</td></tr>
+      <tr><td>余额聚合也吃谓词</td><td>私密支出从余额消失，归档判据跟着错</td><td>聚合不看可见性：钱是真的，只是行不给你看</td></tr>
+      <tr><td>回收站漏接谓词</td><td>别人的私密删除行在你回收站里裸奔</td><td>deleted=true 视角同一 WHERE，一个口子都不留</td></tr>
+      <tr><td>按 user_id 而不是 member_id 判作者</td><td>多家庭下同一用户在不同家庭身份混淆</td><td>作者 = 会话家庭里的 <code>member_id</code>，与 claims 口径一致</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>行级可见性</td><td>权限判定细到单行：同一接口，不同读者看到不同行集合</td></tr>
+      <tr><td><code>is_private</code></td><td>流水的私密标记；命中行仅作者与 owner 可读</td></tr>
+      <tr><td>可见性谓词</td><td><code>is_private = false OR member_id = ? OR 我是 owner</code> 的 SQL 片段，拼进 WHERE</td></tr>
+      <tr><td>判定单一实现</td><td>规则只写在 platform/authz 一处；业务模块消费谓词，不复制逻辑</td></tr>
+      <tr><td>读藏写拒</td><td>越权读 404+1001（藏存在性），越权写 403+1003（明确拒绝）</td></tr>
+      <tr><td>作者（member_id）</td><td>会话家庭内的成员身份，不是全局 user——多家庭下同一人有两个 member_id</td></tr>
+      <tr><td>可见性 ≠ 记账口径</td><td>私密行的钱照常进余额与统计；藏的是行，不是钱</td></tr>
+      <tr><td>owner</td><td>家庭管理员，唯一可转让；行级可见性的第二个例外读方</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <ul>
+      <li><b>角色矩阵与 authz 包的结构</b>：回 S4 权限判定收口的那一天——今天给它的规则库加一条行级谓词。</li>
+      <li><b>claims 里的 memberID 与 role 怎么读</b>：S4 中间件与 context 键口径（<code>c.GetInt64("memberID")</code>、<code>c.MustGet("role").(model.Role)</code>）。</li>
+      <li><b>谓词为什么必须进 WHERE 而不是后过滤</b>：S6·D6 的游标分页——分页正确性依赖「数据库看到的行集合」。</li>
+      <li><b>越权同形 1001 的论证</b>：S6·D7 的三类 404。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w14d1c1">可见性矩阵测试（作者/owner/peer × 私密/非私密 × 单条/列表）全绿</label></li>
+      <li><label><input type="checkbox" data-key="w14d1c2">peer 读私密行 404 + 1001 与真不存在逐字节同形；写私密行 403 + 1003</label></li>
+      <li><label><input type="checkbox" data-key="w14d1c3">余额聚合与归档判据<b>不</b>受 is_private 影响，有专门断言</label></li>
+      <li><label><input type="checkbox" data-key="w14d1c4">回收站视角与附件读取同样吃到谓词；<code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，commit 带卡号 <code>s6d13</code></label></li>
+      <li><label><input type="checkbox" data-key="w14d1c5"><code>notes/</code> 三行：行级与矩阵两层的分工、谓词为什么进 WHERE、可见性为什么不管余额</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../frontend/f4/w13f1.html"><span class="hint">← 上周日 · F4·w13</span>游标分页的前端侧（上）</a>
+    <a href="w14d2.html"><span class="hint">明天 · S6·D14 →</span>时间窗五档参数：非法编码 400+1007 不回落</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w14d1 · 明天见 ⟩</footer>
+</body>
+</html>

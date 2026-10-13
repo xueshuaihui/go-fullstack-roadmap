@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S3·D8 · 游标分页：(排序键,id) 不透明游标 | HomeCube 修炼手册</title>
+<meta name="description" content="offset 分页的三宗罪与游标（keyset）分页的原理；落盘 platform/paging 的 base64 不透明游标（sort+id）与分类 repo 的 ListPage：WHERE (sort,id) > 上页末尾、Limit(n+1) 探 has_more，25 行种子数据 3 页读完不重不漏测试绿。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w06d2">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S3</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S3</a> / w06d2</div>
+  <div class="day-meta">
+    <span class="chip">S3 · DAY 8</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>游标分页：(排序键,id) 不透明游标</h1>
+  <p>S3 判据里有一条「能解释游标 vs offset」，今天把它挣到手。载体还是分类 repo：给它加一个 <code>ListPage</code>，用 <b>(sort, id) 组成的 base64 不透明游标</b>翻页，全站从此<b>禁 offset</b>。HTTP 契约今天不动——分类 6 条接口的集合很小，<code>List</code> 照旧全量返回；<code>ListPage</code> 是 repo 层原语，S6 流水列表（一个家庭几千上万行）上线时直接挂 HTTP。今天先把原理、代码、测试三样都落袋。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w06d2g1">能背出 offset 分页的三宗罪（越翻越慢、并发下重读漏读、深翻页灾难），并说清游标分页为什么天然免疫</label></li>
+      <li><label><input type="checkbox" data-key="w06d2g2">说清游标里为什么必须同时带排序键和 id：sort 不唯一，(sort, id) 才构成全序，翻页才不重不漏</label></li>
+      <li><label><input type="checkbox" data-key="w06d2g3">落盘 <code>platform/paging</code>：Cursor 结构 + base64 RawURLEncoding 的 Encode/Decode，坏游标一律 ErrBadCursor</label></li>
+      <li><label><input type="checkbox" data-key="w06d2g4">repo 补 <code>ListPage</code>：keyset 条件 <code>WHERE (sort, id) &gt; (?, ?)</code> + Limit(n+1) 探 has_more，25 行种子翻完不重不漏、坏游标 → 1004 测试绿</label></li>
+    </ul>
+    <div class="callout note"><p>↑ 这四条是「学习目标」。页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. offset 的三宗罪</h3>
+    <p><code>LIMIT 10 OFFSET 2000</code> 看着人畜无害，实际是三笔债：</p>
+    <table>
+      <tr><th>罪状</th><th>发生了什么</th></tr>
+      <tr><td>① 越翻越慢</td><td>OFFSET 不是「跳过」，是<b>数着走过去</b>：数据库要先取出并丢弃前 2000 行，再给你 10 行。页码越深，白干的活越多</td></tr>
+      <tr><td>② 重读漏读（漂移）</td><td>你停在第 2 页时，别人在头部插入/删除了一行——第 3 页的内容整体平移一格，于是有一行你<b>看了两遍</b>，另一行你<b>永远看不到</b></td></tr>
+      <tr><td>③ 深翻页灾难</td><td>移动端无限滚动一路翻到底，OFFSET 一路涨到几万，每页都是一次全量扫描前缀；列表页把数据库拖垮是最经典的生产事故之一</td></tr>
+    </table>
+    <p>offset 的本质问题：它用<b>「行号」</b>定位，而行号在活的表里随时会变。游标分页换一个定位方式——用<b>「上一页最后一行本身」</b>定位。</p>
+
+    <h3>2. 游标（keyset）分页：记住读到哪，从那里往后拿</h3>
+    <p>客户端把上一页最后一行的位置交回来，服务端翻译成一条 where：</p>
+    <pre><span class="code-label">片段 · 第 1 页 vs 第 N 页，只差一个 keyset 条件</span><code><span class="c">-- 第 1 页（没有游标）</span>
+<span class="k">SELECT</span> * <span class="k">FROM</span> finance.finance_category
+<span class="k">WHERE</span> (family_id = <span class="n">921</span> <span class="k">OR</span> family_id <span class="k">IS NULL</span>)
+<span class="k">ORDER BY</span> sort <span class="k">ASC</span>, id <span class="k">ASC</span>
+<span class="k">LIMIT</span> <span class="n">11</span>;                      <span class="c">-- 要 10 行，多拿 1 行探 has_more</span>
+
+<span class="c">-- 第 N 页（游标 = 上页末行的 (sort, id)，比如 (3, 107)）</span>
+<span class="k">SELECT</span> * <span class="k">FROM</span> finance.finance_category
+<span class="k">WHERE</span> (family_id = <span class="n">921</span> <span class="k">OR</span> family_id <span class="k">IS NULL</span>)
+  <span class="k">AND</span> (sort, id) &gt; (<span class="n">3</span>, <span class="n">107</span>)   <span class="c">-- 行值比较：先比 sort，再比 id</span>
+<span class="k">ORDER BY</span> sort <span class="k">ASC</span>, id <span class="k">ASC</span>
+<span class="k">LIMIT</span> <span class="n">11</span>;</code></pre>
+    <p><code>(sort, id) &gt; (?, ?)</code> 是 Postgres 的<b>行值比较</b>，语义等同 <code>sort &gt; ? OR (sort = ? AND id &gt; ?)</code>，但写法短、且能直接吃 <code>(sort, id)</code> 复合索引——定位是<b>索引上的一次跳跃</b>，不是数行，第 1 页和第 1000 页一样快，罪状①③当场消失。罪状②也免疫：头部插入的新行位置在游标<b>之前</b>，不会把后面的内容挤平移——你顶多「这一轮看不到新行」，绝不会重读或漏读已有行。</p>
+
+    <h3>3. 游标里为什么是 (sort, id) 两个值，还要 base64</h3>
+    <p><b>为什么带 id</b>：排序键 sort 不唯一（一堆分类可以同 sort）。只用 sort 做 <code>&gt;</code>，同值的行会被整批跳过或整批重放；带上唯一列 id 之后，(sort, id) 在表内<b>全序且唯一</b>——任何两行都能分出先后，「从某行之后」才有确定含义。这个 id 叫<b>决胜键（tie-breaker）</b>，游标分页的每条 ORDER BY 都必须以唯一列收尾。</p>
+    <p><b>为什么 base64</b>：游标对客户端必须是<b>不透明</b>的——一个原样交回的字符串，不承诺内部结构。明文传 <code>sort=3&amp;id=107</code> 有两个坏处：客户端会忍不住依赖字段自己拼（契约被悄悄放大）；篡改后的怪值会渗进 where。本站做法：<code>{"s":3,"i":107}</code> JSON 序列化后 <code>base64.RawURLEncoding</code> 编码（URL 安全字母表、无 <code>=</code> 填充），解码失败或字段不合法一律 <code>ErrBadCursor</code> → 上层 <b>1004</b>。顺带说明：就算有人解码后改成别家的 (sort,id) 也无害——family_id 的 where 照样把它圈在本家庭内，游标只决定「从哪继续」，不决定「能看谁」。</p>
+
+    <h3>4. Limit(n+1) 探针与响应信封</h3>
+    <p>「还有没有下一页」不值得为它单独跑一次 COUNT——多要一行就够了：<code>LIMIT n+1</code>，真拿回 n+1 行说明后面还有（<code>has_more=true</code>，把多的那行丢掉）；只拿回 ≤n 行说明到底了。游标分页的响应信封固定三件套：</p>
+    <table>
+      <tr><th>字段</th><th>含义</th></tr>
+      <tr><td><code>list</code></td><td>本页数据（≤ limit 行）</td></tr>
+      <tr><td><code>next_cursor</code></td><td>下一页的游标（由<b>截断后</b>的末行生成）；没有下一页时为空</td></tr>
+      <tr><td><code>has_more</code></td><td>是否还有下一页；前端无限滚动只看它</td></tr>
+    </table>
+    <div class="callout warn"><p>信封里<b>没有 total，也没有页码</b>。「共 137 页，跳到第 8 页」是 offset 世界观的产物：算 total 要全表 COUNT（大表上很慢且随即过期），跳页在游标世界观里根本不存在——只能顺着读。产品上要「大概多少条」，用近似统计或缓存另算，别把 COUNT 塞进列表接口。</p></div>
+
+    <h3>5. 在本站的定位</h3>
+    <p>分类集合小（一个家庭几十条封顶），B4 的 <code>GET /api/finance/categories</code> 维持 D6 的全量 <code>{"list":[...]}</code> 契约不变，<b>今天不加任何 HTTP 分页参数</b>。<code>ListPage</code> 落在 repo 层，是替 S6 的流水列表预制的原语——那时信封三件套才第一次出现在 HTTP 响应里。一个 repo 同时留 <code>List</code>（全量）与 <code>ListPage</code>（分页）不矛盾：按调用方的真实数据量选，不预先泛化。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>①+②+③：platform/paging 新增游标结构 + repo 新增 ListPage + 翻页读穿测试</b>。HTTP 契约不动。收工时 <code>make build</code> / <code>make test</code> 仍绿。</p>
+
+    <h3>步骤 1 · 游标的编解码（全站唯一，之后所有分页都 import 它）</h3>
+    <pre><span class="code-label">完整 · server/internal/platform/paging/paging.go</span><code><span class="k">package</span> paging
+
+<span class="k">import</span> (
+    <span class="s">"encoding/base64"</span>
+    <span class="s">"encoding/json"</span>
+    <span class="s">"errors"</span>
+    <span class="s">"fmt"</span>
+)
+
+<span class="c">// ErrBadCursor 游标不合法（不是本站发出去的、或被改坏了）。</span>
+<span class="c">// 上层把它映射成 response.ErrInvalidParam → 400 + 1004，绝不当 5000 处理。</span>
+<span class="k">var</span> <span class="t">ErrBadCursor</span> = errors.<span class="t">New</span>(<span class="s">"bad cursor"</span>)
+
+<span class="k">const</span> (
+    <span class="t">DefaultLimit</span> = <span class="n">20</span>  <span class="c">// 调用方不传 limit 时的兜底</span>
+    <span class="t">MaxLimit</span>     = <span class="n">100</span> <span class="c">// 上限：防止 ?limit=999999 变成变相全量拖库</span>
+)
+
+<span class="c">// Cursor 记录「上一页最后一行」在排序上的位置。</span>
+<span class="c">// JSON 字段刻意取短名：游标会进 URL，每个字节都算钱。</span>
+<span class="k">type</span> <span class="t">Cursor</span> <span class="k">struct</span> {
+    <span class="t">Sort</span> <span class="t">int</span>   <span class="s">`json:"s"`</span>
+    <span class="t">ID</span>   <span class="t">int64</span> <span class="s">`json:"i"`</span>
+}
+
+<span class="c">// Encode 序列化 + base64（RawURLEncoding：URL 安全字母表、无 = 填充）。</span>
+<span class="k">func</span> <span class="t">Encode</span>(c <span class="t">Cursor</span>) <span class="t">string</span> {
+    b, _ := json.<span class="t">Marshal</span>(c) <span class="c">// 两个数值字段，Marshal 不会失败</span>
+    <span class="k">return</span> base64.<span class="t">RawURLEncoding</span>.<span class="t">EncodeToString</span>(b)
+}
+
+<span class="c">// Decode 是 Encode 的逆运算；任何一步不对劲都归为 ErrBadCursor。</span>
+<span class="k">func</span> <span class="t">Decode</span>(s <span class="t">string</span>) (<span class="t">Cursor</span>, <span class="t">error</span>) {
+    <span class="k">var</span> c <span class="t">Cursor</span>
+    b, err := base64.<span class="t">RawURLEncoding</span>.<span class="t">DecodeString</span>(s)
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        <span class="k">return</span> c, fmt.<span class="t">Errorf</span>(<span class="s">"%w: base64: %v"</span>, <span class="t">ErrBadCursor</span>, err)
+    }
+    <span class="k">if</span> err := json.<span class="t">Unmarshal</span>(b, &amp;c); err != <span class="t">nil</span> {
+        <span class="k">return</span> c, fmt.<span class="t">Errorf</span>(<span class="s">"%w: json: %v"</span>, <span class="t">ErrBadCursor</span>, err)
+    }
+    <span class="k">return</span> c, <span class="k">nil</span>
+}</code></pre>
+
+    <h3>步骤 2 · repo 的 ListPage：keyset 条件 + Limit(n+1) 探针</h3>
+    <pre><span class="code-label">完整 · server/internal/finance/repository/category_paging.go</span><code><span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"errors"</span>
+    <span class="s">"fmt"</span>
+
+    <span class="s">"homecube/internal/finance/model"</span>
+    <span class="s">"homecube/internal/platform/paging"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="c">// Page 游标分页的 repo 层信封。S6 挂 HTTP 时，handler 把它翻译成</span>
+<span class="c">// {"list":..., "next_cursor":..., "has_more":...} 的 JSON 响应。</span>
+<span class="k">type</span> <span class="t">Page</span> <span class="k">struct</span> {
+    <span class="t">List</span>    []model.<span class="t">Category</span>
+    <span class="t">Next</span>    <span class="t">string</span> <span class="c">// 空 = 没有下一页</span>
+    <span class="t">HasMore</span> <span class="t">bool</span>
+}
+
+<span class="c">// ListPage 游标分页读分类：排序 (sort ASC, id ASC)，游标 = 上页末行的 (sort, id)。</span>
+<span class="c">// cursor 为空表示读第一页。坏游标 → response.ErrInvalidParam（上层 400+1004）。</span>
+<span class="k">func</span> (r *<span class="t">GormCategoryRepo</span>) <span class="t">ListPage</span>(ctx context.<span class="t">Context</span>, familyID <span class="t">int64</span>, cursor <span class="t">string</span>, limit <span class="t">int</span>) (<span class="t">Page</span>, <span class="t">error</span>) {
+    <span class="k">if</span> limit &lt;= <span class="n">0</span> {
+        limit = paging.<span class="t">DefaultLimit</span>
+    }
+    <span class="k">if</span> limit &gt; paging.<span class="t">MaxLimit</span> {
+        limit = paging.<span class="t">MaxLimit</span>
+    }
+
+    q := r.db.<span class="t">WithContext</span>(ctx).<span class="t">Model</span>(&amp;model.<span class="t">Category</span>{}).
+        <span class="t">Where</span>(<span class="s">"(family_id = ? OR family_id IS NULL)"</span>, familyID) <span class="c">// 与 List 同一可见范围：本家庭 + 预置</span>
+
+    <span class="k">if</span> cursor != <span class="s">""</span> {
+        c, err := paging.<span class="t">Decode</span>(cursor)
+        <span class="k">if</span> err != <span class="t">nil</span> {
+            <span class="k">if</span> errors.<span class="t">Is</span>(err, paging.<span class="t">ErrBadCursor</span>) {
+                <span class="k">return</span> <span class="t">Page</span>{}, fmt.<span class="t">Errorf</span>(<span class="s">"list page: %w"</span>, response.<span class="t">ErrInvalidParam</span>)
+            }
+            <span class="k">return</span> <span class="t">Page</span>{}, fmt.<span class="t">Errorf</span>(<span class="s">"list page: %w"</span>, err)
+        }
+        q = q.<span class="t">Where</span>(<span class="s">"(sort, id) &gt; (?, ?)"</span>, c.<span class="t">Sort</span>, c.<span class="t">ID</span>) <span class="c">// keyset：从游标位置之后接着读</span>
+    }
+
+    <span class="k">var</span> rows []model.<span class="t">Category</span>
+    <span class="k">if</span> err := q.<span class="t">Order</span>(<span class="s">"sort ASC, id ASC"</span>).<span class="t">Limit</span>(limit + <span class="n">1</span>). <span class="c">// 多拿 1 行当探针</span>
+        <span class="t">Find</span>(&amp;rows).<span class="t">Error</span>; err != <span class="t">nil</span> {
+        <span class="k">return</span> <span class="t">Page</span>{}, fmt.<span class="t">Errorf</span>(<span class="s">"list page: %w"</span>, err)
+    }
+
+    p := <span class="t">Page</span>{<span class="t">List</span>: rows}
+    <span class="k">if</span> <span class="t">len</span>(rows) &gt; limit { <span class="c">// 探针命中：还有下一页</span>
+        p.<span class="t">HasMore</span> = <span class="t">true</span>
+        p.<span class="t">List</span> = rows[:limit] <span class="c">// 探针行丢掉，不泄漏给调用方</span>
+        last := p.<span class="t">List</span>[<span class="t">len</span>(p.<span class="t">List</span>)<span class="n">-1</span>]
+        p.<span class="t">Next</span> = paging.<span class="t">Encode</span>(paging.<span class="t">Cursor</span>{<span class="t">Sort</span>: last.<span class="t">Sort</span>, <span class="t">ID</span>: last.ID}) <span class="c">// 由截断后的末行生成</span>
+    }
+    <span class="k">return</span> p, <span class="k">nil</span>
+}</code></pre>
+    <div class="callout note"><p>两个 GORM 细节：① 每个 <code>Where</code> 会被 GORM 用 AND 串接，但<b>不要赌它替你加括号</b>——含 OR 的条件自己在字符串里带上括号，keyset 条件同理，这是肌肉记忆级的好习惯；② 模型带 <code>gorm.DeletedAt</code>，默认作用域自动追加 <code>deleted_at IS NULL</code>，软删的行不会混进任何一页（昨天的软删三件套在这里白捡一个正确性）。</p></div>
+
+    <h3>步骤 3 · 翻页读穿测试：25 行种子，不重不漏</h3>
+    <pre><span class="code-label">完整 · server/internal/finance/repository/category_paging_test.go</span><code><span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"errors"</span>
+    <span class="s">"fmt"</span>
+    <span class="s">"testing"</span>
+
+    <span class="s">"homecube/internal/finance/model"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="k">func</span> <span class="t">TestListPageWalkThrough</span>(t *testing.<span class="t">T</span>) {
+    gdb := <span class="t">openTestDB</span>(t) <span class="c">// S3·D6 的 skip 助手，同包直接用</span>
+    repo := <span class="t">NewGormCategoryRepo</span>(gdb)
+    ctx := context.<span class="t">Background</span>()
+    <span class="k">const</span> fam = <span class="t">int64</span>(<span class="n">921</span>)
+    t.<span class="t">Cleanup</span>(<span class="k">func</span>() {
+        gdb.<span class="t">Unscoped</span>().<span class="t">Where</span>(<span class="s">"family_id = ?"</span>, fam).<span class="t">Delete</span>(&amp;model.<span class="t">Category</span>{})
+    })
+
+    <span class="c">// 种 25 行，sort 刻意只取 0..4 循环——大量并列，逼 (sort,id) 的 id 出来决胜</span>
+    seeded := <span class="k">make</span>(<span class="k">map</span>[<span class="t">int64</span>]<span class="t">bool</span>, <span class="n">25</span>)
+    <span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="n">25</span>; i++ {
+        cat, err := repo.<span class="t">Create</span>(ctx, fam, model.<span class="t">CategoryInput</span>{
+            <span class="t">Name</span>: fmt.<span class="t">Sprintf</span>(<span class="s">"分页小白鼠%02d"</span>, i),
+            <span class="t">Kind</span>: <span class="s">"expense"</span>,
+            <span class="t">Sort</span>: i % <span class="n">5</span>,
+        })
+        <span class="k">if</span> err != <span class="t">nil</span> {
+            t.<span class="t">Fatalf</span>(<span class="s">"seed %d: %v"</span>, i, err)
+        }
+        seeded[cat.ID] = <span class="t">true</span>
+    }
+
+    <span class="c">// 顺着游标一路翻到底，收集所有见过的 id</span>
+    seen := <span class="k">make</span>(<span class="k">map</span>[<span class="t">int64</span>]<span class="t">int</span>) <span class="c">// id → 出现次数，抓重复</span>
+    cursor := <span class="s">""</span>
+    pages := <span class="n">0</span>
+    <span class="k">for</span> {
+        p, err := repo.<span class="t">ListPage</span>(ctx, fam, cursor, <span class="n">10</span>)
+        <span class="k">if</span> err != <span class="t">nil</span> {
+            t.<span class="t">Fatalf</span>(<span class="s">"page %d: %v"</span>, pages+<span class="n">1</span>, err)
+        }
+        <span class="k">if</span> <span class="t">len</span>(p.<span class="t">List</span>) &gt; <span class="n">10</span> {
+            t.<span class="t">Fatalf</span>(<span class="s">"第 %d 页给了 %d 行, 超过 limit"</span>, pages+<span class="n">1</span>, <span class="t">len</span>(p.<span class="t">List</span>))
+        }
+        <span class="k">for</span> _, c := <span class="k">range</span> p.<span class="t">List</span> {
+            seen[c.ID]++
+        }
+        pages++
+        <span class="k">if</span> !p.<span class="t">HasMore</span> {
+            <span class="k">if</span> p.<span class="t">Next</span> != <span class="s">""</span> {
+                t.<span class="t">Fatalf</span>(<span class="s">"最后一页 next 必须为空, got %q"</span>, p.<span class="t">Next</span>)
+            }
+            <span class="k">break</span>
+        }
+        cursor = p.<span class="t">Next</span>
+        <span class="k">if</span> pages &gt; <span class="n">10</span> {
+            t.<span class="t">Fatal</span>(<span class="s">"翻了 10 页还没到底——游标没在推进，死循环保护"</span>)
+        }
+    }
+
+    <span class="c">// ① 不重：每个 id 恰好出现一次</span>
+    <span class="k">for</span> id, n := <span class="k">range</span> seen {
+        <span class="k">if</span> n != <span class="n">1</span> {
+            t.<span class="t">Fatalf</span>(<span class="s">"id %d 出现了 %d 次——翻页重读"</span>, id, n)
+        }
+    }
+    <span class="c">// ② 不漏：25 行种子一个不少（预置行也在流里，总数只会 ≥ 25+预置数，不硬编码）</span>
+    <span class="k">for</span> id := <span class="k">range</span> seeded {
+        <span class="k">if</span> seen[id] == <span class="n">0</span> {
+            t.<span class="t">Fatalf</span>(<span class="s">"种子 id %d 从没出现——翻页漏读"</span>, id)
+        }
+    }
+    <span class="c">// ③ 至少翻了 3 页（25 行 + 6 条预置，limit 10）</span>
+    <span class="k">if</span> pages &lt; <span class="n">3</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"只翻了 %d 页, want ≥ 3"</span>, pages)
+    }
+
+    <span class="c">// ④ 坏游标 → ErrInvalidParam（上层 400+1004），不是 panic 也不是 5000</span>
+    <span class="k">for</span> _, bad := <span class="k">range</span> []<span class="t">string</span>{<span class="s">"@@不是base64@@"</span>, <span class="s">"e30"</span> /* {} 解得出但字段全零值也算合法，见下 */, <span class="s">"eyJzIjoiYSJ9"</span> /* s 是字符串 */} {
+        <span class="k">if</span> bad == <span class="s">"e30"</span> {
+            <span class="k">continue</span> <span class="c">// 全零游标是合法位置（从头读），不该报错——写下来防止自己想当然</span>
+        }
+        <span class="k">if</span> _, err := repo.<span class="t">ListPage</span>(ctx, fam, bad, <span class="n">10</span>); !errors.<span class="t">Is</span>(err, response.<span class="t">ErrInvalidParam</span>) {
+            t.<span class="t">Fatalf</span>(<span class="s">"坏游标 %q 应 ErrInvalidParam, got %v"</span>, bad, err)
+        }
+    }
+}</code></pre>
+    <div class="callout note"><p>测试里那个 <code>"e30"</code>（<code>{}</code> 的 base64）特意留了一手：解码成功、字段全零值，它<b>是</b>合法游标——语义等于「从 (0,0) 之后读」，也就是从头读。不透明 ≠ 不可预测：合法的零值位置不该报错，只有<b>解不出来</b>的才报 1004。把这条边界写进测试，好过在代码评审里吵。</p></div>
+
+    <h3>步骤 4 · 验证并提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+docker compose up -d postgres
+make migrate-homeos-up &amp;&amp; make migrate-finance-up
+
+export DB_HOST=localhost DB_PORT=5432 DB_USER=homecube DB_PASS=homecube123 DB_NAME=homecube DB_SSLMODE=disable
+make test                                  <span class="c"># 翻页读穿测试绿；HTTP 契约未动，分类 6 条接口测试原样通过</span>
+
+<span class="c"># 顺手看一次行值比较的执行计划：keyset 条件走索引，不是扫全表</span>
+docker compose exec postgres psql -U homecube -d homecube -c \
+  <span class="s">"EXPLAIN SELECT * FROM finance.finance_category WHERE (sort, id) &gt; (3, 107) ORDER BY sort, id LIMIT 11;"</span>
+
+unset DB_HOST DB_PORT DB_USER DB_PASS DB_NAME DB_SSLMODE
+make build &amp;&amp; make test &amp;&amp; make lint       <span class="c"># 无库口径也绿（Skip）</span>
+git add server
+git status
+git commit -m "feat(s3d8): 游标分页 platform/paging + 分类 repo ListPage + 读穿测试"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>游标里只放排序键，不放 id</td><td>sort 并列的行翻页时整批重复或整批消失</td><td>ORDER BY 必须以唯一列收尾，游标带上它——(sort, id) 才是全序</td></tr>
+      <tr><td>忘写 <code>Limit(n+1)</code> 探针</td><td>恰好整页时 has_more 靠猜：多翻一页空的，或提前断流</td><td>多拿一行：拿满 n+1 才有下一页，探针行截掉不外泄</td></tr>
+      <tr><td>next 游标用未截断的末行（探针行）生成</td><td>下一页开头凭空跳过一行——漏读</td><td>先截断到 n 行，再用<b>截断后</b>的末行生成 next</td></tr>
+      <tr><td>base64 用 StdEncoding</td><td>游标里的 <code>+</code> 被 URL 当空格、<code>=</code> 要转义，解回来是坏值</td><td><code>RawURLEncoding</code>：URL 安全字母表 + 无填充</td></tr>
+      <tr><td>坏游标当内部错误处理</td><td>用户改了个 URL 参数，你返回 5000 还打了告警</td><td>解码失败 → ErrInvalidParam → 400 + 1004，客户端的错就明说</td></tr>
+      <tr><td>含 OR 的条件不加括号，与 keyset 条件混拼</td><td>AND/OR 优先级把 where 拼歪，预置行或软删行漏进结果</td><td>每个 Where 的字符串自带括号，不赌框架行为</td></tr>
+      <tr><td>给游标分页硬加 total / 页码</td><td>每页多一次全表 COUNT，大表上列表接口慢成狗</td><td>信封就三件套 list/next_cursor/has_more；要总数另做缓存统计</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>offset 分页</td><td>用行号定位（LIMIT n OFFSET m）；越翻越慢、并发下重读漏读，本站禁用</td></tr>
+      <tr><td>游标分页（keyset pagination）</td><td>用「上页末行的位置」定位：WHERE (排序键…) &gt; 游标，索引跳跃，页页等速</td></tr>
+      <tr><td>不透明游标（opaque cursor）</td><td>对客户端只是一个原样交回的字符串，不承诺内部结构；本站 = base64 的 (sort, id)</td></tr>
+      <tr><td>行值比较</td><td><code>(a, b) &gt; (x, y)</code>：先比 a 再比 b 的字典序；Postgres 原生支持且吃复合索引</td></tr>
+      <tr><td>决胜键（tie-breaker）</td><td>ORDER BY 末尾的唯一列（本站是 id）；没有它，「从某行之后」无确定含义</td></tr>
+      <tr><td>Limit(n+1) 探针</td><td>多要一行探测 has_more，替代单独的 COUNT 查询</td></tr>
+      <tr><td>信封三件套</td><td><code>{list, next_cursor, has_more}</code>；没有 total、没有页码</td></tr>
+      <tr><td>RawURLEncoding</td><td>base64 的 URL 安全无填充变体：<code>-</code><code>_</code> 字母表、无 <code>=</code>，可直接进查询串</td></tr>
+      <tr><td>ErrBadCursor → 1004</td><td>游标解不出来是客户端输入错误：400 + 1004，不是 5000</td></tr>
+      <tr><td>漂移（drift）</td><td>offset 分页在并发增删下内容平移导致的重读/漏读；游标分页天然免疫</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有两种情况出去查：</p>
+    <ul>
+      <li><b>行值比较的精确语义</b>：<a href="https://www.postgresql.org/docs/16/functions-comparisons.html" target="_blank">PostgreSQL 16 · Row and Array Comparisons</a>（可选，看 <code>ROW</code> 比较那一小节即可）。</li>
+      <li><b>复合索引怎么建才吃得到 keyset</b>：今天不建——分类表数据量小，全表扫也快；S6 流水表的 <code>(family_id, occurred_at DESC, id DESC)</code> 索引会正式兑现这件事（本周六收口时你会先见到它）。</li>
+    </ul>
+    <p>站内回看：repo 的 <code>List</code> 全量版在 <a href="w05d6.html">S3·D6</a>；<code>ErrInvalidParam</code>/1004 与 <code>errors.Is</code> 的哨兵错误机制在 <a href="../s1/w01d4.html">S1·D4</a>；软删默认作用域为什么让分页「白捡正确性」在 <a href="w06d1.html">S3·D7</a>。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w06d2c1"><code>platform/paging</code> 落盘：Cursor{s,i} + Encode/Decode（RawURLEncoding）+ ErrBadCursor + DefaultLimit/MaxLimit，全站唯一游标实现</label></li>
+      <li><label><input type="checkbox" data-key="w06d2c2">repo 的 <code>ListPage</code> 落盘：keyset 条件 <code>(sort, id) &gt; (?, ?)</code>、Limit(n+1) 探针、next 由截断后末行生成、坏游标 → ErrInvalidParam</label></li>
+      <li><label><input type="checkbox" data-key="w06d2c3">读穿测试绿：25 行（sort 并列）+ 预置行顺着游标翻到底，不重不漏、末页 next 为空、坏游标 1004、死循环保护在位</label></li>
+      <li><label><input type="checkbox" data-key="w06d2c4"><code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿（带库与无库两种口径），HTTP 契约确认未动，commit 带卡号 <code>s3d8</code></label></li>
+      <li><label><input type="checkbox" data-key="w06d2c5"><code>notes/</code> 里写下三行：offset 三宗罪各一句话、游标为什么必须带 id、信封里为什么没有 total</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w06d1.html"><span class="hint">← 昨天 · S3·D7</span>事务与软删：deleted_at 语义、Unscoped 与</a>
+    <a href="w06d3.html"><span class="hint">明天 · S3·D9 →</span>金额列 *_cents BIGINT 与 finance_0</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w06d2 · 明天见 ⟩</footer>
+</body>
+</html>

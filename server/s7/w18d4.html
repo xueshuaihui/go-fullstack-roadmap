@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S7·D10 · 动态流接口：按天分组、按面筛选、游标分页 | HomeCube 修炼手册</title>
+<meta name="description" content="GET /api/homeos/dynamics：homeos_dynamic 表 + 按家庭时区分天分组、按面 code 筛选、不透明游标分页；summary 的 D 区前 20 条复用同一个查询函数。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w18d4">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S7</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S7</a> / w18d4</div>
+  <div class="day-meta">
+    <span class="chip">S7 · DAY 10</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>动态流接口：按天分组、按面筛选、游标分页</h1>
+  <p>动态流是首页 D 区的内容源：「家里刚发生了什么」——谁记了一笔账、谁改了面配置、谁的待办完成了。今天建 <code>homeos_dynamic</code> 表与 <code>GET /api/homeos/dynamics</code> 接口，三个能力一次做齐：<b>按天分组</b>（家庭时区的天）、<b>按面筛选</b>（code 参数）、<b>游标分页</b>（不透明游标，续读不重不漏）。首页 summary 的 D 区取前 20 条，与动态流页<b>续读同一个接口、同一个查询函数</b>——同源纪律第三次上岗。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w18d4g1">动态表落库：module_code 记来源面、occurred_at 记发生时刻，逻辑引用不建物理外键</label></li>
+      <li><label><input type="checkbox" data-key="w18d4g2">查询函数一份：summary D 区（前 20 条）与 dynamics 接口（游标续读）都调它</label></li>
+      <li><label><input type="checkbox" data-key="w18d4g3">讲清「按天分组在 Go 侧做、SQL 只管排序与游标」的取舍与家庭时区口径</label></li>
+      <li><label><input type="checkbox" data-key="w18d4g4">分页测试绿：两页拼接不重不漏、code 筛选生效、游标篡改 400+1004</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 动态行长什么样</h3>
+    <p>一行 = 家里发生的一件事。关键列的取舍：</p>
+    <ul>
+      <li><code>module_code</code>：来源面（finance / homeos / …）。「按面筛选」直接过滤这一列；它也决定了深链回源对象的路由域。</li>
+      <li><code>actor_member_id</code>：谁干的。渲染时联出名字与称谓——注意这是<b>进程内</b>同库查询，不是跨面：动态表与成员表都在 homeos。</li>
+      <li><code>kind</code> + <code>summary</code>：机读分型 + 人读文案。文案在<b>写入时</b>定稿（「妈妈记了一笔 34.00 的餐饮支出」），读侧不做模板拼接——否则改一次文案样式，历史动态全变脸。</li>
+      <li><code>occurred_at</code>：事情发生的时刻（TIMESTAMPTZ），不是行创建时刻。排序与游标都用它。</li>
+      <li><b>没有 source_id 的外键</b>：动态引用源对象走逻辑 id，不建物理外键、不复制金额——源对象被删，动态行照常在（历史不被追溯篡改）。</li>
+    </ul>
+    <p>写入侧的纪律顺带立好：别的模块（如 finance 记账动作）要发动态，<b>不直插这张表</b>，走 platform 的追加接口（与 FamilyDirectory、DueRegistry 同一条跨模块纪律）。今天先把表与读侧做完，写入用测试造数；追加接口在收口日前补一个最小版（见步骤 4）。</p>
+
+    <h3>2. 按天分组：SQL 管序，Go 管组</h3>
+    <p>「天」是谁的天？<b>家庭时区</b>的天（S7·D8 立的口径：today 按家庭时区，动态分组同理）。实现上两种做法：</p>
+    <table>
+      <tr><th>做法</th><th>评价</th></tr>
+      <tr><td>SQL 里 <code>GROUP BY date(occurred_at AT TIME ZONE ?)</code></td><td>能跑，但游标分页与分组在 SQL 里纠缠：页边界切在一天的中间时，「组」跨页了，拼接逻辑非常绕</td></tr>
+      <tr><td><b>SQL 只负责排序 + 游标 + LIMIT，分组在 Go 侧扫一遍</b></td><td>本页内顺序折叠成 <code>[]DayGroup</code>；跨页的同一天由客户端按 date 合并（前端侧的续读契约）。SQL 简单、可测、口径集中</td></tr>
+    </table>
+    <p>游标照 S3 的口径：<b>不透明</b>，服务端把 <code>(occurred_at, id)</code> 编码进 base64；客户端不得解析、不得自造。排序键必须<b>唯一化</b>——同一微秒可能有两条动态，只按 occurred_at 排会翻页重复，所以游标带上 id 做决胜键（tie-breaker）。解不开/解出畸形值 → 400 + 1004（参数错误），不静默当第一页。</p>
+
+    <h3>3. summary 与 dynamics：一个查询函数两个出口</h3>
+    <pre><span class="code-label">结构</span><code>Query(familyID, code, cursor, limit)
+   ├─ 出口①  summary.dynamics.items：code=""、cursor=""、limit=20 → 平铺 items + has_more
+   └─ 出口②  GET /api/homeos/dynamics：带筛选与游标 → 分组 []DayGroup + next_cursor + has_more</code></pre>
+    <p>分组只是出口②的<b>呈现整形</b>，查询内核一份。首页 D 区取前 20 条、动态流页续读同一接口——用户从首页滑进动态流页，看到的前 20 条与首页完全一致，续读从第 21 条开始，不重不漏。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>④ + ② + ⑤</b>：迁移、dynamics handler、summary D 区换真。</p>
+
+    <h3>步骤 1 · 迁移（编号接 S7·D9 的示例是 0012）</h3>
+    <pre><span class="code-label">完整 · server/migrations/homeos/homeos_0012_init_dynamic.up.sql</span><code>CREATE TABLE homeos_dynamic (
+    id              BIGSERIAL PRIMARY KEY,
+    family_id       BIGINT NOT NULL,
+    module_code     TEXT NOT NULL,           -- 来源面 code
+    kind            TEXT NOT NULL,           -- 机读分型，如 tx.created / module.disabled
+    actor_member_id BIGINT NOT NULL,         -- 谁干的（逻辑引用，无外键）
+    summary         TEXT NOT NULL,           -- 人读文案，写入时定稿
+    source_id       BIGINT NULL,             -- 源对象逻辑 id，深链用；无外键
+    occurred_at     TIMESTAMPTZ NOT NULL,    -- 发生时刻：排序与游标的键
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at      TIMESTAMPTZ NULL,
+    deleted_by      BIGINT NULL,
+    version         INT NOT NULL DEFAULT 1
+);
+
+-- 主查询形态：某家庭按时间倒序翻页，可带面筛选
+CREATE INDEX idx_dynamic_family_time ON homeos_dynamic (family_id, occurred_at DESC, id DESC);
+CREATE INDEX idx_dynamic_family_code ON homeos_dynamic (family_id, module_code, occurred_at DESC, id DESC);</code></pre>
+    <pre><span class="code-label">完整 · server/migrations/homeos/homeos_0012_init_dynamic.down.sql</span><code>DROP TABLE IF EXISTS homeos_dynamic;</code></pre>
+
+    <h3>步骤 2 · 查询内核 + 游标编解码</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/dynamics/query.go</span><code><span class="k">package</span> dynamics
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"encoding/base64"</span>
+    <span class="s">"fmt"</span>
+    <span class="s">"strconv"</span>
+    <span class="s">"strings"</span>
+    <span class="s">"time"</span>
+
+    <span class="s">"gorm.io/gorm"</span>
+
+    <span class="s">"homecube/internal/homeos/model"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="k">type</span> <span class="t">Dynamic</span> <span class="k">struct</span> {
+    ID            <span class="t">int64</span>     <span class="s">`gorm:"primaryKey" json:"id"`</span>
+    FamilyID      <span class="t">int64</span>     <span class="s">`gorm:"not null" json:"-"`</span>
+    ModuleCode    <span class="t">string</span>    <span class="s">`gorm:"not null" json:"code"`</span>
+    Kind          <span class="t">string</span>    <span class="s">`gorm:"not null" json:"kind"`</span>
+    ActorMemberID <span class="t">int64</span>     <span class="s">`gorm:"not null" json:"-"`</span>
+    Summary       <span class="t">string</span>    <span class="s">`gorm:"not null" json:"summary"`</span>
+    SourceID      *<span class="t">int64</span>    <span class="s">`json:"source_id"`</span>
+    OccurredAt    time.<span class="t">Time</span> <span class="s">`gorm:"not null" json:"occurred_at"`</span>
+    CreatedAt     time.<span class="t">Time</span> <span class="s">`json:"-"`</span>
+    UpdatedAt     time.<span class="t">Time</span> <span class="s">`json:"-"`</span>
+    DeletedAt     *time.<span class="t">Time</span> <span class="s">`json:"-"`</span>
+    DeletedBy     *<span class="t">int64</span>    <span class="s">`json:"-"`</span>
+    Version       <span class="t">int</span>       <span class="s">`json:"-"`</span>
+
+    ActorName     <span class="t">string</span> <span class="s">`gorm:"-" json:"actor_name"`</span>     <span class="c">// 联出的展示字段</span>
+    ActorRelation <span class="t">string</span> <span class="s">`gorm:"-" json:"actor_relation"`</span>
+}
+
+<span class="k">func</span> (Dynamic) <span class="t">TableName</span>() <span class="t">string</span> { <span class="k">return</span> <span class="s">"homeos_dynamic"</span> }
+
+<span class="c">// EncodeCursor 不透明游标：base64(微秒|id)。客户端不得解析。</span>
+<span class="k">func</span> <span class="t">EncodeCursor</span>(occurredAt time.<span class="t">Time</span>, id <span class="t">int64</span>) <span class="t">string</span> {
+    raw := fmt.<span class="t">Sprintf</span>(<span class="s">"%d|%d"</span>, occurredAt.<span class="t">UnixMicro</span>(), id)
+    <span class="k">return</span> base64.<span class="t">RawURLEncoding</span>.<span class="t">EncodeToString</span>([]<span class="t">byte</span>(raw))
+}
+
+<span class="c">// DecodeCursor 解不开或畸形 → response.ErrInvalidParam（400 + 1004），不静默当第一页。</span>
+<span class="k">func</span> <span class="t">DecodeCursor</span>(s <span class="t">string</span>) (time.<span class="t">Time</span>, <span class="t">int64</span>, <span class="t">error</span>) {
+    b, err := base64.<span class="t">RawURLEncoding</span>.<span class="t">DecodeString</span>(s)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        <span class="k">return</span> time.<span class="t">Time</span>{}, <span class="n">0</span>, response.<span class="t">ErrInvalidParam</span>
+    }
+    ts, idStr, ok := strings.<span class="t">Cut</span>(<span class="t">string</span>(b), <span class="s">"|"</span>)
+    <span class="k">if</span> !ok {
+        <span class="k">return</span> time.<span class="t">Time</span>{}, <span class="n">0</span>, response.<span class="t">ErrInvalidParam</span>
+    }
+    micro, err1 := strconv.<span class="t">ParseInt</span>(ts, <span class="n">10</span>, <span class="n">64</span>)
+    id, err2 := strconv.<span class="t">ParseInt</span>(idStr, <span class="n">10</span>, <span class="n">64</span>)
+    <span class="k">if</span> err1 != <span class="k">nil</span> || err2 != <span class="k">nil</span> {
+        <span class="k">return</span> time.<span class="t">Time</span>{}, <span class="n">0</span>, response.<span class="t">ErrInvalidParam</span>
+    }
+    <span class="k">return</span> time.<span class="t">UnixMicro</span>(micro), id, <span class="k">nil</span>
+}
+
+<span class="c">// Query 是动态流的唯一查询内核，summary D 区与 dynamics 接口共用。</span>
+<span class="c">// code 为空 = 不按面筛选；cursor 为空 = 第一页。多取一条判 has_more。</span>
+<span class="k">func</span> <span class="t">Query</span>(ctx context.<span class="t">Context</span>, db *gorm.<span class="t">DB</span>, familyID <span class="t">int64</span>, code, cursor <span class="t">string</span>, limit <span class="t">int</span>) ([]<span class="t">Dynamic</span>, <span class="t">bool</span>, <span class="t">string</span>, <span class="t">error</span>) {
+    q := db.<span class="t">WithContext</span>(ctx).<span class="t">Model</span>(&amp;<span class="t">Dynamic</span>{}).
+        <span class="t">Where</span>(<span class="s">"family_id = ?"</span>, familyID)
+    <span class="k">if</span> code != <span class="s">""</span> {
+        q = q.<span class="t">Where</span>(<span class="s">"module_code = ?"</span>, code)
+    }
+    <span class="k">if</span> cursor != <span class="s">""</span> {
+        at, id, err := <span class="t">DecodeCursor</span>(cursor)
+        <span class="k">if</span> err != <span class="k">nil</span> {
+            <span class="k">return</span> <span class="k">nil</span>, <span class="k">false</span>, <span class="s">""</span>, err
+        }
+        <span class="c">// (occurred_at, id) 双键严格小于：同刻两条也不重不漏</span>
+        q = q.<span class="t">Where</span>(<span class="s">"(occurred_at, id) &lt; (?, ?)"</span>, at, id)
+    }
+    <span class="k">var</span> rows []<span class="t">Dynamic</span>
+    <span class="k">if</span> err := q.<span class="t">Order</span>(<span class="s">"occurred_at DESC, id DESC"</span>).
+        <span class="t">Limit</span>(limit + <span class="n">1</span>).<span class="t">Find</span>(&amp;rows).Error; err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, <span class="k">false</span>, <span class="s">""</span>, err
+    }
+    hasMore := <span class="t">len</span>(rows) &gt; limit
+    <span class="k">if</span> hasMore {
+        rows = rows[:limit]
+    }
+    next := <span class="s">""</span>
+    <span class="k">if</span> hasMore &amp;&amp; <span class="t">len</span>(rows) &gt; <span class="n">0</span> {
+        last := rows[<span class="t">len</span>(rows)-<span class="n">1</span>]
+        next = <span class="t">EncodeCursor</span>(last.OccurredAt, last.ID)
+    }
+    <span class="k">if</span> err := <span class="t">fillActors</span>(ctx, db, familyID, rows); err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, <span class="k">false</span>, <span class="s">""</span>, err
+    }
+    <span class="k">return</span> rows, hasMore, next, <span class="k">nil</span>
+}
+
+<span class="c">// fillActors 批量联出名字与称谓：一次 IN 查询，禁止每行查一次（N+1）。</span>
+<span class="k">func</span> <span class="t">fillActors</span>(ctx context.<span class="t">Context</span>, db *gorm.<span class="t">DB</span>, familyID <span class="t">int64</span>, rows []<span class="t">Dynamic</span>) <span class="t">error</span> {
+    ids := <span class="t">map</span>[<span class="t">int64</span>]<span class="t">bool</span>{}
+    <span class="k">for</span> _, r := <span class="k">range</span> rows {
+        ids[r.ActorMemberID] = <span class="k">true</span>
+    }
+    idList := <span class="t">make</span>([]<span class="t">int64</span>, <span class="n">0</span>, <span class="t">len</span>(ids))
+    <span class="k">for</span> id := <span class="k">range</span> ids {
+        idList = <span class="t">append</span>(idList, id)
+    }
+    <span class="k">if</span> <span class="t">len</span>(idList) == <span class="n">0</span> {
+        <span class="k">return</span> <span class="k">nil</span>
+    }
+    <span class="k">var</span> members []model.<span class="t">Member</span>
+    <span class="k">if</span> err := db.<span class="t">WithContext</span>(ctx).
+        <span class="t">Where</span>(<span class="s">"family_id = ? AND id IN ?"</span>, familyID, idList).
+        <span class="t">Find</span>(&amp;members).Error; err != <span class="k">nil</span> {
+        <span class="k">return</span> err
+    }
+    byID := <span class="t">map</span>[<span class="t">int64</span>]model.<span class="t">Member</span>{}
+    <span class="k">for</span> _, m := <span class="k">range</span> members {
+        byID[m.ID] = m
+    }
+    <span class="k">for</span> i := <span class="k">range</span> rows {
+        <span class="k">if</span> m, ok := byID[rows[i].ActorMemberID]; ok {
+            rows[i].ActorName = m.Name
+            rows[i].ActorRelation = m.Relation
+        }
+    }
+    <span class="k">return</span> <span class="k">nil</span>
+}</code></pre>
+
+    <h3>步骤 3 · dynamics handler + summary D 区换真</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/dynamics/handler.go</span><code><span class="k">package</span> dynamics
+
+<span class="k">import</span> (
+    <span class="s">"strconv"</span>
+    <span class="s">"time"</span>
+
+    <span class="s">"github.com/gin-gonic/gin"</span>
+    <span class="s">"gorm.io/gorm"</span>
+
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="c">// DayGroup 是按天分组后的一天的形状。</span>
+<span class="k">type</span> <span class="t">DayGroup</span> <span class="k">struct</span> {
+    Date  <span class="t">string</span>    <span class="s">`json:"date"`</span> <span class="c">// 家庭时区的 YYYY-MM-DD</span>
+    Items []<span class="t">Dynamic</span> <span class="s">`json:"items"`</span>
+}
+
+<span class="c">// List GET /api/homeos/dynamics?code=finance&amp;cursor=…&amp;limit=20</span>
+<span class="k">func</span> <span class="t">List</span>(db *gorm.<span class="t">DB</span>, tzOf <span class="k">func</span>(familyID <span class="t">int64</span>) *time.<span class="t">Location</span>) gin.<span class="t">HandlerFunc</span> {
+    <span class="k">return</span> <span class="k">func</span>(c *gin.<span class="t">Context</span>) {
+        familyID := c.<span class="t">GetInt64</span>(<span class="s">"familyID"</span>)
+        limit := <span class="n">20</span>
+        <span class="k">if</span> s := c.<span class="t">Query</span>(<span class="s">"limit"</span>); s != <span class="s">""</span> {
+            n, err := strconv.<span class="t">Atoi</span>(s)
+            <span class="k">if</span> err != <span class="k">nil</span> || n &lt; <span class="n">1</span> || n &gt; <span class="n">50</span> {
+                response.<span class="t">Fail</span>(c, <span class="n">400</span>, response.CodeInvalidParam, <span class="s">"limit 取 1-50"</span>)
+                <span class="k">return</span>
+            }
+            limit = n
+        }
+        rows, hasMore, next, err := <span class="t">Query</span>(c.<span class="t">Request</span>.<span class="t">Context</span>(), db,
+            familyID, c.<span class="t">Query</span>(<span class="s">"code"</span>), c.<span class="t">Query</span>(<span class="s">"cursor"</span>), limit)
+        <span class="k">if</span> err != <span class="k">nil</span> {
+            response.<span class="t">FailErr</span>(c, err)
+            <span class="k">return</span>
+        }
+
+        <span class="c">// 分组在 Go 侧：行已按时间倒序，顺序折叠即可</span>
+        tz := <span class="t">tzOf</span>(familyID)
+        groups := []<span class="t">DayGroup</span>{}
+        <span class="k">for</span> _, r := <span class="k">range</span> rows {
+            day := r.OccurredAt.<span class="t">In</span>(tz).<span class="t">Format</span>(<span class="s">"2006-01-02"</span>)
+            <span class="k">if</span> <span class="t">len</span>(groups) == <span class="n">0</span> || groups[<span class="t">len</span>(groups)-<span class="n">1</span>].Date != day {
+                groups = <span class="t">append</span>(groups, <span class="t">DayGroup</span>{Date: day})
+            }
+            g := &amp;groups[<span class="t">len</span>(groups)-<span class="n">1</span>]
+            g.Items = <span class="t">append</span>(g.Items, r)
+        }
+        response.<span class="t">OK</span>(c, gin.<span class="t">H</span>{<span class="s">"list"</span>: groups, <span class="s">"next_cursor"</span>: next, <span class="s">"has_more"</span>: hasMore})
+    }
+}</code></pre>
+    <pre><span class="code-label">片段 · summary D 区换真（server/internal/homeos/home/handler.go，删掉 D10 占位块）</span><code><span class="c">// D 区：前 20 条 + has_more，与动态流页同一内核（出口①平铺、出口②分组）</span>
+items, hasMore, _, err := dynamics.<span class="t">Query</span>(c.<span class="t">Request</span>.<span class="t">Context</span>(), deps.DB, familyID, <span class="s">""</span>, <span class="s">""</span>, <span class="n">20</span>)
+<span class="k">if</span> err != <span class="k">nil</span> {
+    response.<span class="t">FailErr</span>(c, err)
+    <span class="k">return</span>
+}
+data[<span class="s">"dynamics"</span>] = gin.<span class="t">H</span>{<span class="s">"items"</span>: items, <span class="s">"has_more"</span>: hasMore}</code></pre>
+    <pre><span class="code-label">片段 · main.go 路由</span><code>homeos.<span class="t">GET</span>(<span class="s">"/dynamics"</span>, dynamics.<span class="t">List</span>(db, home.<span class="t">FamilyTZ</span>(db))) <span class="c">// FamilyTZ：按家庭载时区，缓存 *time.Location</span></code></pre>
+
+    <h3>步骤 4 · 写入侧的最小接口槽（跨模块纪律）</h3>
+    <pre><span class="code-label">完整 · server/internal/platform/dynamic.go</span><code><span class="k">package</span> platform
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"time"</span>
+)
+
+<span class="c">// DynamicInput 是一条待追加的动态。跨模块写入只准走本接口，</span>
+<span class="c">// 任何业务模块不得直插 homeos_dynamic（跨模块调用点收在 platform 接口后）。</span>
+<span class="k">type</span> <span class="t">DynamicInput</span> <span class="k">struct</span> {
+    FamilyID      <span class="t">int64</span>
+    ModuleCode    <span class="t">string</span>
+    Kind          <span class="t">string</span>
+    ActorMemberID <span class="t">int64</span>
+    Summary       <span class="t">string</span>
+    SourceID      *<span class="t">int64</span>
+    OccurredAt    time.<span class="t">Time</span>
+}
+
+<span class="k">type</span> <span class="t">DynamicAppender</span> <span class="k">interface</span> {
+    <span class="t">Append</span>(ctx context.<span class="t">Context</span>, in <span class="t">DynamicInput</span>) <span class="t">error</span>
+}</code></pre>
+    <p>dynamics 包里给一个 GORM 实现（十行内的 Create），main 装配。业务动作点（如记账成功）何时接这一行调用，由你在收口时统一盘——接上即生效，接口形状今天已定。</p>
+
+    <h3>步骤 5 · 测试 + 验收 + 提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test
+make lint
+
+make run   <span class="c"># 终端 1；终端 2：</span>
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:8080/api/homeos/dynamics?limit=20"
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:8080/api/homeos/dynamics?code=finance"
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:8080/api/homeos/dynamics?cursor=不是base64"
+<span class="c"># 第三条应 400 + 1004</span>
+
+git add server
+git status
+git commit -m "feat(s7d10): homeos_dynamic 表 + dynamics 接口（分组/筛选/游标），summary D 区同内核换真"</code></pre>
+    <p>测试至少四条（用 seed 造 25 行跨两天的动态）：① limit=20 两页拼接 = 25 行、无重复、无遗漏；② <code>code=finance</code> 只出 finance 行；③ 分组日期按家庭时区（造一条 UTC 23:30 的行，东八区家庭应归到第二天）；④ 畸形游标 400+1004。</p>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>游标只用 occurred_at</td><td>同一时刻两条动态，翻页时重复或漏掉一条</td><td>排序键唯一化：(occurred_at, id) 双键，游标编码两者</td></tr>
+      <tr><td>畸形游标静默当第一页</td><td>客户端拿着坏游标无限重刷第一页，还以为到底了</td><td>解码失败 → 400 + 1004，让错误可见</td></tr>
+      <tr><td>客户端解析游标改参数</td><td>服务端换排序键，老客户端全崩</td><td>游标不透明是契约；客户端只存、只回传</td></tr>
+      <tr><td>每行动态查一次成员（N+1）</td><td>20 行动态 = 21 条 SQL，首页越刷越慢</td><td>fillActors 一次 IN 批量联</td></tr>
+      <tr><td>summary 里另写一份动态查询</td><td>首页与动态流页前 20 条不一致</td><td>同一 Query 内核，两个出口只差呈现整形</td></tr>
+      <tr><td>分组用服务器本地时区</td><td>跨时区家庭的「今天」错位，凌晨动态归错天</td><td>按家庭时区分组（与 today 口径同源）</td></tr>
+      <tr><td>finance 直插 homeos_dynamic</td><td>跨模块直查/直写，拆服务时全断</td><td>走 <code>platform.DynamicAppender</code> 接口</td></tr>
+      <tr><td>has_more 用「本页满 limit」判断</td><td>恰好整除时多翻一页空页</td><td>多取一条：取 limit+1，多出即 has_more（今天的实现）</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>动态（dynamic）</td><td>家里发生的一件事：来源面 + 行为人 + 定稿文案 + 发生时刻</td></tr>
+      <tr><td>不透明游标</td><td>base64(排序键, id)；客户端不得解析、不得自造</td></tr>
+      <tr><td>决胜键（tie-breaker）</td><td>排序键并列时用 id 决胜，保证全序、翻页不重不漏</td></tr>
+      <tr><td>limit+1 探页</td><td>多取一条判 has_more，避免空翻页</td></tr>
+      <tr><td>按天分组</td><td>家庭时区的 YYYY-MM-DD；SQL 管序、Go 管组，跨页同天由客户端合并</td></tr>
+      <tr><td>N+1 查询</td><td>列表 N 行触发 N 次关联查询；用一次 IN 批量联替代</td></tr>
+      <tr><td>逻辑引用</td><td>source_id 无物理外键、不复制金额；源删了动态还在</td></tr>
+      <tr><td>DynamicAppender</td><td>跨模块写动态的 platform 接口；业务模块不直插表</td></tr>
+      <tr><td>文案写入时定稿</td><td>summary 列存最终人读文案；读侧不做模板拼接</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <ul>
+      <li><b>游标分页的完整口径</b>：S3 列表返回那课（不透明、禁 offset、非分页小集合例外）。</li>
+      <li><b>base64 与 strconv</b>：S1·D4 的标准库初识 + 标准库文档（可选）。</li>
+      <li><b>家庭时区与「今天」口径</b>:S7·D8 的 todaySection。</li>
+      <li><b>跨模块接口纪律</b>：S4 FamilyDirectory、S7·D8 DueRegistry，今天第三个。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w18d4c1">迁移 up/down 落盘并执行，两条索引与主查询形态一致；down 能回滚</label></li>
+      <li><label><input type="checkbox" data-key="w18d4c2">GET <code>/api/homeos/dynamics</code> 三能力齐：按天分组（家庭时区）、code 筛选、游标分页（limit 1-50，畸形游标 400+1004）</label></li>
+      <li><label><input type="checkbox" data-key="w18d4c3">summary D 区换真且与 dynamics 同内核；两页拼接不重不漏的测试绿；fillActors 无 N+1</label></li>
+      <li><label><input type="checkbox" data-key="w18d4c4"><code>platform.DynamicAppender</code> 接口槽落盘并有 GORM 实现；<code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，commit 带卡号 <code>s7d10</code></label></li>
+      <li><label><input type="checkbox" data-key="w18d4c5">能不看资料讲清：游标为什么必须带 id、分组为什么在 Go 侧做、has_more 为什么用 limit+1 判</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w18d3.html"><span class="hint">← 昨天 · S7·D9</span>未读口径唯一：三个出口同值的第一个出口</a>
+    <a href="w18d5.html"><span class="hint">明天 · S7·D11 →</span>未出生/未启用面的零请求服务端保证</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w18d4 · 明天见 ⟩</footer>
+</body>
+</html>

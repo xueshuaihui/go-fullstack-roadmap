@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S1 阶段总览 · Go 与最小 HTTP | HomeCube 修炼手册</title>
+<meta name="description" content="S1（w01-w02，12 张日卡）：从零建起 homecube 学习仓，用标准库 net/http 跑通 GET /healthz 与统一响应体。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body>
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="../s2/overview.html">下一阶段 S2 →</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / 服务端主线 / S1</div>
+  <div class="day-meta">
+    <span class="chip">STAGE S1</span>
+    <span class="chip alt">w01-w02 · 12 张日卡</span>
+    <span class="chip">难度 ★★☆☆☆</span>
+  </div>
+  <h1>S1 · Go 与最小 HTTP</h1>
+  <p>这两周不碰数据库、不碰 Gin、不碰前端。只做一件事：<b>把一个空的仓库变成一个能跑起来、能测、构建恒绿的最小 HTTP 服务</b>，并且把 Go 里最反直觉的四件事（指针、值/引用语义、接口隐式实现、error 是普通值）亲手过一遍。</p>
+
+  <section>
+    <h2>为什么 S1 只用标准库，不直接上 Gin</h2>
+    <div class="callout note"><p>Gin 的 <code>c.JSON()</code> 替你做了三件事：设 <code>Content-Type</code>、序列化、写状态码。你没自己写过一遍，就不知道它替你做了什么，出问题时也不知道该往哪看。S1 用 <code>net/http</code> 把这三件事手做一次，S2·D1 平移到 Gin 时你会立刻看出「哦，原来框架只是把这段收进了 <code>Context</code>」。<b>先懂标准库的 handler 签名，再懂框架</b>——这一条对 React 出身的人尤其划算，你已经知道 <code>fetch</code> 和 axios 的关系是同一回事。</p></div>
+  </section>
+
+  <section>
+    <h2>阶段产物（S1 结束时仓库里必须有的东西）</h2>
+    <table>
+      <tr><th>产物</th><th>说明</th></tr>
+      <tr><td><code>server/go.mod</code></td><td>模块名 <code>homecube</code>，全期不换。import 路径 <code>homecube/pkg/response</code></td></tr>
+      <tr><td>目录骨架</td><td><code>server/{cmd,internal,pkg,migrations}</code> + 根 <code>Makefile</code> + <code>docker-compose.yml</code> 占位 + <code>notes/</code></td></tr>
+      <tr><td><code>server/pkg/response</code></td><td>统一响应体 <code>Body{Code,Message,Data}</code> + <code>OK/Created/Fail/FailErr</code></td></tr>
+      <tr><td>错误码常量全表</td><td>0 / 1001-1010 / 3001-3004 / 4001-4002 / 5000，一个不多一个不少</td></tr>
+      <tr><td><code>GET /healthz</code></td><td>返回 <code>{"code":0,"message":"ok","data":{"status":"ok"}}</code>，有 httptest 断言</td></tr>
+      <tr><td><code>GET /api/ping</code></td><td>教学期练手端点。<b>S2·D1 必须删掉</b>——留着就是「注册了但没用的假入口」</td></tr>
+      <tr><td><code>Makefile</code></td><td><code>build / test / run / lint</code> 四个目标，<code>make test</code> 里带 <code>-race</code></td></tr>
+      <tr><td><code>model</code> 与 <code>Repository</code></td><td><code>User/Family/Member</code> 三个 struct + <code>Role</code> 四级枚举 + 接口的内存实现</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>阶段判据（全过才算 S1 通过）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="s1o1"><code>make build</code> 与 <code>make test</code> 在一台干净检出上都是绿的</label></li>
+      <li><label><input type="checkbox" data-key="s1o2"><code>curl -i localhost:8080/healthz</code> 返回 200 且 Body 是统一响应体那三键</label></li>
+      <li><label><input type="checkbox" data-key="s1o3">能<b>不看资料</b>讲清：值接收者与指针接收者的区别、什么时候必须用指针</label></li>
+      <li><label><input type="checkbox" data-key="s1o4">能<b>不看资料</b>讲清：Go 的接口为什么不需要 <code>implements</code>，以及这跟 TypeScript 的 <code>interface</code> 哪里像哪里不像</label></li>
+      <li><label><input type="checkbox" data-key="s1o5">能<b>不看资料</b>讲清：<code>error</code> 为什么要用 <code>%w</code> 包装、<code>errors.Is</code> 与 <code>==</code> 的区别</label></li>
+      <li><label><input type="checkbox" data-key="s1o6">能说出 <code>cmd/</code>、<code>internal/</code>、<code>pkg/</code> 三个目录各自该放什么、为什么 <code>internal/</code> 是编译器强制的</label></li>
+    </ul>
+    <div class="callout warn"><p><b>不通过就原地重做，不跳阶段。</b>S1 的四个「不看资料讲清」是后面全部阶段的地基：S3 的 GORM 关联要靠指针语义，S4 的鉴权中间件要靠接口，S6 的乐观锁要靠 error 分支。跳过去，空洞会在 S4/S6 以数倍时间偿还。</p></div>
+  </section>
+
+  <section>
+    <h2>12 张日卡</h2>
+    <table>
+      <tr><th>卡</th><th>知识点</th><th>当天增量</th></tr>
+      <tr><td><a href="w01d1.html">w01d1</a></td><td>环境、go mod 与仓库骨架</td><td>git init + 目录骨架 + Makefile</td></tr>
+      <tr><td><a href="w01d2.html">w01d2</a></td><td>变量、类型、控制流与指针</td><td>第一个表驱动测试</td></tr>
+      <tr><td><a href="w01d3.html">w01d3</a></td><td>结构体、方法与接收者</td><td>User / Family / Member + Role 枚举</td></tr>
+      <tr><td><a href="w01d4.html">w01d4</a></td><td>slice、map、defer 与 error 包装</td><td>哨兵错误集 + 错误码常量全表</td></tr>
+      <tr><td><a href="w01d5.html">w01d5</a></td><td>接口与隐式实现</td><td>Repository 接口 + 内存实现</td></tr>
+      <tr><td><a href="w01d6.html">w01d6</a></td><td><b>周六</b> · net/http 起服务</td><td>main.go + ServeMux + /healthz 跑通</td></tr>
+      <tr><td><a href="w02d1.html">w02d1</a></td><td>HTTP 语义、handler 签名与路由模式</td><td>/api/ping + 带 {id} 的路由骨架</td></tr>
+      <tr><td><a href="w02d2.html">w02d2</a></td><td>请求解析：JSON 解码与查询参数</td><td>假数据换成真解析 + 1004</td></tr>
+      <tr><td><a href="w02d3.html">w02d3</a></td><td>响应写出与中间件</td><td>request-id 中间件 + panic recover</td></tr>
+      <tr><td><a href="w02d4.html">w02d4</a></td><td>表驱动测试与 httptest</td><td>补测试，覆盖成功与两条失败路径</td></tr>
+      <tr><td><a href="w02d5.html">w02d5</a></td><td>internal/ 分层与收口前重构</td><td>handler 归置，main.go 只剩装配</td></tr>
+      <tr><td><a href="w02d6.html">w02d6</a></td><td><b>周六</b> · S1 收口与费曼自测</td><td>README + 判据逐条自测</td></tr>
+    </table>
+    <p>周日的两张前端卡（<a href="../../frontend/f1/w01f1.html">w01f1</a>、<a href="../../frontend/f1/w02f1.html">w02f1</a>）属 F1「Vue 3 读法」，与本阶段并行、互不挪用时间。</p>
+  </section>
+
+  <section>
+    <h2>本阶段不做什么（明确划掉，免得手滑）</h2>
+    <ul>
+      <li>不接数据库（S3）、不接 Gin（S2）、不写 JWT（S4）、不起 goroutine（S5）</li>
+      <li>不做 72 条接口里的任何一条业务接口——S1 只有 <code>/healthz</code> 和教学期 <code>/api/ping</code></li>
+      <li>不写前端。<code>web/</code> 目录这两周甚至不必存在</li>
+      <li>不为了「看起来完整」加 Docker、CI、日志库——<code>docker-compose.yml</code> 只放占位，S3 才填</li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../index.html"><span class="hint">← 回到</span>22 周路线总览</a>
+    <a href="w01d1.html"><span class="hint">开始 →</span>w01d1 · 环境、go mod 与仓库骨架</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · S1 阶段总览 ⟩</footer>
+</body>
+</html>

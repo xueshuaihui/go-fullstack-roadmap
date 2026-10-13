@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S8·D6 · 周六 · 干净机器复现与 E2E 冒烟 | HomeCube 修炼手册</title>
+<meta name="description" content="把本周的五个部署增量串成一条完整能力：从 clone 到 docker compose up 一条命令跑通的清单、一个全走 HTTP 并断言 code 的 E2E 冒烟脚本，以及把「能在别人机器上跑起来」写进 README。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w21d6">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S8</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S8</a> / w21d6</div>
+  <div class="day-meta">
+    <span class="chip">S8 · DAY 6</span>
+    <span class="chip alt">预计 4 小时</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>周六 · 干净机器复现与 E2E 冒烟</h1>
+  <p>本周你写了 Dockerfile、nginx、compose、迁移脚本，还结清了三笔部署伏笔。它们各自都验过，但<b>「五个零件各自能用」和「一条命令能从零跑通」是两件完全不同的事</b>。今天四小时只做后者：把本周五个增量串成一条完整能力，用一个端到端冒烟脚本证明它真的活着，然后把全过程写进 README——写不出来的步骤，就是你其实没搞懂的地方。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w21d6g1">在一份<b>没有本机状态</b>的检出上，从 <code>clone</code> 到全套服务健康，只敲一条命令</label></li>
+      <li><label><input type="checkbox" data-key="w21d6g2"><code>scripts/smoke.sh</code> 落盘并跑绿：注册 → 登录 → 建家庭 → 建账户 → 记一笔 → 查报表，全部走 HTTP，每一步断言 <code>code</code></label></li>
+      <li><label><input type="checkbox" data-key="w21d6g3">冒烟脚本<b>可重复执行</b>：连跑两次都绿（靠唯一手机号与幂等键，不靠人工清库）</label></li>
+      <li><label><input type="checkbox" data-key="w21d6g4">README 多出一节「在一台干净机器上跑起来」，含前置、四步、预期输出与故障排查表</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 「干净机器」到底干净在哪</h3>
+    <p>S1 收口那天你做过一次干净检出验证，抓的是「忘了提交」和「依赖了本机环境」两类事故。今天同一件事，但面积大了十倍——因为现在牵涉的不只是文件，还有<b>镜像、数据卷、网络、端口、环境变量</b>五类本机状态。</p>
+    <table>
+      <tr><th>本机状态</th><th>它会怎么骗你</th><th>怎么清</th></tr>
+      <tr><td>已构建的镜像</td><td>你改了 Dockerfile 但 <code>build</code> 命中了旧层，或者干脆忘了 <code>--build</code>，跑的还是三天前的二进制</td><td><code>docker compose down --rmi local</code></td></tr>
+      <tr><td>数据卷</td><td>库早就初始化过了，今天的 <code>initdb</code> 钩子根本不执行；schema 是你上周手工建的</td><td><code>docker compose down -v</code></td></tr>
+      <tr><td><code>.env</code></td><td>它是本机文件、不进 git。干净检出里<b>没有它</b>——这正是最容易漏的一步</td><td>README 第一步就是 <code>cp .env.example .env</code></td></tr>
+      <tr><td>占用的端口</td><td><code>8080</code> 被你另一个项目占着，compose 报 <code>address already in use</code>，看起来像配置错了</td><td>先 <code>docker compose down</code>，再查是谁占着</td></tr>
+      <tr><td>本机装的工具</td><td>你手上有 <code>jq</code>、有 <code>psql</code>、有 <code>go</code>，别人没有。脚本用了它们就只在你能跑</td><td>脚本只用 <code>bash</code> + <code>curl</code> + <code>python3</code>（三者都是 macOS 与主流 Linux 的自带物）</td></tr>
+    </table>
+    <p>所以今天的验证要一次清干净：</p>
+    <pre><span class="code-label">可跑 · 把本机状态清零</span><code>cd &lt;你的学习仓根目录&gt;
+docker compose down -v --rmi local     <span class="c"># 容器 + 网络 + 数据卷 + 本地构建的镜像，全清</span>
+docker system df                       <span class="c"># 顺手看一眼还剩什么，心里有数</span></code></pre>
+    <div class="callout note"><p><b>真·干净机器怎么找？</b>四选一，从便宜到贵：① 同一台机器上 <code>git clone</code> 到 <code>/tmp</code> 的新目录 + 上面那套清理（能抓九成问题，今天用这个）；② Docker Desktop 的「Clean / Purge data」（连镜像缓存一起清）；③ 新建一个系统用户账号跑一遍（<code>$HOME</code> 里的配置也隔离了）；④ 开一台最便宜的云主机（最接近真实交付，S8·D12 的上线检查单会用这个口径）。<b>①与④的差别就是「你本机装过什么」</b>——所以第④条留到毕业前做一次即可。</p></div>
+
+    <h3>2. 冒烟测试：为什么是这五步，为什么全走 HTTP</h3>
+    <p>「冒烟」这个词来自硬件：新板子第一次通电，先看会不会冒烟，再谈功能。软件里的冒烟测试同理——<b>它不追求覆盖率，追求「主干链路一条不断」</b>。今天这五步是这样挑的：</p>
+    <table>
+      <tr><th>步骤</th><th>接口</th><th>它同时在验证什么</th></tr>
+      <tr><td>注册</td><td><code>POST /api/homeos/auth/register</code></td><td>库连通、<code>homeos</code> schema 迁移到位、密码哈希、验证码链路、唯一约束</td></tr>
+      <tr><td>登录</td><td><code>POST /api/homeos/auth/login</code></td><td>两把 JWT 密钥都配对了、access/refresh 签发正常</td></tr>
+      <tr><td>建家庭</td><td><code>POST /api/homeos/families</code></td><td><code>family_id</code> 这条全站命脉、创建者自动成为 owner、面配置初始化</td></tr>
+      <tr><td>建账户 + 记一笔</td><td><code>POST /api/finance/accounts</code>、<code>POST /api/finance/transactions</code></td><td><code>finance</code> schema 迁移到位、跨模块的家庭上下文传递、金额以分为单位、幂等键生效</td></tr>
+      <tr><td>查报表</td><td><code>GET /api/finance/reports/summary</code></td><td>时间窗编码解析、聚合查询能读到刚写进去的那一笔、并发聚合不炸</td></tr>
+    </table>
+    <p><b>为什么全部走 HTTP，而不是写成一个 Go 测试直接调 service？</b>因为冒烟要验的是「整台机器」：nginx 有没有把 <code>/api</code> 转对、Gin 的路由分组有没有挂上、中间件顺序对不对、环境变量有没有真的传进容器、迁移有没有真的跑过。<b>进程内测试全都绕过了这些</b>——它能绿，而 <code>docker compose up</code> 起不来。S2/S4 用 <code>httptest.NewRecorder</code> 测 handler、S5 用 <code>NewServer</code> 测并发，那些是单元与集成层；今天是<b>系统层</b>，必须从最外面那个端口打进去。</p>
+    <p>断言口径也统一：<b>每一步都断言响应体里的 <code>code</code></b>（成功是 <code>0</code>），HTTP 状态只在需要区分「401 还是 500」时才看。因为你的三键信封是全站的合同，冒烟脚本就是这份合同的第一个外部执法者。</p>
+
+    <h3>3. 可重复执行：冒烟脚本最容易腐烂的地方</h3>
+    <p>一个只能跑一次的冒烟脚本，价值会在一周内归零——因为第二次跑它必然失败，然后你就再也不跑了。让它可重复的两个技巧：</p>
+    <ul>
+      <li><b>手机号每次生成都不同</b>。手机号有唯一约束，重复注册会撞 <code>1006</code>。用当前秒级时间戳拼一个号码，天然不重复。</li>
+      <li><b>幂等键每次生成都不同</b>。<code>client_request_id</code> 是用来防「同一笔请求被提交两次」的，如果你两次运行用同一个键，第二次会被正确地判定为重复——脚本自己把自己挡住了。用同一个随机运行号 <code>RUN_ID</code> 拼进所有幂等键。</li>
+    </ul>
+    <p>顺带一个便宜但极有价值的加测：<b>故意用同一个 <code>client_request_id</code> 发两次不同的请求体，断言返回 <code>1008</code></b>。这是幂等机制唯一能被外部观察到的地方，冒烟脚本里带上它，等于每次部署都自动回归一遍。</p>
+
+    <h3>4. 今天唯一需要你按自己实现改一行的地方</h3>
+    <p>注册流程要先拿验证码。<b>开发期的验证码怎么送到脚本手里，取决于你 S4 那课的实现口径</b>：常见做法有两种——开发模式下把验证码放在 <code>sms-code</code> 响应的 <code>data</code> 里返回，或者打进日志。脚本把这件事隔离在一个变量里：</p>
+    <pre><span class="code-label">片段 · 唯一的适配点</span><code>SMS_CODE_FIELD=<span class="s">"${SMS_CODE_FIELD:-debug_code}"</span>   <span class="c"># 验证码在 sms-code 响应 data 里的字段名</span></code></pre>
+    <p>如果你当时选的是「打进日志」，就把 <code>read_sms_code</code> 那个函数体换成一行 <code>docker compose logs server</code> 加一次 <code>grep</code>。<b>只改这一个函数，其余步骤都不用动</b>——这就是把不确定性收在一处的意义。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天是周六，属增量类型 <b>⑥：工程化收口产物</b>——<b>把本周五个微增量串成一条完整能力</b>。两个产物：<code>scripts/smoke.sh</code> 与 README 的复现章节；外加 <code>Makefile</code> 追加 <code>smoke</code> 与 <code>reset</code> 两个目标。收工时 <code>make build</code> / <code>make test</code> 必须全绿。</p>
+
+    <h3>四个小时怎么分</h3>
+    <table>
+      <tr><th>时段</th><th>做什么</th><th>产出</th></tr>
+      <tr><td>第 1 小时</td><td>清零本机状态 → <code>/tmp</code> 干净克隆 → <code>make up</code>，把<b>每一步的真实输出</b>抄下来</td><td>一份可复制的复现流水，以及第一堆坑</td></tr>
+      <tr><td>第 2 小时</td><td>写 <code>scripts/smoke.sh</code>，逐步跑通五个环节</td><td>脚本绿灯</td></tr>
+      <tr><td>第 3 小时</td><td>写 README 的「干净机器复现」一节，含故障排查表</td><td>README</td></tr>
+      <tr><td>第 3.5 小时</td><td><b>故意破坏三次</b>，验证清单和脚本真能抓到（见步骤 5）</td><td>对复现清单的信心</td></tr>
+      <tr><td>最后半小时</td><td>费曼自测 + 提交</td><td><code>notes/</code> 与一个干净的 commit</td></tr>
+    </table>
+
+    <h3>步骤 1 · scripts/smoke.sh</h3>
+    <pre><span class="code-label">完整 · scripts/smoke.sh</span><code><span class="c">#!/usr/bin/env bash</span>
+<span class="c"># E2E 冒烟：全部走 HTTP，从最外面那个端口打进去。</span>
+<span class="c"># 用法：BASE=http://localhost:8080 bash scripts/smoke.sh</span>
+<span class="k">set</span> -euo pipefail
+
+BASE=<span class="s">"${BASE:-http://localhost:8080}"</span>
+SMS_CODE_FIELD=<span class="s">"${SMS_CODE_FIELD:-debug_code}"</span>   <span class="c"># 唯一的适配点，见讲义第 4 节</span>
+
+<span class="c"># ---- 每次运行都不同，于是脚本可重复执行 ----</span>
+RUN_ID=$(date +%s)-$$
+PHONE=<span class="s">"139$(date +%H%M%S)$((RANDOM % 90 + 10))"</span>
+PASSWORD=<span class="s">'SmokePass1x'</span>                        <span class="c"># ≥8 位、含字母与数字</span>
+NOW_MONTH=$(date +%Y-%m)                        <span class="c"># 时间窗 month 档：YYYY-MM</span>
+NOW_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+TMP=$(mktemp)
+<span class="k">trap</span> <span class="s">'rm -f "$TMP"'</span> EXIT
+
+STATUS=<span class="s">""</span>; RESP=<span class="s">""</span>
+
+<span class="c"># ---- 工具函数 ----------------------------------------------------</span>
+jget() {   <span class="c"># 从 JSON 里按点路径取值：jget data.access_token / jget data.list.0.id</span>
+  python3 -c <span class="s">'
+import json, sys
+node = json.load(sys.stdin)
+for part in sys.argv[1].split("."):
+    if isinstance(node, list):
+        node = node[int(part)]
+    elif isinstance(node, dict):
+        node = node.get(part)
+    else:
+        node = None
+    if node is None:
+        break
+print("" if node is None else node)
+'</span> <span class="s">"$1"</span>
+}
+
+api() {    <span class="c"># $1=method $2=path $3=body(可空) $4=token(可空)</span>
+  <span class="k">local</span> args=(-s -o <span class="s">"$TMP"</span> -w <span class="s">'%{http_code}'</span> -X <span class="s">"$1"</span> <span class="s">"$BASE$2"</span>
+              -H <span class="s">'Content-Type: application/json'</span>)
+  <span class="k">if</span> [ -n <span class="s">"${3:-}"</span> ]; <span class="k">then</span> args+=(-d <span class="s">"$3"</span>); <span class="k">fi</span>
+  <span class="k">if</span> [ -n <span class="s">"${4:-}"</span> ]; <span class="k">then</span> args+=(-H <span class="s">"Authorization: Bearer $4"</span>); <span class="k">fi</span>
+  STATUS=$(curl <span class="s">"${args[@]}"</span>)
+  RESP=$(cat <span class="s">"$TMP"</span>)
+}
+
+need() {   <span class="c"># 断言 code 相等，并给出一条能直接看懂的失败信息</span>
+  <span class="k">local</span> step=<span class="s">"$1"</span> want=<span class="s">"$2"</span> got
+  got=$(printf <span class="s">'%s'</span> <span class="s">"$RESP"</span> | jget code)
+  <span class="k">if</span> [ <span class="s">"$got"</span> != <span class="s">"$want"</span> ]; <span class="k">then</span>
+    echo <span class="s">"[FAIL] $step：期望 code=$want，实际 code=$got（HTTP $STATUS）"</span>
+    echo <span class="s">"       响应体：$RESP"</span>
+    <span class="k">exit</span> 1
+  <span class="k">fi</span>
+  echo <span class="s">"[ok] $step (code=$got)"</span>
+}
+
+pick() {   <span class="c"># 从响应里取一个字段，取不到就直接失败：不让空值往下游漂</span>
+  <span class="k">local</span> what=<span class="s">"$1"</span> val
+  val=$(printf <span class="s">'%s'</span> <span class="s">"$RESP"</span> | jget <span class="s">"$2"</span>)
+  <span class="k">if</span> [ -z <span class="s">"$val"</span> ]; <span class="k">then</span>
+    echo <span class="s">"[FAIL] 取不到 $what（路径 $2）；响应体：$RESP"</span>; <span class="k">exit</span> 1
+  <span class="k">fi</span>
+  printf <span class="s">'%s'</span> <span class="s">"$val"</span>
+}
+
+<span class="c"># ---- 主干链路 ----------------------------------------------------</span>
+echo <span class="s">"== 冒烟开始 BASE=$BASE RUN_ID=$RUN_ID PHONE=$PHONE"</span>
+
+api POST /api/homeos/auth/sms-code <span class="s">"{\"phone\":\"$PHONE\"}"</span>
+need <span class="s">"发送验证码"</span> 0
+SMS_CODE=$(pick <span class="s">"验证码"</span> <span class="s">"data.$SMS_CODE_FIELD"</span>)
+
+api POST /api/homeos/auth/register \
+    <span class="s">"{\"phone\":\"$PHONE\",\"password\":\"$PASSWORD\",\"code\":\"$SMS_CODE\"}"</span>
+need <span class="s">"注册"</span> 0
+
+api POST /api/homeos/auth/login <span class="s">"{\"phone\":\"$PHONE\",\"password\":\"$PASSWORD\"}"</span>
+need <span class="s">"登录"</span> 0
+TOKEN=$(pick <span class="s">"access_token"</span> <span class="s">"data.access_token"</span>)
+
+<span class="c"># 负例：不带 token 读账户，必须 401 + 1005（不是 500，也不是 200 空列表）</span>
+api GET /api/finance/accounts
+need <span class="s">"未认证读账户 → 1005"</span> 1005
+[ <span class="s">"$STATUS"</span> = <span class="s">"401"</span> ] || { echo <span class="s">"[FAIL] 期望 HTTP 401，实际 $STATUS"</span>; <span class="k">exit</span> 1; }
+
+api POST /api/homeos/families \
+    <span class="s">"{\"name\":\"冒烟家庭\",\"timezone\":\"Asia/Shanghai\",\"currency\":\"CNY\"}"</span> <span class="s">"$TOKEN"</span>
+need <span class="s">"创建家庭"</span> 0
+FAMILY_ID=$(pick <span class="s">"family_id"</span> <span class="s">"data.family.id"</span>)
+
+<span class="c"># 切换家庭 = 重新签发 token，所以这一步之后 TOKEN 必须换掉</span>
+api POST /api/homeos/families/switch <span class="s">"{\"family_id\":$FAMILY_ID}"</span> <span class="s">"$TOKEN"</span>
+need <span class="s">"切换家庭"</span> 0
+TOKEN=$(pick <span class="s">"新 access_token"</span> <span class="s">"data.access_token"</span>)
+
+<span class="c"># 分类是预置数据（family_id 为空的那一批），直接取树里第一个能用的</span>
+api GET /api/finance/categories <span class="s">""</span> <span class="s">"$TOKEN"</span>
+need <span class="s">"读分类树"</span> 0
+CATEGORY_ID=$(pick <span class="s">"分类 id"</span> <span class="s">"data.list.0.id"</span>)
+
+api POST /api/finance/accounts \
+    <span class="s">"{\"name\":\"冒烟钱包\",\"type\":\"wallet\",\"currency\":\"CNY\",\"initial_balance_cents\":0,\"client_request_id\":\"smoke-acc-$RUN_ID\"}"</span> \
+    <span class="s">"$TOKEN"</span>
+need <span class="s">"创建账户"</span> 0
+ACCOUNT_ID=$(pick <span class="s">"账户 id"</span> <span class="s">"data.account.id"</span>)
+
+TX_BODY=<span class="s">"{\"account_id\":$ACCOUNT_ID,\"category_id\":$CATEGORY_ID,\"type\":\"expense\",\"amount_cents\":1234,\"occurred_at\":\"$NOW_TS\",\"note\":\"冒烟\",\"client_request_id\":\"smoke-tx-$RUN_ID\"}"</span>
+api POST /api/finance/transactions <span class="s">"$TX_BODY"</span> <span class="s">"$TOKEN"</span>
+need <span class="s">"记一笔"</span> 0
+
+<span class="c"># 负例：同一个幂等键 + 不同请求体 = 幂等冲突 1008</span>
+api POST /api/finance/transactions <span class="s">"${TX_BODY/1234/5678}"</span> <span class="s">"$TOKEN"</span>
+need <span class="s">"同键不同体 → 1008"</span> 1008
+
+api GET <span class="s">"/api/finance/reports/summary?period=$NOW_MONTH"</span> <span class="s">""</span> <span class="s">"$TOKEN"</span>
+need <span class="s">"查报表"</span> 0
+
+<span class="c"># 负例：非法时间窗编码必须 400 + 1007，不回落默认档</span>
+api GET <span class="s">"/api/finance/reports/summary?period=not-a-period"</span> <span class="s">""</span> <span class="s">"$TOKEN"</span>
+need <span class="s">"非法时间窗 → 1007"</span> 1007
+
+echo <span class="s">"[SMOKE PASS] 主干链路全通，RUN_ID=$RUN_ID"</span></code></pre>
+    <div class="callout warn"><p>脚本里有三处路径是按「常见形状」写的，<b>与你的实现不一致就改这三行</b>，其余别动：<code>data.family.id</code>（创建家庭的响应）、<code>data.account.id</code>（创建账户的响应）、<code>data.list.0.id</code>（分类树的第一项）。改法只有一个原则：<b>让脚本读你真实的响应，而不是改你的响应去迁就脚本</b>——服务端是契约的持有者。</p></div>
+
+    <h3>步骤 2 · Makefile 追加</h3>
+    <pre><span class="code-label">片段 · Makefile 追加（缩进是真 TAB）</span><code>.PHONY: smoke reset
+
+smoke:
+	bash scripts/smoke.sh
+
+<span class="c"># 把本机状态清零：容器、网络、数据卷、本地构建的镜像</span>
+reset:
+	docker compose down -v --rmi local</code></pre>
+
+    <h3>步骤 3 · 干净检出全流程</h3>
+    <pre><span class="code-label">可跑 · 验收命令（今天的核心 30 分钟）</span><code>cd &lt;你的学习仓根目录&gt;
+git status                       <span class="c"># 必须干净：一个 untracked 都不许有</span>
+make reset                       <span class="c"># 清掉本机所有相关状态</span>
+
+cd /tmp
+rm -rf clean-check
+git clone &lt;你的学习仓地址&gt; clean-check
+cd clean-check
+
+cp .env.example .env             <span class="c"># ← 最容易漏的一步：.env 不在 git 里</span>
+<span class="c"># 把 JWT_SECRET 与 JWT_REFRESH_SECRET 换成随机值：</span>
+<span class="c">#   openssl rand -hex 32</span>
+
+make up                          <span class="c"># 唯一一条命令：迁移 → 构建 → 起四服务</span>
+docker compose ps                <span class="c"># postgres 与 server 必须是 (healthy)</span>
+
+make smoke                       <span class="c"># 期望最后一行 [SMOKE PASS]</span>
+make smoke                       <span class="c"># 立刻再跑一次：期望同样绿（可重复性验证）</span>
+
+curl -s http://localhost:8080/ | grep -c <span class="s">'&lt;div id="app"&gt;'</span>
+<span class="c"># 期望输出 1：正门发出来的是前端页面</span>
+
+make build &amp;&amp; make test &amp;&amp; make lint   <span class="c"># 干净检出里也要绿</span>
+
+cd /tmp &amp;&amp; rm -rf clean-check</code></pre>
+
+    <h3>步骤 4 · README 的复现章节</h3>
+    <pre><span class="code-label">片段 · README.md 追加一节</span><code>## 在一台干净机器上跑起来
+
+### 前置
+
+- Docker 与 Docker Compose v2（`docker compose version` 有输出）
+- bash、curl、python3（macOS 与主流 Linux 自带）
+- 空闲端口：8080（正门）、127.0.0.1:8081（服务端）、127.0.0.1:5432（数据库）
+
+### 四步
+
+    git clone &lt;仓库地址&gt; &amp;&amp; cd &lt;仓库目录&gt;
+    cp .env.example .env        # 然后把两把 JWT 密钥改成 `openssl rand -hex 32` 的输出
+    make up                     # 迁移 → 构建 → 起 postgres/server/web
+    make smoke                  # 端到端冒烟，最后一行应是 [SMOKE PASS]
+
+浏览器打开 http://localhost:8080 就是前端；
+`curl -s http://localhost:8081/healthz` 应返回
+`{"code":0,"message":"ok","data":{"status":"ok"}}`。
+
+### 收工
+
+    make down        # 停服务，数据保留
+    make reset       # 连数据卷与本地镜像一起清掉
+
+### 起不来时按这个顺序查
+
+| 症状 | 先看哪 |
+|---|---|
+| `address already in use` | 8080/8081/5432 被别的项目占着；`make down` 后重试 |
+| server 一直 `(health: starting)` 然后 unhealthy | `docker compose logs server`。多半是 DB_* 或两把 JWT 密钥没配 |
+| 迁移报 `no schema has been selected to create in` | 数据卷是旧的，initdb 钩子没执行过；`make reset` 后重新 `make up` |
+| 接口全 404 + 1001 | `web/nginx.conf` 的 `proxy_pass` 结尾多了斜杠，路径前缀被吃掉了 |
+| 页面能开、接口 502 | server 容器没健康；`docker compose ps` 与 `logs server` |
+| 冒烟脚本第一步就失败 | `SMS_CODE_FIELD` 与你的验证码实现口径不一致 |</code></pre>
+
+    <h3>步骤 5 · 故意破坏三次（这一步别省）</h3>
+    <p>清单和脚本的价值，只有在它们<b>真的能抓到问题</b>时才算数。花半小时故意搞坏三次，每次都要看到「哪一步变红、报的什么」，然后改回来：</p>
+    <table>
+      <tr><th>破坏</th><th>期望被抓在哪</th><th>如果没抓到，说明什么</th></tr>
+      <tr><td>把 compose 里 server 的 <code>DB_HOST</code> 改回 <code>localhost</code></td><td><code>make up</code> 之后 server 转 unhealthy，<code>/healthz</code> 返回 503 + 5000</td><td>你的 healthcheck 还是静态 ok 版（回 S8·D5）</td></tr>
+      <tr><td>把 <code>nginx.conf</code> 的 <code>proxy_pass</code> 结尾加个 <code>/</code></td><td>冒烟脚本第一步就 <code>[FAIL]</code>，<code>code=1001</code></td><td>脚本没在断言 <code>code</code>，或者你只看了 HTTP 状态</td></tr>
+      <tr><td>删掉 <code>deploy/initdb</code> 的挂载</td><td>迁移那一步失败，<code>&amp;&amp;</code> 短路，<b>服务根本不起</b></td><td><code>make up</code> 里两行没用 <code>&amp;&amp;</code> 串起来（回 S8·D4）</td></tr>
+    </table>
+
+    <h3>步骤 6 · 费曼自测与提交</h3>
+    <p>合上资料，对着空气讲这五题，讲不下去就回对应课：</p>
+    <table>
+      <tr><th>#</th><th>自测题</th><th>卡壳回哪</th></tr>
+      <tr><td>1</td><td>多阶段构建的两个阶段各自装了什么、为什么运行镜像里没有 Go 也没有 Node</td><td>S8·D1 / D2</td></tr>
+      <tr><td>2</td><td><code>depends_on</code> 的三种条件差别，以及 healthcheck 的 <code>start_period</code> 解决什么</td><td>S8·D3</td></tr>
+      <tr><td>3</td><td><code>POSTGRES_*</code> 与 <code>DB_*</code> 谁读、什么时候生效、为什么改了口令可能不生效</td><td>S8·D3</td></tr>
+      <tr><td>4</td><td>两套 schema 的迁移为什么必须两张版本表，<code>search_path</code> 在这里干什么</td><td>S8·D4</td></tr>
+      <tr><td>5</td><td>不设可信代理时 <code>c.ClientIP()</code> 会拿到什么，容器编排下为什么反而不需要跨域</td><td>S8·D5</td></tr>
+    </table>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build &amp;&amp; make test &amp;&amp; make lint &amp;&amp; make smoke
+
+git add scripts/smoke.sh Makefile README.md notes/
+git status
+git commit -m <span class="s">"test(s8d6): E2E 冒烟脚本 + 干净机器复现清单"</span>
+git log --oneline
+<span class="c"># 本周六条提交（s8d1…s8d6）应连成一条完整的部署线</span></code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（复现日专属）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>干净检出后忘了 <code>cp .env.example .env</code></td><td>server 起不来，日志报密钥为空；或用了 <code>.env.example</code> 里的占位值签出一堆无效 token</td><td>README 第一步就写它；<code>.env</code> 不进 git 是纪律，代价就是这一步必须显式</td></tr>
+      <tr><td>用旧镜像跑</td><td>改了代码但行为没变，怀疑人生</td><td><code>make up</code> 里带 <code>--build</code>；彻底重来用 <code>make reset</code></td></tr>
+      <tr><td>数据卷没清就换配置</td><td>改了 <code>POSTGRES_PASSWORD</code> 或 initdb 脚本，一点效果都没有</td><td>这两样只在数据目录为空时生效；<code>docker compose down -v</code></td></tr>
+      <tr><td>冒烟脚本用了 <code>jq</code></td><td>你机器上能跑，别人机器上 <code>command not found</code></td><td>只用 bash + curl + python3 这三样自带物</td></tr>
+      <tr><td>脚本只能跑一次</td><td>第二次注册撞 <code>1006</code>，或幂等键撞 <code>1008</code></td><td>手机号与 <code>client_request_id</code> 都带上每次运行都不同的 <code>RUN_ID</code></td></tr>
+      <tr><td>只断言 HTTP 200，不看 <code>code</code></td><td>业务失败但 HTTP 是 200 的情况漏网（比如报表返回了 <code>budget_unset</code> 之类的标记）</td><td>每一步都断言三键信封里的 <code>code</code></td></tr>
+      <tr><td>用进程内测试冒充冒烟</td><td>测试全绿，<code>docker compose up</code> 起不来</td><td>系统层必须从最外面的端口打进去，经过 nginx</td></tr>
+      <tr><td>破坏演练没做</td><td>清单写得很漂亮，第一次真出事时一条都没抓住</td><td>今天故意搞坏三次，看着它变红</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>冒烟测试 smoke test</td><td>只验主干链路通不通，不追覆盖率；通电看会不会冒烟</td></tr>
+      <tr><td>E2E</td><td>端到端：从最外层端口进，穿过 nginx、Gin、service、DB 再回来</td></tr>
+      <tr><td>干净检出</td><td>从 git 克隆、无本机状态的副本；抓「忘提交」与「靠本机环境」</td></tr>
+      <tr><td>本机状态</td><td>镜像、数据卷、网络、端口、<code>.env</code> 五类；复现失败九成出在这里</td></tr>
+      <tr><td><code>down -v --rmi local</code></td><td>删容器 + 网络 + 数据卷 + 本地构建的镜像，把状态清零</td></tr>
+      <tr><td>幂等键</td><td><code>client_request_id</code>：同键同体 = 重复提交返回原结果；同键不同体 = <code>1008</code></td></tr>
+      <tr><td>三键信封</td><td><code>{"code","message","data"}</code>；冒烟脚本断言的就是它，不是 HTTP 状态</td></tr>
+      <tr><td>负例断言</td><td>故意发一个错请求，断言它<b>必须</b>得到指定的错误码。比正例更能防回归</td></tr>
+      <tr><td>破坏演练</td><td>故意搞坏一处，验证清单与脚本真能抓到；没做过的检查等于没写</td></tr>
+      <tr><td><code>trap … EXIT</code></td><td>脚本退出时必然执行的收尾（这里用来删临时文件），失败退出也会跑</td></tr>
+      <tr><td><code>set -euo pipefail</code></td><td>失败即退、未定义变量即错、管道任一环失败即失败。冒烟脚本的第一行</td></tr>
+      <tr><td><code>${var/旧/新}</code></td><td>shell 的字符串替换，脚本里用它把同一个请求体的金额改掉来测幂等冲突</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <table>
+      <tr><th>症状</th><th>回哪一课</th></tr>
+      <tr><td>镜像构建慢、体积大、层缓存不命中</td><td>S8·D1</td></tr>
+      <tr><td>深链接 404、接口 404 + 1001、上传 413</td><td>S8·D2</td></tr>
+      <tr><td>服务起不来、healthcheck 一直 starting、变量取值诡异</td><td>S8·D3</td></tr>
+      <tr><td>迁移报错、版本表不对、<code>dirty</code></td><td>S8·D4</td></tr>
+      <tr><td><code>/healthz</code> 该返回什么、503 与 5000 的关系</td><td>S8·D5；响应体三键的最初定义在 S1·D6</td></tr>
+      <tr><td>注册与验证码的实现口径、密码策略</td><td>S4 讲认证那一段（注册/登录/刷新/忘记/重置七条）</td></tr>
+      <tr><td>幂等键 <code>client_request_id</code> 的表与判定逻辑</td><td>S4 建幂等表那一课（S2 首次出现写接口时埋的伏笔在那里兑现）</td></tr>
+      <tr><td>时间窗五档编码、非法编码为什么必须 1007 不回落</td><td>S6 讲时间窗与报表聚合的那几课</td></tr>
+      <tr><td>创建家庭之后要不要换 token</td><td>S4 讲家庭上下文与切换家庭那一课：<b>切换家庭 = 重新签发 token</b></td></tr>
+      <tr><td>CI 里怎么自动跑这个冒烟</td><td>S8·D7（下周第一天讲 CI 升级）；今天是本机能跑，那天是机器上能跑</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w21d6c1">在 <code>/tmp</code> 的干净检出里，<code>cp .env.example .env</code> 之后<b>只敲 <code>make up</code> 一条命令</b>就把全套服务起到 <code>(healthy)</code>，中间没有任何手工补步骤</label></li>
+      <li><label><input type="checkbox" data-key="w21d6c2"><code>scripts/smoke.sh</code> 落盘并跑绿：注册→登录→建家庭→建账户→记一笔→查报表，每步断言 <code>code</code>，并含三个负例（未认证 1005、同键不同体 1008、非法时间窗 1007）</label></li>
+      <li><label><input type="checkbox" data-key="w21d6c3"><code>make smoke</code> 连跑两次都绿——脚本可重复执行，不需要人工清库</label></li>
+      <li><label><input type="checkbox" data-key="w21d6c4">README 的「在一台干净机器上跑起来」一节落盘，含前置、四步、预期输出与至少六行故障排查表；三次破坏演练都做过并记进 <code>notes/</code></label></li>
+      <li><label><input type="checkbox" data-key="w21d6c5">五道费曼题讲完，卡壳点记进 <code>notes/</code>；本周六条提交（<code>s8d1</code>…<code>s8d6</code>）在 <code>git log --oneline</code> 里连贯，仓库 <code>make build</code> / <code>make test</code> 全绿</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w21d5.html"><span class="hint">← 昨天 · S8·D5</span>兑现两条伏笔：可信代理、跨域收口与 /healthz 的依赖</a>
+    <a href="../../frontend/f6/w21f1.html"><span class="hint">本周日 · F6·w21 →</span>三段定位法与容器化后的前端连线</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w21d6 · 明天见 ⟩</footer>
+</body>
+</html>

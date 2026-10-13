@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S4·D2 · 验证码登录：sms-code 与 login | HomeCube 修炼手册</title>
+<meta name="description" content="本地 mock 验证码 store（真实短信通道属范围外），落地 POST /api/homeos/auth/sms-code 与 POST /api/homeos/auth/login：密码或验证码双通道登录，凭证错误统一 401+1002 防枚举。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w07d2">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S4</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S4</a> / w07d2</div>
+  <div class="day-meta">
+    <span class="chip">S4 · DAY 2</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★☆☆☆</span>
+  </div>
+  <h1>验证码登录：sms-code 与 login</h1>
+  <p>今天上两条接口：<code>POST /api/homeos/auth/sms-code</code>（发验证码）与 <code>POST /api/homeos/auth/login</code>（登录）。登录支持两种凭证：<code>{phone, password}</code> 走昨天的 bcrypt 校验，<code>{phone, code}</code> 走验证码校验。<b>验证码是本地 mock</b>——真实短信通道属课程范围外，但 store 的形态（有效期、限流、一次性消费）照真做，日后换通道只换一个「发送函数」。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w07d2g1">落地验证码 store：6 位数字、5 分钟有效、60 秒限流、校验成功即作废</label></li>
+      <li><label><input type="checkbox" data-key="w07d2g2"><code>POST /api/homeos/auth/sms-code</code> 与 <code>POST /api/homeos/auth/login</code> 跑通</label></li>
+      <li><label><input type="checkbox" data-key="w07d2g3">登录防枚举落地：「手机号不存在」与「凭证错」统一 401 + 1002，响应同形</label></li>
+      <li><label><input type="checkbox" data-key="w07d2g4">把昨天 register 里的 mock 验证码占位换成真 store（增量类型⑤）</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 验证码 store 的四个性质</h3>
+    <table>
+      <tr><th>性质</th><th>规则</th><th>不做会怎样</th></tr>
+      <tr><td>有效期</td><td>发出后 5 分钟内可校验，过期作废 → 3003</td><td>验证码永久有效 = 密码退化成 6 位数字</td></tr>
+      <tr><td>限流</td><td>同一手机号 60 秒内只发一条；超限直接拒绝（教学期从简，也返回 3003 语义族的 400）</td><td>被人拿你的接口轰炸别人的手机，短信费你出</td></tr>
+      <tr><td>一次性</td><td>校验成功立刻删除；失败次数超过 5 次也删除</td><td>同一验证码可重放，登录/注册/重置全被穿透</td></tr>
+      <tr><td>随机性</td><td><code>crypto/rand</code> 生成，不用 <code>math/rand</code></td><td>伪随机序列可被预测——这是安全边界，不是抽奖</td></tr>
+    </table>
+    <p>教学期 store 用「map + <code>sync.Mutex</code>」的内存实现（Mutex 今天照抄，S5 并发阶段正式讲为什么必须加锁）。生产形态是带 TTL 的缓存或数据库表——形态可换，四个性质不变，所以值得先写对。<b>mock 的是「发送」这一步</b>：验证码不打真短信，而是写进服务日志，你从 <code>make run</code> 的终端里抄出来用。</p>
+
+    <h3>2. 登录的防枚举：1002 一把兜底</h3>
+    <p>昨天说好的重头戏。登录失败的三种真相——手机号没注册、密码错、验证码错——响应<b>完全同形</b>：</p>
+    <pre><span class="code-label">片段 · 三种失败一个样</span><code>HTTP/1.1 401 Unauthorized
+{"code":1002,"message":"手机号或凭证错误","data":null}</code></pre>
+    <p>为什么验证码错也归 1002 而不归 3003？因为<b>登录场景</b>里验证码就是凭证本身，区分「号不存在」和「码不对」等于开放枚举。3003 留给注册与重置密码这类「手机号已经摆在明面上」的场景。service 层的写法是一条铁律：<b>查无此人时，不提前 return，照样走一遍密码校验再统一失败</b>——否则「号不存在」的响应比「密码错」快几十毫秒（bcrypt 的耗时差），计时侧信道照样能枚举。</p>
+
+    <h3>3. 登录响应：token 字段今天先是占位</h3>
+    <p>登录成功返回统一形状 <code>data:{user, member, family, access_token, refresh_token}</code>。<code>member/family</code> 是「当前会话家庭」的成员与家庭信息——刚注册还没建家庭时两者为 <code>null</code>，客户端接着走建家庭/受邀流程。token 两个字段今天先返回占位串 <code>"dev-token-d3"</code>：<b>明天 D3 建 jwtutil 后换真签发</b>（d1-d5 允许 handler 先用假数据，D6 前必须换真——本周五之前就会兑现）。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>②+⑤：加两条路由与 handler + 把 register 的验证码占位换成真 store</b>。</p>
+
+    <h3>步骤 1 · CodeStore</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/service/smscode.go</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"crypto/rand"</span>
+    <span class="s">"fmt"</span>
+    <span class="s">"log"</span>
+    <span class="s">"math/big"</span>
+    <span class="s">"sync"</span>
+    <span class="s">"time"</span>
+)
+
+<span class="c">// CodeStore 验证码存储：内存 mock。真实短信通道属课程范围外，</span>
+<span class="c">// 日后接通道只需把 send 换成真实现，四个性质（有效期/限流/一次性/随机）不变。</span>
+<span class="k">type</span> <span class="t">CodeStore</span> <span class="k">struct</span> {
+    mu   sync.<span class="t">Mutex</span> <span class="c">// S5 正式讲；今天记住「多请求并发读写 map 必须锁」</span>
+    codes <span class="k">map</span>[<span class="t">string</span>]codeEntry
+}
+
+<span class="k">type</span> codeEntry <span class="k">struct</span> {
+    code     <span class="t">string</span>
+    expireAt time.<span class="t">Time</span>
+    sentAt   time.<span class="t">Time</span>
+    fails    <span class="t">int</span>
+}
+
+<span class="k">func</span> <span class="t">NewCodeStore</span>() *<span class="t">CodeStore</span> {
+    <span class="k">return</span> &amp;<span class="t">CodeStore</span>{codes: <span class="k">make</span>(<span class="k">map</span>[<span class="t">string</span>]codeEntry)}
+}
+
+<span class="c">// Send 生成并「发送」验证码。60 秒限流；返回 false 表示被限流拒绝。</span>
+<span class="k">func</span> (s *<span class="t">CodeStore</span>) <span class="t">Send</span>(phone <span class="t">string</span>) <span class="t">bool</span> {
+    s.mu.<span class="t">Lock</span>()
+    <span class="k">defer</span> s.mu.<span class="t">Unlock</span>()
+    now := time.<span class="t">Now</span>()
+    <span class="k">if</span> e, ok := s.codes[phone]; ok &amp;&amp; now.<span class="t">Sub</span>(e.sentAt) &lt; <span class="n">60</span>*time.Second {
+        <span class="k">return</span> <span class="t">false</span>
+    }
+    n, err := rand.<span class="t">Int</span>(rand.Reader, big.<span class="t">NewInt</span>(<span class="n">1000000</span>)) <span class="c">// crypto/rand，不是 math/rand</span>
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        <span class="k">return</span> <span class="t">false</span>
+    }
+    code := fmt.<span class="t">Sprintf</span>(<span class="s">"%06d"</span>, n.<span class="t">Int64</span>())
+    s.codes[phone] = codeEntry{code: code, expireAt: now.<span class="t">Add</span>(<span class="n">5</span> * time.Minute), sentAt: now}
+    log.<span class="t">Println</span>(<span class="s">"[sms-mock]"</span>, phone, <span class="s">"验证码:"</span>, code) <span class="c">// mock 发送 = 写日志</span>
+    <span class="k">return</span> <span class="t">true</span>
+}
+
+<span class="c">// Verify 校验并消费：成功即删除；过期/错误返回 false；连错 5 次作废。</span>
+<span class="k">func</span> (s *<span class="t">CodeStore</span>) <span class="t">Verify</span>(phone, code <span class="t">string</span>) <span class="t">bool</span> {
+    s.mu.<span class="t">Lock</span>()
+    <span class="k">defer</span> s.mu.<span class="t">Unlock</span>()
+    e, ok := s.codes[phone]
+    <span class="k">if</span> !ok || time.<span class="t">Now</span>().<span class="t">After</span>(e.expireAt) {
+        <span class="k">delete</span>(s.codes, phone)
+        <span class="k">return</span> <span class="t">false</span>
+    }
+    <span class="k">if</span> e.code == code {
+        <span class="k">delete</span>(s.codes, phone) <span class="c">// 一次性：用过即毁</span>
+        <span class="k">return</span> <span class="t">true</span>
+    }
+    e.fails++
+    <span class="k">if</span> e.fails &gt;= <span class="n">5</span> {
+        <span class="k">delete</span>(s.codes, phone)
+    } <span class="k">else</span> {
+        s.codes[phone] = e
+    }
+    <span class="k">return</span> <span class="t">false</span>
+}</code></pre>
+
+    <h3>步骤 2 · service：SendCode 与 Login</h3>
+    <pre><span class="code-label">片段 · server/internal/homeos/service/auth.go 追加（前置：昨天的 AuthService 与 passutil）</span><code><span class="c">// AuthService 增加一个字段 codes *CodeStore，NewAuthService 相应加参。</span>
+
+<span class="c">// SendCode 发验证码。scene 仅作日志标记（login/register/reset），store 不区分。</span>
+<span class="k">func</span> (s *<span class="t">AuthService</span>) <span class="t">SendCode</span>(phone, scene <span class="t">string</span>) <span class="t">error</span> {
+    <span class="k">if</span> !phoneRE.<span class="t">MatchString</span>(phone) {
+        <span class="k">return</span> response.<span class="t">ErrInvalidParam</span> <span class="c">// → 1004 / 400</span>
+    }
+    <span class="k">if</span> !s.codes.<span class="t">Send</span>(phone) {
+        <span class="k">return</span> response.<span class="t">ErrRateLimited</span> <span class="c">// → 400，message「发送太频繁，请稍后再试」</span>
+    }
+    <span class="k">return</span> <span class="t">nil</span>
+}
+
+<span class="c">// LoginResult 登录响应 data 的形状。token 今天占位，S4·D3 换真。</span>
+<span class="k">type</span> <span class="t">LoginResult</span> <span class="k">struct</span> {
+    User         *model.<span class="t">User</span>   <span class="s">`json:"user"`</span>
+    Member       *model.<span class="t">Member</span> <span class="s">`json:"member"`</span>  <span class="c">// 无家庭时为 null</span>
+    Family       *model.<span class="t">Family</span> <span class="s">`json:"family"`</span>  <span class="c">// 无家庭时为 null</span>
+    AccessToken  <span class="t">string</span>        <span class="s">`json:"access_token"`</span>
+    RefreshToken <span class="t">string</span>        <span class="s">`json:"refresh_token"`</span>
+}
+
+<span class="c">// Login 双通道：password 非空走密码，code 非空走验证码。二者必须恰好给一个。</span>
+<span class="k">func</span> (s *<span class="t">AuthService</span>) <span class="t">Login</span>(ctx context.<span class="t">Context</span>, phone, password, code <span class="t">string</span>) (*<span class="t">LoginResult</span>, <span class="t">error</span>) {
+    <span class="k">if</span> (password == <span class="s">""</span>) == (code == <span class="s">""</span>) {
+        <span class="k">return</span> <span class="t">nil</span>, response.<span class="t">ErrInvalidParam</span> <span class="c">// 给 0 个或 2 个凭证都是参数错 → 1004</span>
+    }
+    u, err := s.users.<span class="t">FindByPhone</span>(ctx, phone)
+    <span class="k">if</span> err != <span class="t">nil</span> &amp;&amp; !errors.<span class="t">Is</span>(err, response.ErrNotFound) {
+        <span class="k">return</span> <span class="t">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"login: %w"</span>, err)
+    }
+    <span class="k">if</span> u == <span class="t">nil</span> {
+        <span class="c">// 防枚举 + 防计时侧信道：查无此人也「演」一遍校验，再统一失败</span>
+        <span class="k">if</span> password != <span class="s">""</span> {
+            passutil.<span class="t">CheckPassword</span>(dummyHash, password) <span class="c">// dummyHash 是包级预生成的合法哈希</span>
+        } <span class="k">else</span> {
+            s.codes.<span class="t">Verify</span>(phone, code)
+        }
+        <span class="k">return</span> <span class="t">nil</span>, response.<span class="t">ErrAuthFailed</span> <span class="c">// → 1002 / 401，message 与凭证错完全一致</span>
+    }
+    ok := <span class="t">false</span>
+    <span class="k">if</span> password != <span class="s">""</span> {
+        ok = passutil.<span class="t">CheckPassword</span>(u.PasswordHash, password)
+    } <span class="k">else</span> {
+        ok = s.codes.<span class="t">Verify</span>(phone, code)
+    }
+    <span class="k">if</span> !ok {
+        <span class="k">return</span> <span class="t">nil</span>, response.<span class="t">ErrAuthFailed</span> <span class="c">// 同一个 1002，不区分密码错还是码错</span>
+    }
+    <span class="c">// 当前会话家庭 = 用户的第一个家庭（S4·D9 起可切换）；没有则为 null</span>
+    member, family := s.<span class="t">primarySession</span>(ctx, u.ID)
+    <span class="k">return</span> &amp;<span class="t">LoginResult</span>{
+        User: u, Member: member, Family: family,
+        AccessToken: <span class="s">"dev-token-d3"</span>, RefreshToken: <span class="s">"dev-token-d3"</span>, <span class="c">// TODO(S4·D3)：jwtutil 真签发</span>
+    }, <span class="t">nil</span>
+}</code></pre>
+    <p>哨兵错误集今天再补两个（与 <code>CodeOf</code> 映射对齐）：<code>ErrAuthFailed</code>（→ 1002 / 401）、<code>ErrRateLimited</code>（→ 400，message 提示稍后再试；不新造业务码）。<code>primarySession</code> 今天可以先返回 <code>(nil, nil)</code>——本周还没有家庭数据，S4·D7 建家庭后回来补真查询（又是一次类型⑤）。</p>
+
+    <h3>步骤 3 · handler 与路由</h3>
+    <pre><span class="code-label">片段 · server/internal/homeos/handler/auth.go 追加（前置：昨天的 AuthHandler）</span><code><span class="k">type</span> <span class="t">smsCodeReq</span> <span class="k">struct</span> {
+    Phone <span class="t">string</span> <span class="s">`json:"phone" binding:"required"`</span>
+    Scene <span class="t">string</span> <span class="s">`json:"scene" binding:"required,oneof=login register reset"`</span>
+}
+
+<span class="k">type</span> <span class="t">loginReq</span> <span class="k">struct</span> {
+    Phone    <span class="t">string</span> <span class="s">`json:"phone" binding:"required"`</span>
+    Password <span class="t">string</span> <span class="s">`json:"password"`</span>
+    Code     <span class="t">string</span> <span class="s">`json:"code"`</span>
+}
+
+<span class="c">// SendCode 处理 POST /api/homeos/auth/sms-code</span>
+<span class="k">func</span> (h *<span class="t">AuthHandler</span>) <span class="t">SendCode</span>(c *gin.<span class="t">Context</span>) {
+    <span class="k">var</span> req smsCodeReq
+    <span class="k">if</span> err := c.<span class="t">ShouldBindJSON</span>(&amp;req); err != <span class="t">nil</span> {
+        response.<span class="t">Fail</span>(c, <span class="n">400</span>, response.CodeInvalidParam, <span class="s">"参数错误"</span>)
+        <span class="k">return</span>
+    }
+    <span class="k">if</span> err := h.auth.<span class="t">SendCode</span>(req.Phone, req.Scene); err != <span class="t">nil</span> {
+        response.<span class="t">FailErr</span>(c, err)
+        <span class="k">return</span>
+    }
+    response.<span class="t">OK</span>(c, gin.<span class="t">H</span>{<span class="s">"sent"</span>: <span class="t">true</span>})
+}
+
+<span class="c">// Login 处理 POST /api/homeos/auth/login</span>
+<span class="k">func</span> (h *<span class="t">AuthHandler</span>) <span class="t">Login</span>(c *gin.<span class="t">Context</span>) {
+    <span class="k">var</span> req loginReq
+    <span class="k">if</span> err := c.<span class="t">ShouldBindJSON</span>(&amp;req); err != <span class="t">nil</span> {
+        response.<span class="t">Fail</span>(c, <span class="n">400</span>, response.CodeInvalidParam, <span class="s">"参数错误"</span>)
+        <span class="k">return</span>
+    }
+    res, err := h.auth.<span class="t">Login</span>(c.<span class="t">Request</span>.<span class="t">Context</span>(), req.Phone, req.Password, req.Code)
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        response.<span class="t">FailErr</span>(c, err)
+        <span class="k">return</span>
+    }
+    response.<span class="t">OK</span>(c, res)
+}</code></pre>
+    <p>路由组加两行：<code>auth.POST("/sms-code", ...)</code>、<code>auth.POST("/login", ...)</code>。然后回 register 的 service，把 <code>code != "123456"</code> 的占位换成 <code>s.codes.Verify(phone, code)</code>，校验失败返回 <code>ErrCaptchaInvalid</code>（注册场景手机号是新的，不存在枚举问题，3003 可以放心用）。昨天测试里的 mock 验证码用例同步改：先 <code>Send</code> 再拿真码注册。</p>
+
+    <h3>步骤 4 · 测试与验收</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/service/auth_login_test.go</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"errors"</span>
+    <span class="s">"testing"</span>
+
+    <span class="s">"homecube/internal/homeos/repo"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="k">func</span> <span class="t">TestLoginEnumeration</span>(t *testing.T) {
+    users := repo.<span class="t">NewMemoryUserRepo</span>()
+    codes := <span class="t">NewCodeStore</span>()
+    svc := <span class="t">NewAuthService</span>(users, codes)
+    ctx := context.<span class="t">Background</span>()
+
+    <span class="c">// 注册一个真用户（验证码走真 store）</span>
+    codes.<span class="t">Send</span>(<span class="s">"13800000001"</span>)
+    <span class="k">if</span> _, err := svc.<span class="t">Register</span>(ctx, <span class="s">"13800000001"</span>, lastCode(t, codes, <span class="s">"13800000001"</span>), <span class="s">"secret99"</span>); err != <span class="t">nil</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"注册失败: %v"</span>, err)
+    }
+
+    _, err1 := svc.<span class="t">Login</span>(ctx, <span class="s">"13800000001"</span>, <span class="s">"wrongpass1"</span>, <span class="s">""</span>)   <span class="c">// 号在、密码错</span>
+    _, err2 := svc.<span class="t">Login</span>(ctx, <span class="s">"13999999999"</span>, <span class="s">"whatever1"</span>, <span class="s">""</span>)    <span class="c">// 号不存在</span>
+    <span class="k">if</span> !errors.<span class="t">Is</span>(err1, response.ErrAuthFailed) || !errors.<span class="t">Is</span>(err2, response.ErrAuthFailed) {
+        t.<span class="t">Fatal</span>(<span class="s">"两种失败必须同为 1002（ErrAuthFailed）"</span>)
+    }
+    <span class="k">if</span> err1.<span class="t">Error</span>() != err2.<span class="t">Error</span>() {
+        t.<span class="t">Fatalf</span>(<span class="s">"响应 message 必须同形: %q vs %q"</span>, err1, err2)
+    }
+
+    <span class="c">// 验证码通道：发码 → 码登录成功；旧码重放 → 1002</span>
+    codes.<span class="t">Send</span>(<span class="s">"13800000001"</span>)
+    code := lastCode(t, codes, <span class="s">"13800000001"</span>)
+    <span class="k">if</span> _, err := svc.<span class="t">Login</span>(ctx, <span class="s">"13800000001"</span>, <span class="s">""</span>, code); err != <span class="t">nil</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"验证码登录应成功: %v"</span>, err)
+    }
+    <span class="k">if</span> _, err := svc.<span class="t">Login</span>(ctx, <span class="s">"13800000001"</span>, <span class="s">""</span>, code); !errors.<span class="t">Is</span>(err, response.ErrAuthFailed) {
+        t.<span class="t">Fatal</span>(<span class="s">"验证码重放必须失败（一次性消费）"</span>)
+    }
+}</code></pre>
+    <p><code>lastCode</code> 是测试辅助函数：给 CodeStore 加一个<b>仅测试可用</b>的读取口（如 <code>PeekForTest(phone)</code>，文件放 <code>export_test.go</code> 或加注释说明用途）——mock 发送的验证码在日志里，测试里总不能去解析日志。</p>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>make build &amp;&amp; make test &amp;&amp; make lint
+
+make run    <span class="c"># 终端 1</span>
+curl -s -X POST http://localhost:8080/api/homeos/auth/sms-code \
+  -H 'Content-Type: application/json' -d '{"phone":"13800000001","scene":"login"}'
+<span class="c"># 终端 1 的日志里出现 [sms-mock] 13800000001 验证码: xxxxxx</span>
+curl -i -X POST http://localhost:8080/api/homeos/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"phone":"13800000001","password":"secret99"}'
+<span class="c"># 期望：200，data 里有 user 与两个占位 token；换错密码再试：401 + "code":1002</span>
+<span class="c"># 用一个没注册过的手机号登录：同样 401 + "code":1002，message 一字不差</span>
+
+git add server
+git status
+git commit -m "feat(s4d2): sms-code mock store + 双通道 login + 防枚举 1002"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>用 <code>math/rand</code> 生成验证码</td><td>默认种子可预测，理论上能推算下一个码</td><td>安全边界一律 <code>crypto/rand</code></td></tr>
+      <tr><td>验证码校验成功后不删除</td><td>同一个码反复登录，成了永久后门</td><td>一次性消费：Verify 成功即 delete</td></tr>
+      <tr><td>「号不存在」提前 return</td><td>响应时间差暴露注册名单（计时侧信道）</td><td>查无此人也走一遍 bcrypt 假校验再统一 1002</td></tr>
+      <tr><td>登录区分「密码错」和「验证码错」的 message</td><td>message 不同 = 枚举通道又开了</td><td>登录场景凭证错一律同一 message</td></tr>
+      <tr><td>map 不加锁并发读写</td><td>Go 运行时直接 <code>fatal error: concurrent map writes</code>，进程崩</td><td>Mutex 护住所有读写；S5 会讲还有没有别的选择</td></tr>
+      <tr><td>限流只做在前端（按钮置灰 60 秒）</td><td>curl 绕过前端无限发</td><td>限流必须在 store/服务端这一层</td></tr>
+      <tr><td>把占位 token 忘了换</td><td>D3 之后登录还返回 <code>dev-token-d3</code></td><td>TODO 注释里写明兑现日（S4·D3）；D6 收口前必须清零——留着就是「注册了但没实现」的假入口</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>验证码 store</td><td>发码/验码的存储层：有效期 5 分钟、限流 60 秒、一次性、crypto/rand 生成</td></tr>
+      <tr><td>mock 发送</td><td>验证码写日志不打真短信；真实短信通道属课程范围外，接口形状照真做</td></tr>
+      <tr><td>1002 认证失败</td><td>登录凭证错误的唯一出口：号不存在/密码错/验证码错同形，401</td></tr>
+      <tr><td>3003 验证码错</td><td>只用于注册与重置密码——那里手机号本来就在明面上，无枚举可防</td></tr>
+      <tr><td>计时侧信道</td><td>靠响应耗时差异推断内部状态的攻击；用「失败路径也演一遍慢操作」抹平</td></tr>
+      <tr><td>双通道登录</td><td><code>{phone,password}</code> 或 <code>{phone,code}</code>，恰好二选一，否则 1004</td></tr>
+      <tr><td>当前会话家庭</td><td>登录响应里的 member/family：用户多个家庭时的默认进入对象；没有家庭则为 null</td></tr>
+      <tr><td>占位 token</td><td>d1-d5 骨架期的假数据，S4·D3 换 jwtutil 真签发——全站纪律：D6 前必须换真</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有两种情况出去查：</p>
+    <ul>
+      <li><b><code>crypto/rand</code> 的用法</b>：<a href="https://pkg.go.dev/crypto/rand" target="_blank">crypto/rand 文档</a>（可选，读 <code>Int</code> 一个函数就够）。</li>
+      <li><b>gin 的 <code>binding:"oneof=..."</code> 语法忘了</b>：回 S2 阶段总览找绑定与验证那张卡。</li>
+    </ul>
+    <p>联调时先盯终端 1 的 <code>[sms-mock]</code> 日志拿码，再用 curl 走登录——顺序反了会以为是接口坏了。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w07d2c1">CodeStore 落盘，四个性质齐：5 分钟有效、60 秒限流、一次性消费、crypto/rand</label></li>
+      <li><label><input type="checkbox" data-key="w07d2c2"><code>POST auth/sms-code</code> 与 <code>POST auth/login</code> 跑通；登录响应 data 形状为 <code>{user, member, family, access_token, refresh_token}</code>（token 暂为占位并注明 D3 兑现）</label></li>
+      <li><label><input type="checkbox" data-key="w07d2c3">防枚举测试绿：「号不存在」与「密码错」同为 401+1002 且 message 一字不差；验证码重放失败</label></li>
+      <li><label><input type="checkbox" data-key="w07d2c4">register 的 mock 验证码占位已换成真 store（昨天的 TODO 清掉），<code>make build</code> / <code>make test</code> 绿，commit 带卡号 <code>s4d2</code></label></li>
+      <li><label><input type="checkbox" data-key="w07d2c5"><code>notes/</code> 写三行：1002 与 3003 各自的使用场景、为什么失败路径要「演一遍」bcrypt、占位 token 哪天必须换真</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w07d1.html"><span class="hint">← 昨天 · S4·D1</span>bcrypt 密码哈希与注册接口</a>
+    <a href="w07d3.html"><span class="hint">明天 · S4·D3 →</span>JWT 签发：claims、双密钥与 TTL</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w07d2 · 明天见 ⟩</footer>
+</body>
+</html>

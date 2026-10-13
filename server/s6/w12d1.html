@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S6·D1 · 流水表与创建：client_request_id 幂等三态 | HomeCube 修炼手册</title>
+<meta name="description" content="财务面开工第一天：对齐 finance_transaction 的列口径，实现 POST /api/finance/transactions，并把 client_request_id 幂等键的三态（首次创建 / 同体重放返回原结果 / 异体 409+1008）写成测试。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w12d1">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S6</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S6</a> / w12d1</div>
+  <div class="day-meta">
+    <span class="chip">S6 · DAY 1</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★☆☆☆</span>
+  </div>
+  <h1>流水表与创建：client_request_id 幂等三态</h1>
+  <p>S6 进入财务功能面。表在 S3 就建好了、鉴权与幂等表在 S4 立好了、并发与工程化在 S5 练过了——从今天起把这些地基变成<b>能记账的服务端</b>。第一个端点就是最核心的写接口：<code>POST /api/finance/transactions</code>。它必须自带 <code>client_request_id</code> 幂等键：手机在电梯里超时重发一次，账不能记两笔。今天把幂等三态一次做对，后面所有写接口都抄这个骨架。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w12d1g1">说清写接口为什么必须幂等：弱网重试、双写窗口、重复扣款的事故链</label></li>
+      <li><label><input type="checkbox" data-key="w12d1g2">背出幂等三态：首次 → 创建并记录；同体重放 → 返回原结果；异体 → 409 + 1008</label></li>
+      <li><label><input type="checkbox" data-key="w12d1g3">对齐 <code>finance_transaction</code> 的列口径：<code>amount_cents</code> 恒为正、方向由 <code>type</code> 表达、作者落 <code>member_id</code></label></li>
+      <li><label><input type="checkbox" data-key="w12d1g4"><code>POST /api/finance/transactions</code> 跑通，幂等三态各有一条测试，<code>make build</code> / <code>make test</code> 绿</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 为什么创建流水必须幂等</h3>
+    <p>移动端记账的真实链路：用户点「保存」→ 请求发出 → 地铁进隧道 → 客户端 10 秒超时 → 客户端自动重试。<b>第一次请求可能已经在服务端落库成功，只是响应没回来。</b>没有幂等键，重试就是第二笔一模一样的支出；用户看到重复流水，对账永远差一笔——这类「重复写入」是家庭记账类服务端最高频的数据正确性事故。</p>
+    <p>解法是把「这次操作」和「这次 HTTP 请求」解耦：客户端为<b>每次操作</b>生成一个 <code>client_request_id</code>（UUID 即可），重试时<b>原样带上同一个 id 和同一个请求体</b>。服务端以 <code>(family_id, client_request_id)</code> 为幂等键，保证同一次操作无论到达几次，只产生一条流水。</p>
+    <table>
+      <tr><th>到达情况</th><th>服务端动作</th><th>响应</th></tr>
+      <tr><td>首次（幂等键没见过）</td><td>创建流水 + 落幂等记录（同一个事务）</td><td>201 + code 0 + 流水对象</td></tr>
+      <tr><td>重放，请求体哈希一致</td><td>不创建，取出当时存的响应快照</td><td><b>与首次完全相同</b>（同状态码、同 body）</td></tr>
+      <tr><td>同键，请求体哈希不同</td><td>拒绝：一个键只能对应一次操作</td><td>409 + <b>1008</b>（幂等冲突）</td></tr>
+    </table>
+    <div class="callout warn"><p><b>重放必须返回原结果，不是返回一个错。</b>客户端重试时期望的就是「我上次那笔到底成没成」；返回原 201 响应，客户端无感知地拿到同一条流水 id。若返回 409，客户端就得再写一套「409 之后去查一遍」的逻辑——把复杂度推给每个调用方，是偷懒的服务端。</p></div>
+
+    <h3>2. finance_transaction 列口径（S3 建表，今天对齐语义）</h3>
+    <pre><span class="code-label">参考 · S3 迁移里的 DDL（今天不改表，只对齐口径）</span><code>CREATE TABLE finance_transaction (
+    id                BIGSERIAL PRIMARY KEY,
+    family_id         BIGINT NOT NULL,
+    type              TEXT NOT NULL,            <span class="c">-- income / expense / transfer，明天展开</span>
+    amount_cents      BIGINT NOT NULL,          <span class="c">-- 恒为正整数；方向由 type 表达，禁止存负数</span>
+    account_id        BIGINT NOT NULL,          <span class="c">-- 转出/收付账户</span>
+    to_account_id     BIGINT NULL,              <span class="c">-- 仅 transfer 必填，明天做校验</span>
+    category_id       BIGINT NULL,              <span class="c">-- 二级分类叶子；transfer 可空</span>
+    member_id         BIGINT NOT NULL,          <span class="c">-- 作者。行级可见性与「谁记的账」都靠它</span>
+    note              TEXT NOT NULL DEFAULT '',
+    occurred_at       TIMESTAMPTZ NOT NULL,     <span class="c">-- 业务发生时间，与 created_at 分开</span>
+    is_private        BOOLEAN NOT NULL DEFAULT false,
+    client_request_id TEXT NOT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at        TIMESTAMPTZ NULL,
+    deleted_by        BIGINT NULL,
+    version           INT NOT NULL DEFAULT 1
+);
+CREATE UNIQUE INDEX uq_fintx_idem  ON finance_transaction (family_id, client_request_id);
+CREATE INDEX idx_fintx_query ON finance_transaction (family_id, occurred_at DESC, id DESC);</code></pre>
+    <ul>
+      <li><b>金额一律 <code>*_cents BIGINT</code>、Go 侧 <code>int64</code></b>——禁浮点从 S3 第一条迁移起就是铁律，今天第一次真正写它。</li>
+      <li><code>amount_cents</code> <b>恒为正</b>：支出不存负数，方向由 <code>type</code> 表达。存负数会让「求和」「取绝对值」散落各处，口径必炸。</li>
+      <li><code>occurred_at</code> 与 <code>created_at</code> 分离：补记上个月的账，业务时间是上个月，落库时间是现在。报表按 <code>occurred_at</code> 聚合。</li>
+      <li>唯一索引 <code>(family_id, client_request_id)</code> 是幂等的<b>数据库级兜底</b>：即使应用层「先查后插」被两个并发请求同时穿过，第二个 INSERT 也会撞唯一约束——捕获它，按重放处理。</li>
+    </ul>
+
+    <h3>3. 幂等记录长什么样（复用 S4 建的幂等表）</h3>
+    <p>S4 建幂等表时讲过原理，今天第一次在真业务里用它。每行存四样东西：</p>
+    <pre><span class="code-label">片段 · 幂等记录的关键字段</span><code>family_id + client_request_id   <span class="c">-- 幂等键（联合唯一）</span>
+body_hash                       <span class="c">-- 请求体的 sha256，判「同体/异体」</span>
+resp_status + resp_body         <span class="c">-- 首次响应的快照，重放时原样吐回</span></code></pre>
+    <p>「同体」的判定 = <b>整个请求体规范化后的哈希一致</b>。客户端重试时本来就该原样重发，所以哈希天然相等；一旦有人拿旧 id 配新 body，哈希对不上，就是 1008。<b>先插幂等记录占位、再写业务行、最后回填响应快照，三步收进同一个数据库事务</b>——事务要么全成要么全无，不留「有流水没幂等记录」的缝隙。</p>
+    <div class="callout note"><p>为什么幂等表放 platform 不放 finance？因为账户、分类、设置……后面每个写接口都要幂等，它是横切设施，归 <code>internal/platform</code>；finance 通过接口调用它，不直查它的表（跨模块纪律）。</p></div>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>②+③：路由与 handler 真实现 + 幂等三态测试</b>。表已有、幂等表已有，今天是把它们接起来。</p>
+
+    <h3>步骤 1 · 入参结构与哨兵</h3>
+    <pre><span class="code-label">片段 · server/internal/finance/model/transaction.go</span><code><span class="k">type</span> <span class="t">TxType</span> <span class="k">string</span>
+
+<span class="k">const</span> (
+    TxIncome   TxType = <span class="s">"income"</span>
+    TxExpense  TxType = <span class="s">"expense"</span>
+    TxTransfer TxType = <span class="s">"transfer"</span>   <span class="c">// 校验明天补，今天先立枚举</span>
+)
+
+<span class="k">type</span> <span class="t">CreateTxInput</span> <span class="k">struct</span> {
+    ClientRequestID <span class="t">string</span>  <span class="s">`json:"client_request_id" binding:"required"`</span>
+    Type            TxType  <span class="s">`json:"type" binding:"required,oneof=income expense transfer"`</span>
+    AmountCents     <span class="t">int64</span>   <span class="s">`json:"amount_cents" binding:"required"`</span>
+    AccountID       <span class="t">int64</span>   <span class="s">`json:"account_id" binding:"required"`</span>
+    ToAccountID     *<span class="t">int64</span>  <span class="s">`json:"to_account_id"`</span>
+    CategoryID      *<span class="t">int64</span>  <span class="s">`json:"category_id"`</span>
+    Note            <span class="t">string</span>  <span class="s">`json:"note"`</span>
+    OccurredAt      <span class="t">string</span>  <span class="s">`json:"occurred_at" binding:"required"`</span> <span class="c">// RFC3339</span>
+    IsPrivate       <span class="t">bool</span>    <span class="s">`json:"is_private"`</span>
+}</code></pre>
+    <p><code>pkg/response</code> 的哨兵集里确认已有（S1·D4 建全表时落过）：<code>ErrIdempotentConflict</code> → 409 + 1008。缺了就今天补一行，并让 <code>CodeOf</code> 认得它。</p>
+
+    <h3>步骤 2 · service 层：幂等三态 + 创建</h3>
+    <pre><span class="code-label">片段 · server/internal/finance/service/transaction.go（前置：model 与 platform 的 IdempotencyStore 接口已定义）</span><code><span class="k">func</span> (s *TxService) <span class="t">Create</span>(ctx context.Context, a Actor, in *model.CreateTxInput) (*model.Transaction, <span class="t">error</span>) {
+    hash := idem.HashBody(in)                       <span class="c">// sha256(规范化 JSON)</span>
+    rec, err := s.idem.Find(ctx, a.FamilyID, in.ClientRequestID)
+    <span class="k">switch</span> {
+    <span class="k">case</span> err == <span class="k">nil</span> &amp;&amp; rec.BodyHash == hash:       <span class="c">// ② 同体重放：吐回原结果</span>
+        <span class="k">return</span> rec.ReplayTransaction()
+    <span class="k">case</span> err == <span class="k">nil</span>:                                <span class="c">// ③ 同键异体：1008</span>
+        <span class="k">return</span> <span class="k">nil</span>, response.ErrIdempotentConflict
+    <span class="k">case</span> !errors.Is(err, platform.ErrIdemNotFound): <span class="c">// 真错误，别吞</span>
+        <span class="k">return</span> <span class="k">nil</span>, err
+    }
+    <span class="c">// ① 首次：校验 → 单事务内「插幂等记录 + 插流水」→ 回填响应快照</span>
+    <span class="k">if</span> in.AmountCents &lt;= <span class="n">0</span> {
+        <span class="k">return</span> <span class="k">nil</span>, response.ErrAmountInvalid      <span class="c">// 400 + 4001</span>
+    }
+    tx, err := s.repo.InsertWithIdem(ctx, a, in)     <span class="c">// 撞唯一索引 → 转按重放处理</span>
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="k">nil</span>, err }
+    _ = s.idem.SaveSnapshot(ctx, a.FamilyID, in.ClientRequestID, tx)
+    <span class="k">return</span> tx, <span class="k">nil</span>
+}</code></pre>
+    <div class="callout tip"><p><code>Actor</code> 是 finance 自己的小结构体（FamilyID / MemberID / Role），由 handler 从 gin context 读出装配——<code>c.GetInt64("familyID")</code>、<code>c.GetInt64("memberID")</code>，角色用 <code>c.MustGet("role").(model.Role)</code>，这是 S4 立好的读取口径，禁止裸键。</p></div>
+
+    <h3>步骤 3 · handler 与路由注册</h3>
+    <pre><span class="code-label">片段 · server/internal/finance/handler/transaction.go 与 cmd/homecube/main.go 装配处</span><code><span class="k">func</span> (h *TxHandler) <span class="t">Create</span>(c *gin.Context) {
+    <span class="k">var</span> in model.CreateTxInput
+    <span class="k">if</span> err := c.ShouldBindJSON(&amp;in); err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"请求体不合法"</span>) <span class="c">// 400 + 1004</span>
+        <span class="k">return</span>
+    }
+    tx, err := h.svc.Create(c.Request.Context(), actorFrom(c), &amp;in)
+    <span class="k">if</span> err != <span class="k">nil</span> { response.FailErr(c, err); <span class="k">return</span> }
+    response.Created(c, tx)                            <span class="c">// 201 + code 0</span>
+}
+
+<span class="c">// main.go 装配（Auth 中间件 S4 已建）：</span>
+fin := r.Group(<span class="s">"/api/finance"</span>)
+fin.Use(middleware.Auth(cfg.JWTSecret))
+fin.POST(<span class="s">"/transactions"</span>, txh.Create)</code></pre>
+    <div class="callout note"><p>路由域是 <code>/api/finance</code>，<b>没有版本号段</b>。响应信封三键 <code>{"code","message","data"}</code>，失败也同形——这些是全站契约，从今天起每个端点都守。</p></div>
+
+    <h3>步骤 4 · 三态测试 + 验收</h3>
+    <pre><span class="code-label">完整 · server/internal/finance/service/transaction_idem_test.go（httptest/内存件沿用 S4 测试脚手架）</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"errors"</span>
+    <span class="s">"testing"</span>
+
+    <span class="s">"homecube/internal/finance/model"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="k">func</span> <span class="t">TestCreateIdempotency</span>(t *testing.T) {
+    svc := newTestTxService(t) <span class="c">// 前置：连测试库或内存件，S4 脚手架已有</span>
+    a := Actor{FamilyID: <span class="n">1</span>, MemberID: <span class="n">10</span>}
+    in := &amp;model.CreateTxInput{
+        ClientRequestID: <span class="s">"req-0001"</span>, Type: model.TxExpense,
+        AmountCents: <span class="n">3500</span>, AccountID: <span class="n">1</span>, OccurredAt: <span class="s">"2026-01-05T12:00:00Z"</span>,
+    }
+    first, err := svc.Create(context.Background(), a, in)
+    <span class="k">if</span> err != <span class="k">nil</span> { t.Fatal(err) }
+
+    replay, err := svc.Create(context.Background(), a, in) <span class="c">// ② 同体重放</span>
+    <span class="k">if</span> err != <span class="k">nil</span> || replay.ID != first.ID {
+        t.Fatalf(<span class="s">"重放应返回原流水 %d，got %v err %v"</span>, first.ID, replay, err)
+    }
+
+    other := *in
+    other.AmountCents = <span class="n">9999</span>                              <span class="c">// ③ 同键异体</span>
+    _, err = svc.Create(context.Background(), a, &amp;other)
+    <span class="k">if</span> !errors.Is(err, response.ErrIdempotentConflict) {
+        t.Fatalf(<span class="s">"异体应 1008，got %v"</span>, err)
+    }
+}</code></pre>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test     <span class="c"># 三态测试绿；已有测试不许被弄红</span>
+make lint
+
+make run      <span class="c"># 终端 1 起服务；终端 2 登录拿 TOKEN（S4 的 POST /api/homeos/auth/login）</span>
+curl -s -X POST http://localhost:8080/api/finance/transactions \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"client_request_id":"demo-0001","type":"expense","amount_cents":3500,"account_id":1,"occurred_at":"2026-01-05T12:00:00Z"}'
+<span class="c"># 把同一条 curl 再跑一遍：响应必须一模一样（同一条流水 id）</span>
+<span class="c"># 改 amount_cents 再跑：409，body 里 code=1008</span>
+
+git add server
+git commit -m "feat(s6d1): POST /api/finance/transactions + client_request_id 幂等三态"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>重放时返回 409 或重新创建</td><td>客户端重试收到「冲突」，或账记了两笔</td><td>同体 = 原样吐回首次响应（同状态码同 body）；只有<b>异体</b>才 1008</td></tr>
+      <tr><td>「先查后插」不在事务里</td><td>并发双击穿过查询，两条 INSERT 都成功</td><td>幂等记录与流水<b>同事务</b>写入；唯一索引撞了按重放兜底</td></tr>
+      <tr><td>金额存了负数或浮点</td><td>求和口径混乱、<code>0.1+0.2</code> 类误差</td><td><code>amount_cents</code> 恒为正 <code>int64</code>，方向由 <code>type</code> 表达</td></tr>
+      <tr><td>金额 ≤0 返回 1004</td><td>参数错误与金额非法混在一起，前端没法针对性提示</td><td>金额语义错误走 <b>400 + 4001</b>；请求体缺字段/格式烂才 1004</td></tr>
+      <tr><td>用 <code>created_at</code> 当业务时间</td><td>补记历史账全堆在「今天」</td><td>聚合与展示一律 <code>occurred_at</code></td></tr>
+      <tr><td>幂等键做成全局唯一</td><td>两个家庭撞了同一个 UUID（或恶意撞键）互相干扰</td><td>键是 <code>(family_id, client_request_id)</code> 联合维度</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>幂等（idempotent）</td><td>同一操作执行一次与执行 N 次，系统状态与返回结果相同</td></tr>
+      <tr><td><code>client_request_id</code></td><td>客户端为「一次操作」生成的唯一 id，重试原样重发；服务端幂等键的组成部分</td></tr>
+      <tr><td>幂等三态</td><td>首次创建 / 同体重放返回原结果 / 同键异体 409+1008</td></tr>
+      <tr><td>body_hash</td><td>请求体规范化后的 sha256，用来判「同体还是异体」</td></tr>
+      <tr><td>响应快照</td><td>首次成功响应的存档，重放时原样吐回，保证两次响应逐字节一致</td></tr>
+      <tr><td><code>amount_cents</code></td><td>金额的最小货币单位整数（int64），全站禁浮点</td></tr>
+      <tr><td><code>occurred_at</code></td><td>业务发生时间，与落库时间 <code>created_at</code> 分离，聚合按它</td></tr>
+      <tr><td>双写窗口</td><td>「查幂等记录」与「写业务行」之间的时间缝，并发会穿过去——用事务+唯一索引封死</td></tr>
+      <tr><td>1008</td><td>幂等冲突：client_request_id 已用过且请求体不同（409）</td></tr>
+      <tr><td>4001</td><td>金额非法：≤0、超出可用余额、转账两端同账户（400）</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <ul>
+      <li><b>哨兵错误与 <code>errors.Is</code> 不熟</b>：回 S1·D4（error 包装与哨兵集）。</li>
+      <li><b>httptest 怎么搭</b>：回 S1·D6（NewRecorder 断言三键信封）；S4 起测试都带登录态脚手架，翻 S4 的周六卡。</li>
+      <li><b>迁移与表结构对不上</b>：回 S3 写 finance 迁移的那几天，DDL 以迁移文件为准。</li>
+      <li><b>幂等表与 <code>IdempotencyStore</code> 接口忘了</b>：回 S4 建幂等表的那一天，今天只是第一个真调用方。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w12d1c1"><code>POST /api/finance/transactions</code> 注册在 <code>/api/finance</code> 域且过 Auth 中间件，无版本号段</label></li>
+      <li><label><input type="checkbox" data-key="w12d1c2">同一条 curl 连发两次，第二次返回与第一次<b>逐字段一致</b>的同一条流水</label></li>
+      <li><label><input type="checkbox" data-key="w12d1c3">改体重放同一 <code>client_request_id</code>，返回 409 + 1008；金额 ≤0 返回 400 + 4001</label></li>
+      <li><label><input type="checkbox" data-key="w12d1c4">三态测试落盘且 <code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，commit 带卡号 <code>s6d1</code></label></li>
+      <li><label><input type="checkbox" data-key="w12d1c5"><code>notes/</code> 三行：幂等三态各返回什么、为什么重放要吐原结果、唯一索引在并发下兜住了什么</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../frontend/f4/w11f1.html"><span class="hint">← 上周日 · F4·w11</span>样式与主题令牌：rpx、scoped 与「颜色只能引用令牌」</a>
+    <a href="w12d2.html"><span class="hint">明天 · S6·D2 →</span>收入、支出、转账</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w12d1 · 明天见 ⟩</footer>
+</body>
+</html>

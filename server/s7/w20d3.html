@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S7·D21 · 已读回写与推送设备注册 | HomeCube 修炼手册</title>
+<meta name="description" content="POST notifications/read：单条与全部已读，read_at 落时间戳、只动 member_id 等于自己的行，响应带第三个出口的 unread；POST devices/push-token 按 (member_id, device_id) upsert。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w20d3">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S7</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S7</a> / w20d3</div>
+  <div class="day-meta">
+    <span class="chip">S7 · DAY 21</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>已读回写与推送设备注册</h1>
+  <p>通知域的最后两条接口，今天一次落完：<code>POST /api/homeos/notifications/read</code>（单条与全部已读，响应带同一份 <code>unread</code>——三个出口的第三个今天上岗，同值断言就此闭环）与 <code>POST /api/homeos/devices/push-token</code>（推送设备与通道 token 的登记，配一条 <code>homeos_device</code> 迁移）。A7 三条到此全部划掉。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w20d3g1"><code>POST /notifications/read</code> 跑通：<code>{ids:[…]}</code> 单条与 <code>{all:true}</code> 全部两种形态，read_at 落时间戳</label></li>
+      <li><label><input type="checkbox" data-key="w20d3g2">说清已读为什么只动「member_id = 我」的行，以及别人的 id 混进来为什么静默不命中而不是报错</label></li>
+      <li><label><input type="checkbox" data-key="w20d3g3"><code>POST /devices/push-token</code> 跑通：按 <code>(member_id, device_id)</code> upsert，token 换新不积重复行</label></li>
+      <li><label><input type="checkbox" data-key="w20d3g4">三出口同值测试全绿（read 之后三个数一起降），<code>make build</code> / <code>make test</code> 绿</label></li>
+    </ul>
+    <div class="callout note"><p>↑ 这四条是「学习目标」。页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 已读的边界：只读自己的</h3>
+    <p>UPDATE 的 WHERE 一次带齐四个条件：</p>
+    <pre><span class="code-label">片段 · 已读更新的完整条件</span><code>UPDATE homeos_notification
+   SET read_at = now()
+ WHERE family_id = ?          <span class="c">-- 家庭隔离，scope 铁律</span>
+   AND member_id = ?          <span class="c">-- 只能替自己已读：别人的红点轮不到你消</span>
+   AND read_at IS NULL        <span class="c">-- 已读的不再动，天然幂等</span>
+   AND id IN (?)              <span class="c">-- 或 all=true 时省略本行</span></code></pre>
+    <p>妙处在 <b>member_id 条件的双重身份</b>：它既是权限判定，又是数据过滤。别人家的、别人收件箱里的 id 混进 <code>ids</code>，这条 UPDATE 命中 0 行——<b>静默跳过，不报错</b>。为什么不报 1001？因为「这个 id 存不存在」本身就是不该泄露的信息（S4 起的老纪律：越权与不存在同形）。重复提交同一批 ids 也无副作用：<code>read_at IS NULL</code> 挡住了第二次写。</p>
+
+    <h3>2. 第三个出口：read 的响应也带 unread</h3>
+    <p>已读操作成功后，客户端最想要的下一个数字就是「还剩几条未读」。让它再发一次 GET 是浪费——<b>POST read 的响应直接带同一份 <code>unread</code></b>（还是调 <code>repo.UnreadCount</code>，一个字都不许多写）。至此三个出口齐了：summary、GET notifications、POST read。今天的测试把昨天的双出口断言升级成三口同值：已读 2 条后，三个出口一起从 3 变 1。</p>
+
+    <h3>3. push-token：只登记，不承诺送达</h3>
+    <p><code>POST /api/homeos/devices/push-token</code> 做的事很薄：客户端把「这台设备（device_id）、什么平台（platform）、通道 token 是什么」报上来，服务端按 <code>(member_id, device_id)</code> upsert 进 <code>homeos_device</code>。同一台设备换 token（重装、换通道账号）是更新不是新增；同一个人的第二台设备是新增一行。真正的推送下发链路（对接厂商通道、失败重试）不在本课程范围——今天登记的数据就是将来那条链路的原料，这里只作前瞻，不承诺周次。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>②+④：两条路由与 handler + 一条设备表迁移</b>。迁移编号续 homeos 序列（下用 <code>00NN</code> 指代）。</p>
+
+    <h3>步骤 1 · 设备表迁移</h3>
+    <pre><span class="code-label">完整 · server/migrations/homeos/homeos_00NN_device.up.sql</span><code>CREATE TABLE homeos_device (
+    id          BIGSERIAL PRIMARY KEY,
+    family_id   BIGINT NOT NULL,             <span class="c">-- 登记时所在家庭（切家庭后重新登记即新行语境）</span>
+    member_id   BIGINT NOT NULL,
+    device_id   TEXT NOT NULL,               <span class="c">-- 客户端生成的设备唯一标识</span>
+    platform    TEXT NOT NULL,               <span class="c">-- 'ios' / 'android' / 'h5'</span>
+    push_token  TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at  TIMESTAMPTZ NULL,
+    deleted_by  BIGINT NULL,
+    version     INT NOT NULL DEFAULT 1,
+    CONSTRAINT uq_device UNIQUE (member_id, device_id)   <span class="c">-- upsert 的冲突目标</span>
+);</code></pre>
+    <pre><span class="code-label">完整 · server/migrations/homeos/homeos_00NN_device.down.sql</span><code>DROP TABLE IF EXISTS homeos_device;</code></pre>
+
+    <h3>步骤 2 · service：已读与设备登记</h3>
+    <pre><span class="code-label">片段 · server/internal/homeos/service/notification.go 追加</span><code><span class="c">// MarkRead 单条或全部已读；返回受影响行数。只动 member_id=me 且未读的行。</span>
+<span class="k">func</span> (s *NotificationService) <span class="t">MarkRead</span>(ctx context.Context, familyID, memberID <span class="t">int64</span>, ids []int64, all <span class="t">bool</span>) (int64, error) {
+    q := s.db.WithContext(ctx).Model(&amp;model.Notification{}).
+        Where(<span class="s">"family_id = ? AND member_id = ? AND read_at IS NULL"</span>, familyID, memberID)
+    <span class="k">if</span> !all {
+        <span class="k">if</span> len(ids) == <span class="n">0</span> { <span class="k">return</span> <span class="n">0</span>, response.ErrInvalidParam } <span class="c">// 两种形态都没有：400 + 1004</span>
+        q = q.Where(<span class="s">"id IN ?"</span>, ids)
+    }
+    res := q.Updates(map[string]<span class="k">any</span>{<span class="s">"read_at"</span>: gorm.Expr(<span class="s">"now()"</span>), <span class="s">"updated_at"</span>: gorm.Expr(<span class="s">"now()"</span>)})
+    <span class="k">return</span> res.RowsAffected, res.Error
+}
+
+<span class="c">// UpsertDevice 按 (member_id, device_id) upsert：换 token 是更新，换设备是新增。</span>
+<span class="k">func</span> (s *NotificationService) <span class="t">UpsertDevice</span>(ctx context.Context, familyID, memberID <span class="t">int64</span>, deviceID, platform, token <span class="t">string</span>) error {
+    <span class="k">if</span> deviceID == <span class="s">""</span> || token == <span class="s">""</span> { <span class="k">return</span> response.ErrInvalidParam }
+    d := model.Device{FamilyID: familyID, MemberID: memberID, DeviceID: deviceID, Platform: platform, PushToken: token, Version: <span class="n">1</span>}
+    <span class="k">return</span> s.db.WithContext(ctx).
+        Clauses(clause.OnConflict{
+            Columns:   []clause.Column{{Name: <span class="s">"member_id"</span>}, {Name: <span class="s">"device_id"</span>}},
+            DoUpdates: clause.Assignments(map[string]<span class="k">any</span>{<span class="s">"push_token"</span>: token, <span class="s">"platform"</span>: platform, <span class="s">"updated_at"</span>: gorm.Expr(<span class="s">"now()"</span>)}),
+        }).
+        Create(&amp;d).Error
+}</code></pre>
+
+    <h3>步骤 3 · handler：第三个出口</h3>
+    <pre><span class="code-label">片段 · server/internal/homeos/handler/notification.go 追加</span><code><span class="c">// Read POST /api/homeos/notifications/read</span>
+<span class="c">// body: {"ids":[1,2]} 或 {"all":true}；响应 data 带受影响行数与最新 unread。</span>
+<span class="k">func</span> (h *NotificationHandler) <span class="t">Read</span>(c *gin.Context) {
+    familyID := c.GetInt64(<span class="s">"familyID"</span>)
+    memberID := c.GetInt64(<span class="s">"memberID"</span>)
+    <span class="k">var</span> req struct {
+        IDs []int64 <span class="s">`json:"ids"`</span>
+        All bool    <span class="s">`json:"all"`</span>
+    }
+    <span class="k">if</span> err := c.ShouldBindJSON(&amp;req); err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"参数错误"</span>)
+        <span class="k">return</span>
+    }
+    n, err := h.svc.MarkRead(c.Request.Context(), familyID, memberID, req.IDs, req.All)
+    <span class="k">if</span> err != <span class="k">nil</span> { response.FailErr(c, err); <span class="k">return</span> }
+
+    unread, err := h.svc.Unread(c.Request.Context(), familyID, memberID) <span class="c">// 还是那一个函数</span>
+    <span class="k">if</span> err != <span class="k">nil</span> { response.FailErr(c, err); <span class="k">return</span> }
+    response.OK(c, gin.H{<span class="s">"marked"</span>: n, <span class="s">"unread"</span>: unread})
+}
+
+<span class="c">// PushToken POST /api/homeos/devices/push-token</span>
+<span class="k">func</span> (h *NotificationHandler) <span class="t">PushToken</span>(c *gin.Context) {
+    <span class="k">var</span> req struct {
+        DeviceID  string <span class="s">`json:"device_id" binding:"required"`</span>
+        Platform  string <span class="s">`json:"platform" binding:"required"`</span>
+        PushToken string <span class="s">`json:"push_token" binding:"required"`</span>
+    }
+    <span class="k">if</span> err := c.ShouldBindJSON(&amp;req); err != <span class="k">nil</span> {
+        response.Fail(c, http.StatusBadRequest, response.CodeInvalidParam, <span class="s">"参数错误"</span>)
+        <span class="k">return</span>
+    }
+    err := h.svc.UpsertDevice(c.Request.Context(), c.GetInt64(<span class="s">"familyID"</span>), c.GetInt64(<span class="s">"memberID"</span>),
+        req.DeviceID, req.Platform, req.PushToken)
+    <span class="k">if</span> err != <span class="k">nil</span> { response.FailErr(c, err); <span class="k">return</span> }
+    response.OK(c, gin.H{<span class="s">"registered"</span>: <span class="k">true</span>})
+}
+
+<span class="c">// 路由：homeos.POST("/notifications/read", nh.Read)</span>
+<span class="c">//       homeos.POST("/devices/push-token", nh.PushToken)</span></code></pre>
+
+    <h3>步骤 4 · 三出口同值测试（升级版）</h3>
+    <pre><span class="code-label">完整 · 昨天的契约测试追加一段（骨架）</span><code><span class="k">func</span> <span class="t">TestUnreadThirdExitAfterRead</span>(t *testing.T) {
+    r, db := newTestRouter(t)
+    token := seedMemberWithToken(t, r, db) <span class="c">// 种 3 条未读，拿到其中 2 条的 id</span>
+
+    w := httptest.NewRecorder()
+    body := strings.NewReader(<span class="s">`{"ids":[`</span> + idsOf(t, db, <span class="n">2</span>) + <span class="s">`]}`</span>)
+    req := httptest.NewRequest(<span class="s">"POST"</span>, <span class="s">"/api/homeos/notifications/read"</span>, body)
+    req.Header.Set(<span class="s">"Authorization"</span>, <span class="s">"Bearer "</span> + token)
+    req.Header.Set(<span class="s">"Content-Type"</span>, <span class="s">"application/json"</span>)
+    r.ServeHTTP(w, req)
+    <span class="k">if</span> w.Code != <span class="n">200</span> { t.Fatalf(<span class="s">"read → %d body=%s"</span>, w.Code, w.Body.String()) }
+
+    <span class="k">var</span> res struct{ Data struct{ Marked, Unread int64 } <span class="s">`json:"data"`</span> }
+    <span class="k">if</span> err := json.Unmarshal(w.Body.Bytes(), &amp;res); err != <span class="k">nil</span> { t.Fatal(err) }
+    <span class="k">if</span> res.Data.Marked != <span class="n">2</span> || res.Data.Unread != <span class="n">1</span> {
+        t.Fatalf(<span class="s">"marked=%d unread=%d, want 2/1"</span>, res.Data.Marked, res.Data.Unread)
+    }
+    <span class="c">// 再打另外两个出口：都必须是 1（复用昨天的 read(path) helper）</span>
+    <span class="k">if</span> n := readUnread(t, r, token, <span class="s">"/api/homeos/home/summary?period=2026-11"</span>); n != <span class="n">1</span> { t.Fatalf(<span class="s">"summary=%d, want 1"</span>, n) }
+    <span class="k">if</span> n := readUnread(t, r, token, <span class="s">"/api/homeos/notifications"</span>); n != <span class="n">1</span> { t.Fatalf(<span class="s">"list=%d, want 1"</span>, n) }
+
+    <span class="c">// 别人的通知 id 混进来：静默不命中，不报错</span>
+    otherID := seedOtherMembersNotification(t, db)
+    <span class="c">// POST {"ids":[otherID]} → 200，marked=0，unread 不变</span>
+    _ = otherID
+}</code></pre>
+
+    <h3>步骤 5 · 验收 + 提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build &amp;&amp; make test &amp;&amp; make lint
+make run
+TOKEN=&lt;access_token&gt;
+curl -s -X POST http://localhost:8080/api/homeos/notifications/read \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"all":true}'
+<span class="c"># 期望：data.marked = 之前的未读数，data.unread = 0；再 GET summary，unread 同为 0</span>
+curl -s -X POST http://localhost:8080/api/homeos/devices/push-token \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"device_id":"dev-001","platform":"ios","push_token":"tok-abc"}'
+<span class="c"># 换个 push_token 重发同一 device_id：库里仍是一行，token 已更新</span>
+
+git add server
+git commit -m "feat(s7d21): notifications/read 三出口闭环 + devices/push-token upsert + homeos_device 迁移"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>WHERE 少了 <code>read_at IS NULL</code></td><td>重复点「全部已读」时 updated_at 被反复刷，乐观锁版本白白上涨</td><td>只更新未读行，天然幂等</td></tr>
+      <tr><td>把别人的 id 报 1001</td><td>泄露了「这个 id 存在」——越权与存在性同形的纪律破了</td><td>静默不命中：marked 少一个数而已</td></tr>
+      <tr><td>read 响应不带 unread</td><td>前端只好再发一次 GET，红点闪一下才归零</td><td>第三出口就在响应里；还是调那唯一的 count 函数</td></tr>
+      <tr><td><code>{}</code> 空 body 当全部已读</td><td>误触一次全清，用户炸毛</td><td>ids 与 all 两者皆空 → 400 + 1004；「全部」必须是显式意图</td></tr>
+      <tr><td>push-token 每次 INSERT</td><td>一台设备半年攒 200 行，将来推送发 200 遍</td><td>(member_id, device_id) 唯一 + upsert</td></tr>
+      <tr><td>device 表用 user_id 不用 member_id</td><td>同一账号在两个家庭里的设备语境混在一起</td><td>通知域的钥匙统一是 member_id（当前会话家庭里的成员）</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>已读回写</td><td>read_at 落 now()；条件四件套 family/member/未读/ids</td></tr>
+      <tr><td>静默不命中</td><td>越权 id 混入时命中 0 行、不报错——存在性不泄露</td></tr>
+      <tr><td>第三出口</td><td>POST read 响应里的 unread；三出口同值断言就此闭环</td></tr>
+      <tr><td><code>marked</code></td><td>本次实际置读的行数；客户端可对账「我勾了几条」</td></tr>
+      <tr><td>push-token 登记</td><td>设备与通道 token 的 upsert 台账；真实下发链路范围外</td></tr>
+      <tr><td><code>(member_id, device_id)</code></td><td>设备行的幂等键：同人同机一行，换 token 是更新</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足。往回翻的三种情况：</p>
+    <ul>
+      <li><b>upsert 的 OnConflict 写法</b>：回 S7·D15——注册表的 upsert 与今天的设备表同款。</li>
+      <li><b>越权与不存在同形的判例</b>：回 S4 越权测试卡（先红后绿那条）。</li>
+      <li><b>契约测试的 router/token 手法</b>：昨天（S7·D20）刚写的 helper 直接复用。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w20d3c1"><code>POST /notifications/read</code> 两种形态跑通；空 body → 400 + 1004；重复提交幂等（marked=0）</label></li>
+      <li><label><input type="checkbox" data-key="w20d3c2">三出口同值测试绿：已读 2 条后 summary / GET list / POST read 三处 unread 一起从 3 变 1</label></li>
+      <li><label><input type="checkbox" data-key="w20d3c3">别人的通知 id 混入时静默不命中（marked=0、不报错、unread 不变）</label></li>
+      <li><label><input type="checkbox" data-key="w20d3c4"><code>homeos_device</code> 迁移可重放；同 device_id 换 token 重发后库里仍一行；<code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿</label></li>
+      <li><label><input type="checkbox" data-key="w20d3c5">commit 带卡号 <code>s7d21</code>，<code>notes/</code> 写下三行：已读 WHERE 四件套各防什么、为什么静默不命中、三出口同值靠什么结构保证</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w20d2.html"><span class="hint">← 昨天 · S7·D20</span>通知列表与未读红点</a>
+    <a href="w20d4.html"><span class="hint">明天 · S7·D22 →</span>设置：主题三态与日期格式</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w20d3 · 明天见 ⟩</footer>
+</body>
+</html>

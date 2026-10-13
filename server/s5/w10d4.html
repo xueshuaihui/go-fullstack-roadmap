@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S5·D4 · context：超时与取消 | HomeCube 修炼手册</title>
+<meta name="description" content="context 的三站链路：创建（WithTimeout/WithCancel）、首参传递、检查点（ctx.Done/ctx.Err）；超时 ctx 不共享给对照组；聚合链路补超时中止测试。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w10d4">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S5</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S5</a> / w10d4</div>
+  <div class="day-meta">
+    <span class="chip">S5 · DAY 4</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>context：超时与取消</h1>
+  <p>D2 的 worker 要是卡住不交作业，select + <code>time.After</code> 只能让<b>等的人</b>先走，干活的 goroutine 还傻在原地——这就是 goroutine 泄漏。今天学真正的解药：<code>context</code>，一根从调用源头贯穿到每个 goroutine 的<b>信号线</b>，超时或取消时沿线广播「都别干了」。它是四个「S1 名词卡常客」里的最后一个，也是 S6 报表聚合、S8 优雅关闭都要用到的地基。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w10d4g1">说得出 ctx 三站链路：创建（WithTimeout/WithCancel）→ 首参传递 → 检查点（Done/Err）</label></li>
+      <li><label><input type="checkbox" data-key="w10d4g2">知道 <code>cancel</code> 为什么必须 <code>defer</code>，以及 ctx 树是怎么级联取消的</label></li>
+      <li><label><input type="checkbox" data-key="w10d4g3">能把 ctx 接进 select：干活与 <code>ctx.Done()</code> 二选一</label></li>
+      <li><label><input type="checkbox" data-key="w10d4g4">聚合链路补「超时即中止」测试并跑绿——对照组用独立 ctx，红线不破</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. ctx 是什么：一根可以掐断的信号线</h3>
+    <p><code>context.Context</code> 是个只有四个方法的接口，今天只用其中两个：</p>
+    <pre><span class="code-label">片段 · 只需读</span><code><span class="k">type</span> <span class="t">Context</span> <span class="k">interface</span> {
+    <span class="t">Done</span>() &lt;-<span class="k">struct</span>{}          <span class="c">// 被取消/超时时，这个 channel 会关闭——D2 的知识接上了</span>
+    <span class="t">Err</span>() <span class="t">error</span>                <span class="c">// 为什么结束：context.Canceled 或 context.DeadlineExceeded</span>
+    <span class="t">Deadline</span>() (time.<span class="t">Time</span>, <span class="t">bool</span>) <span class="c">// 有没有、什么时候到期</span>
+    <span class="t">Value</span>(key <span class="t">any</span>) <span class="t">any</span>          <span class="c">// 请求域元数据（如 request_id），不是传参通道</span>
+}</code></pre>
+    <p>三种造法：<code>context.Background()</code> 是根（main、测试里用）；<code>WithCancel</code> 给你一根手动掐断的线；<code>WithTimeout</code> 到点自动掐。后两个都返回 <code>(ctx, cancel)</code> 一对——<b>cancel 必须 defer 调用</b>，哪怕你笃定会超时：它负责释放定时器等资源，不 defer 就是泄漏。</p>
+    <pre><span class="code-label">可跑 · server/playground/s5d4/main.go（自带 go.mod）</span><code><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"fmt"</span>
+    <span class="s">"time"</span>
+)
+
+<span class="c">// worker 不停干活往外送，直到信号线被掐断。</span>
+<span class="k">func</span> <span class="t">worker</span>(ctx context.<span class="t">Context</span>, out <span class="k">chan</span>&lt;- <span class="t">int</span>) {
+    <span class="k">for</span> {
+        <span class="k">select</span> {
+        <span class="k">case</span> &lt;-ctx.<span class="t">Done</span>():                 <span class="c">// 检查点：信号线断了就回家</span>
+            fmt.<span class="t">Println</span>(<span class="s">"worker 收工:"</span>, ctx.<span class="t">Err</span>())
+            <span class="k">return</span>
+        <span class="k">case</span> out &lt;- <span class="n">42</span>:                    <span class="c">// 干活：送一个结果</span>
+            time.<span class="t">Sleep</span>(<span class="n">50</span> * time.Millisecond)
+        }
+    }
+}
+
+<span class="k">func</span> <span class="t">main</span>() {
+    ctx, cancel := context.<span class="t">WithTimeout</span>(context.<span class="t">Background</span>(), <span class="n">200</span>*time.Millisecond)
+    <span class="k">defer</span> cancel()                        <span class="c">// 肌肉记忆：WithTimeout 的下一行就是 defer cancel</span>
+
+    out := <span class="k">make</span>(<span class="k">chan</span> <span class="t">int</span>)
+    <span class="k">go</span> <span class="t">worker</span>(ctx, out)
+
+    got := <span class="n">0</span>
+    <span class="k">for</span> {
+        <span class="k">select</span> {
+        <span class="k">case</span> v := &lt;-out:
+            got += v
+        <span class="k">case</span> &lt;-ctx.<span class="t">Done</span>():
+            fmt.<span class="t">Println</span>(<span class="s">"超时收工:"</span>, ctx.<span class="t">Err</span>(), <span class="s">"，共收到"</span>, got)
+            <span class="k">return</span>                            <span class="c">// worker 也在同一根线上，会自己退出——不泄漏</span>
+        }
+    }
+}</code></pre>
+    <pre><span class="code-label">可跑</span><code>cd server/playground/s5d4
+go mod init s5d4 &amp;&amp; go run .   <span class="c"># 输出：超时收工: context deadline exceeded ，共收到 1xx 附近</span></code></pre>
+    <div class="callout note"><p>对比 D2 的 <code>time.After</code> 版：那边超时后 worker 还阻塞在 <code>results &lt;- …</code> 上永远回不来；这边<b>双方听同一根信号线</b>，主 goroutine 一走，worker 下一个 select 就收到 Done 自己收工。这就是「取消要可传播」的意义。</p></div>
+
+    <h3>2. 三站链路与 ctx 树</h3>
+    <ul>
+      <li><b>创建</b>：请求入口（handler 里用 <code>c.Request.Context()</code>，客户端断开它会自动取消）、测试里 <code>context.Background()</code> 派生 <code>WithTimeout</code>。</li>
+      <li><b>传递</b>：ctx 永远是<b>第一个参数</b>，<code>func SumByCategoryCtx(ctx context.Context, …)</code>；不存进 struct、不用 <code>nil</code>（拿不准传什么就 <code>context.TODO()</code>，它是「欠着一根线」的显式欠条）。</li>
+      <li><b>检查点</b>：阻塞处用 <code>select { case &lt;-ctx.Done(): … }</code>；长循环里每隔一段查一次 <code>ctx.Err() != nil</code>。<b>取消是协作式的</b>：ctx 不会替你杀 goroutine，不检查点的代码永远感知不到取消。</li>
+    </ul>
+    <p>ctx 是<b>树</b>：从 Background 派生 WithTimeout，再从它派生子 ctx——<b>掐断任何一个节点，它整棵子树全部断开</b>。这就是「一个请求超时，它派生的所有聚合 goroutine 集体收工」的原理，也是 D5 errgroup 的底层机制。</p>
+
+    <h3>3. 超时之后对外说什么</h3>
+    <p><code>ctx.Err()</code> 只有两个值：<code>context.Canceled</code>（手动取消/客户端断开）与 <code>context.DeadlineExceeded</code>（超时）。映射到全站错误契约：聚合超时属服务器侧没干完活，业务码走 <b>5000</b>；HTTP 状态可以按语义细化成 <b>504</b>（契约允许「HTTP 状态按语义细化，业务码仍走唯一表」）。包装时用 <code>%w</code> 把 <code>ctx.Err()</code> 裹进去（S1·D4 的手艺），上层 <code>errors.Is(err, context.DeadlineExceeded)</code> 认得出来。</p>
+    <div class="callout warn"><p><b>本站红线（写进判据的）：并发组与对照组不共享同一条超时 ctx。</b>对拍测试里，超时用例的 ctx 已经被掐死了，对照组再用它就「莫名其妙」立刻失败，你会误判成聚合逻辑错了。对照组永远自己拿一条干净的 <code>context.Background()</code>。</p></div>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>③：补测试用例</b>——给聚合链路加 ctx 版函数与「超时即中止」测试。收工时 <code>make build</code> / <code>make test</code> 必须绿。</p>
+
+    <h3>步骤 1 · ctx 贯穿的单分类求和</h3>
+    <pre><span class="code-label">完整 · server/internal/finance/service/agg_ctx.go</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"fmt"</span>
+    <span class="s">"time"</span>
+)
+
+<span class="c">// sumOneCategory 对单个分类求和；rows 只读，可多 goroutine 共享。</span>
+<span class="c">// time.Sleep 模拟一次慢 IO——S6 起这里会是真查询，检查点的位置不变。</span>
+<span class="k">func</span> <span class="t">sumOneCategory</span>(ctx context.<span class="t">Context</span>, id <span class="t">int64</span>, rows []<span class="t">AggInput</span>) (<span class="t">AggResult</span>, <span class="t">error</span>) {
+    <span class="k">select</span> {                            <span class="c">// 开工前先听一次信号：已取消就别白干</span>
+    <span class="k">case</span> &lt;-ctx.<span class="t">Done</span>():
+        <span class="k">return</span> <span class="t">AggResult</span>{}, fmt.<span class="t">Errorf</span>(<span class="s">"聚合分类 %d: %w"</span>, id, ctx.<span class="t">Err</span>())
+    <span class="k">default</span>:
+    }
+    time.<span class="t">Sleep</span>(<span class="n">20</span> * time.Millisecond) <span class="c">// 模拟 IO</span>
+
+    <span class="k">var</span> total <span class="t">int64</span>
+    <span class="k">for</span> _, r := <span class="k">range</span> rows {
+        <span class="k">if</span> r.CategoryID == id {
+            total += r.AmountCents
+        }
+    }
+    <span class="k">return</span> <span class="t">AggResult</span>{ID: id, TotalCents: total}, <span class="k">nil</span>
+}
+
+<span class="c">// SumByCategoryCtx 串行遍历分类，但 ctx 已贯穿——D5 把它池化成真并发。</span>
+<span class="k">func</span> <span class="t">SumByCategoryCtx</span>(ctx context.<span class="t">Context</span>, rows []<span class="t">AggInput</span>) ([]<span class="t">AggResult</span>, <span class="t">error</span>) {
+    out := []<span class="t">AggResult</span>{}
+    <span class="k">for</span> _, id := <span class="k">range</span> <span class="t">CategoryIDs</span>(rows) {
+        res, err := <span class="t">sumOneCategory</span>(ctx, id, rows)
+        <span class="k">if</span> err != <span class="k">nil</span> {
+            <span class="k">return</span> <span class="k">nil</span>, err            <span class="c">// 一处超时，整批中止——部分结果没有意义</span>
+        }
+        out = <span class="k">append</span>(out, res)
+    }
+    <span class="k">return</span> out, <span class="k">nil</span>                    <span class="c">// CategoryIDs 已排序，输出天然有序</span>
+}</code></pre>
+
+    <h3>步骤 2 · 超时中止测试 + 对照组（各自独立 ctx）</h3>
+    <pre><span class="code-label">完整 · server/internal/finance/service/agg_ctx_test.go</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"errors"</span>
+    <span class="s">"testing"</span>
+    <span class="s">"time"</span>
+)
+
+<span class="k">func</span> <span class="t">TestSumByCategoryCtx_Timeout</span>(t *testing.T) {
+    rows := <span class="t">fakeRows</span>()                    <span class="c">// D3 的确定性假数据：6 个分类 × 每类 20ms，串行要 120ms</span>
+    ctx, cancel := context.<span class="t">WithTimeout</span>(context.<span class="t">Background</span>(), <span class="n">50</span>*time.Millisecond)
+    <span class="k">defer</span> cancel()
+
+    _, err := <span class="t">SumByCategoryCtx</span>(ctx, rows)
+    <span class="k">if</span> !errors.<span class="t">Is</span>(err, context.<span class="t">DeadlineExceeded</span>) {
+        t.<span class="t">Fatalf</span>(<span class="s">"err = %v, want DeadlineExceeded"</span>, err)
+    }
+}
+
+<span class="k">func</span> <span class="t">TestSumByCategoryCtx_Success</span>(t *testing.T) {
+    rows := <span class="t">fakeRows</span>()
+    <span class="c">// 对照组纪律：这里自己拿一条全新的 Background，绝不复用上面那条已超时的 ctx。</span>
+    got, err := <span class="t">SumByCategoryCtx</span>(context.<span class="t">Background</span>(), rows)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"不该出错: %v"</span>, err)
+    }
+    <span class="k">if</span> want := <span class="t">SumByCategory</span>(rows); !<span class="t">equalResults</span>(got, want) {
+        t.<span class="t">Fatalf</span>(<span class="s">"ctx 版与串行对照组不一致:\ngot  %+v\nwant %+v"</span>, got, want)
+    }
+}
+
+<span class="c">// equalResults 逐项对拍。不用 reflect.DeepEqual 是为了失败时能打出具体哪一项歪了。</span>
+<span class="k">func</span> <span class="t">equalResults</span>(got, want []<span class="t">AggResult</span>) <span class="t">bool</span> {
+    <span class="k">if</span> <span class="k">len</span>(got) != <span class="k">len</span>(want) {
+        <span class="k">return</span> <span class="k">false</span>
+    }
+    <span class="k">for</span> i := <span class="k">range</span> got {
+        <span class="k">if</span> got[i] != want[i] {
+            <span class="k">return</span> <span class="k">false</span>
+        }
+    }
+    <span class="k">return</span> <span class="k">true</span>
+}</code></pre>
+    <div class="callout note"><p>时序账算给你看：6 个分类 × 20ms 串行 ≈ 120ms，超时设 50ms——第 3 个分类开工前信号线必断，测试<b>确定性</b>命中超时分支，不靠运气。设计超时测试的诀窍就是这个：让「干活总时长」明显大于「超时预算」。</p></div>
+
+    <h3>步骤 3 · 验收并提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test    <span class="c"># 两个新测试 + 旧测试全绿，-race 零警告</span>
+make lint
+
+git add server/internal/finance/service
+git status
+git commit -m "feat(s5d4): 聚合链路接入 ctx，超时即中止（对照组独立 ctx）"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>超时 ctx 共享给对照组</td><td>对照用例「莫名」秒失败，误判聚合逻辑有 bug</td><td>本站红线：每个用例自己创建 ctx，谁也不借谁的</td></tr>
+      <tr><td><code>WithTimeout</code> 不 defer cancel</td><td><code>go vet</code> 报 lostcancel；定时器资源泄漏</td><td>下一行就 <code>defer cancel()</code>，没有例外</td></tr>
+      <tr><td>把 ctx 存进 struct 字段</td><td>生命周期错位：struct 活得比请求长，拿着死线早过的 ctx 干活</td><td>ctx 只做参数流动；struct 里出现的都该是数据</td></tr>
+      <tr><td>不写检查点</td><td>取消了但 goroutine 照跑到底，超时形同虚设</td><td>取消是协作式的：阻塞处 select Done，长循环定期查 Err</td></tr>
+      <tr><td>吞掉 ctx.Err() 返回 nil</td><td>上层以为成功，拿着半截结果继续算</td><td>中止就是中止：<code>return nil, fmt.Errorf("…: %w", ctx.Err())</code></td></tr>
+      <tr><td>用 <code>WithValue</code> 传业务参数</td><td>签名失去文档性，类型全变 any，编译期零保护</td><td>Value 只放请求域元数据（request_id 这类）；业务参数老老实实写进签名</td></tr>
+      <tr><td>超时预算层层加码</td><td>外层 3s、内层各 5s，外层早死了内层还在跑</td><td>子 ctx 的 deadline 只会更早不会更晚——预算从源头定，派生自动收紧</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td><code>context.Context</code></td><td>取消与超时的信号线；S1 起在名词卡躺了四个阶段，今天上岗</td></tr>
+      <tr><td><code>Background</code> / <code>TODO</code></td><td>根 ctx / 「欠着一根线」的显式欠条；main 与测试用 Background</td></tr>
+      <tr><td><code>WithTimeout</code> / <code>WithCancel</code></td><td>派生子 ctx：到点自动掐 / 手动掐；都返回 cancel，必须 defer</td></tr>
+      <tr><td><code>ctx.Done()</code></td><td>只读 channel，取消时关闭——正好接进 D2 的 select</td></tr>
+      <tr><td><code>ctx.Err()</code></td><td>Canceled（手动/断连）或 DeadlineExceeded（超时）</td></tr>
+      <tr><td>协作式取消</td><td>ctx 不杀 goroutine，只广播信号；不检查就感知不到</td></tr>
+      <tr><td>ctx 树</td><td>派生关系构成树；掐任一节点，整棵子树同断</td></tr>
+      <tr><td>goroutine 泄漏</td><td>goroutine 阻塞在没人兑现的收发上永远回不来；ctx 是解药</td></tr>
+      <tr><td><code>c.Request.Context()</code></td><td>gin/net/http 每请求自带的 ctx；客户端断开自动取消</td></tr>
+      <tr><td>errgroup</td><td>「首个错误 + 级联取消」的 WaitGroup 增强版，底层就是 ctx 树。<b>明天 D5 正式讲</b></td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有两种情况出去查：</p>
+    <ul>
+      <li><b>ctx 的官方使用范式</b>：<a href="https://pkg.go.dev/context" target="_blank">context 包文档</a>（可选，包顶部那段注释就是官方的三站链路说法）。</li>
+      <li><b>取消传播的设计思路</b>：Go 官方博客的 "Go Concurrency Patterns: Context"（可选，读图不读码）。</li>
+    </ul>
+    <p>调试顺序：超时类问题先画<b>时序账</b>——每个环节花多久、预算多少、在哪一站断的。把 <code>ctx.Err()</code> 的值打出来（Canceled 还是 DeadlineExceeded，两回事），再决定是加预算还是砍工作量。 goroutine 疑似泄漏时用 <code>runtime.NumGoroutine()</code> 在测试前后各打一次，数字不回落就是漏了。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w10d4c1">playground s5d4 跑通：超时触发时 worker 与 main 双双收工，无泄漏</label></li>
+      <li><label><input type="checkbox" data-key="w10d4c2"><code>agg_ctx.go</code> 落盘：ctx 是首参、开工前有检查点、错误用 <code>%w</code> 包住 <code>ctx.Err()</code></label></li>
+      <li><label><input type="checkbox" data-key="w10d4c3">超时测试确定性命中 <code>DeadlineExceeded</code>（连跑 5 次 <code>go test -race -count=1 ./internal/finance/service/</code> 全绿不抖）</label></li>
+      <li><label><input type="checkbox" data-key="w10d4c4">对照用例用的是独立 <code>context.Background()</code>——红线没破；<code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，commit 带卡号 <code>s5d4</code></label></li>
+      <li><label><input type="checkbox" data-key="w10d4c5"><code>notes/</code> 里写下三行：cancel 为什么必须 defer、取消为什么是协作式的、超时对外映射哪个业务码与 HTTP 状态</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w10d3.html"><span class="hint">← 昨天 · S5·D3</span>Mutex/RWMutex 与 -race</a>
+    <a href="w10d5.html"><span class="hint">明天 · S5·D5 →</span>并发模式：worker pool 与 errgroup</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w10d4 · 明天见 ⟩</footer>
+</body>
+</html>

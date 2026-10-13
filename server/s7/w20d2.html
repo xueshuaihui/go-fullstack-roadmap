@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S7·D20 · 通知列表与未读红点 | HomeCube 修炼手册</title>
+<meta name="description" content="GET /api/homeos/notifications：游标分页列表 + 响应带 unread；用契约测试把「summary.unread 与通知列表 unread 同值」钉死——三个出口的第二个今天上岗。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w20d2">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S7</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S7</a> / w20d2</div>
+  <div class="day-meta">
+    <span class="chip">S7 · DAY 20</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>通知列表与未读红点</h1>
+  <p>三个未读出口，第一个（首页 summary 的 <code>unread</code>）在 S7 前半就上岗了。今天第二个出口落地：<code>GET /api/homeos/notifications</code>——游标分页的通知列表，<b>响应体自带 <code>unread</code></b>。前端壳的未读红点从此有两个数据源，而我们的判据是：它们永远同值。今天不只写接口，还要写一条<b>同值契约测试</b>，把判据变成 CI 里跑的代码。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w20d2g1"><code>GET /api/homeos/notifications</code> 跑通：游标分页、按 member 过滤、响应带 unread</label></li>
+      <li><label><input type="checkbox" data-key="w20d2g2">说清 unread 为什么塞在列表响应里，而不是单开一个「查未读数」接口</label></li>
+      <li><label><input type="checkbox" data-key="w20d2g3">说清同值契约测试的写法：一次 httptest 打两个出口，断言两个 unread 相等</label></li>
+      <li><label><input type="checkbox" data-key="w20d2g4">测试绿（含同值断言），<code>make build</code> / <code>make test</code> 绿</label></li>
+    </ul>
+    <div class="callout note"><p>↑ 这四条是「学习目标」。页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 列表口径</h3>
+    <ul>
+      <li><b>过滤</b>：<code>family_id = ?</code>（scope helper 注入）+ <code>member_id = ?</code>（当前会话成员）——你只看得到发给你的通知。</li>
+      <li><b>排序与分页</b>：<code>created_at DESC, id DESC</code> 键集分页，游标 = base64 的 <code>(created_at, id)</code>，不透明、不可自造（S3 定的老规矩）。通知是无限增长的流，正是游标分页的主场；offset 分页在这里会在深翻页时把库拖垮。</li>
+      <li><b>可选过滤</b>：<code>?kind=reminder</code> 按分型筛（前端「只看提醒」的 tab）；非法 kind → 400 + 1004。<code>?unread_only=true</code> 只列未读。</li>
+      <li><b>响应形状</b>：分页三件套 <code>list / next_cursor / has_more</code> 之外多一个 <code>unread</code>——它是整份响应里唯一不分页的字段，数的是<b>全量</b>未读，不是本页的。</li>
+    </ul>
+
+    <h3>2. 为什么 unread 搭列表的车，而不是单开接口</h3>
+    <p>红点要的是「一个数」，看起来 <code>GET /notifications/unread</code> 很合理——不。每多一个端点，前端进通知页就多一次请求、多一种时序（列表到了、数还没到，红点闪一下）。把 unread 塞进列表响应，<b>一次请求，数据与计数天然同一时刻</b>，还省了接口分母里的一条。这与首页 summary 的哲学同源：首屏只此一个业务请求。</p>
+
+    <h3>3. 同值契约测试：判据要长成代码</h3>
+    <p>「三个出口同值」如果只写在文档里，它会在某次重构后悄悄破掉。契约测试的写法：</p>
+    <pre><span class="code-label">片段 · 思路</span><code>① httptest 造同一个 member 的会话（S4 的测试 token 手艺）
+② GET /api/homeos/home/summary      → 解出 data.unread
+③ GET /api/homeos/notifications     → 解出 data.unread
+④ assert 两个数相等（且等于种下的未读行数）
+⑤ 后天（S7·D21）POST read 之后，把第三个出口也拉进来断言</code></pre>
+    <p>两个请求走同一个装配好的 router，中间没有任何写操作——如果这都能不相等，说明两个出口没共用 <code>UnreadCount</code>，测试当场抓获。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>②+③：加一条路由与 handler（真查询）+ 补同值契约测试</b>。</p>
+
+    <h3>步骤 1 · service：列表 + 游标</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/service/notification.go</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"encoding/base64"</span>
+    <span class="s">"fmt"</span>
+    <span class="s">"strconv"</span>
+    <span class="s">"strings"</span>
+    <span class="s">"time"</span>
+
+    <span class="s">"gorm.io/gorm"</span>
+
+    <span class="s">"homecube/internal/homeos/model"</span>
+    <span class="s">"homecube/internal/homeos/repo"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="k">type</span> <span class="t">NotificationService</span> <span class="k">struct</span> {
+    db   *gorm.DB
+    repo *repo.NotificationRepo
+}
+
+<span class="k">func</span> <span class="t">NewNotificationService</span>(db *gorm.DB, r *repo.NotificationRepo) *NotificationService {
+    <span class="k">return</span> &amp;NotificationService{db: db, repo: r}
+}
+
+<span class="c">// Unread 只是转发：全仓唯一实现仍在 repo.UnreadCount（昨天的纪律）。</span>
+<span class="k">func</span> (s *NotificationService) <span class="t">Unread</span>(ctx context.Context, familyID, memberID <span class="t">int64</span>) (int64, error) {
+    <span class="k">return</span> s.repo.UnreadCount(ctx, familyID, memberID)
+}
+
+<span class="c">// List 键集分页：游标 = base64("RFC3339|id")，与 S3 的分页 helper 同构。</span>
+<span class="k">func</span> (s *NotificationService) <span class="t">List</span>(ctx context.Context, familyID, memberID <span class="t">int64</span>, cursor, kind <span class="t">string</span>, unreadOnly <span class="t">bool</span>, limit <span class="t">int</span>) ([]model.Notification, string, bool, error) {
+    q := s.db.WithContext(ctx).Model(&amp;model.Notification{}).
+        Where(<span class="s">"family_id = ? AND member_id = ?"</span>, familyID, memberID)
+    <span class="k">if</span> kind != <span class="s">""</span> {
+        <span class="k">if</span> kind != model.NotificationKindBudgetAlert &amp;&amp; kind != model.NotificationKindSystem &amp;&amp; kind != model.NotificationKindReminder {
+            <span class="k">return</span> <span class="k">nil</span>, <span class="s">""</span>, <span class="k">false</span>, response.ErrInvalidParam
+        }
+        q = q.Where(<span class="s">"kind = ?"</span>, kind)
+    }
+    <span class="k">if</span> unreadOnly {
+        q = q.Where(<span class="s">"read_at IS NULL"</span>)
+    }
+    <span class="k">if</span> cursor != <span class="s">""</span> {
+        ts, id, err := decodeNotificationCursor(cursor)
+        <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="k">nil</span>, <span class="s">""</span>, <span class="k">false</span>, response.ErrInvalidParam }
+        q = q.Where(<span class="s">"(created_at, id) &lt; (?, ?)"</span>, ts, id) <span class="c">// DESC 键集：比游标更旧</span>
+    }
+    <span class="k">var</span> list []model.Notification
+    <span class="k">if</span> err := q.Order(<span class="s">"created_at DESC, id DESC"</span>).Limit(limit + <span class="n">1</span>).Find(&amp;list).Error; err != <span class="k">nil</span> {
+        <span class="k">return</span> <span class="k">nil</span>, <span class="s">""</span>, <span class="k">false</span>, err
+    }
+    hasMore := len(list) &gt; limit
+    <span class="k">if</span> hasMore { list = list[:limit] }
+    next := <span class="s">""</span>
+    <span class="k">if</span> hasMore &amp;&amp; len(list) &gt; <span class="n">0</span> {
+        last := list[len(list)-<span class="n">1</span>]
+        next = encodeNotificationCursor(last.CreatedAt, last.ID)
+    }
+    <span class="k">return</span> list, next, hasMore, <span class="k">nil</span>
+}
+
+<span class="k">func</span> <span class="t">encodeNotificationCursor</span>(ts time.Time, id <span class="t">int64</span>) <span class="t">string</span> {
+    raw := fmt.Sprintf(<span class="s">"%s|%d"</span>, ts.UTC().Format(time.RFC3339Nano), id)
+    <span class="k">return</span> base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+<span class="k">func</span> <span class="t">decodeNotificationCursor</span>(cursor <span class="t">string</span>) (time.Time, int64, error) {
+    raw, err := base64.RawURLEncoding.DecodeString(cursor)
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> time.Time{}, <span class="n">0</span>, err }
+    parts := strings.SplitN(string(raw), <span class="s">"|"</span>, <span class="n">2</span>)
+    <span class="k">if</span> len(parts) != <span class="n">2</span> { <span class="k">return</span> time.Time{}, <span class="n">0</span>, fmt.Errorf(<span class="s">"bad cursor"</span>) }
+    ts, err := time.Parse(time.RFC3339Nano, parts[<span class="n">0</span>])
+    <span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> time.Time{}, <span class="n">0</span>, err }
+    id, err := strconv.ParseInt(parts[<span class="n">1</span>], <span class="n">10</span>, <span class="n">64</span>)
+    <span class="k">return</span> ts, id, err
+}</code></pre>
+    <div class="callout note"><p>如果你 S3 落地的分页 helper 已经是公共包（当时游标分页就是这么教的），把 encode/decode 两个函数换成公共版——<b>判据不变：游标不透明、键集条件、多取一条判 has_more</b>。本页给的是自足最小版。</p></div>
+
+    <h3>步骤 2 · handler 与路由</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/handler/notification.go</span><code><span class="k">package</span> handler
+
+<span class="k">import</span> (
+    <span class="s">"net/http"</span>
+
+    <span class="s">"github.com/gin-gonic/gin"</span>
+
+    <span class="s">"homecube/internal/homeos/service"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="k">type</span> <span class="t">NotificationHandler</span> <span class="k">struct</span>{ svc *service.NotificationService }
+
+<span class="k">func</span> <span class="t">NewNotificationHandler</span>(svc *service.NotificationService) *NotificationHandler {
+    <span class="k">return</span> &amp;NotificationHandler{svc: svc}
+}
+
+<span class="c">// List GET /api/homeos/notifications —— 三个未读出口的第二出口。</span>
+<span class="k">func</span> (h *NotificationHandler) <span class="t">List</span>(c *gin.Context) {
+    familyID := c.GetInt64(<span class="s">"familyID"</span>)
+    memberID := c.GetInt64(<span class="s">"memberID"</span>)
+
+    list, next, hasMore, err := h.svc.List(c.Request.Context(), familyID, memberID,
+        c.Query(<span class="s">"cursor"</span>), c.Query(<span class="s">"kind"</span>), c.Query(<span class="s">"unread_only"</span>) == <span class="s">"true"</span>, <span class="n">20</span>)
+    <span class="k">if</span> err != <span class="k">nil</span> { response.FailErr(c, err); <span class="k">return</span> }
+
+    unread, err := h.svc.Unread(c.Request.Context(), familyID, memberID)
+    <span class="k">if</span> err != <span class="k">nil</span> { response.FailErr(c, err); <span class="k">return</span> }
+
+    response.OK(c, gin.H{<span class="s">"list"</span>: list, <span class="s">"next_cursor"</span>: next, <span class="s">"has_more"</span>: hasMore, <span class="s">"unread"</span>: unread})
+}
+
+<span class="c">// 路由装配（Auth 之后）：homeos.GET("/notifications", nh.List)</span></code></pre>
+    <p>注意 <code>unread</code> 的分量：它是<b>响应契约的一部分</b>，不是锦上添花——前端红点直接消费它，契约测试直接断言它。</p>
+
+    <h3>步骤 3 · 同值契约测试</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/handler/notification_unread_test.go（骨架）</span><code><span class="k">package</span> handler
+
+<span class="k">import</span> (
+    <span class="s">"encoding/json"</span>
+    <span class="s">"net/http/httptest"</span>
+    <span class="s">"testing"</span>
+)
+
+<span class="k">func</span> <span class="t">TestUnreadSameAcrossExits</span>(t *testing.T) {
+    r, db := newTestRouter(t)              <span class="c">// S4 起的全装配测试 router + 测试库</span>
+    token := seedMemberWithToken(t, r, db) <span class="c">// 一个 member 会话；顺手种 3 条未读通知</span>
+
+    read := func(path string) int64 {
+        w := httptest.NewRecorder()
+        req := httptest.NewRequest(<span class="s">"GET"</span>, path, nil)
+        req.Header.Set(<span class="s">"Authorization"</span>, <span class="s">"Bearer "</span>+token)
+        r.ServeHTTP(w, req)
+        <span class="k">if</span> w.Code != <span class="n">200</span> { t.Fatalf(<span class="s">"%s → %d, body=%s"</span>, path, w.Code, w.Body.String()) }
+        <span class="k">var</span> body struct{ Data struct{ Unread int64 <span class="s">`json:"unread"`</span> } <span class="s">`json:"data"`</span> }
+        <span class="k">if</span> err := json.Unmarshal(w.Body.Bytes(), &amp;body); err != <span class="k">nil</span> { t.Fatal(err) }
+        <span class="k">return</span> body.Data.Unread
+    }
+
+    fromSummary := read(<span class="s">"/api/homeos/home/summary?period=2026-11"</span>) <span class="c">// 出口一（S7 前半建）</span>
+    fromList := read(<span class="s">"/api/homeos/notifications"</span>)                  <span class="c">// 出口二（今天建）</span>
+
+    <span class="k">if</span> fromSummary != <span class="n">3</span> || fromList != <span class="n">3</span> {
+        t.Fatalf(<span class="s">"summary=%d list=%d, want 都是 3"</span>, fromSummary, fromList)
+    }
+    <span class="k">if</span> fromSummary != fromList {
+        t.Fatalf(<span class="s">"两个出口不同值: %d vs %d"</span>, fromSummary, fromList)
+    }
+}</code></pre>
+
+    <h3>步骤 4 · 验收 + 提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build &amp;&amp; make test &amp;&amp; make lint
+make run
+TOKEN=&lt;access_token&gt;
+curl -s "http://localhost:8080/api/homeos/notifications" -H "Authorization: Bearer $TOKEN"
+<span class="c"># 期望：list / next_cursor / has_more / unread 四键齐全，unread 与 summary 里的一致</span>
+curl -s "http://localhost:8080/api/homeos/notifications?kind=promo" -H "Authorization: Bearer $TOKEN"
+<span class="c"># 期望：400 + 1004</span>
+
+git add server
+git commit -m "feat(s7d20): GET notifications 游标分页 + 响应带 unread + 双出口同值契约测试"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>unread 数的是本页未读</td><td>翻一页红点数变一次</td><td>unread 永远是全量口径，与分页参数无关</td></tr>
+      <tr><td>handler 里现写一份 COUNT</td><td>三出口同值判据从第二天开始腐烂</td><td>只调 repo.UnreadCount；grep 全仓 COUNT 只此一处</td></tr>
+      <tr><td>游标里塞页码</td><td>客户端开始「算页」，插入新行后重复/漏读</td><td>游标 = (排序键, id) 的 base64，键集条件续读</td></tr>
+      <tr><td>排序只按 created_at</td><td>同一时刻两条通知，翻页时反复出现/消失</td><td>排序键补 id 兜底：<code>created_at DESC, id DESC</code></td></tr>
+      <tr><td>kind 过滤不校验取值</td><td><code>?kind=promoo</code> 静默返回空列表，前端以为没通知</td><td>非三分型之一 → 400 + 1004，错误要响</td></tr>
+      <tr><td>忘了 family 过滤只按 member</td><td>member_id 是全局序列时看似没事，撞号就串家庭</td><td>family_id 与 member_id 两个条件一个都不能少</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>未读出口</td><td>把 unread 吐给客户端的位置；共三个，今天上线第二个</td></tr>
+      <tr><td>同值契约测试</td><td>一次测试打多个出口断言相等——判据长成的代码形态</td></tr>
+      <tr><td>键集分页（keyset）</td><td>WHERE (排序键) &lt; 游标 的续读方式；深翻页不退化</td></tr>
+      <tr><td>不透明游标</td><td>base64 的 (created_at, id)；客户端不得解析、不得自造</td></tr>
+      <tr><td>多取一条</td><td>Limit(n+1) 判 has_more 的标准手法，省一次 COUNT</td></tr>
+      <tr><td>红点（badge）</td><td>前端壳消费的未读数；服务端只保证数对，渲染归 F5</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足。往回翻的三种情况：</p>
+    <ul>
+      <li><b>游标分页的编码/解码细节</b>：回 S3 分页卡——今天这套与它同构，判据同为「不重复、不漏、能续读」。</li>
+      <li><b>summary 的响应结构</b>：回 S7 前半的首页卡；契约测试要解它的 <code>data.unread</code>。</li>
+      <li><b>测试 token 怎么造</b>：回 S4 的鉴权测试卡，seedMemberWithToken 就是你当时的手艺。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w20d2c1"><code>GET /api/homeos/notifications</code> 跑通：list/next_cursor/has_more/unread 四键齐全，游标续读不重不漏</label></li>
+      <li><label><input type="checkbox" data-key="w20d2c2">kind 与 unread_only 过滤生效；非法 kind 返回 400 + 1004</label></li>
+      <li><label><input type="checkbox" data-key="w20d2c3">同值契约测试绿：summary.unread == notifications.unread == 种下的未读行数</label></li>
+      <li><label><input type="checkbox" data-key="w20d2c4">unread 的实现只有 repo.UnreadCount 一处；<code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿</label></li>
+      <li><label><input type="checkbox" data-key="w20d2c5">commit 带卡号 <code>s7d20</code>，<code>notes/</code> 写下三行：unread 为什么搭列表的车、键集分页的条件怎么写、契约测试抓的是哪类回归</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w20d1.html"><span class="hint">← 昨天 · S7·D19</span>通知表与三分型</a>
+    <a href="w20d3.html"><span class="hint">明天 · S7·D21 →</span>已读回写与推送设备注册</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w20d2 · 明天见 ⟩</footer>
+</body>
+</html>

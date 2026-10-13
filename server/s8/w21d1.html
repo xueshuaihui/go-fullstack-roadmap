@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S8·D1 · 多阶段 Dockerfile：从二进制到一个能跑的镜像 | HomeCube 修炼手册</title>
+<meta name="description" content="第一次真正接触 Docker：用多阶段构建把 homecube 服务端打成一个二十兆的运行镜像，理解 CGO_ENABLED=0、-ldflags -s -w、镜像分层缓存与 .dockerignore 各自解决什么问题。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w21d1">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S8</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S8</a> / w21d1</div>
+  <div class="day-meta">
+    <span class="chip">S8 · DAY 1</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>多阶段 Dockerfile：从二进制到一个能跑的镜像</h1>
+  <p>72 条接口你已经全部写完，<code>make run</code> 在本机能起。但「在我机器上能跑」不是交付，是事故预告。从今天起的 12 天只做一件事：<b>把这套东西变成干净机器上一条命令能复现、CI 能拦、上线能跑的机器</b>。今天不新增任何业务接口，只写两个文件：<code>server/Dockerfile</code> 与仓库根的 <code>.dockerignore</code>。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w21d1g1">说得出镜像、容器、构建上下文、层这四个词各自指什么，以及它们和前端的 <code>node_modules</code> / 构建产物 / 打包体积分别怎么对应</label></li>
+      <li><label><input type="checkbox" data-key="w21d1g2">写出一份两阶段的 <code>server/Dockerfile</code>，运行镜像里没有 Go 工具链、没有源码</label></li>
+      <li><label><input type="checkbox" data-key="w21d1g3">能解释 <code>CGO_ENABLED=0</code>、<code>-ldflags "-s -w"</code>、<code>-trimpath</code> 三个开关分别换来什么、付出什么</label></li>
+      <li><label><input type="checkbox" data-key="w21d1g4"><code>.dockerignore</code> 落盘，<code>docker build</code> 出的镜像能跑起来（跑失败的原因是连不上数据库，而不是二进制本身有问题）</label></li>
+    </ul>
+    <div class="callout note"><p>↑ 这四条是「学习目标」。页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p></div>
+  </section>
+
+  <section>
+    <h2>课前须知：Docker 第一次登场，先记住四句话</h2>
+    <div class="callout js">
+      <p>1. <b>镜像（image）是一个只读的文件系统快照 + 一份启动说明</b>。它不是虚拟机，里面没有内核，也没有「开机」这回事——它就是一堆文件和一条 <code>ENTRYPOINT</code>。</p>
+      <p>2. <b>容器（container）是镜像的一次运行实例</b>。同一个镜像可以同时起十个容器，各自有独立的文件系统视图与进程。删掉容器，镜像还在。</p>
+      <p>3. <b>Dockerfile 是构建配方，一行指令产出一「层」（layer）</b>。层会被缓存，也会被复用：<code>docker build</code> 从上往下执行，<b>只要某一层的输入没变就直接用缓存，一旦变了，它和它下面的所有层全部重建</b>。今天所有的「先后顺序」讲究都从这一条推出来。</p>
+      <p>4. <b>构建上下文（build context）是你执行 <code>docker build</code> 时那个目录的全部内容</b>。它会被打包发给 Docker 引擎，所以目录里有 <code>web/node_modules</code> 的话，每次构建都要先搬几百兆。<code>.dockerignore</code> 就是这一层的 <code>.gitignore</code>。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 为什么 Go 项目的镜像能小到二十兆</h3>
+    <p>S1·D1 讲过一句话：<code>go build</code> 直接出静态二进制，没有运行时、目标机器不需要装 Go。这句话在容器里的兑现形式就是<b>多阶段构建（multi-stage build）</b>：一个 Dockerfile 里写多个 <code>FROM</code>，前面的阶段负责「造」，最后一个阶段负责「跑」，中间只把造出来的那一个文件搬过去。</p>
+    <table>
+      <tr><th>阶段</th><th>基础镜像</th><th>体积量级</th><th>里面有什么</th><th>进不进最终镜像</th></tr>
+      <tr><td>builder</td><td><code>golang:1.24-alpine</code></td><td>约 300 MB</td><td>Go 工具链、模块缓存、你的全部源码</td><td><b>不进</b></td></tr>
+      <tr><td>runtime</td><td><code>alpine:3.20</code></td><td>约 8 MB</td><td>一个 shell、CA 证书、时区数据、<code>/app/homecube</code></td><td>这就是最终镜像</td></tr>
+    </table>
+    <p>前端类比：builder 阶段等于 <code>npm run build</code> 的那台 CI 机器（装了 Node、装了 <code>node_modules</code>），runtime 阶段等于你最后丢给 CDN 的 <code>dist/</code> 目录。<b>没人会把 <code>node_modules</code> 一起上传到 CDN</b>，同理也不该把 Go 工具链打进运行镜像。</p>
+    <div class="callout note"><p><b>为什么用 alpine 而不是更极端的 <code>scratch</code>（空镜像）？</b>三个理由：① 你的家庭表里有时区字段，服务端要 <code>time.LoadLocation("Asia/Shanghai")</code>，这需要 <code>/usr/share/zoneinfo</code>，即 <code>tzdata</code> 包——<code>scratch</code> 里没有，一查就报 <code>unknown time zone</code>；② 排查问题时要能 <code>docker compose exec server sh</code> 进去看一眼，<code>scratch</code> 连 shell 都没有；③ 容器健康检查（S8·D3 会写）要在容器内执行一条命令，同样需要 shell。<code>scratch</code> 与 distroless 是「体积再压十兆」的优化，属于前瞻，不是今天的取舍。</p></div>
+
+    <h3>2. CGO_ENABLED=0：为什么要关掉 C 胶水层</h3>
+    <p>Go 默认在部分标准库里用 C 代码（cgo）：最典型的是 <code>net</code> 包的域名解析和 <code>os/user</code>。开了 cgo，产出的二进制会<b>动态链接</b>到构建机的 C 库（glibc / musl）。</p>
+    <p>后果很具体：你在 <code>golang:1.24-alpine</code>（musl libc）里构建，却把二进制拷到 <code>debian</code>（glibc）里跑，会直接 <code>no such file or directory</code> 或段错误——报错信息还完全不指向真实原因。<code>CGO_ENABLED=0</code> 强制走纯 Go 实现，产出一个<b>不依赖任何外部 C 库的静态二进制</b>，随便往哪个基础镜像里丢都能跑。</p>
+    <table>
+      <tr><th></th><th><code>CGO_ENABLED=1</code>（默认）</th><th><code>CGO_ENABLED=0</code></th></tr>
+      <tr><td>链接方式</td><td>动态链接 C 库</td><td>纯静态</td></tr>
+      <tr><td>DNS 解析</td><td>走系统 resolver（读 <code>/etc/nsswitch.conf</code>）</td><td>纯 Go resolver，直接读 <code>/etc/resolv.conf</code></td></tr>
+      <tr><td>跨基础镜像</td><td>构建机与运行机的 C 库必须兼容</td><td>无关</td></tr>
+      <tr><td>代价</td><td>—</td><td>极少数依赖 cgo 的库用不了（如某些 SQLite 驱动）。本项目用 Postgres 纯 Go 驱动，零代价</td></tr>
+    </table>
+
+    <h3>3. -ldflags "-s -w" 与 -trimpath：两个便宜的开关</h3>
+    <ul>
+      <li><code>-s</code> 去掉符号表，<code>-w</code> 去掉 DWARF 调试信息。合起来通常让二进制小 25%-30%。<b>代价</b>：不能再用 <code>dlv</code> / <code>gdb</code> 对这个二进制下断点、看变量。生产容器里本来也不挂调试器，所以这笔交易划算；<b>本机开发照旧用 <code>make build</code>（不带这些 flag）</b>，别把自己的调试能力也砍了。</li>
+      <li><code>-trimpath</code> 把编译时的<b>本机绝对路径</b>从二进制里抹掉。不加的话，<code>/Users/你/xxx/server/internal/finance/...</code> 这种字符串会原样躺在产物里，任何人 <code>strings</code> 一下就能读到你的目录结构。加了之后路径变成 <code>homecube/internal/finance/...</code>。panic 时的堆栈也一样干净——这一点在 S8·D9 看容器日志时会直接受益。</li>
+    </ul>
+
+    <h3>4. 分层与缓存：Dockerfile 里行序就是性能</h3>
+    <p>把「几乎不变的东西」放前面，「天天变的东西」放后面，这是 Dockerfile 唯一的排版原则。</p>
+    <pre><span class="code-label">对照 · 坏写法 vs 好写法</span><code><span class="c"># 坏：改一行 Go 代码，依赖也要重新下载</span>
+COPY server/ ./
+RUN go mod download          <span class="c"># 每次都跑，几百兆依赖每次重下</span>
+RUN go build -o /out/homecube ./cmd/homecube
+
+<span class="c"># 好：go.mod / go.sum 不变 → 这一层命中缓存 → 依赖不重下</span>
+COPY server/go.mod server/go.sum ./
+RUN go mod download
+COPY server/ ./
+RUN go build -o /out/homecube ./cmd/homecube</code></pre>
+    <p>怎么判断缓存有没有命中？<code>docker build</code> 的输出里，命中的步骤会写 <code>CACHED</code>。前端对应物是「把 <code>package.json</code> 的 <code>npm ci</code> 单独一层」，同一个道理。</p>
+    <div class="callout warn"><p><b>构建上下文用仓库根，不是 <code>server/</code>。</b>因为 <code>.dockerignore</code> 只能放在上下文根目录，而你要挡的 <code>.env</code>、<code>.git</code>、<code>web/node_modules</code> 三样都在仓库根。所以命令是 <code>docker build -f server/Dockerfile -t homecube-server:dev .</code>——注意最后那个点，它才是上下文；<code>-f</code> 只指定配方文件在哪。</p></div>
+
+    <h3>5. .dockerignore 要挡什么，以及为什么这是安全问题不只是性能问题</h3>
+    <table>
+      <tr><th>条目</th><th>挡它的理由</th><th>不挡会怎样</th></tr>
+      <tr><td><code>.env</code>、<code>.env.*</code></td><td>里面有数据库口令与两把 JWT 密钥</td><td>今天它进不了镜像（我们只 <code>COPY server/</code>），但<b>它进了构建上下文</b>；将来任何人写一句 <code>COPY . /src</code>，密钥就永久留在镜像层里——<code>docker history</code> 与解包镜像都能读出来，删掉再提交也没用</td></tr>
+      <tr><td><code>.git</code></td><td>整个提交历史，含被删掉的敏感文件</td><td>上下文凭空大几十兆，且等于把 git 历史一起打包</td></tr>
+      <tr><td><code>web/node_modules</code></td><td>前端依赖，服务端镜像完全用不到</td><td>每次构建先搬几百兆给 Docker 引擎，慢到你想砸键盘</td></tr>
+      <tr><td><code>bin/</code>、<code>uploads/</code></td><td>本机构建产物与用户上传的附件</td><td>本机架构的二进制混进上下文；真实家庭数据被带进镜像</td></tr>
+      <tr><td><code>server/playground/</code></td><td>语法练习沙盒，每个子目录自带独立 <code>go.mod</code></td><td>被 <code>COPY server/</code> 一起搬进去，构建时容易撞上一堆与主模块无关的编译噪音</td></tr>
+      <tr><td><code>notes/</code>、<code>*.md</code></td><td>你的学习笔记</td><td>笔记里的口令示例、手机号示例会跟着镜像一起分发</td></tr>
+    </table>
+    <p>一句话总结这一节：<b><code>.gitignore</code> 保护的是远端仓库，<code>.dockerignore</code> 保护的是镜像。</b>两者名单高度重叠但不完全相同——比如 <code>web/dist</code> 该被 <code>.gitignore</code> 挡，但在 S8·D2 里它恰好是前端镜像的构建产物（在自己的上下文里生成，不受根 <code>.dockerignore</code> 影响）。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>⑥：工程化收口产物</b>——这一类只在 S8 开放（S1-S7 引入部署物会把「每天可跑」变成「每天等构建」）。三个文件：<code>server/Dockerfile</code>、仓库根 <code>.dockerignore</code>、Makefile 追加两个目标。收工时 <code>make build</code> 与 <code>make test</code> 仍必须绿。</p>
+
+    <h3>步骤 1 · server/Dockerfile</h3>
+    <pre><span class="code-label">完整 · server/Dockerfile</span><code><span class="c"># ---------- 阶段一：builder（不进最终镜像） ----------</span>
+<span class="k">FROM</span> golang:1.24-alpine <span class="k">AS</span> builder
+<span class="k">WORKDIR</span> /src
+
+<span class="c"># 先只拷依赖清单：这两行不变，下面的 download 就命中层缓存</span>
+<span class="k">COPY</span> server/go.mod server/go.sum ./
+<span class="k">RUN</span> go mod download
+
+<span class="c"># 再拷源码（.dockerignore 已把 playground 与笔记挡在外面）</span>
+<span class="k">COPY</span> server/ ./
+
+<span class="c"># 纯静态二进制：不链接 C 库，不携带本机路径，不带符号表</span>
+<span class="k">ENV</span> CGO_ENABLED=0 GOOS=linux
+<span class="k">RUN</span> go build -trimpath -ldflags <span class="s">"-s -w"</span> -o /out/homecube ./cmd/homecube
+
+<span class="c"># ---------- 阶段二：runtime（这就是最终镜像） ----------</span>
+<span class="k">FROM</span> alpine:3.20
+<span class="c"># ca-certificates：出站 HTTPS 要验证书；tzdata：家庭时区要能 LoadLocation</span>
+<span class="k">RUN</span> apk add --no-cache ca-certificates tzdata \
+ &amp;&amp; addgroup -S app &amp;&amp; adduser -S -G app app
+<span class="k">WORKDIR</span> /app
+<span class="k">COPY</span> --from=builder /out/homecube /app/homecube
+<span class="c"># 附件目录：S6 的 UPLOAD_DIR 指到这里，S8·D3 会挂一个卷给它</span>
+<span class="k">RUN</span> mkdir -p /app/uploads &amp;&amp; chown -R app:app /app
+<span class="k">USER</span> app
+<span class="k">EXPOSE</span> 8080
+<span class="k">ENTRYPOINT</span> [<span class="s">"/app/homecube"</span>]</code></pre>
+    <p>三条要点：</p>
+    <ul>
+      <li><code>WORKDIR /src</code> 之后 <code>COPY server/ ./</code> 把 <code>server/</code> 的<b>内容</b>铺到 <code>/src</code>，所以 <code>/src/go.mod</code> 存在、<code>go build ./cmd/homecube</code> 的路径才对得上。</li>
+      <li><code>USER app</code>：不用 root 跑业务进程。容器逃逸时，root 与非特权用户的差别很大；顺带一个副作用——非 root 用户写不了 <code>/app</code>，所以上面那句 <code>chown</code> 不能省。</li>
+      <li><code>ENTRYPOINT</code> 用<b>数组（exec）形式</b>，进程就是 PID 1，能直接收到 <code>docker stop</code> 发的 <code>SIGTERM</code>——这是 S5 写的优雅关闭在容器里能生效的前提。写成 <code>ENTRYPOINT /app/homecube</code>（shell 形式）会多套一层 <code>/bin/sh</code>，信号被 sh 吃掉，容器每次都等 10 秒被 <code>SIGKILL</code> 硬杀。</li>
+    </ul>
+
+    <h3>步骤 2 · 仓库根 .dockerignore</h3>
+    <pre><span class="code-label">完整 · .dockerignore（仓库根）</span><code># 版本库与密钥：绝不进构建上下文
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+
+# 本地产物与真实数据
+bin/
+uploads/
+dist/
+
+# 前端：服务端镜像用不到（前端镜像有自己的上下文与 .dockerignore）
+web/
+
+# 笔记与文档
+notes/
+*.md
+
+# 语法练习沙盒：各自独立 go.mod，与主模块无关
+server/playground/
+
+# 系统与编辑器
+.DS_Store
+.idea/
+*.swp</code></pre>
+    <div class="callout warn"><p><code>!.env.example</code> 这一行的<b>取反必须写在 <code>.env.*</code> 后面</b>。<code>.dockerignore</code> 与 <code>.gitignore</code> 一样按顺序匹配、后写的覆盖前写的。S8·D3 会新建 <code>.env.example</code>（只有变量名与占位值、没有真密钥），它需要进仓库、但不需要进镜像——今天先把规则写对，那天就不会踩。</p></div>
+
+    <h3>步骤 3 · Makefile 追加两个目标</h3>
+    <pre><span class="code-label">片段 · Makefile 追加（缩进是真 TAB）</span><code>.PHONY: docker-build docker-run
+
+docker-build:
+	docker build -f server/Dockerfile -t homecube-server:dev .
+
+docker-run: docker-build
+	docker run --rm -p 8081:8080 homecube-server:dev</code></pre>
+
+    <h3>步骤 4 · 构建并验证</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+
+docker build -f server/Dockerfile -t homecube-server:dev .
+<span class="c"># 期望：两个阶段依次执行；第二次构建时 go mod download 那步显示 CACHED</span>
+
+docker image ls homecube-server:dev
+<span class="c"># 期望 SIZE 在 20-30 MB 量级。若显示 300 MB 以上，说明你写成了单阶段</span>
+
+docker inspect --format <span class="s">'{{.Os}}/{{.Architecture}}'</span> homecube-server:dev
+<span class="c"># 期望 linux/arm64（Apple Silicon）或 linux/amd64。它必须与将来跑它的机器一致</span>
+
+docker history homecube-server:dev
+<span class="c"># 逐层看一遍：只有 apk add、COPY 二进制、mkdir/chown 三层有体积，没有源码层</span>
+
+docker run --rm homecube-server:dev
+<span class="c"># 期望：服务启动日志（读到了 PORT / DB_HOST），随后因连不上 postgres 而报错退出。</span>
+<span class="c"># 这一步的判据是「报的是连不上库」，而不是 "exec format error" 或 "not found"。</span>
+<span class="c"># 后者意味着二进制平台不对或动态链接了缺失的 C 库——回去检查 CGO_ENABLED 与 GOOS。</span></code></pre>
+    <div class="callout note"><p>今天<b>故意不接数据库</b>。「容器里的二进制能自己启动到读配置那一步」已经足够证明镜像是对的；数据库与编排是 S8·D3 的事。切得小一点，今天才能收工。</p></div>
+
+    <h3>步骤 5 · 提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>make build &amp;&amp; make test &amp;&amp; make lint   <span class="c"># 老规矩：仓库必须绿</span>
+
+git add server/Dockerfile .dockerignore Makefile
+git status                              <span class="c"># 逐条看：没有 .env、没有 bin/、没有 uploads/</span>
+git commit -m <span class="s">"build(s8d1): 多阶段 Dockerfile + .dockerignore"</span></code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>忘了 <code>CGO_ENABLED=0</code></td><td>在 alpine 里构建、换个基础镜像跑就 <code>not found</code> 或段错误，报错完全不指向真实原因</td><td>构建阶段显式 <code>ENV CGO_ENABLED=0</code>，产静态二进制</td></tr>
+      <tr><td>用 <code>scratch</code> 求最小体积</td><td>一查带时区的时间窗就 <code>unknown time zone Asia/Shanghai</code></td><td>要么用 alpine + <code>tzdata</code>，要么在 Go 里 <code>import _ "time/tzdata"</code> 把时区库编进二进制</td></tr>
+      <tr><td><code>COPY . .</code> 写在 <code>go mod download</code> 前面</td><td>改一行代码，依赖重下一遍，构建从 20 秒变 3 分钟</td><td>先 <code>COPY go.mod go.sum</code> + <code>RUN go mod download</code>，再拷源码</td></tr>
+      <tr><td>在 Apple Silicon 上构建，拿到 x86 服务器跑</td><td><code>exec format error</code></td><td><code>docker build --platform linux/amd64 -f server/Dockerfile -t ... .</code>；构建完用 <code>docker inspect</code> 核架构</td></tr>
+      <tr><td>没有 <code>.dockerignore</code></td><td>构建开头「Sending build context to Docker daemon」显示 800MB，每次都要等</td><td>挡掉 <code>web/node_modules</code>、<code>.git</code>、<code>bin/</code>、<code>uploads/</code></td></tr>
+      <tr><td><code>ENTRYPOINT</code> 写成 shell 形式</td><td><code>docker stop</code> 后每次都卡 10 秒才被杀，S5 写的优雅关闭看起来「没生效」</td><td>用数组（exec）形式，让业务进程当 PID 1 直接收 <code>SIGTERM</code></td></tr>
+      <tr><td>以 root 跑容器</td><td>没有明显现象，但容器内进程与宿主 root 同权</td><td><code>adduser</code> + <code>USER app</code>，并把要写的目录 <code>chown</code> 给它</td></tr>
+      <tr><td>把 <code>-s -w</code> 也加进 <code>make build</code></td><td>本机想用 dlv 调试，发现断点打不上、看不到变量</td><td>瘦身 flag 只进镜像构建，本机 <code>make build</code> 保持原样</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>镜像 image</td><td>只读文件系统快照 + 启动说明；类比「构建产物 + 一份运行环境清单」</td></tr>
+      <tr><td>容器 container</td><td>镜像的一次运行实例，有独立文件系统视图与进程树；删容器不删镜像</td></tr>
+      <tr><td>层 layer</td><td>一条 Dockerfile 指令的产物，可缓存可复用；<b>某层变了，它下面全部重建</b></td></tr>
+      <tr><td>构建上下文 build context</td><td><code>docker build</code> 最后那个路径的全部内容，会被打包发给引擎</td></tr>
+      <tr><td>多阶段构建</td><td>一个 Dockerfile 里多个 <code>FROM</code>，只有最后一个阶段的产物成为镜像</td></tr>
+      <tr><td><code>CGO_ENABLED=0</code></td><td>禁用 C 胶水层，产出纯静态二进制，与基础镜像的 C 库彻底解耦</td></tr>
+      <tr><td><code>-ldflags "-s -w"</code></td><td>去符号表与调试信息，体积降两三成，代价是这个二进制不能用调试器</td></tr>
+      <tr><td><code>-trimpath</code></td><td>从二进制与 panic 堆栈里抹掉本机绝对路径</td></tr>
+      <tr><td><code>.dockerignore</code></td><td>构建上下文的忽略名单；语法同 <code>.gitignore</code>，支持 <code>!</code> 取反</td></tr>
+      <tr><td><code>ENTRYPOINT</code> / <code>CMD</code></td><td>容器启动时执行什么。exec（数组）形式让进程当 PID 1，能直接收到信号</td></tr>
+      <tr><td>tag</td><td>镜像的名字后缀，如 <code>homecube-server:dev</code>。<code>latest</code> 是默认 tag，也是个陷阱：它不表示「最新」，只表示「没写 tag」</td></tr>
+      <tr><td><code>docker history</code></td><td>列出镜像的每一层与其体积，用来确认「密钥/源码没有被打进去」</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <table>
+      <tr><th>症状</th><th>回哪一课</th></tr>
+      <tr><td>不确定 <code>make build</code> / <code>make test</code> 的目标怎么写、Makefile 为什么必须真 TAB</td><td>S1·D1（仓库骨架与 Makefile 那张）</td></tr>
+      <tr><td>容器里服务起不来，报读不到配置或 <code>PORT</code> 为空</td><td>S5 工程化段讲 config 加载与结构化日志的那两课——环境变量名以那里为准（<code>PORT / GIN_MODE / DB_* / JWT_* / AUTO_MIGRATE / UPLOAD_DIR / CORS_ORIGIN</code>）</td></tr>
+      <tr><td>二进制能跑但连不上库，想确认 DSN 是怎么拼的</td><td>S3 讲 Postgres 连接与 <code>DB_*</code> 变量的那一课；S8·D3 会给出容器内的取值</td></tr>
+      <tr><td>附件目录 <code>/app/uploads</code> 里的文件重启就没了</td><td>S6 讲文件上传与 <code>UPLOAD_DIR</code> 的那一课；卷挂载在 S8·D3 解决</td></tr>
+      <tr><td>优雅关闭没生效、<code>docker stop</code> 卡十秒</td><td>S5 讲优雅关闭与信号处理的那一课，配合今天的 exec 形式 <code>ENTRYPOINT</code></td></tr>
+      <tr><td>想知道前端镜像怎么打</td><td>明天，S8·D2</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w21d1c1"><code>server/Dockerfile</code> 落盘，两阶段结构，运行阶段基于 alpine 且含 <code>ca-certificates</code> 与 <code>tzdata</code></label></li>
+      <li><label><input type="checkbox" data-key="w21d1c2">仓库根 <code>.dockerignore</code> 落盘，至少挡住 <code>.env*</code>、<code>.git</code>、<code>web/</code>、<code>bin/</code>、<code>uploads/</code>、<code>server/playground/</code></label></li>
+      <li><label><input type="checkbox" data-key="w21d1c3"><code>docker build</code> 成功，<code>docker image ls</code> 显示 SIZE 在 20-30 MB 量级，<code>docker history</code> 里看不到源码层</label></li>
+      <li><label><input type="checkbox" data-key="w21d1c4"><code>docker run --rm homecube-server:dev</code> 的失败原因是连不上数据库，而不是 <code>exec format error</code>；<code>make build</code> / <code>make test</code> / <code>make lint</code> 仍全绿并已提交</label></li>
+      <li><label><input type="checkbox" data-key="w21d1c5"><code>notes/</code> 里写下三行：<code>CGO_ENABLED=0</code> 解决什么问题、层缓存为什么要求 <code>go.mod</code> 先拷、<code>.dockerignore</code> 与 <code>.gitignore</code> 名单为什么不完全相同</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../frontend/f5/w20f1.html"><span class="hint">← 上周日 · F5·w20</span>PIN 应用锁与 F5 收口</a>
+    <a href="w21d2.html"><span class="hint">明天 · S8·D2 →</span>前端构建产物与 nginx</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w21d1 · 明天见 ⟩</footer>
+</body>
+</html>

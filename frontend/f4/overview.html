@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>F4 阶段总览 · 组件、样式与列表 | HomeCube 修炼手册</title>
+<meta name="description" content="F4（w10-w16，7 张周日卡，前端线最长一段）：对应服务端 S5+S6——把 agent 写出的真实财务页面变成你能拆开、能改、能调的东西：组件拆分、主题令牌、深色模式、游标分页前端侧、ucharts、时间窗切换器。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body>
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="../f5/overview.html">下一阶段 F5 →</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / 前端辅线 / F4</div>
+  <div class="day-meta">
+    <span class="chip">STAGE F4</span>
+    <span class="chip alt">w10-w16 · 7 张周日卡</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>F4 · 组件、样式与列表</h1>
+  <p>前端辅线<b>最长的一段</b>：七张周日卡，对应服务端 S5（并发与工程化）+ S6（财务功能面 30 条接口）。走到这里，<code>web/</code> 已经不是你第一次见它时的脚手架了——F2 建好了工程与请求层，F3 建好了 Pinia store 与路由守卫并完成了第一次真对接，服务端也开始吐出真实的财务数据。F4 的主题一句话：<b>把 agent 写出来的这些页面，变成你能拆开、能改、能调的东西</b>。教材全部是 <code>web/</code> 里的真实页面：流水列表、报表图表、shell 切换器。</p>
+
+  <section>
+    <h2>为什么 F4 的判据仍是「能讲清 / 能改」</h2>
+    <div class="callout js"><p>前端线的分工没变：<b>agent 写代码，你学到能改</b>。F4 与 F1 的差别是教材从内嵌片段换成了真实页面，但判据口径一字不改：① 能读懂任意一页 ② 能改字段与样式 ③ 能独立定位一个 bug 在前端还是服务端。每张卡都有一个「动手改」（改真实文件，带小勾选）和一道「定位题」（分层排查，结论写进 <code>notes/f4/</code>）——完成检查里没有一条是「代码写出来了」。<b>不许拿「页面能跑」当自己通过了。</b></p></div>
+  </section>
+
+  <section>
+    <h2>阶段产物（F4 结束时必须有的东西）</h2>
+    <table>
+      <tr><th>产物</th><th>说明</th></tr>
+      <tr><td><code>web/</code> 里的七次动手改</td><td>每张卡一处真实改动（字段、样式、store、分页、图表、切换器）；可以改完恢复，判据是 <code>git diff</code> 摆出来每行都讲得清</td></tr>
+      <tr><td><code>notes/f4/</code> 定位笔记</td><td>七条排查链：undefined 三步、双端样式四步、深色白底四步、触底无反应、重复记录四层、差 100 倍三步、切年不变三步</td></tr>
+      <tr><td>分页三实验记录</td><td>改 limit、连续触底对 id、中途插数据再刷新——三条判据（不重复、不漏、能续读）的实验过程与观察结果</td></tr>
+      <tr><td><code>notes/f4/review.md</code></td><td>第七张卡的七行自测表 + 毕业题（五分钟四问）记录</td></tr>
+      <tr><td>encodeQuarter 边界自测</td><td>1 月、3 月、4 月、12 月四个输入的编码验证记录</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>阶段判据（全过才算 F4 通过）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="f4o1">能拆读任意一个财务页面：对每个组件口述 props/emits/状态归属，会用「假数据单独渲染法」验证拆分没坏</label></li>
+      <li><label><input type="checkbox" data-key="f4o2"><b>能改一个组件的样式与字段而不动别的页</b>：单点改动检查过得了，且能讲清「颜色只能引用令牌」的换肤因果链与 rpx/px 的取舍</label></li>
+      <li><label><input type="checkbox" data-key="f4o3"><b>能改出一套深色主题变量</b>：讲清「一套变量名、两套值」机制、原生层与页面层的分工、canvas 为什么必须 JS 重绘</label></li>
+      <li><label><input type="checkbox" data-key="f4o4"><b>游标分页在列表页正确接上（不重复、不漏、触底续读）</b>：三个实验亲手做过，能讲清坐标 vs 偏移、index key 的死法、失败三纪律</label></li>
+      <li><label><input type="checkbox" data-key="f4o5">能讲清金额三纪律（显示才除、整数域求和、格式化收口一处）与 <code>budget_unset</code> 红线：未设预算显示文案，不画 0 线、不折算</label></li>
+      <li><label><input type="checkbox" data-key="f4o6">能默写时间窗五档编码，讲清 1007 不回落的前端义务（生成即合法）与 period 全站唯一一份的数据通路</label></li>
+      <li><label><input type="checkbox" data-key="f4o7">七条定位排查链全部写进 <code>notes/f4/</code>：给任何一个前端现象，能先分层（事件/逻辑/数据/渲染 或 前端/服务端）再下结论</label></li>
+    </ul>
+    <div class="callout warn"><p><b>不通过就原地重做，不跳阶段。</b>F4 是前端线从「读懂片段」到「驾驭真实页面」的转折：F5 的壳基座（分包、底栏、PIN 锁）全部建立在这七张卡的组件边界、令牌纪律与 store 通路之上；F6 的定位硬判据，一半素材来自这里的七条排查链。</p></div>
+  </section>
+
+  <section>
+    <h2>七张周日卡</h2>
+    <table>
+      <tr><th>卡</th><th>知识点</th><th>动手改 / 定位题</th></tr>
+      <tr><td><a href="w10f1.html">w10f1</a></td><td>组件拆分实战：流水列表页拆成筛选条 / 列表 / item / 空态四块；provide/inject 的启用时机</td><td>把 item 的一个字段换成 props 传入 / 「字段显示 undefined」三步定论</td></tr>
+      <tr><td><a href="w11f1.html">w11f1</a></td><td>样式与主题令牌：scss vs CSS 变量、rpx 与 px、scoped 与 :deep()、小程序端 CSS 禁区</td><td>硬编码色值换令牌 + 改一个间距 / 「H5 对、小程序不对」双端排查</td></tr>
+      <tr><td><a href="w12f1.html">w12f1</a></td><td>深色模式：CSS 变量切换机制、darkmode 与 theme.json、ucharts 重绘、三态主题设置</td><td>给一个页面补缺失的深色态 / 「切深色后有一块白底」四步定论</td></tr>
+      <tr><td><a href="w13f1.html">w13f1</a></td><td>游标分页前端侧（上）：信封与三禁令、下拉刷新重置、触底续读、加载中/没有更多</td><td>给列表加「没有更多了」尾部提示 / 「触底没反应」分层排查</td></tr>
+      <tr><td><a href="w14f1.html">w14f1</a></td><td>游标分页前端侧（下）：三判据三实验、key 的学问、四个 UI 状态分工、失败后游标不前进</td><td>失败保留数据 + 重试按钮 / 「两条一模一样的记录」一次 Network 定论</td></tr>
+      <tr><td><a href="w15f1.html">w15f1</a></td><td>ucharts 图表：categories/series 映射、金额 *_cents 纪律、budget_unset 红线</td><td>折线图数据点点击跳该周期明细 / 「金额差 100 倍」三步定论</td></tr>
+      <tr><td><a href="w16f1.html">w16f1</a></td><td>时间窗切换器 + F4 收口：五档编码与三档暴露、1007 不回落、period 全站唯一一份</td><td>加「本季度」快捷入口（YYYY-Qn）/ 「切年还是月」三步定论 + 七卡自测</td></tr>
+    </table>
+    <p>同期的服务端卡在 <a href="../../server/s5/overview.html">S5</a>（并发与工程化）与 S6（财务功能面，30 条接口）；周六的服务端收口与周日的前端卡互不占用时间。伏笔兑现：「游标分页的前端侧」自 S3 埋下，在本阶段第 4、5 张卡正面还清。</p>
+  </section>
+
+  <section>
+    <h2>本阶段不做什么（明确划掉，免得手滑）</h2>
+    <ul>
+      <li>不改服务端：字段对不上时<b>改前端</b>，不改响应契约——服务端先定契约、前端服从，这是三条不变约定之首；发现服务端 bug 走定位题的结论去找对应的 S 段卡修</li>
+      <li>不学壳基座专属内容：底栏五项、分包 <code>subPackages</code>、PIN 应用锁是 F5 的事</li>
+      <li>不做系统化的调试方法论训练——那是 F6；F4 每张卡的定位题是分层的实战积累</li>
+      <li>不引入新依赖：不上 Storybook（假数据单独渲染用一个临时调试页就够）、不上额外图表库（ucharts 一个管够）、不碰任何 React 代码（它只作概念对照出现）</li>
+      <li>不动 <code>pages.json</code> 的结构性约定：三段式路由与「无 tabBar 字段」的纪律（F2 判据）在整个 F4 期间继续有效</li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../index.html"><span class="hint">← 回到</span>22 周路线总览</a>
+    <a href="w10f1.html"><span class="hint">开始 →</span>w10f1 · 组件拆分实战：把流水列表页拆成四块</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · F4 阶段总览 ⟩</footer>
+</body>
+</html>

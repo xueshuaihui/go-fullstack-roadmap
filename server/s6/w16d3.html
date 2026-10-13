@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S6·D27 · 环比与服务端逐期累计余额 | HomeCube 修炼手册</title>
+<meta name="description" content="summary 响应补两块：环比（上一期同桶，比率为万分比整数、上期为 0 时返回 null）与累计余额（服务端逐期累加，前端二次累加必须为 0）。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w16d3">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S6</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S6</a> / w16d3</div>
+  <div class="day-meta">
+    <span class="chip">S6 · DAY 27</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>环比与服务端逐期累计余额</h1>
+  <p>报表的最后一块硬骨头，也是本阶段第二条红线：<b>累计余额由服务端逐期累加，前端二次累加须为 0</b>。顺带把环比做掉：上一期同口径桶 + 变化率。两件事共享同一个前提——「期」的算术（上一期是哪期、期初余额从哪来）必须是纯函数，且和昨天的桶序列同源。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w16d3g1">写清 <code>prevPeriod</code> 纯函数：五档各自的「上一期」，全部在周期键层面算术，跨年正确</label></li>
+      <li><label><input type="checkbox" data-key="w16d3g2">说清上期为 0 的比率口径：<code>change_bp</code> 返回 null（指针），不是 0、不是无穷大、不是字符串 "∞"</label></li>
+      <li><label><input type="checkbox" data-key="w16d3g3">说清累计余额的定义：期初 + 逐桶净额累加；转账在家庭总口径净贡献为 0</label></li>
+      <li><label><input type="checkbox" data-key="w16d3g4">红线可测：每个桶满足 <code>running[i] - running[i-1] == net[i]</code>，前端拿到的序列自身零累加</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 环比：粒度跟着档位走</h3>
+    <p>「环比」= 与<b>紧邻的上一期</b>比，粒度随档位：月档比上月、周档比上一 ISO 周、季档比上季、年档比上年、日档比昨天。实现只有一个要点：<b>在周期键层面做算术，不要拿日期减</b>。「2026-01 的上一期」是 2025-12——键算术一行搞定；若拿 <code>AddDate(0,-1,0)</code> 从某个具体日期倒推，就会撞上 D23/D26 反复出现的月末规整化坑。上一期算出来后，<b>复用昨天的同一个桶查询</b>查上期数据（同一套 WHERE、同一个 Viewer），保证口径同源——环比两期用了两套过滤条件，是报表最隐蔽的错法。</p>
+    <pre><span class="code-label">片段 · server/internal/finance/service/period/prev.go（前置：D8 的解析包；纯函数，表驱动测试）</span><code><span class="c">// Prev 返回上一期的周期键。全部键层面算术：</span>
+<span class="c">//   day:     2026-03-01 → 2026-02-28（解析成真日期后减一天，day 档允许碰日期）</span>
+<span class="c">//   week:    2026-W01   → 2025-W53（ISOWeek 反解回该周星期四，减 7 天再取 ISOWeek，跨年自动正确）</span>
+<span class="c">//   month:   2026-01    → 2025-12</span>
+<span class="c">//   quarter: 2026-Q1    → 2025-Q4</span>
+<span class="c">//   year:    2026       → 2025</span>
+<span class="k">func</span> <span class="t">Prev</span>(p <span class="t">Period</span>) <span class="t">Period</span></code></pre>
+    <p>week 档那句「反解回星期四再减 7 天」是 ISO 周的标准技巧：星期四永远落在周的「归属年」内，拿它做锚点，跨年周边界不会算错。</p>
+
+    <h3>2. 变化率：万分比整数 + null 语义</h3>
+    <p>金额禁浮点的纪律延伸到比率：<code>change_bp = (cur - prev) * 10000 / prev</code>（整数除法，负增长自然是负数）。唯一的边界是 <b>prev = 0</b>：数学上无定义，工程上有三种错法——返回 0（谎报「持平」）、返回极大数（图表爆轴）、返回字符串（类型污染）。正确姿势：<code>*int64</code> 指针，序列化成 <code>null</code>，前端渲染「—」。</p>
+    <pre><span class="code-label">片段 · 环比响应形状（挂在 summary 的 data 上，三个视图都带）</span><code>{
+  <span class="s">"period"</span>: <span class="s">"2026-10"</span>,
+  <span class="s">"prev_period"</span>: <span class="s">"2026-09"</span>,
+  <span class="s">"prev"</span>: { <span class="s">"income_cents"</span>: <span class="n">500000</span>, <span class="s">"expense_cents"</span>: <span class="n">280000</span> },
+  <span class="s">"expense_change_bp"</span>: <span class="n">1142</span>,   <span class="c">// 支出环比 +11.42%；prev 为 0 时此字段为 null</span>
+  <span class="s">"income_change_bp"</span>: <span class="k">null</span>      <span class="c">// 上期无收入</span>
+}</code></pre>
+
+    <h3>3. 累计余额：服务端逐期累加，前端零累加</h3>
+    <p>trend 视图每个桶追加一个字段 <code>running_balance_cents</code>：<b>截至该桶期末的家庭资金累计余额</b>。定义拆开是两段：</p>
+    <ul>
+      <li><b>期初（opening）</b>：窗口第一个桶开始前的全部净流——各账户初始余额之和 + 窗口前所有流水的净贡献。一条 SQL：<code>occurred_at &lt; start</code> 的净额聚合（同样带 base 过滤与可见性）。</li>
+      <li><b>逐桶累加</b>：<code>running = opening</code> 起步，按桶序 <code>running += income - expense</code>，写进每个桶。</li>
+    </ul>
+    <p><b>转账去哪了？</b>家庭总口径下转账净贡献为 0：钱从 A 账户出、进 B 账户，家庭总量不变。所以累加式里根本没有 transfer 项——这不是遗漏，是口径。账户<b>单账户</b>口径的余额另有其人（账户接口 S6·D13 起就算好了），报表的 running 是<b>家庭合计</b>。</p>
+    <div class="callout warn"><p><b>红线原文</b>：累计余额由服务端逐期累加，<b>前端二次累加须为 0</b>。意思是：前端拿到 <code>running_balance_cents</code> 序列只做一件事——画线。它不做 <code>reduce((a,b)=&gt;a+b.net)</code> 之类的再累加；服务端也<b>不许</b>只发净额序列让前端自己累计。为什么这么狠：多端（App/H5）各累加一遍，舍入与断桶处理稍有不一致，两条端的余额曲线就分叉，而用户会拿它和银行对账。<b>钱相关的派生数列只允许有一个生产者。</b></p></div>
+    <p>红线怎么变成测试？给序列一个自洽判据：<code>running[i] - running[i-1] == net[i]</code> 对每个 i 成立，且 <code>running[0] == opening + net[0]</code>。任何一端偷偷改口径（比如前端又累加了一遍），差值等式当场破裂。</p>
+
+    <h3>4. int64 会不会溢出</h3>
+    <p>顺手算一笔账安下心：int64 上限约 9.2×10^18 分 = 9.2×10^16 元。一个家庭记一百万年账也到不了。真正的溢出风险在<b>中间乘法</b>：D22 的 <code>used*100</code>、今天的 <code>(cur-prev)*10000</code>——家庭级金额（&lt;10^12 分）乘一万离上限还差六个数量级，安全；但同样的式子搬到「全平台汇总」场景就要重新评估。口径：<b>乘系数前先想清楚量级上界</b>，想不清楚就先除后乘（精度换安全）。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>⑤+③：summary 响应加 prev 与 running_balance_cents，补红线测试</b>。收工时 <code>make build</code> / <code>make test</code> 必须绿。</p>
+
+    <h3>步骤 1 · 累加纯函数</h3>
+    <pre><span class="code-label">可跑 · server/playground/d27/main.go（独立 go.mod；跑通后 WithRunning 搬进 report_service.go，目录删除）</span><code><span class="k">package</span> main
+
+<span class="k">import</span> <span class="s">"fmt"</span>
+
+<span class="k">type</span> <span class="t">Bucket</span> <span class="k">struct</span> {
+    Key                 <span class="t">string</span>
+    IncomeCents         <span class="t">int64</span>
+    ExpenseCents        <span class="t">int64</span>
+    NetCents            <span class="t">int64</span>
+    RunningBalanceCents <span class="t">int64</span>
+}
+
+<span class="c">// WithRunning 原地写入逐期累计余额：running = opening + Σ net。转账不出现——家庭口径净贡献为 0。</span>
+<span class="k">func</span> <span class="t">WithRunning</span>(bs []<span class="t">Bucket</span>, opening <span class="t">int64</span>) {
+    running := opening
+    <span class="k">for</span> i := <span class="k">range</span> bs {
+        bs[i].NetCents = bs[i].IncomeCents - bs[i].ExpenseCents
+        running += bs[i].NetCents
+        bs[i].RunningBalanceCents = running
+    }
+}
+
+<span class="k">func</span> <span class="t">main</span>() {
+    bs := []<span class="t">Bucket</span>{
+        {Key: <span class="s">"2026-08"</span>, IncomeCents: <span class="n">500000</span>, ExpenseCents: <span class="n">300000</span>},
+        {Key: <span class="s">"2026-09"</span>, IncomeCents: <span class="n">0</span>, ExpenseCents: <span class="n">120000</span>},
+        {Key: <span class="s">"2026-10"</span>, IncomeCents: <span class="n">520000</span>, ExpenseCents: <span class="n">610000</span>},
+    }
+    <span class="t">WithRunning</span>(bs, <span class="n">1000000</span>) <span class="c">// 期初 1 万元（1000000 分）</span>
+    <span class="k">for</span> _, b := <span class="k">range</span> bs {
+        fmt.<span class="t">Printf</span>(<span class="s">"%s net=%d running=%d\n"</span>, b.Key, b.NetCents, b.RunningBalanceCents)
+    }
+    <span class="c">// 2026-08 net=200000  running=1200000</span>
+    <span class="c">// 2026-09 net=-120000 running=1080000</span>
+    <span class="c">// 2026-10 net=-90000  running=990000</span>
+}</code></pre>
+
+    <h3>步骤 2 · service 接线</h3>
+    <pre><span class="code-label">片段 · report_service.go（前置：昨天的五档 trend；repo 加两条查询）</span><code><span class="c">// repo 新增：</span>
+<span class="c">//   NetBefore(ctx, famID, start, v)  → opening：初始余额之和 + start 前净流（同 base 过滤）</span>
+<span class="c">//   PrevBucket(ctx, famID, prevP, v) → 上一期同口径聚合（复用 TrendBy*Range，区间换成 Prev(p) 的边界）</span>
+
+<span class="c">// trend 分支收尾追加：</span>
+opening, err := s.repo.<span class="t">NetBefore</span>(ctx, famID, start, v)
+<span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="k">nil</span>, err }
+<span class="t">WithRunning</span>(rows, opening)
+
+<span class="c">// 三个视图公共出口追加环比：</span>
+prev := period.<span class="t">Prev</span>(p)
+prevAgg, err := s.<span class="t">aggregate</span>(ctx, famID, prev, v)   <span class="c">// 与本期同一个 aggregate 函数，只是周期不同——同源</span>
+<span class="k">if</span> err != <span class="k">nil</span> { <span class="k">return</span> <span class="k">nil</span>, err }
+out.PrevPeriod = prev.<span class="t">Key</span>()
+out.Prev = prevAgg
+out.ExpenseChangeBP = <span class="t">changeBP</span>(cur.ExpenseCents, prevAgg.ExpenseCents) <span class="c">// *int64；prev==0 → nil</span></code></pre>
+
+    <h3>步骤 3 · 红线测试</h3>
+    <pre><span class="code-label">片段 · report_service_test.go 追加（前置：昨天的用例都在）</span><code><span class="c">// TestRunningIsServerAccumulated（红线护栏，永远不许删）：</span>
+<span class="c">//   取 span=3 的月档 trend，断言 ∀i&gt;0: running[i]-running[i-1] == net[i]，且 running[0] == opening+net[0]。</span>
+<span class="c">//   再断言响应里没有第二个可累加字段被前端依赖（结构体字段快照比对）。</span>
+<span class="c">// TestPrevPeriod：表驱动五档，重点 2026-W01→2025-W53、2026-Q1→2025-Q4、2026-01→2025-12。</span>
+<span class="c">// TestChangeBPNull：上期支出为 0 → expense_change_bp 序列化为 null；正常期 → 整数万分比（含负增长）。</span>
+<span class="c">// TestOpeningIncludesTransfersNet0：窗口前有一笔转账 → opening 不变（净贡献 0 的口径证明）。</span></code></pre>
+
+    <h3>步骤 4 · 验收与提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build &amp;&amp; make test
+curl -s "localhost:8080/api/finance/reports/summary?view=trend&amp;period=2026-10&amp;span=3" -H "Authorization: Bearer $TOKEN"
+<span class="c"># 手工验红线：相邻两桶 running 相减 == 后一桶 net；对不上就是实现错了，不是「显示误差」</span>
+git add server
+git commit -m "feat(s6d27): 环比（bp+null）与服务端逐期累计余额（前端零累加红线）"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>只发净额让前端累加</td><td>多端曲线分叉，红线击穿</td><td>running 序列服务端产出，前端只画线</td></tr>
+      <tr><td>上期比率除零返回 0</td><td>「上期为 0 本期 5 万」显示成持平</td><td><code>*int64</code> → null，前端渲染「—」</td></tr>
+      <tr><td>prev 用日期倒推</td><td>月末规整化、跨年周归属连环错</td><td>周期键算术；week 档锚星期四</td></tr>
+      <tr><td>环比两期各写一套过滤</td><td>本期含私密行、上期不含，比率失真</td><td>同一个 aggregate 函数只换周期参数</td></tr>
+      <tr><td>把转账算进 running</td><td>一笔内部转账让家庭余额翻倍</td><td>家庭口径转账净贡献 0，累加式无 transfer 项</td></tr>
+      <tr><td>opening 忘了初始余额</td><td>累计曲线整体平移一个常数</td><td>opening = 初始余额之和 + 窗口前净流</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>环比</td><td>与紧邻上一期同口径比较；粒度随档位</td></tr>
+      <tr><td>prevPeriod</td><td>周期键层面的「上一期」纯函数；跨年跨档正确</td></tr>
+      <tr><td>星期四锚点</td><td>ISO 周的归属年永远包含该周星期四；week 档期算术的支点</td></tr>
+      <tr><td>change_bp</td><td>变化率的万分比整数；prev=0 时为 null（指针序列化）</td></tr>
+      <tr><td>running_balance_cents</td><td>服务端逐期累加的累计余额序列；前端二次累加须为 0</td></tr>
+      <tr><td>opening（期初）</td><td>窗口前全部净流 = 初始余额之和 + start 前净额</td></tr>
+      <tr><td>差值自洽判据</td><td><code>running[i]-running[i-1]==net[i]</code>；红线的可测形式</td></tr>
+      <tr><td>同源聚合</td><td>本期与上期共用同一个聚合函数，只差周期参数</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <ul>
+      <li><b>指针字段序列化成 null 的行为</b>：回本站 S2 的 DTO 与绑定卡——<code>*int64</code> 的 nil 就是 JSON null，当年讲过。</li>
+      <li><b>ISO 周算术再确认</b>：昨天的卡 + <code>ISOWeek()</code> 文档；星期四锚点一行就能验证。</li>
+      <li><b>初始余额在哪一列</b>：回本站 S6·D14（账户接口段）——<code>initial_balance_cents</code>，opening 的加数从那里来。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w16d3c1">红线测试在库且绿：差值自洽判据逐桶成立，TestRunningIsServerAccumulated 带「永远不许删」注释</label></li>
+      <li><label><input type="checkbox" data-key="w16d3c2">prevPeriod 表驱动测试全绿，含 W01→上年 W53、Q1→上年 Q4</label></li>
+      <li><label><input type="checkbox" data-key="w16d3c3">prev=0 时 change_bp 序列化为 null，有测试断言原始 JSON 里是 <code>null</code> 不是 <code>0</code></label></li>
+      <li><label><input type="checkbox" data-key="w16d3c4">转账不影响 opening 与 running，有测试证明；<code>make build</code> / <code>make test</code> 绿，commit 带卡号 <code>s6d27</code></label></li>
+      <li><label><input type="checkbox" data-key="w16d3c5">notes/ 三行：为什么前端零累加、null 比 0 诚实、星期四锚点解决什么问题</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w16d2.html"><span class="hint">← 昨天 · S6·D26</span>时间窗五档桶：ISO 周与季/年边界</a>
+    <a href="w16d4.html"><span class="hint">明天 · S6·D28 →</span>报表游标与无上限返回禁令</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w16d3 · 明天见 ⟩</footer>
+</body>
+</html>

@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S1·D5 · 接口与隐式实现 | HomeCube 修炼手册</title>
+<meta name="description" content="接口的方法集、隐式实现、空接口 any 与「接口变量为 nil」的经典坑，并落盘 Repository 接口与带锁的内存实现。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w01d5">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S1</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S1</a> / w01d5</div>
+  <div class="day-meta">
+    <span class="chip">S1 · DAY 5</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★☆☆☆</span>
+  </div>
+  <h1>接口与隐式实现</h1>
+  <p>Go 的接口是全站架构的承重墙：明天 D6 的 <code>http.Handler</code> 是它，S2 三层的 service 依赖 repo 靠它，S4 跨模块调用收在接口后面还是它。今天把三件事吃透——<b>隐式实现</b>（没有 implements 关键字）、<b>方法集</b>（值与指针谁能进接口）、<b>接口变量为 nil 的坑</b>（面试和线上事故的双料常客）。增量是第一个 <code>Repository</code> 接口与内存实现。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w01d5g1">说清「隐式实现」：方法齐了就算实现，无需声明；并对比 TS 的 <code>interface</code> 哪里像哪里不像</label></li>
+      <li><label><input type="checkbox" data-key="w01d5g2">说清空接口 <code>any</code> 是什么、为什么响应体的 <code>Data</code> 字段用它</label></li>
+      <li><label><input type="checkbox" data-key="w01d5g3">能解释「接口变量非 nil，里面装的指针却是 nil」这个坑的成因</label></li>
+      <li><label><input type="checkbox" data-key="w01d5g4"><code>Repository</code> 接口 + 内存实现落盘，测试绿，<code>make build</code> / <code>make test</code> 绿</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 隐式实现：鸭子类型的编译期版本</h3>
+    <p>接口就是一组方法签名的约定。<b>任何类型只要拥有接口要求的全部方法，就自动算实现了它</b>——没有 <code>implements</code>，没有 <code>extends</code>，两边甚至不需要知道对方存在：</p>
+    <pre><span class="code-label">可跑</span><code><span class="k">package</span> main
+
+<span class="k">import</span> <span class="s">"fmt"</span>
+
+<span class="k">type</span> <span class="t">Speaker</span> <span class="k">interface</span> {
+    <span class="t">Speak</span>() <span class="t">string</span>
+}
+
+<span class="k">type</span> <span class="t">Dog</span> <span class="k">struct</span>{}
+<span class="k">func</span> (d *<span class="t">Dog</span>) <span class="t">Speak</span>() <span class="t">string</span> { <span class="k">return</span> <span class="s">"woof"</span> } <span class="c">// 齐了。Dog 没说它实现谁</span>
+
+<span class="k">func</span> <span class="t">announce</span>(s <span class="t">Speaker</span>) { fmt.<span class="t">Println</span>(s.<span class="t">Speak</span>()) }
+
+<span class="k">func</span> <span class="t">main</span>() {
+    <span class="t">announce</span>(&amp;<span class="t">Dog</span>{})   <span class="c">// *Dog 有 Speak 方法 → *Dog 自动满足 Speaker</span>
+}</code></pre>
+    <p>揭晓昨天埋的彩蛋：<code>Role.String()</code> 为什么特殊？因为标准库有个 <code>fmt.Stringer</code> 接口（只有一个 <code>String() string</code> 方法），你写了这个方法，<code>fmt.Println(role)</code> 就自动打印 <code>"owner"</code> 而不是 <code>1</code>——<b>你「实现」了一个你从没 import 过的接口</b>。这就是隐式实现的威力：约定在使用方，不在定义方。</p>
+    <p>对照 TS：<code>interface</code> 也是结构化类型（形状对了就兼容），这点像。不像的两处：① TS 的接口主要用于<b>类型检查期</b>，编译后消失；Go 的接口是<b>运行时真实存在的值</b>；② Go 的方法必须显式写在类型上，不能像 TS 那样随手给个对象字面量算数。</p>
+
+    <h3>2. 接口值与「非 nil 的 nil」</h3>
+    <p>接口变量在运行时是一个两字宽的结构：<b>(动态类型, 动态值)</b>。赋 <code>nil</code> 给它 = 两位都空。坑就出在「类型位有值、值位是 nil」：</p>
+    <pre><span class="code-label">片段 · 前置：import "fmt"，MyErr 为任意 error 实现</span><code><span class="k">type</span> <span class="t">MyErr</span> <span class="k">struct</span>{}
+<span class="k">func</span> (e *<span class="t">MyErr</span>) <span class="t">Error</span>() <span class="t">string</span> { <span class="k">return</span> <span class="s">"boom"</span> }
+
+<span class="k">func</span> <span class="t">do</span>() error {
+    <span class="k">var</span> p *<span class="t">MyErr</span> = <span class="k">nil</span>   <span class="c">// p 是 nil 指针</span>
+    <span class="k">return</span> p                 <span class="c">// 装进 error 接口：类型位=*MyErr，值位=nil</span>
+}
+
+<span class="k">func</span> <span class="t">main</span>() {
+    err := <span class="t">do</span>()
+    fmt.<span class="t">Println</span>(err == <span class="k">nil</span>)   <span class="c">// false！接口本身不是 nil（类型位有东西）</span>
+}</code></pre>
+    <div class="callout warn"><p>防坑口诀：<b>返回 error 的函数，出错就 <code>return err</code> / <code>return fmt.Errorf(…%w…)</code>，不出错就字面量 <code>return nil</code></b>。永远不要把一个「具体类型的 nil 指针」返回成 error。这个坑在 S3 的 repo 层（返回 <code>*model.Family, error</code>）出现频率最高，今天先在 playground/d5 亲手复现一次。</p></div>
+
+    <h3>3. 方法集：值与指针谁能进接口</h3>
+    <p>规则两句话：<b>值接收者的方法，<code>T</code> 和 <code>*T</code> 的方法集里都有；指针接收者的方法，只在 <code>*T</code> 的方法集里。</b>后果：</p>
+    <pre><span class="code-label">片段 · 前置：上面的 Dog（指针接收者 Speak）</span><code><span class="k">var</span> s <span class="t">Speaker</span>
+s = &amp;<span class="t">Dog</span>{}   <span class="c">// ✅ *Dog 的方法集含 Speak</span>
+s = <span class="t">Dog</span>{}     <span class="c">// ❌ 编译失败：Dog does not implement Speaker</span>
+              <span class="c">//    （Speak 是指针接收者，值的方法集里没有它）</span></code></pre>
+    <p>这解释了 D3 军规的补充条款「同一类型接收者风格要统一」：混用时，某些调用点能进接口、某些不能，编译器报错位置还离病根很远。</p>
+
+    <h3>4. 空接口 any：什么都能装，代价是什么都不知道</h3>
+    <p><code>any</code> 是 <code>interface{}</code> 的别名——零个方法的接口，所有类型都满足它。明天 D6 的统一响应体 <code>Body.Data</code> 字段就是 <code>any</code>：<b>响应信封形状固定，装什么由每个接口自己定</b>，这正是空接口的正确用途。从 <code>any</code> 取回具体类型靠<b>类型断言</b>：</p>
+    <pre><span class="code-label">片段 · 前置：无</span><code><span class="k">var</span> v <span class="t">any</span> = <span class="s">"hello"</span>
+s, ok := v.(<span class="t">string</span>)   <span class="c">// comma-ok：断言失败 ok=false，不 panic</span>
+<span class="k">switch</span> x := v.(<span class="k">type</span>) { <span class="c">// type switch：按类型分支</span>
+<span class="k">case</span> <span class="t">string</span>: fmt.<span class="t">Println</span>(<span class="s">"字符串"</span>, x)
+}</code></pre>
+    <p><code>any</code> 把类型检查从编译期推迟到运行时，用多了等于放弃 Go 最强的保护。纪律：<b>业务代码里不用 any 传来传去</b>，它只出现在响应信封、JSON 解码这类「形状未知」的边界上。</p>
+
+    <h3>5. Repository：接口应该长在「用的人」那边</h3>
+    <p>今天的增量是一个经典模式：<b>Repository（仓储）</b>——把「存取数据」抽象成接口，业务代码只依赖接口，不关心数据在内存、文件还是 Postgres。S3 换数据库时，只写一个新实现，业务代码一行不改。</p>
+    <div class="callout note"><p>Go 的惯例：<b>接口定义在消费方</b>（谁用谁定义），而不是实现方——这与 Java 的「先定接口再写实现」相反。本项目 S1 先简单点，接口与内存实现放同一个包；S2·D4 讲三层时会把它按消费方原则重新归置，并解释内存实现为什么值得留着（测试替身）。</p></div>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>②：加骨架</b>——<code>FamilyRepository</code> 接口 + 内存实现。位置 <code>server/internal/homeos/repository/</code>，包名 <code>repository</code>。<b>内存实现里的 <code>sync.Mutex</code> 今天照抄，S5 正式讲</b>（D4 说过：并发读写 map 会崩，锁就是给 map 站岗的）。</p>
+
+    <h3>步骤 1 · 接口定义</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/repository/family.go</span><code><span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="s">"homecube/internal/homeos/model"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="c">// FamilyRepository 约定「家庭」的存取能力。</span>
+<span class="c">// S1 用内存实现；S3 换 Postgres 实现，业务代码不改一行。</span>
+<span class="k">type</span> <span class="t">FamilyRepository</span> <span class="k">interface</span> {
+    <span class="c">// Save 存入或更新一个家庭。</span>
+    <span class="t">Save</span>(f *model.<span class="t">Family</span>) error
+    <span class="c">// FindByID 按 id 查找；查不到必须返回 response.ErrNotFound（可用 %w 包装）。</span>
+    <span class="t">FindByID</span>(id <span class="t">int64</span>) (*model.<span class="t">Family</span>, error)
+}</code></pre>
+
+    <h3>步骤 2 · 内存实现（Mutex 照抄，S5 正式讲）</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/repository/memory.go</span><code><span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="s">"fmt"</span>
+    <span class="s">"sync"</span>
+
+    <span class="s">"homecube/internal/homeos/model"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="c">// MemoryFamilyRepo 是 FamilyRepository 的内存实现。</span>
+<span class="c">// 含 sync.Mutex → 整个 struct 必须按指针使用（D3 军规第 3 条）。</span>
+<span class="c">// mu 的用法今天照抄：进出临界区各一行，成对出现。S5 正式讲。</span>
+<span class="k">type</span> <span class="t">MemoryFamilyRepo</span> <span class="k">struct</span> {
+    mu   sync.<span class="t">Mutex</span>
+    data <span class="k">map</span>[<span class="t">int64</span>]*model.<span class="t">Family</span>
+}
+
+<span class="c">// NewMemoryFamilyRepo 构造函数。map 必须 make，否则写入 panic（D4 的坑）。</span>
+<span class="k">func</span> <span class="t">NewMemoryFamilyRepo</span>() *<span class="t">MemoryFamilyRepo</span> {
+    <span class="k">return</span> &amp;<span class="t">MemoryFamilyRepo</span>{data: <span class="k">make</span>(<span class="k">map</span>[<span class="t">int64</span>]*model.<span class="t">Family</span>)}
+}
+
+<span class="k">func</span> (r *<span class="t">MemoryFamilyRepo</span>) <span class="t">Save</span>(f *model.<span class="t">Family</span>) error {
+    <span class="k">if</span> f == <span class="k">nil</span> {
+        <span class="k">return</span> fmt.<span class="t">Errorf</span>(<span class="s">"save family: %w"</span>, response.<span class="t">ErrInvalidParam</span>)
+    }
+    r.mu.<span class="t">Lock</span>()
+    <span class="k">defer</span> r.mu.<span class="t">Unlock</span>()   <span class="c">// D4 的肌肉记忆：Lock 的下一行就是 defer Unlock</span>
+    r.data[f.ID] = f
+    <span class="k">return</span> <span class="k">nil</span>
+}
+
+<span class="k">func</span> (r *<span class="t">MemoryFamilyRepo</span>) <span class="t">FindByID</span>(id <span class="t">int64</span>) (*model.<span class="t">Family</span>, error) {
+    r.mu.<span class="t">Lock</span>()
+    <span class="k">defer</span> r.mu.<span class="t">Unlock</span>()
+    f, ok := r.data[id]      <span class="c">// comma-ok（D4）</span>
+    <span class="k">if</span> !ok {
+        <span class="c">// 哨兵错误 + %w 包装（D4）：上层用 errors.Is 认得出</span>
+        <span class="k">return</span> <span class="k">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"find family %d: %w"</span>, id, response.<span class="t">ErrNotFound</span>)
+    }
+    <span class="k">return</span> f, <span class="k">nil</span>            <span class="c">// 出错分支才 return nil, err；成功就字面量 return</span>
+}</code></pre>
+    <div class="callout note"><p>看一眼 import：<code>homecube/internal/homeos/model</code>、<code>homecube/pkg/response</code>——D1 讲的「import 路径 = 模块名 + 相对目录」第一次真枪实弹。internal 包能被本模块 import，畅通无阻；换成别人的模块来 import 就会编译失败。</p></div>
+
+    <h3>步骤 3 · 测试：接口、哨兵、errors.Is 一锅端</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/repository/memory_test.go</span><code><span class="k">package</span> repository
+
+<span class="k">import</span> (
+    <span class="s">"errors"</span>
+    <span class="s">"testing"</span>
+
+    <span class="s">"homecube/internal/homeos/model"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="k">func</span> <span class="t">TestMemoryFamilyRepo</span>(t *testing.T) {
+    <span class="k">var</span> repo <span class="t">FamilyRepository</span> = <span class="t">NewMemoryFamilyRepo</span>()   <span class="c">// 编译期检查：实现不满足接口，这一行直接报错</span>
+    fam := &amp;model.<span class="t">Family</span>{ID: <span class="n">1</span>, Name: <span class="s">"我们家"</span>, OwnerID: <span class="n">100</span>}
+
+    <span class="k">if</span> err := repo.<span class="t">Save</span>(fam); err != <span class="k">nil</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"Save: %v"</span>, err)
+    }
+    got, err := repo.<span class="t">FindByID</span>(<span class="n">1</span>)
+    <span class="k">if</span> err != <span class="k">nil</span> || got.Name != <span class="s">"我们家"</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"FindByID(1) = %+v, %v"</span>, got, err)
+    }
+
+    _, err = repo.<span class="t">FindByID</span>(<span class="n">404</span>)
+    <span class="k">if</span> !errors.<span class="t">Is</span>(err, response.<span class="t">ErrNotFound</span>) {
+        t.<span class="t">Fatalf</span>(<span class="s">"FindByID(404) 应返回 ErrNotFound，实际 %v"</span>, err)
+    }
+}</code></pre>
+
+    <h3>步骤 4 · 验收并提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test    <span class="c"># response 与 repository 两个包都必须 ok</span>
+make lint
+
+git add server/internal/homeos/repository
+git status
+git commit -m "feat(s1d5): FamilyRepository 接口 + 内存实现（Mutex 照抄，S5 正式讲）"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>把「具体类型的 nil 指针」return 成 error</td><td>上层 <code>err == nil</code> 是 false，明明没出错却走了错误分支</td><td>成功路径永远字面量 <code>return nil</code>；今天 playground 里先复现一次</td></tr>
+      <tr><td>值类型赋给指针接收者的接口</td><td><code>Dog does not implement Speaker</code>，报错在赋值处，病根在方法定义处</td><td>看报错最后一行 <code>(method Speak has pointer receiver)</code>，它直接告诉你病根</td></tr>
+      <tr><td>到处用 <code>any</code> 传业务数据</td><td>编译全过，运行时类型断言 panic</td><td><code>any</code> 只出现在信封/解码等边界；业务参数用具体类型或接口</td></tr>
+      <tr><td>类型断言不用 comma-ok</td><td><code>v.(string)</code> 断言失败直接 panic</td><td><code>s, ok := v.(string)</code>；多分支用 type switch</td></tr>
+      <tr><td>一上来就为所有 struct 抽接口</td><td>满仓库单实现接口，纯增噪音</td><td>接口在<b>需要替换或需要测试替身</b>时才抽。Repository 符合条件：S3 要换 Postgres</td></tr>
+      <tr><td>含 Mutex 的 struct 按值传递</td><td>能编译（<code>go vet</code> 会警告），锁被复制后保护失效</td><td>含锁 struct 只以指针流转；<code>make lint</code> 里的 <code>go vet</code> 就是抓这个的</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>接口（interface）</td><td>方法签名的约定；方法齐了自动满足，无需声明</td></tr>
+      <tr><td>隐式实现</td><td>实现方与接口方互不知情也能对上——约定在消费方</td></tr>
+      <tr><td>接口值</td><td>运行时两字宽：(动态类型, 动态值)。类型位非空则接口非 nil</td></tr>
+      <tr><td>typed nil</td><td>「非 nil 接口装着 nil 指针」的坑；error 返回纪律可完全避开</td></tr>
+      <tr><td>方法集</td><td>值接收者方法进 <code>T</code> 与 <code>*T</code>；指针接收者方法只进 <code>*T</code></td></tr>
+      <tr><td><code>any</code> / 空接口</td><td><code>interface{}</code> 的别名，什么都能装；D6 的 <code>Body.Data</code> 就是它</td></tr>
+      <tr><td>类型断言</td><td><code>v.(T)</code>：从 any 取回具体类型；comma-ok 保平安</td></tr>
+      <tr><td><code>fmt.Stringer</code></td><td>标准库接口：<code>String() string</code>。昨天 Role.String() 的实现对象</td></tr>
+      <tr><td>Repository 模式</td><td>把数据存取抽象成接口；S2·D4 按三层重新归置，S3 换 Postgres 实现</td></tr>
+      <tr><td><code>http.Handler</code></td><td>标准库最重要的接口：<code>ServeHTTP(w, r)</code>。<b>明天 D6 的主角落</b></td></tr>
+      <tr><td>测试替身（test double）</td><td>为测试造的假实现。内存 repo 日后兼任此职</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有两种情况出去查：</p>
+    <ul>
+      <li><b>接口与 nil 的坑想再确认一遍</b>：<a href="https://go.dev/doc/faq#nil_error" target="_blank">Go FAQ · Why is my nil error value not equal to nil?</a>（可选，官方对这个坑的正面回答）。</li>
+      <li><b>方法集规则记不住</b>：不用背。<code>go vet</code> 与编译器会在你犯错时把规则原文贴你脸上，错了再读比先背有效。</li>
+    </ul>
+    <p>自测方法：合上页面，口头回答「S3 换成 Postgres 时，为什么业务代码一行不用改？」——答案里必须出现「依赖接口不依赖实现」「方法集齐就满足」两个要素。答不利索就回讲义 §5 重读。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w01d5c1"><code>repository/family.go</code> + <code>memory.go</code> + <code>memory_test.go</code> 落盘，<code>var repo FamilyRepository = NewMemoryFamilyRepo()</code> 这行编译通过</label></li>
+      <li><label><input type="checkbox" data-key="w01d5c2">测试覆盖三条路径：Save 成功、FindByID 命中、FindByID 未命中且 <code>errors.Is(err, response.ErrNotFound)</code> 为真</label></li>
+      <li><label><input type="checkbox" data-key="w01d5c3">在 playground/d5 复现过 typed-nil 坑一次，能口述成因（接口值 = 类型位 + 值位）</label></li>
+      <li><label><input type="checkbox" data-key="w01d5c4"><code>make build</code> 与 <code>make test</code> 全绿，commit 带卡号 <code>s1d5</code></label></li>
+      <li><label><input type="checkbox" data-key="w01d5c5"><code>notes/</code> 写三行：隐式实现与 TS interface 的异同、指针接收者对方法集的影响、any 的使用纪律</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w01d4.html"><span class="hint">← 昨天 · S1·D4</span>slice、map、defer 与 error 包装</a>
+    <a href="w01d6.html"><span class="hint">明天 · S1·D6 →</span>net/http 起服务</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w01d5 · 明天见 ⟩</footer>
+</body>
+</html>

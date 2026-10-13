@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>F2·w05 · uni-app 工程结构怎么读：pages.json 与配置式路由 | HomeCube 修炼手册</title>
+<meta name="description" content="前端辅线第五张卡：web/ 工程已经存在了，读 pages.json / main.js / App.vue / manifest.json 各自负责什么，配置式路由与 React Router 的差别，navigateTo / reLaunch 的分工；动手改注册一个新页面，定位题「page not found」两步定论。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w05f1">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 F2</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / 前端辅线 / F2 / w05</div>
+  <div class="day-meta">
+    <span class="chip">F2 · WEEK 05</span>
+    <span class="chip alt">周日前半 · 约 2 小时</span>
+    <span class="chip">难度 ★★☆☆☆</span>
+  </div>
+  <h1>uni-app 工程结构怎么读：pages.json 与配置式路由</h1>
+  <p>从今天起，<b>你看的是真代码，不是我给你的片段</b>。F1 的四张卡里，所有 SFC 都是日卡内嵌的练习文件，跑不起来也没关系——那时 <code>web/</code> 这个目录根本不存在。agent 在服务端 <b>S3·D1</b> 第一次介入，脚手架出了 <code>web/</code>：一个 Vue 3 + uni-app 工程，加一层 <code>src/api/http.js</code> 请求封装。所以现在你手上有可以 <code>cd</code> 进去、可以 <code>npm run dev:h5</code> 起在浏览器里点、可以用编辑器全局搜索的真实工程。今天这张卡的任务是<b>把这个工程的骨架读通</b>：哪个文件决定「有哪些页面」、哪个决定「页面长什么框」、哪个决定「请求发到哪台机器」。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w05f1g1">说清 <code>pages.json</code> / <code>main.js</code> / <code>App.vue</code> / <code>manifest.json</code> 四个文件各自负责什么，改一件事该去哪一个</label></li>
+      <li><label><input type="checkbox" data-key="w05f1g2">能讲清 <b><code>pages.json</code> 里为什么不能有 <code>tabBar</code> 字段</b>——底栏由 shell 自绘，双份注册会打架</label></li>
+      <li><label><input type="checkbox" data-key="w05f1g3">说清配置式路由与 React Router 声明式路由的差别，以及三段式路径 <code>pages/{code}/{feature}/{action}</code> 每一段是什么</label></li>
+      <li><label><input type="checkbox" data-key="w05f1g4">完成「动手改」：注册一个新页面并从首页跳过去；完成「定位题」的两步定论</label></li>
+    </ul>
+    <div class="callout js"><p><b>判据没变。</b>工程能跑起来是 agent 的功劳，不是你的。今天你要拿走的是三句话：① 「这个页面上不去，我该改哪个文件」；② 「这个入口是谁注册的」；③ 「这个 bug 是路由配置的问题，还是组件本身的问题」。完成检查里没有一条是「新页面跑起来了」——<b>不许拿「页面能跑」当自己通过了</b>。</p></div>
+  </section>
+
+  <section>
+    <h2>1. 工程骨架：先认清五个文件</h2>
+    <pre><span class="code-label">结构 · &lt;repo&gt;/web/（agent 脚手架产出，你只读与改）</span><code>&lt;repo&gt;/
+└── web/
+    ├── package.json          依赖与脚本：dev:h5 / build:h5 / dev:app
+    ├── vite.config.js        装配 uni-app 的 Vite 插件
+    ├── index.html            H5 端的宿主页（只有一个 &lt;div id="app"&gt;）
+    └── src/
+        ├── main.js           应用入口：createSSRApp + 装 Pinia
+        ├── App.vue           应用级组件：onLaunch / onShow / onHide + 全局样式
+        ├── pages.json        <b>页面注册表</b> + 全局窗口样式：唯一的路由来源
+        ├── manifest.json     各端配置：appid、vueVersion、H5 devServer 代理
+        ├── uni.scss          scss 主题令牌入口（颜色只能从这里取）
+        ├── api/
+        │   └── http.js       请求层（下一张卡的主角）
+        ├── stores/
+        │   ├── auth.js       登录态与 token（F3 第 1 张）
+        │   ├── family.js     当前家庭上下文（F3 第 3 张）
+        │   └── shell.js      未读计数 + 时间窗 period（全站唯一一份）
+        └── pages/
+            ├── homeos/       主包：认证、家庭、成员、首页、错误页
+            │   ├── auth/login.vue
+            │   ├── family/list.vue
+            │   └── home/index.vue
+            └── finance/      分包：记账、分类、报表
+                ├── category/list.vue
+                └── tx/list.vue</code></pre>
+    <p>四个「配置类」文件的分工，用你熟的话说：</p>
+    <table>
+      <tr><th>文件</th><th>管什么</th><th>React 世界里最接近的东西</th></tr>
+      <tr><td><code>src/pages.json</code></td><td><b>有哪些页面</b>（路由表）、每页的窗口样式（标题栏、下拉刷新）、分包划分、全局窗口样式</td><td>路由表 + 每个 route 的 layout 配置，但它是<b>编译期读的 JSON</b>，不是 JSX</td></tr>
+      <tr><td><code>src/main.js</code></td><td>创建应用实例、装插件（Pinia）、挂载</td><td><code>src/main.jsx</code> 里的 <code>createRoot().render()</code></td></tr>
+      <tr><td><code>src/App.vue</code></td><td>应用级生命周期（<code>onLaunch</code> / <code>onShow</code> / <code>onHide</code>）与全局样式；<b>它自己没有模板内容</b></td><td>最外层 <code>App</code> 组件，但只管「应用整体出生/回前台/进后台」，不管页面渲染</td></tr>
+      <tr><td><code>src/manifest.json</code></td><td>各端打包配置：appid、图标、<code>vueVersion: "3"</code>、H5 的 <code>devServer.proxy</code></td><td>没有单一对应物，约等于 <code>vite.config</code> 的 server 段 + 应用商店元信息</td></tr>
+    </table>
+    <div class="callout note"><p><b>「改一件事该去哪个文件」是今天的实用产出</b>：加一个页面 → <code>pages.json</code> + <code>pages/</code> 下的 <code>.vue</code>；改某页标题栏文字 → <code>pages.json</code> 里那一页的 <code>style</code>；改全局标题栏配色 → <code>pages.json</code> 的 <code>globalStyle</code>（值写主题令牌，不写色号）；把请求指到你本地的 Go 服务 → <code>manifest.json</code> 的 H5 代理；改启动时做的第一件事（比如读回登录态）→ <code>App.vue</code> 的 <code>onLaunch</code>。</p></div>
+    <p><code>main.js</code> 与 <code>App.vue</code> 的实际内容比你想的短：</p>
+    <pre><span class="code-label">片段 · src/main.js</span><code><span class="k">import</span> { createSSRApp } <span class="k">from</span> <span class="s">'vue'</span>
+<span class="k">import</span> { createPinia } <span class="k">from</span> <span class="s">'pinia'</span>
+<span class="k">import</span> App <span class="k">from</span> <span class="s">'./App.vue'</span>
+
+<span class="k">export function</span> <span class="t">createApp</span>() {
+  <span class="k">const</span> app = <span class="t">createSSRApp</span>(App)
+  app.<span class="t">use</span>(<span class="t">createPinia</span>())   <span class="c">// 整个应用只装这一次，之后任何文件 import store 即可用</span>
+  <span class="k">return</span> { app }
+}</code></pre>
+    <pre><span class="code-label">片段 · src/App.vue</span><code><span class="t">&lt;script&gt;</span>
+<span class="k">export default</span> {
+  <span class="t">onLaunch</span>() {
+    <span class="c">// 应用冷启动，早于任何页面的 onLoad。</span>
+    <span class="c">// F3 第 1 张会把「读回本地会话」放在这里 —— 位置错了就会出现「刷新后登录态丢」。</span>
+  },
+  <span class="t">onShow</span>() { <span class="c">/* 从后台回到前台 */</span> },
+  <span class="t">onHide</span>() { <span class="c">/* 进后台 */</span> },
+}
+<span class="t">&lt;/script&gt;</span>
+
+<span class="t">&lt;style</span> <span class="k">lang</span>=<span class="s">"scss"</span><span class="t">&gt;</span>
+<span class="c">/* 全局样式：只引 uni.scss 里的主题令牌，禁止写死色号 */</span>
+<span class="t">&lt;/style&gt;</span></code></pre>
+    <div class="callout warn"><p><code>App.vue</code> <b>没有 <code>&lt;template&gt;</code></b>——这是它与普通页面组件最大的区别。它不是一个「渲染出来的东西」，是应用本身。想找一个「所有页面共用的布局组件」，在 uni-app 里不是 <code>App.vue</code>，而是你自己写的一个 shell 组件（底部五项、顶栏一行都由它自绘），由各主页面包进去。</p></div>
+  </section>
+
+  <section>
+    <h2>2. pages.json：配置式路由，以及那条不许碰的字段</h2>
+    <pre><span class="code-label">片段 · src/pages.json（节选，注意没有 tabBar）</span><code>{
+  <span class="s">"pages"</span>: [
+    { <span class="s">"path"</span>: <span class="s">"pages/homeos/home/index"</span>,
+      <span class="s">"style"</span>: { <span class="s">"navigationBarTitleText"</span>: <span class="s">"首页"</span> } },
+    { <span class="s">"path"</span>: <span class="s">"pages/homeos/auth/login"</span>,
+      <span class="s">"style"</span>: { <span class="s">"navigationStyle"</span>: <span class="s">"custom"</span> } },
+    { <span class="s">"path"</span>: <span class="s">"pages/finance/category/list"</span>,
+      <span class="s">"style"</span>: { <span class="s">"enablePullDownRefresh"</span>: <span class="k">true</span> } }
+  ],
+  <span class="s">"globalStyle"</span>: {
+    <span class="s">"navigationBarBackgroundColor"</span>: <span class="s">"@bg-nav"</span>,   <span class="c">// @xxx = uni.scss 里的主题令牌</span>
+    <span class="s">"navigationBarTextStyle"</span>: <span class="s">"black"</span>
+  },
+  <span class="s">"subPackages"</span>: [
+    { <span class="s">"root"</span>: <span class="s">"pages/finance"</span>, <span class="s">"pages"</span>: [ <span class="c">/* … */</span> ] }
+  ]
+}</code></pre>
+    <p>四条读法：</p>
+    <table>
+      <tr><th>字段</th><th>读法</th></tr>
+      <tr><td><code>pages[]</code></td><td>页面注册表，<b>数组第一项就是启动页</b>（不是 <code>/</code> 匹配出来的，是「第 0 项」）。每项 <code>path</code> 不带前导斜杠、不带 <code>.vue</code>；<code>style</code> 是这一页的窗口配置</td></tr>
+      <tr><td><code>globalStyle</code></td><td>所有页面的默认窗口样式，单页 <code>style</code> 覆盖它</td></tr>
+      <tr><td><code>subPackages[]</code></td><td>分包：<code>root</code> + 分包内 <code>pages[].path</code> 拼出完整路径。<b>本项目口径：主包 = <code>homeos</code>，分包集合 = 已出生的面域减去 <code>homeos</code></b>。分包与按需加载在 F5 展开，今天只认这条口径</td></tr>
+      <tr><td><code>easycom</code></td><td>组件自动引入规则（符合目录约定的组件不用手写 import）。看到某组件「没 import 也能用」，答案在这里</td></tr>
+    </table>
+    <div class="callout warn"><p><b>为什么 <code>pages.json</code> 里不能有 <code>tabBar</code> 字段。</b>三个理由，一个比一个硬：
+    ① <b>会出现两个底栏。</b><code>tabBar</code> 一旦写上，框架就自己渲染一个原生底部栏；而本项目的底栏是 shell 组件自绘的（因为「哪几项可见」必须来自服务端下发的面清单，不是编译期写死的）。两份底栏叠在一起，视觉与点击区全乱。
+    ② <b>路由语义会打架。</b>被写进 <code>tabBar</code> 的页面从此<b>只能用 <code>switchTab</code> 跳</b>，用 <code>navigateTo</code> 会静默失败；而 shell 自绘底栏走的是自己的跳转逻辑。同一批页面两套跳法，bug 会以「点了没反应」的形式出现，且不报错。
+    ③ <b>那是第二份页面清单。</b><code>tabBar.list</code> 里必须硬编码每一项的 <code>pagePath</code> 与文字，等于在客户端写死了一份「有哪些入口」——直接违背「面清单只能来自服务端、客户端不得二次裁剪也不得硬编码」这条纪律。
+    所以本项目把它当红线：<b>CI 第一查就是这条</b>。</p></div>
+    <p>三段式路径的每一段都是有含义的，不是随手起的目录名：</p>
+    <pre><span class="code-label">口径 · pages/{code}/{feature}/{action}</span><code>pages/homeos/auth/login      code=homeos   feature=auth     action=login
+pages/homeos/family/list     code=homeos   feature=family   action=list
+pages/finance/category/list  code=finance  feature=category action=list
+pages/finance/tx/create      code=finance  feature=tx       action=create</code></pre>
+    <p><code>{code}</code> 这一段与服务端的七类命名同源：路由分域 <code>/api/homeos/*</code> 与 <code>/api/finance/*</code>、schema <code>homeos</code> 与 <code>finance</code>、表前缀 <code>homeos_</code> 与 <code>finance_</code>、分包目录 <code>pages/homeos</code> 与 <code>pages/finance</code>——<b>同一个 code 在前后端指同一个业务域</b>。看到一个页面路径，你立刻知道它的数据来自哪个域的接口，这在定位 bug 时能省一半时间（对应服务端 S2·D1 立下的路由分域）。</p>
+  </section>
+
+  <section>
+    <h2>3. 配置式路由 vs React Router：差别在哪</h2>
+    <table>
+      <tr><th>维度</th><th>React Router（声明式）</th><th>uni-app（配置式）</th></tr>
+      <tr><td>路由表在哪</td><td>JSX 里：<code>&lt;Route path element&gt;</code>，与组件同文件、可以是变量、可以运行时拼装</td><td><code>pages.json</code> 的 <code>pages[]</code>，<b>编译期读的静态 JSON</b>，不能写表达式</td></tr>
+      <tr><td>启动页</td><td>由 <code>path="/"</code> 匹配决定</td><td>由<b>数组顺序</b>决定：第 0 项就是启动页</td></tr>
+      <tr><td>怎么跳</td><td>声明 <code>&lt;Link&gt;</code>，或调 <code>navigate()</code></td><td>只能调 API：<code>uni.navigateTo</code> 等。<b>没有 <code>&lt;Link&gt;</code> 这种东西</b></td></tr>
+      <tr><td>路由守卫</td><td>路由表里的钩子：<code>loader</code> / 包一层 <code>&lt;RequireAuth&gt;</code></td><td><b>配置里没有钩子的位置</b>。只能全局拦跳转 API，或在每页自己的生命周期里判（F3 第 2 张整张卡讲这个）</td></tr>
+      <tr><td>参数</td><td>路径参数 <code>:id</code> + <code>useParams()</code></td><td>路径里<b>不放参数段</b>，参数走 query：<code>uni.navigateTo({ url: '…?id=3' })</code>，页面在 <code>onLoad(options)</code> 里取</td></tr>
+      <tr><td>懒加载</td><td><code>React.lazy</code> + <code>Suspense</code>，你自己决定切分点</td><td>按 <code>subPackages</code> 切，框架决定何时下载</td></tr>
+      <tr><td>URL 的地位</td><td>URL 是状态源，可分享、可后退、可直接落内页</td><td>页面栈是状态源；H5 端有 URL 但它是<b>结果</b>不是入口约定（不过用户仍然能刷新落在内页，守卫必须兜住这种情况）</td></tr>
+    </table>
+    <p>页面栈与四个导航 API 的分工，这张表建议抄进 <code>notes/</code>：</p>
+    <table>
+      <tr><th>API</th><th>对页面栈做什么</th><th>什么时候用</th></tr>
+      <tr><td><code>uni.navigateTo</code></td><td>压栈（旧页留在栈里，可返回）</td><td>绝大多数「进入下一级」：列表 → 详情、首页 → 记账</td></tr>
+      <tr><td><code>uni.navigateBack</code></td><td>出栈</td><td>返回上一页；<code>delta</code> 可以一次退多层</td></tr>
+      <tr><td><code>uni.redirectTo</code></td><td>替换栈顶（旧页销毁，<b>回不去</b>）</td><td>登录成功后跳到「记住的来源页」；向导的中间步</td></tr>
+      <tr><td><code>uni.reLaunch</code></td><td><b>清空整个栈</b>，只留新页</td><td>退出登录、<b>切换家庭</b>（F3 第 3 张）、跳回首页</td></tr>
+      <tr><td><code>uni.switchTab</code></td><td>跳到 tabBar 页</td><td><b>本项目用不上</b>——没有 <code>tabBar</code> 就没有它的目标。看到代码里出现它，当成缺陷报给 agent</td></tr>
+    </table>
+    <div class="callout tip"><p><b>为什么 shell 自绘底栏切主入口要用 <code>reLaunch</code> 而不是 <code>navigateTo</code></b>：底栏五项之间来回切，如果用 <code>navigateTo</code>，页面栈会一直变深（小程序端上限 10 层，超了跳转直接失败），而且返回键会变成「回到上一个主入口」这种诡异行为。<code>reLaunch</code> 每次清栈，语义就是「我换了一个大区」。</p></div>
+    <p>页面自己的四个生命周期钩子（来自 <code>@dcloudio/uni-app</code>，与 F1 讲的组件钩子是两套东西，同时存在）：</p>
+    <table>
+      <tr><th>钩子</th><th>时机</th><th>典型用途</th></tr>
+      <tr><td><code>onLoad(options)</code></td><td>页面创建时一次，能拿到 query 参数</td><td>解析 <code>options.id</code>、决定要不要读登录态</td></tr>
+      <tr><td><code>onShow</code></td><td>每次页面显示（含从下一页返回时）</td><td><b>拉/刷新数据</b>、守卫兜底判断</td></tr>
+      <tr><td><code>onHide</code></td><td>页面被盖住（跳到下一页）</td><td>暂停轮询</td></tr>
+      <tr><td><code>onUnload</code></td><td>页面出栈销毁</td><td>清定时器（与 F1·w04 的 <code>onUnmounted</code> 同理）</td></tr>
+    </table>
+    <div class="callout warn"><p><b>「从下一页返回，<code>onMounted</code> 不会再跑」</b>——因为上一页组件根本没销毁，只是被盖住了。所以「返回后要看到最新数据」这件事必须写在 <code>onShow</code> 里，不是 <code>onMounted</code>。这是 React 开发者在 uni-app 里踩得最响的一脚，也是 F3 第 3 张「切换家庭后列表还是旧数据」定位题的一个答案分支。</p></div>
+  </section>
+
+  <section>
+    <h2>动手改（今天的判据现场）</h2>
+    <p>目标：<b>注册一个新页面，并从首页跳过去。</b>这是「新增一页并挂进路由」这条阶段判据的现场。改的是真工程，改完请把它删干净——留在工程里就成了「注册了但没用的假入口」。</p>
+    <pre><span class="code-label">完整 · 起点代码 src/pages/homeos/debug/route.vue（新建）</span><code><span class="t">&lt;template&gt;</span>
+  <span class="t">&lt;view</span> <span class="k">class</span>=<span class="s">"page"</span><span class="t">&gt;</span>
+    <span class="t">&lt;text&gt;</span>路由练习页 · 我是从 {{ from }} 来的<span class="t">&lt;/text&gt;</span>
+    <span class="t">&lt;button</span> <span class="k">@click</span>=<span class="s">"goBack"</span><span class="t">&gt;</span>返回<span class="t">&lt;/button&gt;</span>
+  <span class="t">&lt;/view&gt;</span>
+<span class="t">&lt;/template&gt;</span>
+
+<span class="t">&lt;script</span> <span class="k">setup</span><span class="t">&gt;</span>
+<span class="k">import</span> { ref } <span class="k">from</span> <span class="s">'vue'</span>
+<span class="k">import</span> { onLoad } <span class="k">from</span> <span class="s">'@dcloudio/uni-app'</span>
+
+<span class="k">const</span> from = <span class="t">ref</span>(<span class="s">'未知'</span>)
+<span class="t">onLoad</span>((options) =&gt; { from.value = options.from || <span class="s">'未知'</span> })
+
+<span class="k">function</span> <span class="t">goBack</span>() { <span class="t">uni</span>.navigateBack() }
+<span class="t">&lt;/script&gt;</span>
+
+<span class="t">&lt;style</span> <span class="k">lang</span>=<span class="s">"scss"</span> <span class="k">scoped</span><span class="t">&gt;</span>
+<span class="t">.page</span> { <span class="k">padding</span>: <span class="n">32rpx</span>; <span class="k">color</span>: <span class="s">$color-text-primary</span>; }
+<span class="t">&lt;/style&gt;</span></code></pre>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w05f1m1">改动 ①：在 <code>src/pages.json</code> 的 <code>pages[]</code> 末尾注册这一页——<code>path</code> 写 <code>pages/homeos/debug/route</code>（<b>不带前导斜杠、不带 <code>.vue</code></b>），<code>style</code> 里给一个 <code>navigationBarTitleText</code>。改完<b>重启</b> <code>dev:h5</code>，说清为什么这一步必须重启</label></li>
+      <li><label><input type="checkbox" data-key="w05f1m2">改动 ②：在首页 <code>pages/homeos/home/index.vue</code> 加一个按钮，<code>@click</code> 调 <code>uni.navigateTo({ url: '/pages/homeos/debug/route?from=home' })</code>——注意 <b>url 要带前导斜杠</b>，与 <code>pages.json</code> 里的 <code>path</code> 写法正好相反。跳过去后确认页面上显示出「我是从 home 来的」，并说清这个 <code>home</code> 是在哪个钩子里被读到的</label></li>
+      <li><label><input type="checkbox" data-key="w05f1m3">改动 ③：把 <code>navigateTo</code> 改成 <code>reLaunch</code> 再跳一次，然后按返回键。说清两次行为的差别、以及「返回键回到了哪一页」为什么不同。最后把这一页从 <code>pages.json</code> 与磁盘上删干净</label></li>
+    </ul>
+    <div class="callout note"><p>跑不起来也别耗着：H5 端起不来通常是 <code>npm install</code> 没做或端口被占。<b>今天的判据不依赖跑成功</b>——三处改动做完，能口述「哪一步改了路由表、哪一步改了组件、哪一步改了跳转方式」，这张卡就过了。跑通全链路是 F3 的事，那时你自己写的 Go 服务已经在 <code>/api/homeos/*</code> 上等着了。</p></div>
+  </section>
+
+  <section>
+    <h2>定位题（两步定论：路由配置还是组件本身）</h2>
+    <div class="task">
+      <div class="task-title">现象：跳转时报 <code>page not found</code>（H5 端表现为白屏或停在原页，控制台一行 <code>Page[xxx] not found</code>）。</div>
+      <p>不要开始乱改。这个报错只有两个来源，两步就能定论：</p>
+      <ol>
+        <li><b>第一步：把报错里的路径与 <code>pages.json</code> 的 <code>pages[].path</code> 逐字符比对。</b>四个高频差异点——前导斜杠（<code>url</code> 要带、<code>path</code> 不带）、<code>.vue</code> 后缀（<code>path</code> 不许带）、大小写、<code>{code}/{feature}/{action}</code> 三段顺序写反。<b>路径不在注册表里 → 路由配置问题</b>，与组件无关，组件写得再对也上不去。分包页还要多比一次：<code>subPackages[].root</code> + 分包内 <code>path</code> 拼出来是否等于你 <code>url</code> 里写的那串；同一个页面既在主包 <code>pages</code> 又在分包里注册，也算这一类。</li>
+        <li><b>第二步：路径确实在注册表里，去磁盘上找同名的 <code>.vue</code>。</b>文件不存在、或大小写与注册表不一致（本机 macOS 大小写不敏感所以能跑，构建机与 CI 上就 <code>page not found</code>）→ <b>组件层面的问题</b>（文件放错位置 / 名字不符）。文件确实存在且大小写一致 → 看编译输出：<code>pages.json</code> 本身有语法错（多一个逗号、引号不配对）会让<b>整张注册表失效</b>，此时的特征是「<b>所有</b>页面都跳不动，不只是新加的这一页」。<b>「只有一页坏」与「全站都坏」是区分「我这一页配错了」和「整张表没生效」的关键一刀。</b></li>
+      </ol>
+      <p><b>收尾一问</b>：跳法对不对。目标页若被你当成 tabBar 页而用了 <code>switchTab</code>，本项目没有 <code>tabBar</code>，一定失败；若目标页在分包里而分包还没下载，表现也不是 <code>page not found</code> 而是首次跳转有一次可感知的延迟——这两种现象别混。</p>
+      <p>把这两步补进 <code>notes/</code> 里的定位笔记。F1 练的四步法（Console → Network → 绑定 → 事件）从这一张起多了一个前置层：<b>路由层</b>——页面根本没上去的时候，谈绑定和请求都是空的。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>往 <code>pages.json</code> 里写 <code>tabBar</code></td><td>出现两个底栏；被登记的页面 <code>navigateTo</code> 静默失败</td><td>底栏由 shell 自绘，<code>tabBar</code> 字段<b>一个都不写</b>（CI 第一查）</td></tr>
+      <tr><td>建了 <code>.vue</code> 但没注册</td><td><code>page not found</code></td><td><b>文件存在 ≠ 路由存在</b>。<code>pages.json</code> 是唯一路由来源</td></tr>
+      <tr><td><code>path</code> 带前导斜杠或 <code>.vue</code> 后缀</td><td>注册不上，或编译期报路径非法</td><td><code>pages.json</code> 的 <code>path</code> 不带斜杠不带后缀；<code>uni.navigateTo</code> 的 <code>url</code> <b>要</b>带前导斜杠</td></tr>
+      <tr><td>改完 <code>pages.json</code> 不重启 dev</td><td>新页面 404，旧页面正常</td><td><code>pages.json</code> 是编译期配置，注册表改动常常不热更；重启 <code>dev:h5</code></td></tr>
+      <tr><td>主入口之间用 <code>navigateTo</code> 互跳</td><td>页面栈越来越深，返回键行为诡异；小程序端栈超 10 层后跳转直接失败</td><td>换大区用 <code>reLaunch</code>；退出登录、切换家庭也用 <code>reLaunch</code></td></tr>
+      <tr><td>路径大小写与文件名不一致</td><td>本机能跑，CI / 构建机上 <code>page not found</code></td><td>全小写；三段式目录名与注册表逐字符一致</td></tr>
+      <tr><td>把「返回后要刷新数据」写在 <code>onMounted</code></td><td>从详情页返回，列表还是旧的</td><td>写在页面的 <code>onShow</code> 里；上一页组件没销毁，<code>onMounted</code> 不会再跑</td></tr>
+      <tr><td>颜色写死在 <code>style</code> 或 <code>globalStyle</code> 里</td><td>深色主题切不动，改一次配色要全仓搜</td><td>只引用 <code>uni.scss</code> 的主题令牌；<code>pages.json</code> 里用 <code>@令牌名</code> 形式</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td><code>pages.json</code></td><td>uni-app 的页面注册表 + 窗口样式 + 分包划分，<b>唯一的路由来源</b>，编译期读取</td></tr>
+      <tr><td>配置式路由</td><td>路由表写在静态 JSON 里，不能写表达式、不能在运行时拼装；对立面是 React Router 那种写在 JSX 里的声明式路由</td></tr>
+      <tr><td>三段式路径</td><td><code>pages/{code}/{feature}/{action}</code>；<code>{code}</code> 与服务端的路由分域、schema、表前缀同源</td></tr>
+      <tr><td>页面栈</td><td>框架维护的一个页面数组，最多 10 层；<code>navigateTo</code> 压栈、<code>navigateBack</code> 出栈、<code>redirectTo</code> 换栈顶、<code>reLaunch</code> 清栈</td></tr>
+      <tr><td><code>switchTab</code></td><td>跳 tabBar 页专用 API。<b>本项目没有 tabBar，因此它没有合法目标</b></td></tr>
+      <tr><td><code>subPackages</code></td><td>分包配置：<code>root</code> + 分包内 <code>pages</code> 拼出完整路径；主包 = <code>homeos</code>，其余已出生面域进分包</td></tr>
+      <tr><td><code>easycom</code></td><td>组件自动引入规则，符合目录约定的组件无需手写 <code>import</code></td></tr>
+      <tr><td><code>manifest.json</code></td><td>各端打包配置；H5 的 <code>devServer.proxy</code> 决定 <code>/api</code> 的请求被转到哪台机器</td></tr>
+      <tr><td>应用级生命周期</td><td><code>App.vue</code> 的 <code>onLaunch</code> / <code>onShow</code> / <code>onHide</code>，早于任何页面的 <code>onLoad</code></td></tr>
+      <tr><td>页面级生命周期</td><td><code>onLoad</code> / <code>onShow</code> / <code>onHide</code> / <code>onUnload</code>，与组件的 <code>onMounted</code> / <code>onUnmounted</code> 是并存的两套</td></tr>
+      <tr><td>主题令牌</td><td><code>uni.scss</code> 里定义的颜色/间距变量；页面只准引用变量名，禁止写死色号</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <table>
+      <tr><th>卡在哪</th><th>回去查</th></tr>
+      <tr><td>SFC 三段读不懂、<code>ref</code> 要不要 <code>.value</code></td><td><a href="../f1/w01f1.html">F1 第 1 张</a>（SFC 三段与模板语法）</td></tr>
+      <tr><td>模板里 <code>v-if</code> / <code>v-for</code> 的写法</td><td><a href="../f1/w01f1.html">F1 第 1 张</a> §2 五个指令</td></tr>
+      <tr><td>页面里的定时器 / 轮询该在哪个钩子清</td><td><a href="../f1/w04f1.html">F1 第 4 张</a>（生命周期与 composable）；本页 §3 的页面级钩子表是它的 uni-app 版本</td></tr>
+      <tr><td><code>/api/homeos</code>、<code>/api/finance</code> 这两个前缀从哪来、为什么没有版本号段</td><td>服务端 <b>S2·D1</b>（Gin 与路由分域）</td></tr>
+      <tr><td><code>web/</code> 在仓库里的位置、与服务端目录的关系</td><td>服务端 <b>S1·D1</b>（仓库骨架）</td></tr>
+      <tr><td>H5 代理该指向哪个端口、服务起没起</td><td>服务端 <b>S1·D6</b>（起服务）与 <b>S3·D1</b>（配置与 <code>PORT</code>）；先访问 <code>/healthz</code> 确认服务活着</td></tr>
+      <tr><td>下一张：请求层 <code>baseURL</code> 与拦截器</td><td><a href="w06f1.html">F2 第 2 张</a></td></tr>
+    </table>
+    <p>正文自足，不需要先读外部资料。uni-app 官方文档只在「某个 API 的参数记不清」时查，<b>不要拿它当路由设计的依据</b>——本项目对 <code>tabBar</code>、分包、守卫的取舍是本站自己的口径，官方示例里那些写法很多在这里是禁用的。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w05f1c1">能不看资料说出 <code>pages.json</code> / <code>main.js</code> / <code>App.vue</code> / <code>manifest.json</code> 各管什么，并给出「改某页标题」「把请求指向本地服务」「改启动时第一件事」各去哪个文件</label></li>
+      <li><label><input type="checkbox" data-key="w05f1c2">能完整讲清 <code>pages.json</code> 里不能有 <code>tabBar</code> 的三个理由（两个底栏、两套跳法、第二份硬编码清单）</label></li>
+      <li><label><input type="checkbox" data-key="w05f1c3">能说出配置式路由与 React Router 的至少四处差别，并说清 <code>navigateTo</code> / <code>redirectTo</code> / <code>reLaunch</code> / <code>navigateBack</code> 各自对页面栈做什么、本项目为什么用不上 <code>switchTab</code></label></li>
+      <li><label><input type="checkbox" data-key="w05f1c4">动手改三处已完成（注册、跳转、换成 <code>reLaunch</code> 对比），练习页已从 <code>pages.json</code> 与磁盘删干净，且每处都能说清改的是路由表还是组件</label></li>
+      <li><label><input type="checkbox" data-key="w05f1c5">定位题的两步定论已写进 <code>notes/</code>，并能口述「只有一页坏」与「全站都坏」分别指向哪一类原因</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../server/s3/w05d6.html"><span class="hint">← 本周六 · S3·D6</span>分类域从内存 map 换到 DB</a>
+    <a href="../../server/s3/w06d1.html"><span class="hint">下周一 · S3·D7 →</span>事务与软删：deleted_at 语义、Unscoped 与</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w05f1 · 下周见 ⟩</footer>
+</body>
+</html>

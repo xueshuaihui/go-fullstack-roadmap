@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>F4·w13 · 游标分页的前端侧（上）：下拉刷新与触底加载 | HomeCube 修炼手册</title>
+<meta name="description" content="前端辅线 F4 第四张卡：兑现 S3 埋下的伏笔——游标分页信封在前端怎么消费：下拉刷新重置游标、onReachBottom 触底续读、加载中与没有更多两种状态；动手给列表加尾部提示。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w13f1">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">前端线 F1-F6</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / 前端辅线 / F4 / w13</div>
+  <div class="day-meta">
+    <span class="chip">F4 · WEEK 13</span>
+    <span class="chip alt">周日前半 · 约 2 小时</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>游标分页的前端侧（上）：下拉刷新与触底加载</h1>
+  <p>这是一条埋了很久的伏笔：服务端在 S3 就把列表返回统一成了游标分页信封，今天兑现它的前端侧。财务面的每个列表——流水、账户、分类下的明细——都吃这一套。这张卡管「怎么跑起来」：下拉刷新重置、触底续读、两种加载状态；下一张卡管「怎么验证跑对了」：不重复、不漏、能续读。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w13f1g1">背出游标分页信封的形状，并说清「游标不透明」的三条禁令：不解析、不自造、不修改</label></li>
+      <li><label><input type="checkbox" data-key="w13f1g2">说清下拉刷新为什么要<b>重置</b>游标、触底加载为什么要<b>续</b>游标，两条路径共用哪个加载函数</label></li>
+      <li><label><input type="checkbox" data-key="w13f1g3">看懂 <code>onPullDownRefresh</code> / <code>onReachBottom</code> 的页面级配置与脚本写法，能讲出「加载中 / 没有更多了」两种状态的 UI 表达</label></li>
+      <li><label><input type="checkbox" data-key="w13f1g4">完成「动手改」（给列表加「没有更多了」尾部提示）并回答「定位题」（触底没反应的三种可能）</label></li>
+    </ul>
+    <div class="callout js"><p><b>判据提醒</b>：这个列表是 agent 写的、而且「能滚出下一页」大概率早就正常。你的判据是：能讲清<b>游标在哪一步被清空、在哪一步被带回、为什么客户端永远不该理解它的内容</b>。不许拿「页面能跑」当自己通过了。</p></div>
+  </section>
+
+  <section>
+    <h2>1. 信封与三条禁令</h2>
+    <p>所有分页列表接口（如 <code>GET /api/finance/transactions</code>）的响应都是这个形状：</p>
+    <pre><span class="code-label">片段 · 游标分页信封</span><code>{ <span class="s">"code"</span>: <span class="n">0</span>, <span class="s">"message"</span>: <span class="s">"ok"</span>, <span class="s">"data"</span>: {
+    <span class="s">"list"</span>: [ … ],            <span class="c">// 本页数据</span>
+    <span class="s">"next_cursor"</span>: <span class="s">"eyJvIjox"</span>,  <span class="c">// 下一页的门票；null/空 = 没有了</span>
+    <span class="s">"has_more"</span>: <span class="k">true</span>          <span class="c">// 还有没有下一页</span>
+} }</code></pre>
+    <p>三条禁令，条条都是红线：</p>
+    <ul>
+      <li><b>不解析</b>：游标是服务端把「(排序键, id)」base64 编码后的产物，对客户端是<b>不透明字符串</b>。你解出来看了一眼？从此你的前端就和服务端的排序实现耦死了——服务端换排序键，你解出来的逻辑全错。</li>
+      <li><b>不自造</b>：不许自己拼一个「看起来像」的游标。造出来的游标服务端解不开，或者更糟——解开了但语义错误，返回错乱的数据。</li>
+      <li><b>不修改</b>：上次响应给的 <code>next_cursor</code>，原样带回下次请求，一个字符都不能动。</li>
+    </ul>
+    <div class="callout warn"><p>另外注意信封里<b>没有</b>什么：没有 <code>total</code>、没有 <code>page</code>、没有总页数。这不是漏了，是刻意设计——「共 137 条 / 第 3 页」这类 UI 在游标分页里<b>根本不存在</b>，你也没法跳页，只能顺序续读。如果你在哪个页面看到「上一页/下一页」按钮，那是对着错误契约写的 UI。</p></div>
+    <p>对照 React：这与 SWR 的 <code>useSWRInfinite</code> 是同一个心智模型——<code>getFirstPageParam</code> 返回首页参数（无游标），<code>getNextPageParam</code> 从上一页响应里取出下一页参数（<code>next_cursor</code>），<code>size/setSize</code> 控制读到第几页。「下一页的参数依赖上一页的响应」，两套生态殊途同归；差别是 React 里你自己管数组拼接，这里状态和加载函数由页面（容器）持有——上一张卡拆好的结构正好用上。</p>
+  </section>
+
+  <section>
+    <h2>2. 两条路径：刷新重置，触底续读</h2>
+    <p>整个分页前端侧只有一个核心函数和两个入口：</p>
+    <pre><span class="code-label">片段 · 页面（容器）里的分页状态机（示意，以 agent 实现为准）</span><code><span class="k">const</span> items = <span class="t">ref</span>([])          <span class="c">// 已加载的全部行</span>
+<span class="k">const</span> cursor = <span class="t">ref</span>(<span class="k">null</span>)       <span class="c">// 下一页门票；null = 从第一页读</span>
+<span class="k">const</span> hasMore = <span class="t">ref</span>(<span class="k">true</span>)
+<span class="k">const</span> loading = <span class="t">ref</span>(<span class="k">false</span>)       <span class="c">// 加载锁：防触底连发</span>
+
+<span class="k">async function</span> <span class="t">loadPage</span>() {
+  <span class="k">if</span> (loading.value || !hasMore.value) <span class="k">return</span>   <span class="c">// 锁住 + 没票不发</span>
+  loading.value = <span class="k">true</span>
+  <span class="k">try</span> {
+    <span class="c">// 请求层（F2 建好）已拆掉外层信封，拿到的就是 data</span>
+    <span class="k">const</span> data = <span class="k">await</span> http.<span class="t">get</span>(<span class="s">'/finance/transactions'</span>,
+      { period: shell.period, cursor: cursor.value, limit: <span class="n">20</span> })
+    items.value.<span class="t">push</span>(...data.list)               <span class="c">// 续读 = 往后拼</span>
+    cursor.value = data.next_cursor              <span class="c">// 门票原样收下</span>
+    hasMore.value = data.has_more
+  } <span class="k">finally</span> { loading.value = <span class="k">false</span> }           <span class="c">// finally：失败也要放锁</span>
+}
+
+<span class="k">function</span> <span class="t">refresh</span>() {                              <span class="c">// 刷新 = 全部归零再读第一页</span>
+  items.value = []; cursor.value = <span class="k">null</span>; hasMore.value = <span class="k">true</span>
+  <span class="k">return</span> <span class="t">loadPage</span>()
+}</code></pre>
+    <p>两个入口都是 <b>uni-app 的页面级生命周期</b>——不是 Vue 的组件钩子，写在页面（<code>pages.json</code> 注册过的文件）里才生效，且需要配置配合：</p>
+    <pre><span class="code-label">片段 · pages.json 里该页的配置 + script setup 里的挂钩</span><code><span class="c">// pages.json（节选）：两个开关都在这里</span>
+{ <span class="s">"path"</span>: <span class="s">"pages/finance/tx/list"</span>,
+  <span class="s">"style"</span>: { <span class="s">"enablePullDownRefresh"</span>: <span class="k">true</span>, <span class="s">"onReachBottomDistance"</span>: <span class="n">80</span> } }
+
+<span class="c">// list.vue（script setup）：从 uni-app 导入页面级钩子</span>
+<span class="k">import</span> { onPullDownRefresh, onReachBottom } <span class="k">from</span> <span class="s">'@dcloudio/uni-app'</span>
+<span class="t">onPullDownRefresh</span>(<span class="k">async</span> () =&gt; {
+  <span class="k">await</span> <span class="t">refresh</span>()
+  uni.<span class="t">stopPullDownRefresh</span>()          <span class="c">// 不收，转圈永远不停</span>
+})
+<span class="t">onReachBottom</span>(() =&gt; <span class="t">loadPage</span>())       <span class="c">// 滚动到距底 80px 内触发</span></code></pre>
+    <table>
+      <tr><th>入口</th><th>对游标做什么</th><th>对列表做什么</th><th>直觉</th></tr>
+      <tr><td>下拉刷新</td><td><b>重置</b>：<code>cursor = null</code></td><td>清空重填</td><td>「从头再读一遍最新的」</td></tr>
+      <tr><td>触底加载</td><td><b>续</b>：带上次的 <code>next_cursor</code></td><td>往后拼接</td><td>「接着上次读到哪算哪」</td></tr>
+      <tr><td>首次进入</td><td>初始即 <code>null</code></td><td>空 → 第一页</td><td>等价于一次静默刷新</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>3. 两种状态：加载中 与 没有更多了</h2>
+    <p>触底之后用户看到的必须是<b>确定的反馈</b>，只有三种合法画面：</p>
+    <table>
+      <tr><th>状态</th><th>条件</th><th>UI 表达</th></tr>
+      <tr><td>加载中</td><td><code>loading === true</code></td><td>列表尾部的转圈 + 「加载中…」；首屏则是骨架屏（下一张卡展开）</td></tr>
+      <tr><td>没有更多了</td><td><code>!hasMore &amp;&amp; items.length</code></td><td>尾部灰色一行「没有更多了」——告诉用户「到底了」不是「坏了」</td></tr>
+      <tr><td>（空列表）</td><td><code>!loading &amp;&amp; !items.length</code></td><td>空态组件的活，<b>不是</b>尾部提示的活；此时不显示「没有更多了」</td></tr>
+    </table>
+    <p>为什么「没有更多了」值得单独一行提示？因为触底是<b>无按钮操作</b>——用户滚到底没有任何可点的东西，如果既不出新数据也没有提示，他无法区分「加载完了」和「加载坏了」。状态可见，是可滚动列表的基本礼貌。</p>
+  </section>
+
+  <section>
+    <h2>动手改（今天的判据现场）</h2>
+    <p>找到流水列表页，看它的尾部：如果 agent 已经写了「没有更多了」，就按下面要求核对并改造它；如果没写，正好亲手加一个。</p>
+    <pre><span class="code-label">片段 · 起点（列表模板的尾部）</span><code><span class="t">&lt;TxList</span> <span class="k">:items</span>=<span class="s">"items"</span> <span class="k">:loading</span>=<span class="s">"loading"</span> <span class="t">/&gt;</span>
+<span class="c">&lt;!-- 这里往后是空白：滚到底什么反馈都没有 --&gt;</span></code></pre>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w13f1m1">改动 ①：加尾部状态区——<code>loading</code> 时显示「加载中…」，<code>!hasMore &amp;&amp; items.length</code> 时显示「没有更多了」；两个提示互斥，颜色走令牌（上一张卡的纪律）</label></li>
+      <li><label><input type="checkbox" data-key="w13f1m2">改动 ②：确认空列表时<b>不</b>显示「没有更多了」（该画面归空态组件管）；把三个条件分支的优先级说清楚</label></li>
+      <li><label><input type="checkbox" data-key="w13f1m3">改动 ③：在 <code>loadPage</code> 的锁判断处加一行临时 <code>console.log</code>，滚到底观察它被触发的次数；说清如果没有 <code>loading</code> 锁，快速滚动会发出几个重复请求</label></li>
+    </ul>
+    <div class="callout note"><p>验证方式：H5 端把浏览器窗口拉窄、多滚几次；或临时把请求的 <code>limit</code> 参数改小（如 5），两页就能滚到底，看尾部提示是否按时出现。<b>limit 改小只是实验手段，看完改回来</b>——每页大小是接口约定，不是前端自由参数。</p></div>
+  </section>
+
+  <section>
+    <h2>定位题（bug 在哪一层：滚到底没反应）</h2>
+    <div class="task">
+      <div class="task-title">现象：列表滚到底了，不加载下一页——「触底没反应」。</div>
+      <p>三个嫌疑人：事件根本没触发、触发了但被前端逻辑拦住、页面配置没开。这个顺序排：</p>
+      <ol>
+        <li><b>先证明事件层</b>：在 <code>onReachBottom</code> 回调第一行加 <code>console.log</code>，滚到底。<b>日志没出来 → 事件没触发</b>，进入第 2 步；日志出来了 → 跳到第 3 步。</li>
+        <li><b>事件没触发的两种死法</b>：① <b>绑错了地方</b>——<code>onReachBottom</code> 是<b>页面级</b>钩子，写在子组件（比如拆出去的 TxList）里不生效；确认它写在 <code>pages.json</code> 注册过的页面文件里。② <b>页面配置/结构问题</b>——该页 <code>style</code> 里 <code>onReachBottomDistance</code> 配置异常，或者列表被包在 <code>scroll-view</code> 里：<code>scroll-view</code> 内部滚动<b>不产生页面级触底事件</b>（页面本身没滚），这是 uni-app 最经典的触底失效原因。</li>
+        <li><b>事件触发了但没发请求</b>：看 <code>loadPage</code> 入口的两个拦截条件——<code>hasMore</code> 已经是 <code>false</code>？打开 Network 面板看<b>上一次</b>响应的 <code>has_more</code> 字段，如果真是 <code>false</code>，那不加载是<b>正确行为</b>，你缺的只是「没有更多了」提示（动手改①就是治这个的）。<code>loading</code> 卡在 <code>true</code>？说明上一次请求失败后没放锁——检查是不是把 <code>loading = false</code> 写在了 <code>then</code> 而不是 <code>finally</code>。</li>
+        <li><b>请求发了但列表没变</b>：这就进入下一张卡的领地（拼接与重复渲染）——先看 Network 里这次请求的 <code>cursor</code> 参数是不是和上次响应给的 <code>next_cursor</code> 一致。</li>
+      </ol>
+      <p>这一题的分层价值：<b>事件层（钩子/配置）→ 逻辑层（状态机拦截）→ 数据层（拼接）</b>，三层各有独立证据（日志、状态值、Network）。把「触底无反应排查链」记进 <code>notes/f4/</code>。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>常见坑</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>在子组件里写 <code>onReachBottom</code></td><td>永远不触发，且无任何报错</td><td>页面级钩子只写在页面文件里；组件事件靠 emit 上报</td></tr>
+      <tr><td>列表包在 <code>scroll-view</code> 里</td><td>页面不滚动，触底事件无从谈起</td><td>用页面自身滚动；确需 scroll-view 就监听它自己的 <code>scrolltolower</code></td></tr>
+      <tr><td>下拉刷新忘了 <code>stopPullDownRefresh</code></td><td>顶部转圈永不停止</td><td>刷新 Promise 结束后必收，失败分支也要收</td></tr>
+      <tr><td>把 <code>loading = false</code> 写在成功分支</td><td>一次失败后加载锁死，列表永久瘫痪</td><td>放锁一律写 <code>finally</code></td></tr>
+      <tr><td>解码/拼接游标「看看里面是什么」</td><td>服务端换排序实现后分页错乱</td><td>三条禁令：不解析、不自造、不修改</td></tr>
+      <tr><td>UI 上画「第 N 页 / 共 M 条」</td><td>数据根本不存在，只能造假</td><td>游标分页没有总页数概念，UI 只有「还有 / 没有」两态</td></tr>
+      <tr><td><code>has_more: false</code> 还继续发请求</td><td>反复请求同一空页，浪费且可能报错</td><td>请求前先看 <code>hasMore</code>，入口就拦</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>游标分页信封</td><td><code>{list, next_cursor, has_more}</code>——全站分页列表的唯一返回形状</td></tr>
+      <tr><td><code>next_cursor</code></td><td>下一页门票：服务端 (排序键, id) 的 base64，对客户端不透明，原样带回</td></tr>
+      <tr><td><code>has_more</code></td><td>还有没有下一页；false 时前端必须停止续读</td></tr>
+      <tr><td><code>onPullDownRefresh</code></td><td>uni-app 页面级钩子：下拉刷新触发；需 <code>enablePullDownRefresh: true</code>，完事必须 stop</td></tr>
+      <tr><td><code>onReachBottom</code></td><td>uni-app 页面级钩子：页面滚动触底触发；子组件里写无效</td></tr>
+      <tr><td><code>onReachBottomDistance</code></td><td>距底多少 px 就提前触发触底（默认 50）；配大一点体验更顺</td></tr>
+      <tr><td>加载锁</td><td><code>loading</code> 标志位：请求在途时拦截重复触发；放锁必须在 finally</td></tr>
+      <tr><td>重置 vs 续读</td><td>刷新 = 游标归零清空重填；触底 = 带着门票往后拼——两条路径共用一个 loadPage</td></tr>
+      <tr><td><code>useSWRInfinite</code>（对照）</td><td>React 生态的无限加载方案；getNextPageParam 与 next_cursor 是同一心智模型</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <ul>
+      <li>请求层怎么把外层信封拆掉、401 重放：<b>F2 的两张卡</b>（请求层封装）与 <b>F3 的三张卡</b></li>
+      <li><code>pages.json</code> 页面配置、页面栈：<b>F2 的两张卡</b></li>
+      <li>ref / watch / 页面级状态放哪：<b>F1 第 2、3 张</b></li>
+      <li>信封的服务端侧（游标怎么编码、为什么禁 offset）：<b>S3 阶段</b>的列表接口课；真实财务数据从 <b>S6 的流水域各卡</b>来</li>
+      <li>「period 参数是谁」：<b>F4 第 7 张</b>（时间窗切换器）正面讲；今天只需知道它从 <code>useShellStore</code> 读</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w13f1c1">能默写信封形状，并说清游标三条禁令各自的事故场景</label></li>
+      <li><label><input type="checkbox" data-key="w13f1c2">能讲清刷新/触底两条路径对游标和列表各做什么，以及为什么能共用一个加载函数</label></li>
+      <li><label><input type="checkbox" data-key="w13f1c3">动手改三处已完成：尾部两态提示互斥、空列表不显示「没有更多了」、能说出加载锁防的是什么</label></li>
+      <li><label><input type="checkbox" data-key="w13f1c4">能说出「游标分页没有总页数」在 UI 上的三个具体后果（没有页码、没有总条数、不能跳页）</label></li>
+      <li><label><input type="checkbox" data-key="w13f1c5">定位题的「触底无反应排查链」已写进 <code>notes/f4/</code>，并能口述为什么第一步是加日志证明事件层</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../server/s6/w13d6.html"><span class="hint">← 本周六 · S6·D12</span>流水·附件·账户·分类接口测试全量</a>
+    <a href="../../server/s6/w14d1.html"><span class="hint">下周一 · S6·D13 →</span>私密流水 is_private</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w13f1 · 下周见 ⟩</footer>
+</body>
+</html>

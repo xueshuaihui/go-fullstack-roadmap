@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S8 阶段总览 · 收口与部署 | HomeCube 修炼手册</title>
+<meta name="description" content="S8（w21-w22，12 张日卡）：不新增一条接口，只把前 20 周的东西交付出去——多阶段镜像、nginx 与前端产物、compose 编排、容器内迁移、可信代理与 CORS、CI 升级与四道门禁、干净机器复现与 E2E 冒烟。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body>
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="../../frontend/f6/overview.html">前端辅线 F6 →</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / 服务端主线 / S8</div>
+  <div class="day-meta">
+    <span class="chip">STAGE S8</span>
+    <span class="chip alt">w21-w22 · 12 张日卡</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>S8 · 收口与部署</h1>
+  <p>这两周<b>一条接口都不新增</b>，只做一件事：把前 20 周写完的东西变成<b>别人能跑起来的东西</b>。判据只有一句——<b>在一台干净机器上，照着 README 只敲一条命令，全套服务起到 healthy，冒烟脚本连跑两次都绿</b>。做不到就说明前面某个阶段留了「只有你本机跑得通」的隐性依赖，而那是这门课最贵的一种失败。</p>
+
+  <section>
+    <h2>为什么部署放在最后，而且只给两周</h2>
+    <div class="callout note"><p>部署物提前引入会让「每天可跑」变成「每天等构建」——这也是本阶段独享<b>第六类增量</b>（工程化收口产物）的原因：Dockerfile、compose、nginx 配置、CI workflow、对账与冒烟脚本，这些在 S1-S7 出现一律违规。而两周够用的前提是 S1-S7 一直把仓库保持绿：迁移能 up→down→up、测试带 <code>-race</code>、config 只有一张变量表。<b>S8 是照镜子，不是补课。</b></p></div>
+  </section>
+
+  <section>
+    <h2>伏笔兑现表（本阶段集中还债）</h2>
+    <table>
+      <tr><th>伏笔</th><th>埋在哪</th><th>兑现卡</th></tr>
+      <tr><td><code>SetTrustedProxies</code>（S5 只提一句，Nginx 的 XFF 留到这里）</td><td>S5·D8</td><td><a href="w21d5.html">w21d5</a>：可信代理 + <code>CORS_ORIGIN</code> 收口</td></tr>
+      <tr><td>CI workflow 最小版（build + <code>test -race</code> 两步）</td><td>S5·D12</td><td><a href="w22d1.html">w22d1</a> 升级为全量 + 覆盖率棘轮 + 门禁 + Postgres service</td></tr>
+      <tr><td><code>/healthz</code> 从「进程活着」升级成「依赖就绪」</td><td>S1·D1</td><td><a href="w21d5.html">w21d5</a>：DB 没起来时必须返非 0，而不是绿着</td></tr>
+      <tr><td>优雅关闭三步曲（停收新请求 → 等存量 → 关 DB）</td><td>S5·D9</td><td><a href="w21d3.html">w21d3</a> compose 的 <code>stop_grace_period</code> 与 healthcheck 把它接上</td></tr>
+      <tr><td>两套 schema、两个专属账号、迁移各自独立序列</td><td>S3·D1</td><td><a href="w21d4.html">w21d4</a>：容器内执行迁移，启动前跑还是启动时跑</td></tr>
+      <tr><td>「每张表带 <code>family_id</code>、每条查询带 <code>WHERE family_id</code>」的门禁化</td><td>S4·D10</td><td><a href="w22d1.html">w22d1</a> 四道静态门禁在 CI 上强制</td></tr>
+      <tr><td>「收工时仓库必须绿」升级为「别人也能让它绿」</td><td>S1·D1 的 Makefile</td><td><a href="w21d6.html">w21d6</a> 干净机器复现</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>阶段产物（S8 结束时仓库里必须有的东西）</h2>
+    <table>
+      <tr><th>产物</th><th>说明</th></tr>
+      <tr><td>多阶段 Dockerfile</td><td>构建层与运行层分离；最终镜像只带一个二进制和迁移文件，不带 Go 工具链、不带源码</td></tr>
+      <tr><td>前端产物与 nginx</td><td>静态资源缓存、前端路由回退（history 模式刷新不 404）、<code>/api</code> 反代到后端；一段配置同时管两件事</td></tr>
+      <tr><td><code>docker-compose.yml</code></td><td>四个服务（postgres / server / web / migrate）+ 各自 healthcheck + <code>depends_on: condition: service_healthy</code> + 官方镜像变量与后端变量分两段注释</td></tr>
+      <tr><td>迁移的容器内执行</td><td><code>migrate</code> 服务带 <code>profiles: tools</code>；两套 schema 各跑各的序列，起服前跑完</td></tr>
+      <tr><td>可信代理与 CORS</td><td><code>SetTrustedProxies</code> 从环境变量读；<code>CORS_ORIGIN</code> 收口，不在代码里写死来源</td></tr>
+      <tr><td><code>scripts/smoke.sh</code> + <code>make smoke</code></td><td>注册 → 登录 → 建家庭 → 建账户 → 记一笔 → 查报表，每步断言 <code>code</code>；含三个负例（1005 / 1008 / 1007）；可重复执行不需要人工清库</td></tr>
+      <tr><td>四道门禁 + <code>make gates</code></td><td>静态断言（跨模块 SQL、裸 <code>family_id</code> 判定、游标契约、<code>float</code> 金额路径等）；一秒内跑完，每道都要做过「插探针必红」的破坏演练</td></tr>
+      <tr><td>升级后的 <code>.github/workflows/ci.yml</code></td><td>Postgres 16 service、复用 <code>deploy/</code> 的建 schema 与迁移、<code>-race</code> 全量、覆盖率门槛（棘轮）、门禁，五步齐全</td></tr>
+      <tr><td>README「在一台干净机器上跑起来」一节</td><td>前置、四步、预期输出、至少六行故障排查表；三次破坏演练记进 <code>notes/</code></td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>阶段判据（全过才算 S8 通过，也才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="s8o1">在 <code>/tmp</code> 的干净检出里，<code>cp .env.example .env</code> 之后<b>只敲 <code>make up</code> 一条命令</b>就把全套服务起到 (healthy)，中间没有任何手工补步骤</label></li>
+      <li><label><input type="checkbox" data-key="s8o2"><code>make smoke</code> <b>连跑两次都绿</b>——脚本可重复执行，不需要人工清库</label></li>
+      <li><label><input type="checkbox" data-key="s8o3">四道门禁每道都做过破坏演练：亲眼看到它输出 <code>[FAIL]</code> 且退出码为 1，删掉探针后恢复全绿</label></li>
+      <li><label><input type="checkbox" data-key="s8o4">CI 在 push 后五步全绿（Postgres service、迁移、<code>-race</code> 全量、覆盖率门槛、门禁）；覆盖率门槛是当前真实值向下取整到 5 的倍数，<b>是棘轮不是目标</b></label></li>
+      <li><label><input type="checkbox" data-key="s8o5"><code>/healthz</code> 在数据库被停掉时返非 0 状态——依赖就绪态与进程存活态是两件事，能讲清为什么要分开</label></li>
+      <li><label><input type="checkbox" data-key="s8o6">能<b>不看资料</b>讲清：迁移为什么放在独立的一次性容器里跑，而不是应用启动时自动跑；两种做法各自的风险</label></li>
+      <li><label><input type="checkbox" data-key="s8o7">施工清单上的 <b>72 条接口全部核销</b>，九项终点能力逐条自测并记进 <code>notes/</code>；欠账写清原因与排期，不许静默消失</label></li>
+      <li><label><input type="checkbox" data-key="s8o8">README 的复现一节让<b>另一个人</b>照做跑通（找不到第二个人时，用干净机器 + 只读 README 的自己替代），故障排查表至少六行</label></li>
+    </ul>
+    <div class="callout warn"><p><b>不通过就原地重做，不跳阶段。</b>S8 的每一项判据都是「别人能不能复现」的形状。代码写完不等于交付完成——历史反例里最贵的一类不是接口写错，而是「作者机器上能跑」。</p></div>
+  </section>
+
+  <section>
+    <h2>12 张日卡</h2>
+    <table>
+      <tr><th>卡</th><th>知识点</th><th>当天增量</th></tr>
+      <tr><td><a href="w21d1.html">w21d1</a></td><td>多阶段 Dockerfile：从二进制到一个能跑的镜像</td><td>⑥ 工程化收口产物：Dockerfile + <code>.dockerignore</code></td></tr>
+      <tr><td><a href="w21d2.html">w21d2</a></td><td>前端构建产物与 nginx：静态资源、前端路由与反向代理</td><td>⑥ nginx 配置 + 前端镜像层</td></tr>
+      <tr><td><a href="w21d3.html">w21d3</a></td><td>docker-compose 编排：四个服务、健康检查与两段变量</td><td>⑥ <code>docker-compose.yml</code> + <code>.env.example</code></td></tr>
+      <tr><td><a href="w21d4.html">w21d4</a></td><td>容器内执行迁移：两套 schema、启动前跑还是启动时跑</td><td>⑥ migrate 服务 + <code>deploy/</code> 里的建 schema 脚本</td></tr>
+      <tr><td><a href="w21d5.html">w21d5</a></td><td>兑现两条伏笔：可信代理、跨域收口与 <code>/healthz</code> 的依赖就绪态</td><td>②+⑤ handler 改造 + 配置读取收口</td></tr>
+      <tr><td><a href="w21d6.html">w21d6</a></td><td><b>周六</b> · 干净机器复现与 E2E 冒烟</td><td>⑥ <code>scripts/smoke.sh</code> + <code>make up</code> / <code>make smoke</code> + README 复现一节</td></tr>
+      <tr><td><a href="w22d1.html">w22d1</a></td><td>CI 升级：<code>-race</code> 全量、覆盖率棘轮与四道门禁</td><td>⑥ 升级 <code>ci.yml</code> + 四个门禁脚本 + <code>make gates</code> / <code>make cover-check</code></td></tr>
+      <tr><td><span class="todo">w22d2 · 待生成</span></td><td>密钥与环境分离：哪些进仓、哪些永不进仓</td><td>⑥ <code>.env</code> 三段划分 + 密钥注入路径与检查脚本</td></tr>
+      <tr><td><span class="todo">w22d3 · 待生成</span></td><td>备份与恢复演练：一次 <code>pg_dump</code> 和它的验证</td><td>⑥ 备份脚本 + 「删库→恢复→冒烟绿」演练记录</td></tr>
+      <tr><td><span class="todo">w22d4 · 待生成</span></td><td>故障演练：三个必须亲手撞过的坑</td><td>⑥ 三次破坏演练（DB 起不来 / 迁移没跑 / 密钥不一致）写进 README 排查表</td></tr>
+      <tr><td><span class="todo">w22d5 · 待生成</span></td><td>全量回归：软删回收站、导出对账与可见性矩阵在真环境跑一遍</td><td>③ 端到端回归用例补齐 + 与 S6 判据对账</td></tr>
+      <tr><td><span class="todo">w22d6 · 待生成</span></td><td><b>周六</b> · 毕业：72 条接口核销与九项终点能力自测</td><td>③+⑥ 全课程收口：判据逐条勾、CI 绿、README 交给第二个人</td></tr>
+    </table>
+    <p>两周的周日卡（<a href="../../frontend/f6/w21f1.html">w21f1</a>、<a href="../../frontend/f6/w22f1.html">w22f1</a>）属 F6「调试与定位」，与本阶段并行、互不挪用时间。</p>
+  </section>
+
+  <section>
+    <h2>本阶段不做什么（明确划掉，免得手滑）</h2>
+    <ul>
+      <li><b>不新增一条业务接口</b>——72 条的分母在 S7 结束时就锁死了</li>
+      <li>不上 Kubernetes、不做 Helm chart、不搞多机编排；单机 compose 是本阶段的全部拓扑</li>
+      <li>不做监控告警平台、不做链路追踪。<code>request_id</code> 串起日志就到此为止</li>
+      <li>不做蓝绿/灰度发布——<b>回退能力靠镜像 tag 和 <code>up→down→up</code> 可重放的迁移</b>，不靠编排系统</li>
+      <li>不引入 Redis、消息队列、事件总线（课程范围外，只作前瞻句）</li>
+      <li>不追覆盖率数字。门槛是棘轮：只防倒退，不冲指标</li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../index.html"><span class="hint">← 回到</span>22 周路线总览</a>
+    <a href="w21d1.html"><span class="hint">开始 →</span>w21d1 · 多阶段 Dockerfile</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · S8 阶段总览 ⟩</footer>
+</body>
+</html>

@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S7·D9 · 未读口径唯一：三个出口同值的第一个出口 | HomeCube 修炼手册</title>
+<meta name="description" content="建 homeos_notification 表与通知分型枚举，未读数只有一份实现：read_at IS NULL 按 member_id 聚合；summary.unread 是三个出口同值的第一个出口。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w18d3">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S7</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S7</a> / w18d3</div>
+  <div class="day-meta">
+    <span class="chip">S7 · DAY 9</span>
+    <span class="chip alt">预计 25 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>未读口径唯一：三个出口同值的第一个出口</h1>
+  <p>底栏角标那个小红点，是全站最容易被做出三个不同数字的地方。未读数会有<b>三个出口</b>：首页 summary 的 <code>unread</code>、通知列表接口的响应、标记已读接口的响应（后两个属本阶段后半的通知域）。今天把「唯一口径」立死：<b><code>read_at IS NULL</code>，按 member_id 聚合，只有一份函数实现</b>——并把第一个出口（summary.unread）接上真数据。通知表与分型枚举也今天落库：表先行、接口后半，读的一侧从今天起就是真的。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w18d3g1">讲清未读口径为什么按 member_id 而不是 user_id</label></li>
+      <li><label><input type="checkbox" data-key="w18d3g2"><code>homeos_notification</code> 迁移落盘（含未读部分索引），分型枚举 budget_alert / system / reminder 落成常量</label></li>
+      <li><label><input type="checkbox" data-key="w18d3g3"><code>UnreadCount</code> 唯一实现落进 notify 包，summary.unread 换真</label></li>
+      <li><label><input type="checkbox" data-key="w18d3g4">测试钉住口径：已读的不算、别人的不算、别家庭的不算；summary 与直调函数同值</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 一个口径，三个出口</h3>
+    <pre><span class="code-label">结构</span><code>                        ┌─ 出口①  GET /api/homeos/home/summary → unread.count   （今天接真）
+UnreadCount(family, member) ─┼─ 出口②  通知列表接口 → 响应带 unread                （本阶段后半）
+                        └─ 出口③  标记已读接口 → 响应带同一份 unread          （本阶段后半）</code></pre>
+    <p>「三个出口同值」不是巧合要求，是<b>实现要求</b>：三个 handler 都只准调 <code>notify.UnreadCount</code> 这一个函数。谁在自己包里再写一遍 <code>COUNT(*) … read_at IS NULL</code>，谁就是未来的不一致源头——比如某处手滑加了 <code>AND type != 'system'</code>，于是角标和列表页永远差一个数，用户以为 app 有鬼。</p>
+    <p>为什么标已读的响应也要带 unread？因为客户端标完已读要立刻刷新角标。响应自带新值 = 少一个请求，且这个数字与刚完成的写操作在<b>同一连接、同一时刻</b>算出，不存在「标完已读角标还亮着」的时序缝隙。这是聚合思维在写接口上的应用。</p>
+
+    <h3>2. 为什么按 member_id 聚合</h3>
+    <ul>
+      <li><b>一个账号可以属于多个家庭</b>（切换家庭 = 换 token，S4 口径）。未读是「这个家庭里给我看的」，跟着会话家庭走：token 里的 familyID + memberID 就是聚合键。</li>
+      <li><b>无账号成员没有未读</b>：ward 可以没有账号，通知发给了「成员」，但没有登录态就没有角标——这是产品事实，不是缺陷。</li>
+      <li>按 user_id 聚合会把两个家庭的未读加在一起，切换家庭后角标数字对不上眼前这个家，直接违反「当前会话家庭」的世界观。</li>
+    </ul>
+
+    <h3>3. 表设计与分型</h3>
+    <p><code>homeos_notification</code> 每行是「发给某个成员的一条通知」。分型三个，落成 Go 常量（写死枚举，不用自由字符串）：</p>
+    <table>
+      <tr><th>type</th><th>来源举例</th><th>备注</th></tr>
+      <tr><td><code>budget_alert</code></td><td>预算告警（财务面的阈值触发，经 platform 接口写入）</td><td>跨面写入照跨模块纪律走接口，不直查表</td></tr>
+      <tr><td><code>system</code></td><td>成员变更、邀请结果、面配置变更提示</td><td></td></tr>
+      <tr><td><code>reminder</code></td><td>到期中心的提醒到点</td><td>生产者是本阶段后半的到期中心</td></tr>
+    </table>
+    <p>未读查询的索引按查询长：部分索引 <code>WHERE read_at IS NULL</code>，只索引未读行——已读行再多，索引不膨胀。这是「索引跟着谓词走」的第一次实战。</p>
+    <div class="callout note"><p>今天只建表 + 枚举 + 读侧（UnreadCount）。通知的列表接口、标已读接口、推送设备注册都属本阶段后半的通知域，今天<b>一个都不写</b>。写入侧同样后置：测试用直接插行造数。</p></div>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>④ + ① + ⑤</b>：迁移 up/down、分型枚举与 model、summary.unread 从占位换真。</p>
+
+    <h3>步骤 1 · 迁移（编号以你的 homeos 序列下一个空号为准，接 S7·D2 的示例是 0011）</h3>
+    <pre><span class="code-label">完整 · server/migrations/homeos/homeos_0011_init_notification.up.sql</span><code>CREATE TABLE homeos_notification (
+    id          BIGSERIAL PRIMARY KEY,
+    family_id   BIGINT NOT NULL,
+    member_id   BIGINT NOT NULL,          -- 未读聚合键：发给哪个成员
+    type        TEXT NOT NULL,            -- budget_alert | system | reminder（应用层枚举把关）
+    title       TEXT NOT NULL,
+    body        TEXT NOT NULL DEFAULT '',
+    read_at     TIMESTAMPTZ NULL,         -- NULL = 未读，全站唯一判据
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at  TIMESTAMPTZ NULL,
+    deleted_by  BIGINT NULL,
+    version     INT NOT NULL DEFAULT 1
+);
+
+-- 未读查询专用部分索引：只索引未读行
+CREATE INDEX idx_notification_unread
+    ON homeos_notification (family_id, member_id)
+    WHERE read_at IS NULL;</code></pre>
+    <pre><span class="code-label">完整 · server/migrations/homeos/homeos_0011_init_notification.down.sql</span><code>DROP TABLE IF EXISTS homeos_notification;</code></pre>
+
+    <h3>步骤 2 · 枚举、model 与唯一口径函数</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/notify/model.go</span><code><span class="k">package</span> notify
+
+<span class="k">import</span> <span class="s">"time"</span>
+
+<span class="c">// 通知分型：写死枚举，入库前校验，不接受自由字符串。</span>
+<span class="k">const</span> (
+    TypeBudgetAlert = <span class="s">"budget_alert"</span>
+    TypeSystem      = <span class="s">"system"</span>
+    TypeReminder    = <span class="s">"reminder"</span>
+)
+
+<span class="k">func</span> <span class="t">ValidType</span>(t <span class="t">string</span>) <span class="t">bool</span> {
+    <span class="k">switch</span> t {
+    <span class="k">case</span> TypeBudgetAlert, TypeSystem, TypeReminder:
+        <span class="k">return</span> <span class="k">true</span>
+    }
+    <span class="k">return</span> <span class="k">false</span>
+}
+
+<span class="k">type</span> <span class="t">Notification</span> <span class="k">struct</span> {
+    ID        <span class="t">int64</span>      <span class="s">`gorm:"primaryKey"`</span>
+    FamilyID  <span class="t">int64</span>      <span class="s">`gorm:"not null"`</span>
+    MemberID  <span class="t">int64</span>      <span class="s">`gorm:"not null"`</span>
+    Type      <span class="t">string</span>     <span class="s">`gorm:"not null"`</span>
+    Title     <span class="t">string</span>     <span class="s">`gorm:"not null"`</span>
+    Body      <span class="t">string</span>     <span class="s">`gorm:"not null;default:''"`</span>
+    ReadAt    *time.<span class="t">Time</span> <span class="c">// NULL = 未读</span>
+    CreatedAt time.<span class="t">Time</span>
+    UpdatedAt time.<span class="t">Time</span>
+    DeletedAt *time.<span class="t">Time</span>
+    DeletedBy *<span class="t">int64</span>
+    Version   <span class="t">int</span>        <span class="s">`gorm:"not null;default:1"`</span>
+}
+
+<span class="k">func</span> (Notification) <span class="t">TableName</span>() <span class="t">string</span> { <span class="k">return</span> <span class="s">"homeos_notification"</span> }</code></pre>
+    <pre><span class="code-label">完整 · server/internal/homeos/notify/unread.go</span><code><span class="k">package</span> notify
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+
+    <span class="s">"gorm.io/gorm"</span>
+)
+
+<span class="c">// UnreadCount 是全站未读数的唯一实现。</span>
+<span class="c">// 口径：read_at IS NULL，按 (family_id, member_id) 聚合。</span>
+<span class="c">// 三个出口（summary.unread、通知列表、标记已读响应）都只准调本函数，</span>
+<span class="c">// 任何地方不得复制这段查询——复制即口径分叉的开始。</span>
+<span class="k">func</span> <span class="t">UnreadCount</span>(ctx context.<span class="t">Context</span>, db *gorm.<span class="t">DB</span>, familyID, memberID <span class="t">int64</span>) (<span class="t">int64</span>, <span class="t">error</span>) {
+    <span class="k">var</span> n <span class="t">int64</span>
+    err := db.<span class="t">WithContext</span>(ctx).
+        <span class="t">Model</span>(&amp;<span class="t">Notification</span>{}).
+        <span class="t">Where</span>(<span class="s">"family_id = ? AND member_id = ? AND read_at IS NULL"</span>, familyID, memberID).
+        <span class="t">Count</span>(&amp;n).Error
+    <span class="k">return</span> n, err
+}</code></pre>
+
+    <h3>步骤 3 · summary.unread 换真（出口①）</h3>
+    <pre><span class="code-label">片段 · server/internal/homeos/home/handler.go：删掉 D9 的占位块</span><code><span class="c">// 未读数：出口①，调 notify.UnreadCount 唯一实现</span>
+unread, err := notify.<span class="t">UnreadCount</span>(c.<span class="t">Request</span>.<span class="t">Context</span>(), deps.DB,
+    familyID, c.<span class="t">GetInt64</span>(<span class="s">"memberID"</span>))
+<span class="k">if</span> err != <span class="k">nil</span> {
+    response.<span class="t">FailErr</span>(c, err)
+    <span class="k">return</span>
+}
+data[<span class="s">"unread"</span>] = gin.<span class="t">H</span>{<span class="s">"count"</span>: unread}</code></pre>
+
+    <h3>步骤 4 · 口径测试</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/notify/unread_test.go</span><code><span class="k">package</span> notify
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"testing"</span>
+    <span class="s">"time"</span>
+
+    <span class="s">"homecube/internal/platform/testdb"</span>
+)
+
+<span class="k">func</span> <span class="t">TestUnreadCountScope</span>(t *testing.<span class="t">T</span>) {
+    db := testdb.<span class="t">Open</span>(t)
+    ctx := context.<span class="t">Background</span>()
+    <span class="k">const</span> fam, me, other = <span class="t">int64</span>(<span class="n">9001</span>), <span class="t">int64</span>(<span class="n">11</span>), <span class="t">int64</span>(<span class="n">12</span>)
+    now := time.<span class="t">Now</span>()
+
+    <span class="c">// 固定 id 造数 → 必须清场，否则重跑测试计数会翻倍</span>
+    t.<span class="t">Cleanup</span>(<span class="k">func</span>() {
+        db.<span class="t">Unscoped</span>().<span class="t">Where</span>(<span class="s">"family_id IN ?"</span>, []<span class="t">int64</span>{fam, fam + <span class="n">1</span>}).<span class="t">Delete</span>(&amp;<span class="t">Notification</span>{})
+    })
+
+    seed := []<span class="t">Notification</span>{
+        {FamilyID: fam, MemberID: me, Type: TypeSystem, Title: <span class="s">"未读1"</span>},
+        {FamilyID: fam, MemberID: me, Type: TypeReminder, Title: <span class="s">"未读2"</span>},
+        {FamilyID: fam, MemberID: me, Type: TypeBudgetAlert, Title: <span class="s">"已读"</span>, ReadAt: &amp;now}, <span class="c">// 已读：不算</span>
+        {FamilyID: fam, MemberID: other, Type: TypeSystem, Title: <span class="s">"别人的"</span>},              <span class="c">// 别人的：不算</span>
+        {FamilyID: fam + <span class="n">1</span>, MemberID: me, Type: TypeSystem, Title: <span class="s">"别家庭的"</span>},           <span class="c">// 别家庭：不算</span>
+    }
+    <span class="k">for</span> i := <span class="k">range</span> seed {
+        <span class="k">if</span> err := db.<span class="t">Create</span>(&amp;seed[i]).Error; err != <span class="k">nil</span> {
+            t.<span class="t">Fatal</span>(err)
+        }
+    }
+
+    n, err := <span class="t">UnreadCount</span>(ctx, db, fam, me)
+    <span class="k">if</span> err != <span class="k">nil</span> || n != <span class="n">2</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"UnreadCount = %d, err = %v, want 2"</span>, n, err)
+    }
+}
+
+<span class="k">func</span> <span class="t">TestValidType</span>(t *testing.<span class="t">T</span>) {
+    <span class="k">for</span> _, ok := <span class="k">range</span> []<span class="t">string</span>{TypeBudgetAlert, TypeSystem, TypeReminder} {
+        <span class="k">if</span> !<span class="t">ValidType</span>(ok) {
+            t.<span class="t">Fatalf</span>(<span class="s">"%s 应合法"</span>, ok)
+        }
+    }
+    <span class="k">if</span> <span class="t">ValidType</span>(<span class="s">"promo"</span>) {
+        t.<span class="t">Fatal</span>(<span class="s">"枚举外的分型应拒绝"</span>)
+    }
+}</code></pre>
+    <p>再加一条集成断言把出口①钉住：seed 后打 summary（用 S7·D7 的身份注入法），断言 <code>data.unread.count</code> 与 <code>UnreadCount</code> 直调结果相等——「三个出口同值」从第一个出口起就是测试保障，不是口头承诺。</p>
+
+    <h3>步骤 5 · 验收 + 提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test
+make lint
+
+git add server/migrations server/internal
+git status
+git commit -m "feat(s7d9): homeos_notification 表 + 分型枚举，未读唯一口径 UnreadCount 接入 summary"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>在 summary 里手写第二份 COUNT</td><td>今天一样，改一处忘另一处，角标与列表差数</td><td>只调 <code>notify.UnreadCount</code>；grep 全仓 <code>read_at IS NULL</code> 只许出现一次</td></tr>
+      <tr><td>按 user_id 聚合</td><td>多家庭账号切换家庭后角标串数</td><td>聚合键 (family_id, member_id)，跟会话走</td></tr>
+      <tr><td>用 <code>is_read</code> 布尔列</td><td>丢了「何时读的」，且布尔默认值与 NULL 语义纠缠</td><td><code>read_at NULL</code> 一列两用：判未读 + 留时间</td></tr>
+      <tr><td>type 用自由字符串</td><td>写侧手滑 <code>"budget-alert"</code>（连字符），读侧过滤全漏</td><td>枚举常量 + ValidType 入库把关</td></tr>
+      <tr><td>全表索引 (family_id, member_id, read_at)</td><td>已读行占索引大头，越用越肥</td><td>部分索引 <code>WHERE read_at IS NULL</code>，与查询谓词同形</td></tr>
+      <tr><td>标已读的响应不带新 unread</td><td>客户端标完还得再拉一次 summary 刷角标，首屏一个请求的纪律被写路径破掉</td><td>出口③响应带同一份 unread（后半实现时照此契约）</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>唯一口径</td><td>一个业务数字只有一份计算实现，所有出口调它</td></tr>
+      <tr><td>三个出口</td><td>summary.unread、通知列表响应、标已读响应；同函数故同值</td></tr>
+      <tr><td><code>read_at IS NULL</code></td><td>未读的唯一判据；一列两用（状态 + 时间）</td></tr>
+      <tr><td>member_id 聚合</td><td>未读跟「当前会话家庭的成员」走，不跟账号走</td></tr>
+      <tr><td>通知分型</td><td>budget_alert / system / reminder 三个枚举值，入库校验</td></tr>
+      <tr><td>部分索引</td><td>带 WHERE 的索引，只索引满足谓词的行；索引跟着查询长</td></tr>
+      <tr><td>表先行、接口后置</td><td>读侧今天真实现，写侧与其余接口按排期后半落——假数据不留到收口</td></tr>
+      <tr><td>写响应带读数据</td><td>标已读的响应自带新 unread，省一个请求、消一个时序缝隙</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <ul>
+      <li><b>部分索引与索引设计</b>：S3 的迁移与索引那几天。</li>
+      <li><b>member 与 user 的关系、会话家庭</b>：S4 的家庭与成员模型、Claims 三件套（uid/mid/fam）。</li>
+      <li><b>summary 的依赖注入与测试身份注入</b>：S7·D7、S7·D8。</li>
+      <li><b>枚举常量而不是字符串字面量</b>：S1·D4 的错误码常量全表，同一思想。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w18d3c1">迁移 up/down 落盘并执行：表 + 未读部分索引；down 能回滚</label></li>
+      <li><label><input type="checkbox" data-key="w18d3c2">分型三常量 + ValidType 落盘；<code>UnreadCount</code> 是全站唯一实现（grep <code>read_at IS NULL</code> 只有 unread.go 一处）</label></li>
+      <li><label><input type="checkbox" data-key="w18d3c3">summary.unread 换真，D9 占位注释已删；口径测试绿：已读/别人/别家庭都不算</label></li>
+      <li><label><input type="checkbox" data-key="w18d3c4"><code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，commit 带卡号 <code>s7d9</code></label></li>
+      <li><label><input type="checkbox" data-key="w18d3c5">能不看资料讲清：为什么按 member_id 不按 user_id、三个出口同值靠什么保证、标已读响应为什么带 unread</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w18d2.html"><span class="hint">← 昨天 · S7·D8</span>首屏只有一个业务请求</a>
+    <a href="w18d4.html"><span class="hint">明天 · S7·D10 →</span>动态流接口：按天分组、按面筛选、游标分页</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w18d3 · 明天见 ⟩</footer>
+</body>
+</html>

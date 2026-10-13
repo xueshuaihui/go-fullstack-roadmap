@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S7·D6 · 周六 · 停用面的三条语义与最后一面保护 | HomeCube 修炼手册</title>
+<meta name="description" content="周六大增量：把本周的面目录、启用配置、四层合成、分包清单串成一条完整能力；落地停用面的三条语义（入口消失、数据保留、仍参与统计）与停用最后一个面的拒绝（1010）。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w17d6">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S7</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S7</a> / w17d6</div>
+  <div class="day-meta">
+    <span class="chip">S7 · DAY 6</span>
+    <span class="chip alt">预计 4 小时</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>周六 · 停用面的三条语义与最后一面保护</h1>
+  <p>本周把 D1-D5 串成一条完整能力：面目录（D1）→ 家庭启用配置与乐观锁（D2）→ 四层合成清单（D3）→ 分包清单（D4）→ 契约测试（D5）。今天补上「停用」这个动作的完整语义——它比想象中讲究：<b>入口消失、数据保留、仍参与统计</b>，三条缺一不可；再加一道保护：<b>停用最后一个面会被拒绝（409 + 1010）</b>。最后整链验收，本周能力收口。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w17d6g1">讲清停用面的三条语义各自防的是什么事故</label></li>
+      <li><label><input type="checkbox" data-key="w17d6g2">service 补上最后一面保护：停用后家庭将没有任何已启用业务面 → 409 + 1010</label></li>
+      <li><label><input type="checkbox" data-key="w17d6g3">三条语义各有一个测试钉住（入口消失 / 数据保留 / 仍参与统计）</label></li>
+      <li><label><input type="checkbox" data-key="w17d6g4">curl 整链跑通：登录 → 面清单 → 预约开通 purchase → 停用 finance → 清单复查 → 重新启用；<code>make build</code> / <code>make test</code> 绿</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 停用不是删除：三条语义</h3>
+    <table>
+      <tr><th>语义</th><th>内容</th><th>防的事故</th></tr>
+      <tr><td>① 入口消失</td><td>面清单里该项 <code>enabled=false</code>，首页矩阵不再渲染这个面；分包不再被请求（下周 S7·D11 再给服务端路由层加一道 403 门禁）</td><td>用户还能点进一个家庭已决定不用的面</td></tr>
+      <tr><td>② 数据保留</td><td>停用<b>不写任何 DELETE、不碰软删列</b>：finance 的账户、流水、预算一行不动；重新启用后历史数据原样都在</td><td>「只是想清净一下」被实现成「数据没了」——不可逆事故</td></tr>
+      <tr><td>③ 仍参与统计</td><td>跨面聚合口径只按 <code>family_id</code> 过滤，<b>不看面的启用状态</b>：家庭的年度回顾、动态流里 finance 来源的条目、到期项，停用后照常计入</td><td>统计数字随开关跳变，同一家庭两份「历史」</td></tr>
+    </table>
+    <p>三条合起来一句话：<b>停用是收纳，不是销毁</b>。它改变的只有「壳怎么表达这个面」，不改变「这个面曾经发生过什么」。</p>
+    <div class="callout note"><p>③ 的实现纪律：统计与聚合查询里<b>永远不出现</b> <code>homeos_family_module</code> 这个表名。一旦某个报表「贴心地」按启用状态过滤，重新启用后历史曲线就会断一段——而且这种 bug 只在「停用又启用」之后出现，测试极难抓。今天的测试直接钉住：停用前后，聚合结果一个数都不许变。</p></div>
+
+    <h3>2. 最后一面保护：1010</h3>
+    <p>家庭创建时就强制选面，不允许存在 0 面家庭——这个不变量要靠「停用」这条唯一的写路径守住：<b>当目标面是最后一个已启用的业务面时，停用被拒，409 + 1010</b>（业务状态不允许）。</p>
+    <ul>
+      <li>计数口径：<b>除 homeos 基座外</b>的已启用面。基座恒启用、不可配置（D2 已拒绝），把 homeos 算进计数的话「最后一个面」永远轮不到，保护形同虚设。</li>
+      <li>未出生但被「预约开通」的面<b>计入</b>：它代表家庭的选择，不能让用户掉进「只剩一个没出生的面」的空壳状态。</li>
+      <li>当下的直接推论：家里只开了 finance 时，停用 finance 必被拒。想停 finance，先开通任何一个别的面——这正是今天 curl 整链的剧本。</li>
+    </ul>
+    <p>错误码回顾（S1·D4 的码表）：1010 一族都是「业务状态不允许」——余额非 0 归档、删除有流水的分类、唯一 owner 未转让即移除，今天加上停用最后一个面。它们共同点：请求本身合法、权限也够，是<b>世界状态</b>说不行。</p>
+
+    <h3>3. 本周能力全景（费曼预演用）</h3>
+    <pre><span class="code-label">结构</span><code>registry（代码，D1）──┐
+homeos_family_module（表，D2）──┤
+                      ├──▶ Compose 四层合成（D3，唯一实现）──▶ GET family/modules
+registry.Born ────────┤                                        └─▶ 契约测试（D5）
+authz.ModuleVisible ──┘
+bundle 目录（代码，D4）──▶ GET app/bundles（born ∧ 非 homeos 才有五元组）
+PUT family/modules（D2）：epoch 乐观锁 + 审计只落库 + pver+1 + 今天的最后一面保护</code></pre>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>周六属「把本周 5 个微增量串成一条完整能力」。今天的具体动作：① service 补保护分支；② 三条语义 + 保护的测试；③ curl 整链验收。</p>
+
+    <h3>步骤 1 · UpdateEnabled 补最后一面保护</h3>
+    <pre><span class="code-label">片段 · 加在 server/internal/homeos/faces/service.go 的事务内、epoch 比对之前</span><code><span class="c">// ErrLastEnabledModule：停用最后一个已启用业务面（409 + 1010）。</span>
+<span class="k">var</span> ErrLastEnabledModule = errors.<span class="t">New</span>(<span class="s">"至少保留一个已启用的面"</span>)
+
+<span class="c">// 事务内：仅当动作是「停用」时检查</span>
+<span class="k">if</span> row.Enabled &amp;&amp; !enabled {
+    <span class="k">var</span> n <span class="t">int64</span>
+    <span class="k">if</span> err := tx.<span class="t">Model</span>(&amp;model.<span class="t">FamilyModule</span>{}).
+        <span class="t">Where</span>(<span class="s">"family_id = ? AND enabled = true AND code &lt;&gt; 'homeos'"</span>, familyID).
+        <span class="t">Count</span>(&amp;n).Error; err != <span class="k">nil</span> {
+        <span class="k">return</span> err
+    }
+    <span class="k">if</span> n &lt;= <span class="n">1</span> { <span class="c">// 只剩目标自己</span>
+        <span class="k">return</span> ErrLastEnabledModule
+    }
+}</code></pre>
+    <p>handler 的错误分支表（D2 的 switch）加一行：<code>errors.Is(err, ErrLastEnabledModule)</code> → <code>response.Fail(c, http.StatusConflict, response.CodeStateNotAllowed, err.Error())</code>。</p>
+    <div class="callout warn"><p>保护检查必须在<b>同一个事务、FOR UPDATE 锁行之后</b>做：两个管理员同时停用最后两个面，锁外计数会让两个请求都以为「还剩两个」，双双通过，家庭归零。</p></div>
+
+    <h3>步骤 2 · 三条语义的测试</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/faces/disable_test.go</span><code><span class="k">package</span> faces
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"errors"</span>
+    <span class="s">"testing"</span>
+
+    <span class="s">"gorm.io/gorm"</span>
+
+    <span class="s">"homecube/internal/homeos/model"</span>
+    <span class="s">"homecube/internal/platform/testdb"</span>
+)
+
+<span class="k">func</span> <span class="t">TestDisableSemantics</span>(t *testing.<span class="t">T</span>) {
+    db := testdb.<span class="t">Open</span>(t)
+    famID, memID := <span class="t">seedFamily</span>(t, db)
+    ctx := context.<span class="t">Background</span>()
+
+    <span class="c">// 前置：只开了 finance 时，停用被拒（最后一面保护）</span>
+    _, err := <span class="t">UpdateEnabled</span>(ctx, db, famID, memID, <span class="s">"finance"</span>, <span class="k">false</span>, <span class="n">1</span>)
+    <span class="k">if</span> !errors.<span class="t">Is</span>(err, ErrLastEnabledModule) {
+        t.<span class="t">Fatalf</span>(<span class="s">"停用最后一个面应 1010: err=%v"</span>, err)
+    }
+
+    <span class="c">// 预约开通 purchase（未出生面 enabled=true），凑出第二个已启用业务面</span>
+    <span class="k">if</span> _, err := <span class="t">UpdateEnabled</span>(ctx, db, famID, memID, <span class="s">"purchase"</span>, <span class="k">true</span>, <span class="n">1</span>); err != <span class="k">nil</span> {
+        t.<span class="t">Fatal</span>(err)
+    }
+
+    <span class="c">// 语义②③的前置事实：给 finance 塞两行流水（测试专用直插，生产代码禁止跨 schema）</span>
+    db.<span class="t">Exec</span>(<span class="s">"INSERT INTO finance_transaction (family_id, amount_cents, created_at, updated_at, version) VALUES (?, 1200, now(), now(), 1), (?, 3400, now(), now(), 1)"</span>,
+        famID, famID)
+    sumBefore := <span class="t">sumTxnCents</span>(t, db, famID)
+
+    <span class="c">// 停用 finance：现在应该成功。注意 epoch：前面两次尝试一次被 1010 拒、</span>
+    <span class="c">// 一次动的是 purchase 行，finance 行仍是 seed 时的 version=1（失败不跳号，D2 的幂等口径）</span>
+    <span class="k">if</span> _, err := <span class="t">UpdateEnabled</span>(ctx, db, famID, memID, <span class="s">"finance"</span>, <span class="k">false</span>, <span class="n">1</span>); err != <span class="k">nil</span> {
+        t.<span class="t">Fatal</span>(err)
+    }
+
+    <span class="c">// 语义①入口消失：owner 视角清单里 finance.enabled=false，渲染谓词为假</span>
+    items, err := <span class="t">Compose</span>(ctx, db, famID, model.RoleOwner)
+    <span class="k">if</span> err != <span class="k">nil</span> {
+        t.<span class="t">Fatal</span>(err)
+    }
+    <span class="k">for</span> _, it := <span class="k">range</span> items {
+        <span class="k">if</span> it.Code == <span class="s">"finance"</span> &amp;&amp; (it.Enabled || it.<span class="t">ShouldRender</span>()) {
+            t.<span class="t">Fatalf</span>(<span class="s">"停用后 finance 仍在渲染集合: %+v"</span>, it)
+        }
+    }
+
+    <span class="c">// 语义②数据保留：流水一行没少、没被软删</span>
+    <span class="k">var</span> n <span class="t">int64</span>
+    db.<span class="t">Table</span>(<span class="s">"finance_transaction"</span>).
+        <span class="t">Where</span>(<span class="s">"family_id = ? AND deleted_at IS NULL"</span>, famID).<span class="t">Count</span>(&amp;n)
+    <span class="k">if</span> n != <span class="n">2</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"停用后流水 = %d 行, want 2"</span>, n)
+    }
+
+    <span class="c">// 语义③仍参与统计：聚合只按 family_id，停用前后一个数不许变</span>
+    <span class="k">if</span> after := <span class="t">sumTxnCents</span>(t, db, famID); after != sumBefore {
+        t.<span class="t">Fatalf</span>(<span class="s">"统计口径变了: before=%d after=%d"</span>, sumBefore, after)
+    }
+}
+
+<span class="c">// sumTxnCents 是「仍参与统计」的最小口径：聚合查询里没有 enabled 这个词。</span>
+<span class="c">// 正式项目里这里调 finance 模块的统计入口（进程内函数调用）；口径等价。</span>
+<span class="k">func</span> <span class="t">sumTxnCents</span>(t *testing.<span class="t">T</span>, db *gorm.<span class="t">DB</span>, familyID <span class="t">int64</span>) <span class="t">int64</span> {
+    t.<span class="t">Helper</span>()
+    <span class="k">var</span> sum <span class="t">int64</span>
+    db.<span class="t">Table</span>(<span class="s">"finance_transaction"</span>).
+        <span class="t">Where</span>(<span class="s">"family_id = ? AND deleted_at IS NULL"</span>, familyID).
+        <span class="t">Select</span>(<span class="s">"COALESCE(SUM(amount_cents), 0)"</span>).<span class="t">Scan</span>(&amp;sum)
+    <span class="k">return</span> sum
+}</code></pre>
+    <p>两处诚实声明：① 测试直插 finance 表、直查 finance 表，是<b>测试专用</b>——生产代码的跨模块纪律（finance 不查 homeos_*，反之亦然，跨模块走 platform 接口）不因测试松动；② <code>sumTxnCents</code> 的列名以你 S6 落盘的 <code>finance_transaction</code> 为准，测试要表达的本质只有一句：<b>聚合 SQL 里不出现启用状态</b>。测试里的 version 数字假设 seed 出来的配置行都是初始值 1（被拒的写不跳号）——以你的 <code>seedFamily</code> 实际写入为准，对不上时看 1009 响应的双版本 payload 对账。</p>
+
+    <h3>步骤 3 · curl 整链验收</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build &amp;&amp; make test &amp;&amp; make lint
+make run    <span class="c"># 终端 1</span>
+
+<span class="c"># 终端 2：登录拿 token（S4 的接口；PHONE/PASS 用你库里的 owner）</span>
+TOKEN=$(curl -s -X POST http://localhost:8080/api/homeos/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"phone":"$PHONE","password":"$PASS"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["access_token"])')
+
+<span class="c"># ① 面清单：7 项，finance enabled=true（记下它的 version，下面用 $V）</span>
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/homeos/family/modules
+
+<span class="c"># ② 直接停 finance → 应 409，code 1010（最后一面保护）</span>
+curl -s -X PUT http://localhost:8080/api/homeos/family/modules \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"code":"finance","enabled":false,"version":'$V'}'
+
+<span class="c"># ③ 预约开通 purchase（version 用清单里 purchase 的），再停 finance → 应成功</span>
+curl -s -X PUT http://localhost:8080/api/homeos/family/modules \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"code":"purchase","enabled":true,"version":1}'
+curl -s -X PUT http://localhost:8080/api/homeos/family/modules \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"code":"finance","enabled":false,"version":'$V'}'
+
+<span class="c"># ④ 清单复查：finance enabled=false 但 born/availability 不变；分包清单 purchase 仍 not_born</span>
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/homeos/family/modules
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:8080/api/homeos/app/bundles"
+
+<span class="c"># ⑤ 重新启用 finance（version 用 ③ 停用后返回的新值）→ 数据与 version 链完好</span>
+git add server
+git status
+git commit -m "feat(s7d6): 停用面三语义 + 最后一面保护(1010)，本周面配置能力收口"</code></pre>
+    <div class="callout tip"><p><b>本周串联复盘（费曼预演，明天下午正式做）</b>：对着仓库讲一遍——D1 的 registry 给了第一层与 born；D2 的表给了第二层与写路径（epoch/审计/pver）；D3 的 Compose 把四层收在一处；D4 的 bundle 目录复用 born；D5 的契约测试钉住「下发即可渲染」；今天补上停用语义与保护。哪一层说不出来，明天复盘第一个补它。</p></div>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>把停用实现成软删配置行</td><td>重新启用要「复活」行，epoch 断链，审计对不上</td><td>停用只翻 enabled 布尔；行的生命周期与家庭相同</td></tr>
+      <tr><td>停用时顺手清了面的业务数据</td><td>用户重新启用，历史全没了——不可逆</td><td>停用不写任何 DELETE、不碰 deleted_at</td></tr>
+      <tr><td>统计查询按 enabled 过滤</td><td>停用又启用后，历史曲线断一段，极难复现</td><td>聚合只按 family_id；今天的 sum 测试钉死</td></tr>
+      <tr><td>最后一面计数把 homeos 算进去</td><td>基座恒启用，保护永远不触发，形同虚设</td><td>计数口径 = 除 homeos 外的已启用面（含预约开通的未出生面）</td></tr>
+      <tr><td>保护检查在事务外计数</td><td>并发停用最后两个面双双通过，家庭归零</td><td>同事务、锁行后再计数</td></tr>
+      <tr><td>curl 链里 version 用了旧值</td><td>第 ③⑤ 步收到 409 + 1009，误以为保护逻辑坏了</td><td>每次 PUT 成功都用响应里的新 version；1009 的双版本 payload 就是给你对账用的</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>停用三语义</td><td>入口消失、数据保留、仍参与统计——停用是收纳不是销毁</td></tr>
+      <tr><td>最后一面保护</td><td>停用最后一个已启用业务面（除 homeos）→ 409 + 1010</td></tr>
+      <tr><td>1010 业务状态不允许</td><td>请求合法、权限也够，是世界状态说不行（同族：余额非 0 归档、唯一 owner 未转让）</td></tr>
+      <tr><td>预约开通</td><td>未出生面 enabled=true；计入最后一面保护的计数</td></tr>
+      <tr><td>0 面家庭不变量</td><td>创建强制选面 + 停用保护，两条写路径共同守住</td></tr>
+      <tr><td>锁内计数</td><td>保护性计数必须在 FOR UPDATE 之后、同事务之内</td></tr>
+      <tr><td>聚合不看开关</td><td>统计 SQL 里永远不出现面启用状态表</td></tr>
+      <tr><td>整链验收</td><td>用 curl 把一周的接口按真实剧本串一遍，看状态与 version 链</td></tr>
+      <tr><td>费曼预演</td><td>对着仓库把每天的产物讲一遍；讲不出的就是明天要补的</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <ul>
+      <li><b>1009/1010 的语义边界</b>：S1·D4 的错误码表 + S6 的账户归档拒绝（1010 第一次实战）。</li>
+      <li><b>事务与锁行</b>：S7·D2 的 UpdateEnabled；GORM 事务在 S3。</li>
+      <li><b>契约测试红了分不清哪层</b>：S7·D5 的独立推导与集合差打印。</li>
+      <li><b>登录接口与 token</b>：S4 的认证三件套（login / refresh / Claims）。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w17d6c1">最后一面保护落地：事务内锁后计数，除 homeos 外；测试断言 1010</label></li>
+      <li><label><input type="checkbox" data-key="w17d6c2">三语义测试全绿：入口消失（渲染谓词为假）、数据保留（行数与软删列不动）、仍参与统计（停用前后 sum 相等）</label></li>
+      <li><label><input type="checkbox" data-key="w17d6c3">curl 整链五步跑通，version 链与 1009/1010 的响应都亲眼见过</label></li>
+      <li><label><input type="checkbox" data-key="w17d6c4"><code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，commit 带卡号 <code>s7d6</code>，工作区无残留实验代码</label></li>
+      <li><label><input type="checkbox" data-key="w17d6c5">能不看资料把本周全景图（registry/表/Compose/bundles/契约测试/停用语义）讲成一段三分钟的话，并写进 <code>notes/</code></label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w17d5.html"><span class="hint">← 昨天 · S7·D5</span>契约测试：客户端不得二次裁剪</a>
+    <a href="../../frontend/f5/w17f1.html"><span class="hint">本周日 · F5·w17 →</span>壳的顶栏一行与自绘底栏</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w17d6 · 明天见 ⟩</footer>
+</body>
+</html>

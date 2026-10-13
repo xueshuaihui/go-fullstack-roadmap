@@ -1,6 +1,12 @@
-/* GoFullStack Roadmap — 勾选持久化 + 进度统计（纯 localStorage，无构建依赖） */
+/* HomeCube Roadmap — 勾选持久化 + 进度统计（纯 localStorage，无构建依赖）
+   契约见 docs/CANONICAL.md §3.3：
+   - 日卡 body[data-day]，勾选框 data-key（目标 gN / 完成检查 cN）
+   - 只统计 key 以 c+数字 结尾的项，写 localStorage["pf-"+day] = "done/total"
+   - index.html 上每张日卡链接带 data-day="wNNdN"，进度按链接归集，不硬编码周数与天数 */
 (function () {
   "use strict";
+
+  var DEFAULT_TOTAL = 5;
 
   function persistables() {
     return Array.prototype.slice.call(
@@ -8,19 +14,29 @@
     );
   }
 
+  function readDay(key) {
+    try {
+      var raw = localStorage.getItem("pf-" + key);
+      if (raw) {
+        var p = raw.split("/");
+        return { done: +p[0] || 0, total: +p[1] || DEFAULT_TOTAL };
+      }
+    } catch (e) { /* 隐私模式下静默降级 */ }
+    return { done: 0, total: DEFAULT_TOTAL };
+  }
+
   function save() {
     try {
       persistables().forEach(function (i) {
         if (i.dataset.key) localStorage.setItem(i.dataset.key, i.checked ? "1" : "0");
       });
-      var day = document.body.dataset.day; // e.g. "w1d1"
+      var day = document.body.dataset.day;
       if (day) {
-        // 进度只按「完成检查」项（data-key 以 c+数字 结尾）统计，不含目标项
         var ins = persistables().filter(function (i) { return /c\d+$/.test(i.dataset.key || ""); });
         var done = ins.filter(function (i) { return i.checked; }).length;
-        localStorage.setItem("pf-" + day, done + "/" + (ins.length || 5));
+        localStorage.setItem("pf-" + day, done + "/" + (ins.length || DEFAULT_TOTAL));
       }
-    } catch (e) { /* 隐私模式下静默降级 */ }
+    } catch (e) { /* noop */ }
     renderProgress();
   }
 
@@ -32,25 +48,31 @@
     } catch (e) { /* noop */ }
   }
 
-  // 汇总指定范围的进度；未访问过的天按 0/5 计
-  function statsInRange(fromW, toW) {
-    var done = 0, total = 0;
-    for (var w = fromW; w <= toW; w++) {
-      for (var d = 1; d <= 5; d++) {
-        var v = 0, m = 5;
-        try {
-          var raw = localStorage.getItem("pf-w" + w + "d" + d);
-          if (raw) { var p = raw.split("/"); v = +p[0]; m = +p[1] || 5; }
-        } catch (e) { /* noop */ }
-        done += v; total += m;
-      }
-    }
-    return { done: done, total: total };
+  function linksIn(scope) {
+    return Array.prototype.slice.call(scope.querySelectorAll("a[data-day]"));
+  }
+
+  function statsIn(scope) {
+    var done = 0, total = 0, seen = {};
+    linksIn(scope).forEach(function (a) {
+      var k = a.dataset.day;
+      if (seen[k]) return;
+      seen[k] = 1;
+      var s = readDay(k);
+      done += s.done; total += s.total;
+    });
+    return { done: done, total: total, cards: Object.keys(seen).length };
+  }
+
+  function scopeOf(el) {
+    if (el.dataset.scope === "all") return document;
+    var card = el.closest(".week-card");
+    if (card) return card;
+    return el.closest("section") || document;
   }
 
   function pct(el) {
-    var wk = el.dataset.weeks ? +el.dataset.weeks : (el.dataset.week ? +el.dataset.week : null);
-    var s = wk ? statsInRange(wk, wk) : statsInRange(1, 8);
+    var s = statsIn(scopeOf(el));
     var p = s.total ? Math.round((s.done / s.total) * 100) : 0;
     var root = el.closest(".week-card") || el;
     var fill = root.querySelector(".fill");
@@ -58,11 +80,17 @@
     var pctEl = root.querySelector(".pct");
     if (pctEl) pctEl.textContent = s.done + "/" + s.total + " · " + p + "%";
     var num = el.querySelector("b");
-    if (num && el.classList.contains("progress-panel")) num.textContent = p + "%";
+    if (num && el.classList.contains("progress-panel")) {
+      num.textContent = s.cards ? p + "%" : "—";
+    }
+    var sub = el.querySelector(".sub");
+    if (sub && el.classList.contains("progress-panel")) {
+      sub.textContent = s.cards ? s.done + "/" + s.total + " 项 · " + s.cards + " 张日卡" : "日卡尚未生成";
+    }
   }
 
   function renderProgress() {
-    document.querySelectorAll(".progress-panel, .week-mini[data-week]").forEach(pct);
+    document.querySelectorAll(".progress-panel, .week-mini").forEach(pct);
   }
 
   document.addEventListener("change", function (e) {

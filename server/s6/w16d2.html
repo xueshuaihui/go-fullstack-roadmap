@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S6·D26 · 时间窗五档桶：ISO 周与季/年边界 | HomeCube 修炼手册</title>
+<meta name="description" content="报表 trend 视图升级到五档：week 用 ISO 8601 周、quarter/year 的桶边界怎么切；红线口径「季/年 = 月桶之和」——先出月桶再整数归并，保证与月档同源。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w16d2">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S6</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S6</a> / w16d2</div>
+  <div class="day-meta">
+    <span class="chip">S6 · DAY 26</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★★☆</span>
+  </div>
+  <h1>时间窗五档桶：ISO 周与季/年边界</h1>
+  <p>昨天 trend 视图只有月档单桶，今天升满五档：<code>day / week / month / quarter / year</code>。五档里真正要动脑的是两个：<b>week——「一周」到底从哪天算起、跨年那周归谁</b>；<b>quarter/year——桶边界怎么切才能和月档对得上</b>。第二条直接连着本阶段三条红线之一：<b>季/年 = 月桶之和</b>。今天把这句话从口号变成实现。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w16d2g1">说清 ISO 8601 周：周一起始、跨年周归「包含该周星期四的那一年」，Go 侧只认 <code>ISOWeek()</code></label></li>
+      <li><label><input type="checkbox" data-key="w16d2g2">说清「季/年 = 月桶之和」的实现含义：先查月桶，Go 侧整数归并成季/年桶，不用 SQL 直接对季/年分组</label></li>
+      <li><label><input type="checkbox" data-key="w16d2g3">桶序列生成写成纯函数并测过：跨年、闰年、12 月 31 日所在周的归属</label></li>
+      <li><label><input type="checkbox" data-key="w16d2g4">trend 视图五档 curl 实测：<code>period=2026-W42</code>、<code>2026-Q4</code>、<code>2026</code> 各返回正确的桶序列</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 五档回顾与桶边界</h3>
+    <table>
+      <tr><th>档</th><th>编码例</th><th>单桶边界（家庭时区，半开）</th><th>边界难点</th></tr>
+      <tr><td>day</td><td><code>2026-10-13</code></td><td>[当日 00:00, 次日 00:00)</td><td>无</td></tr>
+      <tr><td>week</td><td><code>2026-W42</code></td><td>[ISO 周一 00:00, 下周一 00:00)</td><td>跨年周归属</td></tr>
+      <tr><td>month</td><td><code>2026-10</code></td><td>[1 日 00:00, 次月 1 日 00:00)</td><td>无（AddDate 从 1 号推进）</td></tr>
+      <tr><td>quarter</td><td><code>2026-Q4</code></td><td>[10-01, 次年 01-01)</td><td>= 3 个月桶之和</td></tr>
+      <tr><td>year</td><td><code>2026</code></td><td>[01-01, 次年 01-01)</td><td>= 12 个月桶之和</td></tr>
+    </table>
+    <p>非法编码 400 + 1007 不回落——D8 立的规矩，报表接口同样适用，昨天已经接好。</p>
+
+    <h3>2. ISO 周：别自己算，交给标准库</h3>
+    <p>「2026 年第 42 周」听着无歧义，其实全是坑：周日开头还是周一开头？1 月 1 日所在的那半截周算第 1 周还是上一年最后一周？<b>ISO 8601 把这两件事钉死了</b>：周一是一周的第一天；<b>一年的第 1 周是包含该年第一个星期四的那一周</b>（等价说法：包含 1 月 4 日的那周）。推论：12 月 29-31 日有可能属于<b>下一年</b>的 W01，1 月 1-3 日也可能属于<b>上一年</b>的 W52/W53。</p>
+    <p>Go 的 <code>t.ISOWeek()</code> 返回的 (year, week) 就是按这套规则算的——注意它返回的 year <b>可能不等于 <code>t.Year()</code></b>。手写 <code>t.Year()</code> 拼 <code>int(t.YearDay()/7)+1</code> 之类的算法，跨年夜必错。编码格式化只有一种写法：</p>
+    <pre><span class="code-label">片段 · 周期键格式化（放进周期解析包，全站唯一实现）</span><code>y, w := t.<span class="t">ISOWeek</span>()
+key := fmt.<span class="t">Sprintf</span>(<span class="s">"%04d-W%02d"</span>, y, w) <span class="c">// 2026-W42；week 必须补零两位，否则字典序 ≠ 时间序</span></code></pre>
+    <p>Postgres 侧同口径：<code>date_trunc('week', …)</code> 恰好就是 ISO 周一零点，两边天然一致——但今天之后你其实不再需要它，原因见下节。</p>
+
+    <h3>3. 红线「季/年 = 月桶之和」：为什么不是显然的</h3>
+    <p>数学上，<code>SUM(10 月)+SUM(11 月)+SUM(12 月)</code> 和 <code>date_trunc('quarter')</code> 直接分组当然相等。那红线红在哪？红在<b>工程上它们是两条代码路径</b>：直接按季分组意味着季档有自己的一套 SQL、自己的边界函数、自己的过滤条件拷贝——今天相等，三个月后某人给月档加了个过滤条件忘了同步季档，数字就悄悄分家了，而且<b>没有测试能发现</b>，因为两条路径各自都「对」。</p>
+    <p>实现口径：<b>月桶是唯一的 SQL 产物</b>。quarter/year 档的实现 = 查出覆盖范围的月桶 → Go 侧按 3 个/12 个月一组整数相加 → 输出季/年桶。week/day 档才真正按自己的粒度分组。这样「季 = 月之和」不是数学巧合，是<b>代码结构保证</b>：</p>
+    <pre><span class="code-label">片段 · server/internal/finance/service/report_service.go（前置：昨天的 repo.TrendByMonth；月桶查询升级为接受任意月区间）</span><code><span class="c">// monthBuckets 返回 [fromMonth, toMonth] 逐月桶（空月补 0）。五档中 month/quarter/year 三档共用。</span>
+<span class="k">func</span> (s *<span class="t">ReportService</span>) <span class="t">monthBuckets</span>(ctx context.<span class="t">Context</span>, famID <span class="t">int64</span>, from, to period.<span class="t">Period</span>, v <span class="t">Viewer</span>) ([]<span class="t">TrendRow</span>, <span class="t">error</span>)
+
+<span class="c">// mergeQuarters 把月桶按自然季整数归并：Q4 = 10+11+12 三个桶逐项相加（income、expense 分别加，net 重算）。</span>
+<span class="k">func</span> <span class="t">mergeQuarters</span>(months []<span class="t">TrendRow</span>) []<span class="t">TrendRow</span>
+
+<span class="c">// mergeYear 同形，12 个桶归 1 个。两个都是纯函数，表驱动测试直接喂手写月桶。</span></code></pre>
+    <div class="callout warn"><p><b>这条红线的验收在 S6·D30</b>：同一份数据，月档查 2026-10/11/12 三期之和，必须逐分等于季档 <code>2026-Q4</code> 的桶值。测试今天就要写——它同时是「同源」的证明和将来重构的护栏。</p></div>
+
+    <h3>4. 桶序列生成：纯函数 + playground 验证</h3>
+    <p>「period=2026-Q4 且 span=2 → 要查哪几个月」这类推算全部收进纯函数 <code>BucketRange(p Period, span int) (from, to Period, keys []string)</code>。playground 先跑通边界用例：</p>
+    <pre><span class="code-label">可跑 · server/playground/d26/main.go（独立 go.mod；跑通后函数搬进周期解析包，目录删除）</span><code><span class="k">package</span> main
+
+<span class="k">import</span> (
+    <span class="s">"fmt"</span>
+    <span class="s">"time"</span>
+)
+
+<span class="c">// isoWeekKey 返回 t 所在 ISO 周的编码。</span>
+<span class="k">func</span> <span class="t">isoWeekKey</span>(t time.<span class="t">Time</span>) <span class="t">string</span> {
+    y, w := t.<span class="t">ISOWeek</span>()
+    <span class="k">return</span> fmt.<span class="t">Sprintf</span>(<span class="s">"%04d-W%02d"</span>, y, w)
+}
+
+<span class="k">func</span> <span class="t">main</span>() {
+    tz := time.<span class="t">FixedZone</span>(<span class="s">"CST"</span>, <span class="n">8</span>*<span class="n">3600</span>)
+    fmt.<span class="t">Println</span>(<span class="t">isoWeekKey</span>(time.<span class="t">Date</span>(<span class="n">2026</span>, <span class="n">10</span>, <span class="n">13</span>, <span class="n">12</span>, <span class="n">0</span>, <span class="n">0</span>, <span class="n">0</span>, tz))) <span class="c">// 2026-W42</span>
+    fmt.<span class="t">Println</span>(<span class="t">isoWeekKey</span>(time.<span class="t">Date</span>(<span class="n">2026</span>, <span class="n">12</span>, <span class="n">31</span>, <span class="n">12</span>, <span class="n">0</span>, <span class="n">0</span>, <span class="n">0</span>, tz))) <span class="c">// 2026-W53</span>
+    fmt.<span class="t">Println</span>(<span class="t">isoWeekKey</span>(time.<span class="t">Date</span>(<span class="n">2027</span>, <span class="n">1</span>, <span class="n">1</span>, <span class="n">12</span>, <span class="n">0</span>, <span class="n">0</span>, <span class="n">0</span>, tz)))  <span class="c">// 2026-W53：元旦属于上一年最后一周</span>
+    <span class="c">// 月桶推进：从 1 号 AddDate，永不规整化溢出</span>
+    cur := time.<span class="t">Date</span>(<span class="n">2026</span>, <span class="n">11</span>, <span class="n">1</span>, <span class="n">0</span>, <span class="n">0</span>, <span class="n">0</span>, <span class="n">0</span>, tz)
+    <span class="k">for</span> i := <span class="n">0</span>; i &lt; <span class="n">3</span>; i++ {
+        fmt.<span class="t">Println</span>(cur.<span class="t">Format</span>(<span class="s">"2006-01"</span>)) <span class="c">// 2026-11、2026-12、2027-01：跨年自然衔接</span>
+        cur = cur.<span class="t">AddDate</span>(<span class="n">0</span>, <span class="n">1</span>, <span class="n">0</span>)
+    }
+}</code></pre>
+    <p>时区口径不变：桶边界一律按家庭时区（platform 接口拿 <code>*time.Location</code>）换算成 UTC 进 SQL。<code>ISOWeek()</code> 必须在「家庭时区的那个时刻」上调用——同一绝对时刻在 UTC 和东八区可能差出一整周（周一 00:30 CST = 周日 16:30 UTC）。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>⑤+③：trend 视图从月档单桶升级为五档，补同源断言测试</b>。收工时 <code>make build</code> / <code>make test</code> 必须绿。</p>
+
+    <h3>步骤 1 · repo 升级</h3>
+    <p><code>TrendByMonth</code> 改名 <code>TrendByMonthRange(ctx, famID, from, to, v)</code>：接受月区间，SQL 加 <code>GROUP BY date_trunc('month', occurred_at AT TIME ZONE $tz)</code>（$tz 传家庭时区名），按桶排序返回。day/week 档新增 <code>TrendByDayRange</code> / <code>TrendByWeekRange</code>（<code>date_trunc('day'/'week', …)</code> 同款）。<b>quarter/year 档不加任何 repo 方法</b>——它们只消费月桶。</p>
+
+    <h3>步骤 2 · service 五档分发</h3>
+    <pre><span class="code-label">片段 · report_service.go 的 trend 分支改写（前置：昨天的 trend；BucketRange 纯函数今天从 playground 搬入）</span><code><span class="k">switch</span> p.Granularity {
+<span class="k">case</span> period.Day:     rows, err = s.repo.<span class="t">TrendByDayRange</span>(ctx, famID, start, end, v)
+<span class="k">case</span> period.Week:    rows, err = s.repo.<span class="t">TrendByWeekRange</span>(ctx, famID, start, end, v)
+<span class="k">case</span> period.Month:   rows, err = s.<span class="t">monthBuckets</span>(ctx, famID, fromP, toP, v)
+<span class="k">case</span> period.Quarter: months, err2 := s.<span class="t">monthBuckets</span>(ctx, famID, fromP, toP, v); rows = <span class="t">mergeQuarters</span>(months); err = err2
+<span class="k">case</span> period.Year:    months, err2 := s.<span class="t">monthBuckets</span>(ctx, famID, fromP, toP, v); rows = <span class="t">mergeYear</span>(months);    err = err2
+}
+<span class="c">// 出 SQL 后统一走 fillGaps(rows, keys)：按 BucketRange 生成的键序列补空桶，键序即输出序。</span></code></pre>
+
+    <h3>步骤 3 · 同源断言测试（红线护栏）</h3>
+    <pre><span class="code-label">片段 · report_service_test.go 追加（前置：昨天的用例还在；种子：10/11/12 月各插几笔金额互不相同的流水）</span><code><span class="c">// TestQuarterEqualsSumOfMonths：</span>
+<span class="c">//   m10 := Summary(view=trend, period=2026-10)；m11、m12 同款</span>
+<span class="c">//   q4  := Summary(view=trend, period=2026-Q4)</span>
+<span class="c">//   断言 q4 单桶的 income_cents == m10+m11+m12 三期 income 之和；expense 同断言。</span>
+<span class="c">// TestYearEqualsSumOfMonths：2026 年档单桶 == 12 个月桶之和（没流水的月是 0 行，也要在序列里）。</span>
+<span class="c">// TestWeekKeyCrossYear：种子一笔 2027-01-01 08:00 CST 的流水，week 档 period=2026-W53 能查到它。</span>
+<span class="c">// TestBucketRange：纯函数表驱动——跨年、span=2 的 Q3 起点、闰年 2 月。</span></code></pre>
+
+    <h3>步骤 4 · 验收与提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build &amp;&amp; make test
+curl -s "localhost:8080/api/finance/reports/summary?view=trend&amp;period=2026-W42" -H "Authorization: Bearer $TOKEN"
+curl -s "localhost:8080/api/finance/reports/summary?view=trend&amp;period=2026-Q4"  -H "Authorization: Bearer $TOKEN"
+curl -s "localhost:8080/api/finance/reports/summary?view=trend&amp;period=2026"     -H "Authorization: Bearer $TOKEN"
+<span class="c"># 手工对账：把月档 10/11/12 三次查询的 expense 加起来，应与 Q4 档单桶一致到分</span>
+git add server
+git commit -m "feat(s6d26): trend 五档分桶，季/年由月桶整数归并（同源红线）"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>手算周号（YearDay/7）</td><td>跨年周归属错，W53 消失或多出 W00</td><td>只认 <code>ISOWeek()</code></td></tr>
+      <tr><td>周编码不补零（<code>2026-W5</code>）</td><td>字典序乱掉，游标排序跟着乱</td><td><code>%04d-W%02d</code> 固定格式</td></tr>
+      <tr><td>quarter 档直接 SQL 分组</td><td>与月档两条代码路径，将来悄悄分家</td><td>季/年只消费月桶，整数归并</td></tr>
+      <tr><td>在 UTC 时刻上调 ISOWeek</td><td>东八区周一凌晨的账归了上一周</td><td>先换家庭时区再算桶</td></tr>
+      <tr><td>月推进用「当前日 +1 月」</td><td>1 月 31 日 AddDate 规整成 3 月 3 日</td><td>桶推进永远从 1 号走（D23 同款坑）</td></tr>
+      <tr><td>空桶不补</td><td>季档只有 2 个月有流水，折线图少一个点</td><td>fillGaps 按键序列补 0 行</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>ISO 8601 周</td><td>周一起始；第 1 周 = 包含该年第一个星期四的周；跨年周有明确归属</td></tr>
+      <tr><td><code>ISOWeek()</code></td><td>Go 标准库的 ISO 周年/周号；返回的 year 可能不等于日历年</td></tr>
+      <tr><td>date_trunc('week')</td><td>Postgres 的截断函数，恰好是 ISO 周一零点</td></tr>
+      <tr><td>月桶同源</td><td>month/quarter/year 三档共用同一份月桶 SQL 产物</td></tr>
+      <tr><td>整数归并</td><td>季桶 = 3 个月桶逐项 int64 相加；不重查、不折算</td></tr>
+      <tr><td>BucketRange</td><td>周期 + span → 桶键序列的纯函数；补桶与排序都靠它</td></tr>
+      <tr><td>fillGaps</td><td>按桶键序列补 0 行，保证输出不断档、键序即时间序</td></tr>
+      <tr><td>1007</td><td>时间窗编码非法专码；不回落任何默认档</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <ul>
+      <li><b>ISO 周的原始定义</b>：Wikipedia <a href="https://en.wikipedia.org/wiki/ISO_week_date" target="_blank">ISO week date</a>（可选，图表很直观）。</li>
+      <li><b>date_trunc 支持的粒度</b>：Postgres 官方文档 <a href="https://www.postgresql.org/docs/current/functions-datetime.html#FUNCTIONS-DATETIME-TRUNC" target="_blank">Date/Time Functions</a>（可选）。</li>
+      <li><b>AT TIME ZONE 的语义</b>：同一文档页；记住一句就够——对 TIMESTAMPTZ 列用它，得到的是「那个时区墙钟时间」的 timestamp，正好用来分桶。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w16d2c1">五档 curl 实测各返回正确桶序列；键格式与全站编码一致（<code>%04d-W%02d</code> 补零）</label></li>
+      <li><label><input type="checkbox" data-key="w16d2c2">同源断言测试在库且绿：Q4 == 10+11+12 月桶之和、年 == 12 月桶之和，精确到分</label></li>
+      <li><label><input type="checkbox" data-key="w16d2c3">跨年周测试在库：2027-01-01 08:00 CST 的流水落在 2026-W53</label></li>
+      <li><label><input type="checkbox" data-key="w16d2c4">quarter/year 档的 repo 层零新增方法（只消费月桶）；<code>make build</code> / <code>make test</code> 绿，commit 带卡号 <code>s6d26</code></label></li>
+      <li><label><input type="checkbox" data-key="w16d2c5">notes/ 三行：ISO 周第 1 周的定义、「季=月之和」为什么是结构保证不是数学巧合、时区在哪一步进入计算</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w16d1.html"><span class="hint">← 昨天 · S6·D25</span>报表三视图：趋势/分类/成员 SQL 聚合</a>
+    <a href="w16d3.html"><span class="hint">明天 · S6·D27 →</span>环比与服务端逐期累计余额</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w16d2 · 明天见 ⟩</footer>
+</body>
+</html>

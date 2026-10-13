@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S8·D2 · 前端构建产物与 nginx：静态资源、前端路由与反向代理 | HomeCube 修炼手册</title>
+<meta name="description" content="把 uni-app 的 H5 构建产物打进一个只有 nginx 的镜像：try_files 兜住前端路由，/api 反向代理到 server 容器，gzip 与静态资源缓存头怎么配，以及为什么运行镜像里不需要 Node。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w21d2">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S8</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S8</a> / w21d2</div>
+  <div class="day-meta">
+    <span class="chip">S8 · DAY 2</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>前端构建产物与 nginx：静态资源、前端路由与反向代理</h1>
+  <p>昨天你把服务端变成了一个二十兆的镜像。今天把 <code>web/</code> 也变成一个镜像，并且顺手解决一个你迟早会遇到的问题：<b>浏览器直接访问 <code>/finance/tx/list</code> 或者在那个页面按 F5，为什么会 404</b>。答案在 nginx 的一行 <code>try_files</code> 里。今天写三个文件：<code>web/Dockerfile</code>、<code>web/.dockerignore</code>、<code>web/nginx.conf</code>。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w21d2g1">说得出「构建产物是纯静态文件」这句话为什么直接推出「运行镜像里不需要 Node」</label></li>
+      <li><label><input type="checkbox" data-key="w21d2g2">理解 <code>try_files $uri $uri/ /index.html</code> 在兜什么，以及不做它的现象是什么</label></li>
+      <li><label><input type="checkbox" data-key="w21d2g3">写对 <code>/api</code> 反向代理：路径不被吃掉、超时够用、上传体积不被 nginx 提前拦下</label></li>
+      <li><label><input type="checkbox" data-key="w21d2g4">gzip 与两套缓存策略（入口 HTML 不缓存、带哈希的资源强缓存）落进配置</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>课前须知：nginx 是什么，以及它在本站拓扑里的唯一职责</h2>
+    <div class="callout js">
+      <p>nginx 是一个<b>事件驱动的高性能 HTTP 服务器</b>。它干两类活：<b>发静态文件</b>（把磁盘上的 <code>.html/.js/.css</code> 直接吐给浏览器）和<b>反向代理</b>（把收到的请求转给后面另一个进程，再把响应转回来）。</p>
+      <p>「反向」是相对「正向」说的：正向代理替<b>客户端</b>出去访问别人（你熟悉的科学上网），反向代理替<b>服务端</b>接客户。浏览器以为自己只在跟一个地址说话，其实后面站着两个容器。</p>
+      <p>本站的拓扑只有一种，记住它就够了：<b>浏览器 → <code>web</code> 容器的 nginx（80 端口）→ 静态文件直接返回，或者 <code>/api/*</code> 转给 <code>server</code> 容器（8080 端口）</b>。nginx 不做业务判断、不改响应体、不认识 <code>code</code> 字段。</p>
+      <p>配置文件是一棵嵌套的树：<code>http { server { location { ... } } }</code>。<code>server</code> 块对应「一个站点/一个监听端口」，<code>location</code> 块对应「一类 URL 路径」。今天你只需要写一个 <code>server</code> 块和四个 <code>location</code>。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 构建产物是静态文件，所以运行镜像里不需要 Node</h3>
+    <p><code>web/</code> 是 Vue 3 + uni-app 项目。<code>npm run build:h5</code> 之后，产物落在 <code>web/dist/build/h5/</code>，里面是一堆 <code>index.html</code>、带内容哈希的 <code>assets/*.js</code>、<code>*.css</code>、图片。<b>这些文件的执行者是浏览器，不是服务器</b>——服务器唯一要做的事是把它们原样发出去。</p>
+    <table>
+      <tr><th></th><th>需要 Node 的时期</th><th>不需要 Node 的时期</th></tr>
+      <tr><td>什么时候</td><td><code>npm ci</code> 装依赖、<code>npm run build:h5</code> 编译打包、<code>npm run dev:h5</code> 起本地开发服务器</td><td>构建结束之后的全部时间</td></tr>
+      <tr><td>在哪</td><td>Dockerfile 的 <b>builder 阶段</b>（<code>node:20-alpine</code>）</td><td>Dockerfile 的 <b>runtime 阶段</b>（<code>nginx:1.27-alpine</code>）</td></tr>
+      <tr><td>镜像体积量级</td><td>约 200 MB（Node 运行时 + node_modules）</td><td>约 25 MB（nginx + 你的 dist）</td></tr>
+    </table>
+    <p>这和昨天服务端那条道理完全同源：Go 二进制不需要 Go 工具链，前端产物不需要 Node。多阶段构建就是把「造东西的环境」和「跑东西的环境」彻底分开，只把成品搬过去。</p>
+    <div class="callout note"><p>有人会给前端配一个 Node 的 SSR 服务器（<code>node server.js</code>）来发页面。<b>本项目不需要</b>：uni-app 的 H5 产物是客户端渲染，首屏之后所有数据都走 <code>/api</code>。真要上 SSR，那是一个独立的架构决定，不是部署脚本里顺手加的一行。</p></div>
+
+    <h3>2. try_files：前端路由的 404 是怎么来的，又是怎么没的</h3>
+    <p>浏览器请求 <code>/finance/tx/list</code> 时，nginx 默认行为是<b>去磁盘上找 <code>/usr/share/nginx/html/finance/tx/list</code> 这个文件</b>。它当然不存在——这个「路由」只活在 Vue Router 里，是 JavaScript 运行时概念，磁盘上没有对应文件。于是 nginx 返回自己的 404 页面（一个白底黑字的 HTML，<b>不走你的三键信封</b>）。</p>
+    <pre><span class="code-label">片段 · 一行解决</span><code>location / {
+    try_files $uri $uri/ /index.html;
+}</code></pre>
+    <p><code>try_files</code> 按顺序试：<code>$uri</code>（当成文件找）→ <code>$uri/</code>（当成目录找，配合 <code>index</code> 指令）→ 都没有就<b>内部转发</b>到 <code>/index.html</code>。注意最后这个是「内部转发」：浏览器地址栏不变，也不会多一次 302 往返，nginx 只是把 <code>index.html</code> 的内容当作这次请求的响应发出去。Vue Router 拿到页面后自己解析地址栏，渲染出正确的页面。</p>
+    <p>这也是<b>为什么只有 SPA 需要这一行</b>：多页应用每个路由都有真实的 HTML 文件，磁盘上找得到。</p>
+
+    <h3>3. /api 反向代理：三个必须写对的细节</h3>
+    <p><b>细节一：<code>proxy_pass</code> 结尾那个斜杠会吃掉路径。</b></p>
+    <table>
+      <tr><th>写法</th><th>请求 <code>/api/finance/accounts</code> 被转成</th><th>结果</th></tr>
+      <tr><td><code>proxy_pass http://server:8080;</code></td><td><code>/api/finance/accounts</code></td><td>正确。你的路由分域前缀 <code>/api/finance/*</code> 原样到达 Gin</td></tr>
+      <tr><td><code>proxy_pass http://server:8080/;</code></td><td><code>/finance/accounts</code></td><td><b>错</b>。<code>/api</code> 前缀被替换掉了，Gin 找不到路由，返回 404 + 1001，而前端只会看到「接口全挂了」</td></tr>
+    </table>
+    <p>规则：<code>proxy_pass</code> 后面<b>带了 URI 部分（哪怕只是一个 <code>/</code>）就会替换掉 location 匹配的那段路径；不带 URI 部分就原样透传</b>。本站路由自带 <code>/api/homeos</code>、<code>/api/finance</code> 前缀，所以要的是「原样透传」。</p>
+    <p><b>细节二：用变量形式的 <code>proxy_pass</code>，让 nginx 不在启动时解析上游。</b>如果写死 <code>proxy_pass http://server:8080;</code>，nginx 会在<b>启动那一刻</b>解析 <code>server</code> 这个名字。解析不到（server 容器还没起、或者你今天单独调试 web 容器）就直接启动失败，日志里是 <code>host not found in upstream "server"</code>。而且解析结果会被长期缓存：server 容器重建后换了 IP，nginx 还往旧 IP 发，于是一片 502，直到你重启 nginx。</p>
+    <pre><span class="code-label">片段 · 延迟解析</span><code>resolver 127.0.0.11 valid=10s ipv6=off;   <span class="c"># Docker 内置 DNS，容器编排下固定是这个地址</span>
+set $backend <span class="s">"http://server:8080"</span>;          <span class="c"># 放进变量 → 解析推迟到每次请求</span>
+proxy_pass $backend$request_uri;           <span class="c"># 用变量时必须自己把原始 URI 带上</span></code></pre>
+    <div class="callout warn"><p>最后一行的 <code>$request_uri</code> <b>不能省</b>。一旦 <code>proxy_pass</code> 里出现变量，nginx 就不再自动拼接「location 匹配后剩下的那段路径」，你不显式给 URI，转过去的就是一个空路径。<code>$request_uri</code> 是未经改写的原始请求行（含查询串），正好是我们要的。</p></div>
+    <p><b>细节三：<code>client_max_body_size</code> 默认只有 1 MB。</b>你的附件接口允许单张 5 MB、一笔最多 3 张。nginx 会在请求体还没转给后端之前就先拒掉，返回 <b>413</b>，而且是 nginx 自己的 HTML 错误页——统一响应体、<code>4002</code> 这些一个都不会出现，前端拦截器直接懵。<b>反代层的限额必须放宽到业务限额之上，让后端成为唯一的裁决者</b>（后端该返回 400 + 4002 就返回）。这里设 <code>12m</code>。</p>
+
+    <h3>4. gzip 与两套完全不同的缓存策略</h3>
+    <p><b>gzip</b>：文本类资源（HTML/CSS/JS/JSON/SVG）压缩率通常 60%-80%，一个 800 KB 的 vendor bundle 能压到 200 KB 上下。图片和 <code>.wgt</code> 这类已压缩格式不要再压，白费 CPU。注意 gzip 是在 nginx 发响应的那一刻实时压的，所以 <code>gzip_types</code> 里必须显式列出 <code>application/json</code>——<b>你的 <code>/api</code> 响应也是走这个 <code>server</code> 块出去的</b>，报表接口返回几百行流水时差别很明显。</p>
+    <p><b>缓存要分两套，混一套必出事故</b>：</p>
+    <table>
+      <tr><th>资源</th><th>特征</th><th>策略</th><th>为什么</th></tr>
+      <tr><td><code>/assets/*.js</code>、<code>*.css</code></td><td>文件名带内容哈希，改一个字节就换一个名字</td><td><code>max-age=31536000, immutable</code></td><td>内容变则名变，所以可以放心缓存一年；浏览器连「问一下有没有更新」的请求都不发</td></tr>
+      <tr><td><code>/index.html</code></td><td>文件名永远不变，但里面引用着那些带哈希的名字</td><td><code>no-cache</code></td><td>它是唯一的入口。缓存住了，用户拿到的就是旧的哈希文件名，你的新版本永远发不出去（发版后「用户说要清缓存才生效」就是这个原因）</td></tr>
+    </table>
+    <div class="callout note"><p><code>no-cache</code> 不等于 <code>no-store</code>。<code>no-cache</code> 是「可以存，但每次用之前必须回源确认」（配合 <code>ETag</code>，通常得到一个 304，几乎不花流量）；<code>no-store</code> 是「根本不许存」。入口 HTML 要的是前者。</p></div>
+
+    <h3>5. /healthz 与 /metrics 故意不经过 nginx</h3>
+    <p>这两个路径<b>不写进 nginx 配置</b>：</p>
+    <ul>
+      <li><code>/healthz</code> 是给容器编排与负载均衡看的（S8·D3 的 healthcheck 直接在 <code>server</code> 容器内部访问 <code>localhost:8080/healthz</code>），不需要暴露到公网。暴露了也无害，但会被各种扫描器天天打，污染你的日志与指标。</li>
+      <li><code>/metrics</code>（S8·D9 才实现）里是全站的请求量与延迟分布，<b>属于内部信息，绝不上公网</b>。它只在容器网络内可达，本机通过 server 容器的 <code>127.0.0.1:8081</code> 端口映射看。</li>
+    </ul>
+    <p>原则一句话：<b>nginx 是产品的正门，只开正门需要的两样——页面和 <code>/api</code>。</b>运维用的门走内部网络。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>⑥：工程化收口产物</b>。三个文件都在 <code>web/</code> 下——因为前端镜像的构建上下文是 <code>./web</code>，<code>.dockerignore</code> 与 <code>nginx.conf</code> 必须和 <code>Dockerfile</code> 在同一个上下文里。收工时 <code>make build</code> / <code>make test</code> 仍必须绿。</p>
+
+    <h3>步骤 1 · web/Dockerfile</h3>
+    <pre><span class="code-label">完整 · web/Dockerfile</span><code><span class="c"># ---------- 阶段一：builder（Node 只活在这里） ----------</span>
+<span class="k">FROM</span> node:20-alpine <span class="k">AS</span> builder
+<span class="k">WORKDIR</span> /web
+
+<span class="c"># 先只拷依赖清单：package.json / 锁文件不变，npm ci 就命中缓存</span>
+<span class="k">COPY</span> package*.json ./
+<span class="k">RUN</span> npm ci
+
+<span class="k">COPY</span> . .
+<span class="k">RUN</span> npm run build:h5
+
+<span class="c"># ---------- 阶段二：runtime（nginx 发静态文件，没有 Node） ----------</span>
+<span class="k">FROM</span> nginx:1.27-alpine
+<span class="k">COPY</span> nginx.conf /etc/nginx/conf.d/default.conf
+<span class="k">COPY</span> --from=builder /web/dist/build/h5/ /usr/share/nginx/html/
+<span class="k">EXPOSE</span> 80</code></pre>
+    <ul>
+      <li>覆盖 <code>/etc/nginx/conf.d/default.conf</code> 而不是改 <code>/etc/nginx/nginx.conf</code>：官方镜像的主配置已经 <code>include /etc/nginx/conf.d/*.conf</code>，你只需要提供那个 <code>server</code> 块。改动面越小，将来升级 nginx 版本越省事。</li>
+      <li>包管理器不是 npm 就把 <code>COPY package*.json</code> 与 <code>npm ci</code> 换成对应物（pnpm 是 <code>COPY package.json pnpm-lock.yaml ./</code> + <code>pnpm install --frozen-lockfile</code>，构建命令 <code>pnpm build:h5</code>）。<b>锁文件必须进镜像构建</b>，否则每次构建装到的依赖版本都可能不一样，「昨天还能跑」就来了。</li>
+    </ul>
+
+    <h3>步骤 2 · web/.dockerignore</h3>
+    <pre><span class="code-label">完整 · web/.dockerignore</span><code>node_modules
+dist
+unpackage
+.hbuilderx
+.git
+*.log
+.DS_Store</code></pre>
+    <p><code>node_modules</code> 是这里的头等目标：不挡的话每次构建都要把几万个小文件打包发给 Docker 引擎，而且它<b>会让 <code>npm ci</code> 那一层的缓存彻底失效</b>（<code>COPY . .</code> 的内容变了）。<code>dist</code> 与 <code>unpackage</code> 是本机构建产物，容器里会重新生成，本机的旧产物混进去只会造成「镜像里是上一次的页面」这种极难查的假象。</p>
+
+    <h3>步骤 3 · web/nginx.conf</h3>
+    <pre><span class="code-label">完整 · web/nginx.conf</span><code>server {
+    listen       80;
+    server_name  _;
+    root         /usr/share/nginx/html;
+    index        index.html;
+
+    <span class="c"># 附件上传：nginx 默认 1m 会抢在后端之前返回 413（还不是统一响应体）</span>
+    client_max_body_size 12m;
+
+    <span class="c"># 文本类实时压缩；application/json 必须列进来，/api 的响应也走这里</span>
+    gzip            on;
+    gzip_vary       on;
+    gzip_min_length 1024;
+    gzip_comp_level 5;
+    gzip_types      text/plain text/css application/javascript application/json
+                    image/svg+xml;
+
+    <span class="c"># Docker 内置 DNS。放进变量 → 上游解析推迟到每次请求，</span>
+    <span class="c"># 于是 server 容器还没起时 nginx 也能正常启动</span>
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
+    <span class="c"># ---- 后端接口：原样透传 /api 前缀，不替换路径 ----</span>
+    location /api/ {
+        set $backend <span class="s">"http://server:8080"</span>;
+        proxy_pass $backend$request_uri;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        <span class="c"># 导出接口要跑聚合再拼 CSV，60s 比默认的 60s 读超时更明确地写在这</span>
+        proxy_connect_timeout 5s;
+        proxy_read_timeout    60s;
+    }
+
+    <span class="c"># ---- 带内容哈希的静态资源：强缓存一年 ----</span>
+    location /assets/ {
+        expires    1y;
+        add_header Cache-Control <span class="s">"public, max-age=31536000, immutable"</span>;
+        try_files  $uri =404;
+    }
+
+    <span class="c"># ---- 入口 HTML：可以存，但每次必须回源确认 ----</span>
+    location = /index.html {
+        add_header Cache-Control <span class="s">"no-cache"</span>;
+    }
+
+    <span class="c"># ---- 前端路由：磁盘上找不到就回落到 index.html，交给 Vue Router ----</span>
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}</code></pre>
+    <p>四个 <code>X-*</code> 请求头今天先照抄，<b>S8·D5 会正式讲它们</b>：nginx 是代理，后端直接看到的对端 IP 是 nginx 容器的 IP，不是用户的真实 IP；真实 IP 只能靠 <code>X-Forwarded-For</code> 传递，而后端要不要<b>相信</b>这个头，取决于你有没有告诉它「谁是可信代理」。这是昨天埋的伏笔，两天后兑现。</p>
+
+    <h3>步骤 4 · 构建并验证</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+
+docker build -t homecube-web:dev ./web
+docker image ls homecube-web:dev            <span class="c"># SIZE 应在 25-40 MB 量级，不是 200 MB 以上</span>
+
+docker run -d --name homecube-web-dev -p 8082:80 homecube-web:dev
+docker ps --filter name=homecube-web-dev    <span class="c"># STATUS 是 Up。若是 Restarting，去看下面那条 logs</span>
+docker logs homecube-web-dev                <span class="c"># 不应出现 host not found in upstream</span>
+
+curl -I http://localhost:8082/
+<span class="c"># 期望：HTTP/1.1 200 OK、Content-Type: text/html、Cache-Control: no-cache</span>
+
+curl -I http://localhost:8082/finance/tx/list
+<span class="c"># 期望：同样 200 + text/html。这一条就是 try_files 生效的证据：</span>
+<span class="c"># 磁盘上没有这个路径，nginx 把 index.html 发回来了，浏览器刷新不再 404</span>
+
+curl -s -o /dev/null -w <span class="s">'status=%{http_code}\n'</span> http://localhost:8082/api/finance/categories
+<span class="c"># 期望 status=502。这是今天的正确结果：server 容器还不存在，代理无处可转。</span>
+<span class="c"># 关键是它「按请求返回 502」，而不是让整个 nginx 起不来——变量式 proxy_pass 的功劳</span>
+
+docker rm -f homecube-web-dev               <span class="c"># 验证完收掉</span></code></pre>
+
+    <h3>步骤 5 · 提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>make build &amp;&amp; make test &amp;&amp; make lint
+git add web/Dockerfile web/.dockerignore web/nginx.conf
+git status
+git commit -m <span class="s">"build(s8d2): 前端镜像 + nginx 静态与反代配置"</span></code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td><code>proxy_pass</code> 结尾多了个 <code>/</code></td><td>所有接口 404 + 1001，前端只报「请求失败」</td><td>不带 URI 部分（或用 <code>$request_uri</code> 显式透传），让 <code>/api</code> 前缀原样到达 Gin</td></tr>
+      <tr><td>写死 <code>proxy_pass http://server:8080;</code></td><td>单独起 web 容器就崩，日志 <code>host not found in upstream</code>；或 server 容器重建后一片 502</td><td><code>resolver 127.0.0.11</code> + 变量式 <code>proxy_pass</code>，把解析推迟到每次请求</td></tr>
+      <tr><td>变量式 <code>proxy_pass</code> 忘了带 <code>$request_uri</code></td><td>后端收到的路径是空的，一律 404 + 1001</td><td><code>proxy_pass $backend$request_uri;</code></td></tr>
+      <tr><td>没有 <code>try_files</code> 回落</td><td>首页能开，一刷新或直接访问深链接就 404（nginx 的白底 404 页）</td><td><code>try_files $uri $uri/ /index.html</code></td></tr>
+      <tr><td><code>client_max_body_size</code> 用默认 1m</td><td>传一张 3 MB 的票据就 413，且响应不是三键信封，前端拦截器解析不出 <code>code</code></td><td>放宽到业务限额之上（12m），让后端返回 400 + 4002 当唯一裁决者</td></tr>
+      <tr><td>给 <code>index.html</code> 也配了强缓存</td><td>发版后用户看到的是旧页面，「清缓存就好了」</td><td>入口 HTML 用 <code>no-cache</code>，只有带哈希的资源用 <code>immutable</code></td></tr>
+      <tr><td><code>gzip_types</code> 忘了 <code>application/json</code></td><td>页面很快，报表接口的大响应体照样几百 KB 裸传</td><td>把 <code>application/json</code> 列进 <code>gzip_types</code></td></tr>
+      <tr><td>把 <code>/metrics</code> 也反代出去</td><td>任何人 <code>curl</code> 一下就能读到你全站的 QPS、延迟分布与路由清单</td><td>运维端点只在容器网络内可达，不进 nginx</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>反向代理</td><td>替服务端接客户：浏览器以为只跟一个地址说话，后面其实站着多个容器</td></tr>
+      <tr><td>上游 upstream</td><td>反向代理要转过去的那个后端。这里是 <code>server</code> 容器的 8080</td></tr>
+      <tr><td><code>try_files</code></td><td>按顺序在磁盘上找，都找不到就内部转发到最后一个参数；SPA 前端路由的兜底</td></tr>
+      <tr><td>内部转发</td><td>nginx 自己换个路径重新处理，浏览器无感、地址栏不变、不多一次往返</td></tr>
+      <tr><td><code>$uri</code> / <code>$request_uri</code></td><td>前者是规范化并解码后的路径（不含查询串），后者是客户端发来的原始请求行（含查询串）</td></tr>
+      <tr><td><code>proxy_set_header</code></td><td>转发时补上的请求头。<code>X-Forwarded-For</code> 携带真实客户端 IP 链，S8·D5 正式讲</td></tr>
+      <tr><td><code>resolver</code></td><td>nginx 自己用的 DNS 服务器。Docker 内置 DNS 固定是 <code>127.0.0.11</code></td></tr>
+      <tr><td>内容哈希文件名</td><td><code>index-a1b2c3.js</code>：内容变则名变，是「强缓存一年」能成立的前提</td></tr>
+      <tr><td><code>no-cache</code> vs <code>no-store</code></td><td>前者「存了但每次回源确认」，后者「根本不许存」。入口 HTML 用前者</td></tr>
+      <tr><td><code>immutable</code></td><td>告诉浏览器这个资源在有效期内绝不会变，连刷新都不必回源确认</td></tr>
+      <tr><td>gzip</td><td>响应体实时压缩，文本类省六到八成流量；已压缩格式（图片）不要再压</td></tr>
+      <tr><td>413</td><td>请求体超限。反代层的 413 不走统一响应体，所以要把限额放宽到后端之上</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <table>
+      <tr><th>症状</th><th>回哪一课</th></tr>
+      <tr><td>镜像构建、层缓存、<code>.dockerignore</code> 的原理</td><td>S8·D1（昨天）</td></tr>
+      <tr><td>接口 404 + 1001，怀疑是路由分域前缀写错</td><td>S2 讲 Gin 路由分组的那一课；前缀口径是 <code>/api/homeos/*</code> 与 <code>/api/finance/*</code>，没有版本段</td></tr>
+      <tr><td>前端 401 之后没有自动刷新重放</td><td>F3 段讲请求层与 <code>useAuthStore</code> 的那张周日卡；nginx 不参与这件事，别在这里找</td></tr>
+      <tr><td>附件上传 400 + 4002，想确认业务限额是多少</td><td>S6 讲文件上传与 <code>UPLOAD_DIR</code> 的那一课（≤3 张/笔、单张 ≤5 MB、jpg/png/webp）</td></tr>
+      <tr><td>想知道 <code>X-Forwarded-For</code> 到底怎么被后端消费</td><td>S8·D5（本阶段第 5 天），今天照抄即可</td></tr>
+      <tr><td>导出接口偶发 504</td><td>S6 讲导出与时间窗聚合的那几课；先确认 <code>proxy_read_timeout</code> 够不够，再看查询本身</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w21d2c1"><code>web/Dockerfile</code> 两阶段落盘，runtime 阶段是 <code>nginx:*-alpine</code>，镜像里<b>没有</b> Node 也没有 <code>node_modules</code>（<code>docker run --rm --entrypoint sh homecube-web:dev -c "node -v || echo no-node"</code> 应输出 <code>no-node</code>）</label></li>
+      <li><label><input type="checkbox" data-key="w21d2c2"><code>web/.dockerignore</code> 落盘，至少挡住 <code>node_modules</code>、<code>dist</code>、<code>unpackage</code></label></li>
+      <li><label><input type="checkbox" data-key="w21d2c3"><code>web/nginx.conf</code> 落盘：<code>try_files</code> 回落、变量式 <code>proxy_pass</code> 透传 <code>/api</code> 前缀、<code>client_max_body_size 12m</code>、gzip、两套缓存头，一个不缺</label></li>
+      <li><label><input type="checkbox" data-key="w21d2c4">验证四条全过：容器能起、<code>/</code> 返回 200 且 <code>Cache-Control: no-cache</code>、深链接 <code>/finance/tx/list</code> 也返回 200（不是 404）、<code>/api/finance/categories</code> 返回 502 而不是让 nginx 起不来</label></li>
+      <li><label><input type="checkbox" data-key="w21d2c5"><code>notes/</code> 里写下三行：为什么运行镜像不需要 Node、<code>proxy_pass</code> 结尾斜杠的差别、入口 HTML 与带哈希资源的缓存策略为什么必须相反</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w21d1.html"><span class="hint">← 昨天 · S8·D1</span>多阶段 Dockerfile</a>
+    <a href="w21d3.html"><span class="hint">明天 · S8·D3 →</span>docker-compose 编排</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w21d2 · 明天见 ⟩</footer>
+</body>
+</html>

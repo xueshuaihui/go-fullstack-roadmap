@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>F2 阶段总览 · uni-app 工程与路由 | HomeCube 修炼手册</title>
+<meta name="description" content="F2（2 张周日卡）：web/ 工程已经存在——agent 在服务端 S3·D1 第一次介入，脚手架出 Vue 3 + uni-app 工程与请求层。从这一阶段起读真代码：pages.json 与配置式路由、页面栈与导航 API、src/api/http.js 的 baseURL / 拦截器 / 401 重放。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body>
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="../f3/overview.html">下一阶段 F3 →</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / 前端辅线 / F2</div>
+  <div class="day-meta">
+    <span class="chip">STAGE F2</span>
+    <span class="chip alt">2 张周日卡 · 对应服务端 S3</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>F2 · uni-app 工程与路由</h1>
+  <div class="callout warn"><p><b>这一段有一个转折，先说清楚：从今天起你看的是真代码，不是我给你的片段。</b>F1 那四张卡教的是<b>日卡内嵌的 SFC 片段</b>——那时 <code>web/</code> 这个目录还不存在，练习文件全部放 <code>notes/</code> 下、不进任何构建、也不要求跑起来。agent 在服务端 <b>S3·D1</b> 第一次介入，脚手架出 <code>web/</code>：一个 Vue 3 + uni-app 工程，外加一层 <code>src/api/http.js</code> 请求封装。所以 F2 起，你有真实的目录可以 <code>cd</code> 进去、可以全局搜索、可以在浏览器里点、可以用 devtools 看 Network。<b>教材从「片段」换成「工程」，判据没换。</b></p></div>
+  <p>这一段两张卡，回答两个问题：<b>一个 uni-app 工程该怎么读</b>（哪个文件决定有哪些页面、哪个决定页面长什么框、哪个决定请求发到哪台机器），以及<b>一个请求从页面出发到数据上屏，中间经过了什么</b>。后者是「能不能独立定位一个 bug 在前端还是服务端」这条硬判据最有用的一课：请求层就是前后端的边界，边界读懂了，「数据是服务端没给，还是前端没接住」只需要看一个地方。</p>
+
+  <section>
+    <h2>为什么判据还是「能讲清 / 能改」</h2>
+    <div class="callout js"><p>工程能跑起来、页面能打开、请求能发出去——这些都是 agent 的产出，<b>不是你的判据</b>。F2 的判据是两句话：① 能讲清 <code>pages.json</code> 里<b>为什么不能有 <code>tabBar</code> 字段</b>；② 能把请求指向你本地的 Go 服务并看到响应，且说清这条响应经过了哪几次加工。完成检查里没有一条是「页面跑起来了」。工程现在能跑，恰恰是最容易骗过自己的时候——<b>不许拿「页面能跑」当自己通过了</b>。</p></div>
+    <p>顺带说清「指向本地服务」改的是哪里：不是 <code>http.js</code> 里的 <code>baseURL</code>（它固定是 <code>'/api'</code>，三种环境都不改），而是 <b>H5 联调时的 devServer 代理</b>。这条区分本身就是 F2 的判据之一。</p>
+  </section>
+
+  <section>
+    <h2>阶段产物（F2 结束时必须有的东西）</h2>
+    <table>
+      <tr><th>产物</th><th>说明</th></tr>
+      <tr><td>一次「新增页面并挂进路由」的完整实操</td><td>建 <code>.vue</code> → 在 <code>pages.json</code> 注册 → 从首页跳过去 → 对比 <code>navigateTo</code> 与 <code>reLaunch</code> 的返回行为 → <b>练完删干净</b></td></tr>
+      <tr><td>一次「看到自己服务端响应」的联调</td><td>H5 端跑起来，Network 里看到 <code>/api/homeos/…</code> 或 <code>/healthz</code> 的响应信封 <code>{code,message,data}</code></td></tr>
+      <tr><td><code>notes/</code> 里的路由与导航速查表</td><td>四个导航 API 各对页面栈做什么、<code>pages.json</code> 的 <code>path</code> 与 <code>navigateTo</code> 的 <code>url</code> 写法差异</td></tr>
+      <tr><td><code>notes/</code> 里的错误码文案改动</td><td>补上的业务码中文文案，以及「服务端返码 → 拦截器 reject → 页面查表 → 提示」这条链的自述</td></tr>
+      <tr><td>定位笔记追加两层</td><td>F1 那份四步法前面加「路由层」（<code>page not found</code> 两步定论），后面加「请求层」（200 但没上屏的四处顺序）</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>阶段判据（全过才算 F2 通过）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="f2o1">能讲清 <code>pages.json</code> 里<b>为什么不能有 <code>tabBar</code> 字段</b>，三个理由都答得出：会出现两个底栏、被登记的页面两套跳法会打架、那等于在客户端硬编码第二份入口清单</label></li>
+      <li><label><input type="checkbox" data-key="f2o2">能讲清 <code>pages.json</code> / <code>main.js</code> / <code>App.vue</code> / <code>manifest.json</code> 各管什么，并回答「改某页标题」「改全局标题栏配色」「改启动时第一件事」「把请求指向本地服务」分别去哪个文件</label></li>
+      <li><label><input type="checkbox" data-key="f2o3">能说出配置式路由与 React Router 声明式路由的至少四处差别（路由表在哪、启动页怎么定、怎么跳、守卫挂在哪、参数怎么传），并说清三段式路径 <code>pages/{code}/{feature}/{action}</code> 的 <code>{code}</code> 为什么与服务端路由分域同源</label></li>
+      <li><label><input type="checkbox" data-key="f2o4">能讲清 <code>navigateTo</code> / <code>navigateBack</code> / <code>redirectTo</code> / <code>reLaunch</code> 各自对页面栈做什么，本项目为什么用不上 <code>switchTab</code>，以及为什么切大区、退出登录、切换家庭都用 <code>reLaunch</code></label></li>
+      <li><label><input type="checkbox" data-key="f2o5">能讲清请求层四件事：<code>baseURL '/api'</code> 与业务路径各出一半（叠成 <code>/api/api/</code> 会看到什么）、请求拦截器塞 access token、响应拦截器 <code>code!==0</code> reject 且成功只返回 <code>data</code>、401 → refresh → <b>只重放一次</b>，含并发只刷一次的队列做法</label></li>
+      <li><label><input type="checkbox" data-key="f2o6">两张卡的「动手改」全部完成且能讲清因果；两道定位题（<code>page not found</code> 两步定论、200 但没上屏的四处顺序）都已写进 <code>notes/</code></label></li>
+    </ul>
+    <div class="callout warn"><p><b>不通过就原地重做，不跳阶段。</b>F2 是 F3 的地基：F3 的登录态持久化要靠 <code>App.vue</code> 的 <code>onLaunch</code> 时机、路由守卫要靠这一段的页面栈与页面生命周期、401 重放要靠这一段的请求层。这三处跳过去，F3 会变成背结论。</p></div>
+  </section>
+
+  <section>
+    <h2>两张周日卡</h2>
+    <table>
+      <tr><th>卡</th><th>知识点</th><th>动手改 / 定位题</th></tr>
+      <tr><td><a href="w05f1.html">F2 第 1 张</a></td><td>uni-app 工程结构怎么读：<code>pages.json</code>（页面注册 + 全局样式 + 为什么没有 <code>tabBar</code>）、<code>main.js</code>、<code>App.vue</code>、<code>manifest.json</code>、三段式路由与配置式 vs 声明式、四个导航 API 的分工</td><td>注册一个新页面并从首页跳过去（含 <code>navigateTo</code> 与 <code>reLaunch</code> 对比）/ 「<code>page not found</code>」两步定论：路由配置还是组件本身</td></tr>
+      <tr><td><a href="w06f1.html">F2 第 2 张</a></td><td>请求层 <code>src/api/http.js</code>：<code>baseURL</code> 与路由分域的拼接、请求/响应拦截器、业务码与 HTTP 状态的分工、401 → refresh → 重放一次与并发只刷一次的队列；与 axios 拦截器 / fetch 封装的对照</td><td>给两个业务错误码加中文文案并让它在页面上显示 / 「页面空白、Console 没报错、Network 200 但数据没上屏」的四处顺序</td></tr>
+    </table>
+    <p>同期服务端在 <b>S3</b>（Postgres 与迁移）：分类域从内存实现换成真查询，这也是 agent 第一次介入的时点。<b>S3·D1</b> 那天 <code>web/</code> 出现；周日前半走前端卡，周日后半照旧复盘与提交，两条线互不挪用时间。</p>
+  </section>
+
+  <section>
+    <h2>本阶段不做什么（明确划掉，免得手滑）</h2>
+    <ul>
+      <li>不学 Pinia、不碰登录态与守卫——那是 F3；这一段的 <code>stores/</code> 目录只需要<b>知道它存在、各文件管什么</b></li>
+      <li>不配 <code>tabBar</code>、不写 <code>switchTab</code>、不在客户端硬编码任何入口清单（底栏由 shell 自绘，面清单只能来自服务端）</li>
+      <li>不做分包与按需加载的深入配置——这一段只认「主包 = <code>homeos</code>，分包 = 已出生面域减去 <code>homeos</code>」这条口径，<code>subPackages</code> 的细节在 F5</li>
+      <li>不做游标分页的前端侧（下拉刷新重置游标、触底续读）——那是 F4 兑现的伏笔；这一段只要认得分页信封 <code>{list, next_cursor, has_more}</code> 的形状</li>
+      <li>不写死任何色值、不改 <code>baseURL</code> 成绝对地址、不引入 axios；也不把 React 代码搬进来当实现——React 在本段只作为<b>概念对照</b>出现</li>
+      <li>不因为「工程能跑」就跳过动手改。练习页改完必须删干净，留在工程里就是「注册了但没用的假入口」</li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../f1/overview.html"><span class="hint">← 上一阶段</span>F1 · Vue 3 读法</a>
+    <a href="w05f1.html"><span class="hint">开始 →</span>uni-app 工程结构怎么读：pages.json 与配置式路由</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · F2 阶段总览 ⟩</footer>
+</body>
+</html>

@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S7·D14 · DueRegistry：跨模块调用收在 platform 接口后面 | HomeCube 修炼手册</title>
+<meta name="description" content="兑现 S4 埋下的伏笔：到期注册走进程内接口，调用点必须收在 platform 的 DueRegistry 接口后面，日后换事件总线只换实现、调用点一行不动。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w19d2">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S7</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S7</a> / w19d2</div>
+  <div class="day-meta">
+    <span class="chip">S7 · DAY 14</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>DueRegistry：跨模块调用收在 platform 接口后面</h1>
+  <p>S4 建 <code>FamilyDirectory</code>（第一个跨模块接口）时留过一句话：<b>跨模块调用点一律收在 <code>internal/platform</code> 的接口后面，日后要拆服务，只换接口实现</b>。今天是这句伏笔的兑现日——第二个跨模块接口 <code>DueRegistry</code>：finance 要把预算周期、周期记账注册进到期中心，但 finance 不许 import homeos，更不许 select <code>homeos_*</code> 表。今天只落契约包（接口 + Entry + Kind 常量），实现明天接。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w19d2g1">背出跨模块纪律：finance 不 import homeos、不 select <code>homeos_*</code>，调用点收在 platform 接口后面</label></li>
+      <li><label><input type="checkbox" data-key="w19d2g2">说清「日后换总线只换实现」：接口方法名为什么照着事件语义起（registered / revoked / completed）</label></li>
+      <li><label><input type="checkbox" data-key="w19d2g3">画出依赖方向：<code>finance → platform ← homeos</code>，两个业务模块互相看不见</label></li>
+      <li><label><input type="checkbox" data-key="w19d2g4"><code>internal/platform/dueregistry</code> 契约包落盘，编译级断言测试绿，<code>make build</code> / <code>make test</code> 绿</label></li>
+    </ul>
+    <div class="callout note"><p>↑ 这四条是「学习目标」。页面底部还有 5 条「完成检查」，全部勾掉今天才算结束。</p></div>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 为什么不能直接调、直接查</h3>
+    <p>最直觉的做法：finance 的 service 里 import homeos 的 repo，直接往 <code>homeos_due_registry</code> 插行。三个理由否掉它：</p>
+    <ul>
+      <li><b>依赖方向失控</b>。homeos 迟早也要知道 finance 的事（比如日历详情要展示规则金额），你 import 我、我 import 你，Go 直接报 import cycle，编译不过。接口放在两边都够得着的 platform，环就断了。</li>
+      <li><b>表结构变成公共契约</b>。直查表意味着 homeos 改一列，finance 跟着崩。收在接口后面，契约只剩方法签名——签名比表结构稳定一个数量级。</li>
+      <li><b>换实现的成本</b>。原设计里「注册/撤销」是走事件总线的三个事件（<code>{code}.due.registered</code>、<code>{code}.due.revoked</code>、<code>homeos.todo.completed</code>）。本课程范围明确放弃事件总线，用<b>进程内接口调用</b>替代——但接口方法名照事件语义起，将来真要拆服务、上总线，写一个「把方法调用变成发事件」的实现塞进 main.go 就完事，<b>所有调用点一行不动</b>。这就是 S4 那句伏笔的完整含义。</li>
+    </ul>
+    <div class="callout note"><p>事件总线、消息队列属于本课程<b>范围外</b>，这里只作前瞻，不承诺任何周次。进程内版本必须保住原设计的两条性质：<b>① 幂等键</b>（昨天建的唯一索引）、<b>② 注册与回写不阻塞请求链路</b>（同事务内写自己的表不算 fan-out；真正的触发与通知在后台调度器里做，S7·D16 落地）。</p></div>
+
+    <h3>2. 接口形状：三个方法 = 三个事件</h3>
+    <pre><span class="code-label">片段 · 方法与事件的对照（完整版见今日增量）</span><code>Register(ctx, entry)  ←→  {code}.due.registered   <span class="c">注册/重新注册（upsert）</span>
+Revoke(ctx, ...)      ←→  {code}.due.revoked      <span class="c">撤销（暂停、删源对象）</span>
+Complete(ctx, ...)    ←→  homeos.todo.completed   <span class="c">完成回写（勾选待办）</span></code></pre>
+    <p>参数里反复出现的三元组 <code>(sourceSystem, sourceID, kind)</code> 就是昨天的幂等键——接口签名直接暴露它，等于把「你必须想清楚自己是谁、注册的是哪一件事」写进了契约。</p>
+
+    <h3>3. 契约包放哪、实现放哪、谁装配</h3>
+    <table>
+      <tr><th>东西</th><th>位置</th><th>为什么</th></tr>
+      <tr><td>接口 + Entry + Kind 常量</td><td><code>internal/platform/dueregistry</code></td><td>platform 只放契约，不放业务；与 S4 的 <code>FamilyDirectory</code>、<code>authz</code> 同住</td></tr>
+      <tr><td>真实现（写注册表）</td><td><code>internal/homeos/duecenter</code>（明天建）</td><td>到期中心是 homeos 的功能，注册表是 <code>homeos_*</code> 表，只有 homeos 有权写</td></tr>
+      <tr><td>装配（注入）</td><td><code>cmd/homecube/main.go</code></td><td>main 是全进程唯一「知道所有模块」的地方；S7·D17 finance 接入时见真章</td></tr>
+    </table>
+    <p>依赖方向图，背下来：</p>
+    <pre><span class="code-label">片段 · import 方向</span><code>internal/finance  ──→  internal/platform/dueregistry  ←──  internal/homeos/duecenter
+      （只认接口）                （契约，谁都不 import）           （实现接口，写 homeos 的表）
+main.go：new(duecenter.Inproc) 注入 finance 的 service —— 两个业务模块互相不 import</code></pre>
+
+    <h3>4. 编译级断言：接口的「测试」可以先于实现</h3>
+    <p>Go 的接口是隐式实现（S1·D5），没有一个地方「声明」了实现关系——所以要用一行赋值把关系钉死，方法集不齐直接编译失败：</p>
+    <pre><span class="code-label">片段 · 惯用法，S7·D15 的实现靠它把关</span><code><span class="k">var</span> _ dueregistry.DueRegistry = (*duecenter.Inproc)(<span class="k">nil</span>)</code></pre>
+    <p>今天实现还没出生，断言先在<b>测试文件</b>里用一个 stub 演示（测试里允许放假实现——假数据只能活在测试里，这条纪律没破）。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>①+③：加一个接口/struct + 补一个测试用例</b>。</p>
+
+    <h3>步骤 1 · 契约包</h3>
+    <pre><span class="code-label">完整 · server/internal/platform/dueregistry/registry.go</span><code><span class="k">package</span> dueregistry
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"time"</span>
+)
+
+<span class="c">// Kind 到期种类。跨模块共享，所以常量必须放 platform，</span>
+<span class="c">// 不能留在 homeos 的 model 里（finance 够不着）。</span>
+<span class="k">type</span> <span class="t">Kind</span> <span class="t">string</span>
+
+<span class="k">const</span> (
+    KindReminder      Kind = <span class="s">"reminder"</span>
+    KindTodo          Kind = <span class="s">"todo"</span>
+    KindBudgetCycle   Kind = <span class="s">"budget_cycle"</span>
+    KindRecurringEntry Kind = <span class="s">"recurring_entry"</span>
+)
+
+<span class="c">// Entry 一次注册的完整描述。幂等键 = SourceSystem + SourceID + Kind。</span>
+<span class="k">type</span> <span class="t">Entry</span> <span class="k">struct</span> {
+    FamilyID     int64
+    SourceSystem string         <span class="c">// 面目录里的 code："homeos" / "finance"</span>
+    SourceID     int64
+    Kind         Kind
+    Title        string
+    DueAt        time.Time
+    Payload      map[string]any <span class="c">// 深链等附加信息，可空</span>
+}
+
+<span class="c">// DueRegistry 跨模块到期注册契约（S4 FamilyDirectory 之后第二个）。</span>
+<span class="c">// 进程内实现；日后若换事件总线，只换实现，调用点不动。</span>
+<span class="k">type</span> <span class="t">DueRegistry</span> <span class="k">interface</span> {
+    <span class="c">// Register 注册或重新注册：按幂等键 upsert，status 置回 registered。</span>
+    <span class="t">Register</span>(ctx context.Context, e Entry) error
+    <span class="c">// Revoke 撤销：status 置 revoked，留痕不删行。撤销不存在的键不算错。</span>
+    <span class="t">Revoke</span>(ctx context.Context, sourceSystem <span class="t">string</span>, sourceID <span class="t">int64</span>, kind Kind) error
+    <span class="c">// Complete 完成回写：源对象已完成（如待办勾选），注册行置 fired。</span>
+    <span class="t">Complete</span>(ctx context.Context, sourceSystem <span class="t">string</span>, sourceID <span class="t">int64</span>, kind Kind) error
+}</code></pre>
+    <div class="callout warn"><p><b>Revoke 一个不存在的键返回 nil 而不是 ErrNotFound</b>——这是故意的：撤销是「确保不在册」，本来就不在册也算达成目标（幂等）。把它设计成报错，调用方就得写「先查再撤」的丑陋分支。</p></div>
+
+    <h3>步骤 2 · 编译级断言测试（用 stub）</h3>
+    <pre><span class="code-label">完整 · server/internal/platform/dueregistry/registry_test.go</span><code><span class="k">package</span> dueregistry
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"testing"</span>
+)
+
+<span class="c">// stub 只为验证接口可实现、方法集齐全；真实现明天在 homeos/duecenter 出生。</span>
+<span class="k">type</span> <span class="t">stub</span> <span class="k">struct</span>{ registered []Entry }
+
+<span class="k">func</span> (s *stub) <span class="t">Register</span>(ctx context.Context, e Entry) error {
+    s.registered = <span class="k">append</span>(s.registered, e)
+    <span class="k">return</span> <span class="k">nil</span>
+}
+<span class="k">func</span> (s *stub) <span class="t">Revoke</span>(ctx context.Context, sys <span class="t">string</span>, id <span class="t">int64</span>, k Kind) error { <span class="k">return</span> <span class="k">nil</span> }
+<span class="k">func</span> (s *stub) <span class="t">Complete</span>(ctx context.Context, sys <span class="t">string</span>, id <span class="t">int64</span>, k Kind) error { <span class="k">return</span> <span class="k">nil</span> }
+
+<span class="c">// 编译级断言：stub 的方法集若与接口不齐，这一行直接编译失败。</span>
+<span class="k">var</span> _ DueRegistry = (*stub)(<span class="k">nil</span>)
+
+<span class="k">func</span> <span class="t">TestStubSatisfiesInterface</span>(t *testing.T) {
+    <span class="k">var</span> r DueRegistry = &amp;stub{}
+    <span class="k">if</span> err := r.<span class="t">Register</span>(context.<span class="t">Background</span>(), Entry{SourceSystem: <span class="s">"homeos"</span>, SourceID: <span class="n">1</span>, Kind: KindReminder}); err != <span class="k">nil</span> {
+        t.<span class="t">Fatalf</span>(<span class="s">"Register: %v"</span>, err)
+    }
+}</code></pre>
+
+    <h3>步骤 3 · 验收 + 提交</h3>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>cd &lt;你的学习仓根目录&gt;
+make build
+make test    <span class="c"># dueregistry 包 ok；stub 断言编译通过即赢一半</span>
+make lint
+grep -rn "internal/homeos" server/internal/finance   <span class="c"># 必须零输出：finance 至今没碰过 homeos</span>
+
+git add server
+git commit -m "feat(s7d14): platform/dueregistry 契约包（DueRegistry 接口 + Entry + Kind）"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>接口放 homeos，让 finance 来 import</td><td>今天能跑；哪天 homeos 反过来要 import finance 就死循环</td><td>契约永远放 platform，两个业务模块都只依赖契约</td></tr>
+      <tr><td>接口方法照 SQL 起名叫 <code>InsertRow</code></td><td>换事件总线时语义对不上，调用点全得改</td><td>照<b>领域事件</b>起名：Register / Revoke / Complete</td></tr>
+      <tr><td>Entry 里塞 <code>*model.Reminder</code></td><td>platform 被迫 import homeos 的 model，契约包被污染</td><td>Entry 只用基础类型与 map，任何模块都够得着</td></tr>
+      <tr><td>Kind 常量留在 homeos/model</td><td>finance 注册时只好写裸字符串 <code>"budget_cycle"</code></td><td>跨模块共享的枚举升格进契约包（昨天留的伏笔今天收）</td></tr>
+      <tr><td>Revoke 找不到行就返回错误</td><td>调用方写出「先查再撤」的并发漏洞</td><td>撤销是幂等的：不在册 = 目标已达成，返回 nil</td></tr>
+      <tr><td>忘了编译级断言</td><td>实现少一个方法，直到调用处才报错，报错点离病灶十万八千里</td><td><code>var _ Iface = (*Impl)(nil)</code> 一行钉死</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>跨模块接口</td><td>定义在 platform、由一个业务模块实现、供另一个业务模块调用的契约；S4 的 FamilyDirectory 是第一个，今天的是第二个</td></tr>
+      <tr><td>进程内调用</td><td>同进程直接方法调用替代事件总线；保住幂等键与不阻塞请求链路两条性质</td></tr>
+      <tr><td>依赖倒置</td><td>业务模块依赖抽象（接口）而不是彼此；main.go 装配时决定塞哪个实现</td></tr>
+      <tr><td>import cycle</td><td>Go 编译器直接拒绝的循环依赖；接口放 platform 就是断环手段</td></tr>
+      <tr><td>编译级断言</td><td><code>var _ Iface = (*Impl)(nil)</code>：方法集不齐则编译失败，最早的失败点</td></tr>
+      <tr><td>stub</td><td>测试里的最小假实现，只为满足接口；假数据只许活在测试里</td></tr>
+      <tr><td>幂等的撤销</td><td>Revoke 不存在的键返回 nil——「确保不在册」本来就已达成</td></tr>
+      <tr><td>事件语义命名</td><td>方法名照领域事件起（registered/revoked/completed），换总线时语义无缝</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足。往回翻的三种情况：</p>
+    <ul>
+      <li><b>接口与隐式实现的手感没了</b>：回 S1·D5——「方法齐了就算实现」是今天一切的地基。</li>
+      <li><b>FamilyDirectory 当时怎么装配的忘了</b>：回 S4 讲跨模块接口的卡，装配手法与今天完全同款。</li>
+      <li><b>context.Context 为什么是第一个参数</b>：回 S5 并发段的 context 卡；今天照用即可（超时与取消的传递通道）。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w19d2c1"><code>internal/platform/dueregistry</code> 落盘：接口三方法 + Entry + 四个 Kind 常量，契约包不 import 任何业务模块</label></li>
+      <li><label><input type="checkbox" data-key="w19d2c2">stub 的编译级断言测试绿，<code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿</label></li>
+      <li><label><input type="checkbox" data-key="w19d2c3"><code>grep -rn "internal/homeos" server/internal/finance</code> 零输出</label></li>
+      <li><label><input type="checkbox" data-key="w19d2c4">能不看资料讲清：为什么接口放 platform、方法名为什么照事件语义起、换总线时哪些代码动哪些不动</label></li>
+      <li><label><input type="checkbox" data-key="w19d2c5">commit 带卡号 <code>s7d14</code>，<code>notes/</code> 写下三行：依赖方向图、Revoke 为什么幂等、编译级断言的写法</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w19d1.html"><span class="hint">← 昨天 · S7·D13</span>到期中心三对象与注册表</a>
+    <a href="w19d3.html"><span class="hint">明天 · S7·D15 →</span>注册与撤销：registered / revoked 语义</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w19d2 · 明天见 ⟩</footer>
+</body>
+</html>

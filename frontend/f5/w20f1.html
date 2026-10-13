@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>F5·w20 · PIN 应用锁与 F5 收口 | HomeCube 修炼手册</title>
+<meta name="description" content="F5 第四张卡：PIN 是纯客户端能力——本地散列存储、不出端、没有任何服务端接口；讲清散列为什么必须加盐、错误次数限制怎么做才不自欺欺人；动手收敛错误提示文案；定位题「换设备后 PIN 失效」；末尾做 F5 四张卡判据收口。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w20f1">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">前端线 F1-F6</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / 前端辅线 / F5 / w20</div>
+  <div class="day-meta">
+    <span class="chip">F5 · WEEK 20</span>
+    <span class="chip alt">周日前半 · 约 2 小时</span>
+    <span class="chip">难度 ★★☆☆☆</span>
+  </div>
+  <h1>PIN 应用锁与 F5 收口</h1>
+  <p>F5 的最后一张卡，两件事：① 学壳的最后一块——<b>PIN 应用锁</b>，一个<b>纯客户端能力</b>：本地散列存储、不出端、<b>没有任何服务端接口</b>；② <b>F5 收口</b>：四张卡的判据逐条自测。PIN 这块最好的教材不是代码而是边界感：什么该在端上做、什么不该、端上防御的诚实极限在哪。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w20f1g1">能讲清 PIN 为什么是纯客户端能力：本地散列、不出端、零服务端接口——以及为什么<b>不许</b>给它编一个接口出来</label></li>
+      <li><label><input type="checkbox" data-key="w20f1g2">能讲清为什么不能明文存、散列为什么必须加盐、以及客户端防御的诚实极限（防偷看不防取证）</label></li>
+      <li><label><input type="checkbox" data-key="w20f1g3">能讲清锁屏时机、解锁流程、错误次数限制的正确姿势与兜底路径（重走登录）</label></li>
+      <li><label><input type="checkbox" data-key="w20f1g4">完成「动手改」「定位题」，并把 F5 四张卡判据自测表填进 <code>notes/f5w4/review.md</code></label></li>
+    </ul>
+    <div class="callout js"><p>判据提醒：PIN 的页面 agent 早写好了。你的判据是<b>能讲清它的存储边界与威胁模型</b>——尤其是「换设备 PIN 失效」这种问题，能不能不翻代码就判定「是设计如此」并给用户讲明白。</p></div>
+  </section>
+
+  <section>
+    <h2>1. 红线先行：PIN 没有任何服务端接口</h2>
+    <p>本站接口清单锁死在 72 条，里面<b>没有一条 PIN 接口</b>——这是拍板过的决议，不是遗漏。所以第一个纪律：<b>不许编一个 <code>/api/homeos/pin</code> 之类的东西出来</b>，哪怕「为了多设备同步」。为什么不该有：</p>
+    <table>
+      <tr><th>如果 PIN 出端…</th><th>代价</th></tr>
+      <tr><td>服务端要存它</td><td>它就成了「第二密码」：散列强度、重置流程、防枚举（1002 那一套）、审计，全都得再来一遍</td></tr>
+      <tr><td>网络要传它</td><td>多一个被截获面；而它防的威胁（身边人拿起手机偷看）根本不需要网络参与</td></tr>
+      <tr><td>多设备要同步它</td><td>「每台设备一道本地帘子」变成「一处泄露处处失守」</td></tr>
+    </table>
+    <p>PIN 与登录密码的分工要能一句话说清：<b>登录密码是「你是谁」，服务端验（auth 接口，跨设备有效）；PIN 是「这台设备现在能不能看」，本地验（设备级帘子，每台设备各挂各的）。</b></p>
+  </section>
+
+  <section>
+    <h2>2. 本地存储：不明文、散列必加盐、诚实说极限</h2>
+    <p><b>为什么不能明文存</b>：本地存储不是保险箱——H5 端的 <code>localStorage</code> 在 devtools 里一眼可见；App 端的存储文件可能随备份导出，设备被 root/越狱后可直接读。明文存 PIN 等于把钥匙贴在门上。</p>
+    <p><b>为什么散列还不够、必须加盐</b>：PIN 只有 4-6 位数字，全空间 10<sup>4</sup>-10<sup>6</sup>。不加盐的散列，同一个 PIN 在任何设备上都得到同一个摘要——攻击者拿预计算表（彩虹表）一查就反推出来，甚至不用在这台设备上算。加盐 = 设置 PIN 时随机生成一串 salt 与散列一起存，验证时 <code>hash(salt + 输入)</code> 再比对，让预计算表失效。</p>
+    <pre><span class="code-label">片段 · pin.js（核心三函数，散列实现用项目里选定的库）</span><code><span class="k">const</span> KEY_HASH = <span class="s">'pin_hash'</span>, KEY_SALT = <span class="s">'pin_salt'</span>
+
+<span class="k">export function</span> <span class="t">setupPin</span>(pin) {
+  <span class="k">const</span> salt = <span class="t">randomSalt</span>()                       <span class="c">// 每次设置都换新盐</span>
+  uni.<span class="t">setStorageSync</span>(KEY_SALT, salt)
+  uni.<span class="t">setStorageSync</span>(KEY_HASH, <span class="t">sha256</span>(salt + pin))  <span class="c">// 只存摘要，明文即弃</span>
+}
+<span class="k">export function</span> <span class="t">verifyPin</span>(pin) {
+  <span class="k">const</span> salt = uni.<span class="t">getStorageSync</span>(KEY_SALT)
+  <span class="k">return</span> <span class="t">sha256</span>(salt + pin) === uni.<span class="t">getStorageSync</span>(KEY_HASH)
+}
+<span class="k">export function</span> <span class="t">hasPin</span>() { <span class="k">return</span> !!uni.<span class="t">getStorageSync</span>(KEY_HASH) }  <span class="c">// 换设备后这里就是 false</span></code></pre>
+    <div class="callout warn"><p><b>诚实的极限，必须能讲出口</b>：就算加盐，拿到设备的人仍可以在这台设备上把 10<sup>4</sup>-10<sup>6</sup> 个 PIN 全试一遍——盐防的是「预计算表与跨设备复用」，防不了「本机穷举」。PIN 的威胁模型是<b>防身边人顺手偷看</b>，不是防取证级攻击者。所以散列值本身也不能当密码用（谁拿到存储谁就能离线慢慢试，这正是次数限制与冷却要抬高的成本，见 §3）。把「防什么、不防什么」讲清楚，比把算法讲清楚更重要——这是今天定位题要考的能力。</p></div>
+  </section>
+
+  <section>
+    <h2>3. 锁屏时机、解锁流程与次数限制</h2>
+    <table>
+      <tr><th>环节</th><th>做法</th><th>要点</th></tr>
+      <tr><td>锁屏时机</td><td>冷启动且 <code>hasPin()</code> 为真；退后台超时（<code>onHide</code> 记时间戳，<code>onShow</code> 比对超过 N 分钟）；手动锁定</td><td>用页面级 <code>onShow</code>/<code>onHide</code>（uni-app 提供），不是组件级 <code>onMounted</code></td></tr>
+      <tr><td>锁的形态</td><td><b>全局遮罩层</b>（App 级组件，锁定时盖住一切页面）</td><td>不要做成路由守卫的一个分支——直接 push 路由就绕过去了</td></tr>
+      <tr><td>解锁流程</td><td>输入 → <code>verifyPin</code> 本地比对 → 过：清失败计数、撤遮罩；不过：计数 +1、统一文案</td><td>全程零网络请求（没有接口可发，也不该发）</td></tr>
+      <tr><td>次数限制</td><td>失败计数与 <code>lockoutUntil</code> 时间戳<b>持久化在本地存储</b>，超限进冷却期（如 30 秒 → 1 分钟 → 5 分钟递增退避）</td><td>只放内存的话，杀掉进程重开计数就清零了</td></tr>
+      <tr><td>不自欺欺人</td><td>承认：清缓存/重装可以清掉计数与冷却——客户端限制只能<b>抬高成本</b>，不能绝对</td><td>兜底是「忘记 PIN → 重走账号密码登录」（用已有的 auth 接口，服务端验的是登录密码，依然不需要 PIN 接口），重新登录的流程里允许重设本地 PIN</td></tr>
+    </table>
+    <p>React 对照：全局遮罩相当于在根组件挂一个顶层 modal + 全局 context 的 <code>locked</code> 状态；uni-app 里对应 App.vue 级别的挂载点。核心同构：<b>锁的状态必须比路由层级高</b>，否则任何深链都能绕过它。</p>
+  </section>
+
+  <section>
+    <h2>动手改（今天的判据现场）</h2>
+    <p>目标：把 PIN 的错误提示收敛到「除了第几次错，不泄露任何别的信息」。起点代码（agent 写的版本提示太热情了）：</p>
+    <pre><span class="code-label">片段 · 起点代码（三处泄密文案）</span><code><span class="k">function</span> <span class="t">onPinSubmit</span>(input) {
+  <span class="k">if</span> (!<span class="t">hasPin</span>()) <span class="k">return</span> <span class="t">toast</span>(<span class="s">'本机尚未设置 PIN，请先在设置中开启'</span>)   <span class="c">// 泄密①：暴露“没设 PIN”状态</span>
+  <span class="k">if</span> (<span class="t">verifyPin</span>(input)) <span class="k">return</span> <span class="t">unlock</span>()
+  attempts.value++
+  <span class="k">if</span> (attempts.value &gt;= <span class="n">5</span>) <span class="k">return</span> <span class="t">toast</span>(<span class="s">'连续错 5 次将锁定 30 分钟，请小心'</span>)  <span class="c">// 泄密②：暴露阈值与冷却时长规则</span>
+  <span class="t">toast</span>(<span class="s">`PIN 错误，还剩 ${5 - attempts.value} 次机会，错误将上报服务器`</span>)       <span class="c">// 泄密③：谎称上报（根本没有接口），且报出剩余次数规则</span>
+}</code></pre>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w20f1m1">改动 ①：三处文案统一成「PIN 不正确（第 N 次）」——只保留尝试计数这一个信息；冷却期内只显示倒计时（「请 X 秒后再试」），不显示「几次会锁、锁多久」的规则。样式颜色走主题令牌，不硬编码</label></li>
+      <li><label><input type="checkbox" data-key="w20f1m2">改动 ②：删掉「将上报服务器」的假话——PIN 没有服务端接口，文案撒谎比不说更糟（用户会误以为存在远端保护）。检查整个 PIN 模块没有任何 <code>http</code> 调用，把检查结果记下来</label></li>
+      <li><label><input type="checkbox" data-key="w20f1m3">改动 ③：书面回答（写进 <code>notes/f5w4/</code>）：你删掉的每条信息分别会帮到窥视者什么？（阈值与冷却规则 → 规划试探节奏；「未设置 PIN」状态 → 直接知道这台设备没上锁；剩余次数规则 → 精确控制何时停手）</label></li>
+    </ul>
+    <div class="callout note"><p>验收口径：改完后，一个站在你身后看你解锁失败的人，从屏幕上只能得知「错了、第几次」——其余一无所知。能讲清这一点，才算过。</p></div>
+  </section>
+
+  <section>
+    <h2>定位题（是 bug 还是设计如此？）</h2>
+    <div class="task">
+      <div class="task-title">现象：用户换了新手机，登录同一个账号后，App 不再要求输入 PIN，而是要求「设置 PIN」。用户报障：「我的 PIN 失效了！」这是 bug 还是设计如此？怎么向用户解释？</div>
+      <p>排查（考的是能不能讲清本地存储的边界，不是能不能翻代码）：</p>
+      <ol>
+        <li><b>确认现象的准确形态</b>：新设备上是「输 PIN 报错」（验证失败），还是「直接进设置 PIN 流程」（本机从未设置过）？后者说明本地存储里根本没有 <code>pin_hash</code> 这个键——不是「验证不通过」，是「无从验证」。</li>
+        <li><b>对照存储边界</b>：PIN 的散列与盐只存在<b>旧设备的本地存储</b>里；接口清单里没有 PIN，服务端不存、也从未收到过任何 PIN 数据。新设备登录拿到的是 token 与会话（服务端能力，跨设备有效），本地存储是全新的空房间——<code>hasPin()</code> 返回 false，走「设置 PIN」分支。<b>结论：设计如此，不是 bug。</b></li>
+        <li><b>反向自检</b>：如果<b>旧设备</b>上 PIN 也「失效」了呢？那才有排查空间：清过浏览器缓存/换过浏览器（H5 的 <code>localStorage</code> 按浏览器 + 域隔离）、卸载重装过 App、或系统回收了存储——机理相同：散列随本地存储一起没了。</li>
+      </ol>
+      <p><b>给用户的解释（要求脱稿讲一遍）</b>：「PIN 是这台设备的帘子，不是您账号的钥匙。钥匙（账号密码）在服务器上验证，走到哪台设备都好使；帘子是挂在每台设备本地的，新设备是新房间，得重新挂一道。这也是它安全的原因——PIN 从不离开您的手机，我们也从不保存它。」把这段与三步排查记进 <code>notes/f5w4/</code>。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>F5 收口：四张卡判据逐条自测</h2>
+    <p>建一个 <code>notes/f5w4/review.md</code>，把下表<b>手抄</b>进去，逐行填「能 / 不能」与卡壳点（不能的写清卡在哪句话）。填完这张表 F5 才算收口——和 F1 收口、服务端各阶段收口是同一套纪律：</p>
+    <table>
+      <tr><th>#</th><th>判据（来自哪张卡）</th><th>能 / 不能</th></tr>
+      <tr><td>f5w4-1</td><td>讲清壳的构成与 <code>pages.json</code> 无 <code>tabBar</code> 的三条病症；底栏切换为什么用 <code>reLaunch</code>（F5 第 1 张）</td><td></td></tr>
+      <tr><td>f5w4-2</td><td>讲清未读计数「一个真源、三个出口、一份 store」，前端自己减一为什么是坑（F5 第 1 张）</td><td></td></tr>
+      <tr><td>f5w4-3</td><td><b>F5 毕业题</b>：讲清面清单为什么不允许客户端二次裁剪——信息不全 / 双份必漂 / 前端裁剪不是安全（F5 第 2 张）</td><td></td></tr>
+      <tr><td>f5w4-4</td><td>徒手配一个分包，说清 root/path 拼法与「何时被下载」；三条资源引用限制（F5 第 3 张）</td><td></td></tr>
+      <tr><td>f5w4-5</td><td>「改一个面的图标与顺序」的落点在哪、为什么前端没有第二个地方可改（F5 第 2、3 张）</td><td></td></tr>
+      <tr><td>f5w4-6</td><td>讲清 PIN 的纯客户端边界：不出端、零接口、散列加盐、防偷看不防取证、换设备行为是设计如此（F5 第 4 张）</td><td></td></tr>
+    </table>
+    <div class="callout tip"><p>四张卡的定位题笔记（底栏消失三分法 / faces[] 分界三步 / 分包 page-not-found 三层 / PIN 存储边界）合并读一遍——它们全是同一个模式：<b>先找一个「分界物」（配置字段、响应数组、构建产物、存储键），看分界物两侧各排除什么</b>。这个模式就是下一段 F6 三段定位法的雏形。</p></div>
+  </section>
+
+  <section>
+    <h2>常见坑</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>明文存 PIN</td><td>devtools / 备份文件里一眼可见</td><td>只存加盐散列，明文即弃</td></tr>
+      <tr><td>散列不加盐</td><td>同 PIN 同摘要，预计算表秒反推</td><td>随机盐与散列同存，验证时重算</td></tr>
+      <tr><td>把散列当密码用</td><td>拿到存储即可离线穷举，还以为「加密了」</td><td>承认极限：PIN 防偷看不防取证；次数限制只抬成本</td></tr>
+      <tr><td>给 PIN 编服务端接口</td><td>72 条清单外多出一条假入口</td><td>PIN 零接口是拍板决议；忘 PIN 走重登录兜底</td></tr>
+      <tr><td>锁屏做成路由守卫分支</td><td>深链直接 push 页面就绕过锁</td><td>全局遮罩层，层级高于一切路由</td></tr>
+      <tr><td>冷却状态只放内存</td><td>杀进程重开，冷却与计数清零</td><td><code>lockoutUntil</code> 与计数持久化到本地存储</td></tr>
+      <tr><td>错误文案泄露内部状态</td><td>窥视者学会试探节奏、得知未上锁</td><td>只报「不正确 + 第几次」；冷却只显倒计时</td></tr>
+      <tr><td>多账号共用一份 PIN 存储</td><td>切换账号后 A 的帘子锁不住 B 的数据观感</td><td>存储键按「账号 + 设备」维度隔离，切号即换锁</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>PIN 应用锁</td><td>设备级快速锁：本地验证 4-6 位数字，防身边人顺手偷看；纯客户端能力</td></tr>
+      <tr><td>散列（hash）</td><td>单向摘要：能从 PIN 算出摘要，不能从摘要倒推 PIN（不加盐时可被预计算表攻击）</td></tr>
+      <tr><td>盐（salt）</td><td>随机串，与散列同存；让「同 PIN 同摘要」不成立，废掉彩虹表</td></tr>
+      <tr><td>本地存储</td><td><code>uni.setStorage</code> 一族；H5 落 <code>localStorage</code>（按浏览器 + 域隔离），App 落设备文件——都随设备/缓存存亡</td></tr>
+      <tr><td>威胁模型</td><td>「防谁、不防谁」的明确声明；PIN 防偷看，不防 root 设备上的穷举与取证</td></tr>
+      <tr><td>冷却退避</td><td>连续失败后逐次拉长的等待期（30s → 1min → 5min）；客户端限制，可被清缓存绕过，故需兜底</td></tr>
+      <tr><td>全局遮罩层</td><td>挂在应用级、盖住一切页面的锁屏；层级必须高于路由，深链绕不过</td></tr>
+      <tr><td>重登录兜底</td><td>忘记 PIN 的唯一出路：走账号密码登录（服务端验证的既有接口），流程中重设本地 PIN</td></tr>
+      <tr><td><code>onShow</code> / <code>onHide</code></td><td>页面级生命周期：退后台/回前台的钩子，锁屏超时机器的计时点</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <ul>
+      <li>本地存储与持久化（token 存在哪、为什么——同一套「存储边界」思路）：<a href="../f3/w07f1.html">F3 第 1 张</a>起</li>
+      <li>路由守卫与 401 → refresh → 重放（重登录兜底会穿过这条链路）：<a href="../f3/w09f1.html">F3 第 3 张</a></li>
+      <li>页面级生命周期 <code>onShow</code>/<code>onHide</code> 与组件级钩子的差别：<a href="../f2/w05f1.html">F2 第 1 张</a>；组件钩子清理纪律见 <a href="../f1/w04f1.html">F1 第 4 张</a></li>
+      <li>主题令牌（错误提示的颜色不许硬编码）：<a href="../f4/w10f1.html">F4</a> 的样式与 design-tokens 课</li>
+      <li>服务端侧：设置两条接口（主题等落 settings；PIN 不落）、认证接口（重登录兜底用到的 login/refresh）：<a href="../../server/s7/overview.html">S7 阶段</a>的设置课（约 S7·D19-D24）与 <a href="../../server/s4/overview.html">S4 阶段</a>的认证课</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w20f1c1">能脱稿讲清 PIN 与登录密码的分工（设备帘子 vs 账号钥匙），以及「零服务端接口」为什么是决议不是遗漏</label></li>
+      <li><label><input type="checkbox" data-key="w20f1c2">能讲清明文、无盐散列、加盐散列三档各防住什么，以及客户端防御的诚实极限（本机穷举防不了）</label></li>
+      <li><label><input type="checkbox" data-key="w20f1c3">能讲清锁屏时机三种、遮罩层级为什么必须高于路由、冷却为什么必须持久化、兜底为什么是重登录</label></li>
+      <li><label><input type="checkbox" data-key="w20f1c4">动手改三处完成：文案只报「第几次错」，PIN 模块确认零 <code>http</code> 调用，泄密分析已写进 <code>notes/f5w4/</code></label></li>
+      <li><label><input type="checkbox" data-key="w20f1c5"><code>notes/f5w4/review.md</code> 六条判据已逐行填完，F5 毕业题（面清单不许客户端裁剪）已脱稿讲过一遍，换设备定位题的解释已脱稿讲过一遍</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="../../server/s7/w20d5.html"><span class="hint">← 本周六 · S7·D23</span>家庭设置：币种只存不算汇率</a>
+    <a href="../../server/s8/w21d1.html"><span class="hint">下周一 · S8·D1 →</span>多阶段 Dockerfile</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w20f1 · F5 收口 ⟩</footer>
+</body>
+</html>

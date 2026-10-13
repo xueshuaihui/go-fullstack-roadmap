@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S4·D8 · 邀请：发起、列表、接受与撤销 | HomeCube 修炼手册</title>
+<meta name="description" content="落地邀请四件套：POST members/invite（仅 owner 发起）、POST family/invite/accept（三态同一入参，3002 拦无效码）、DELETE family/invites/{id}（撤销即三态同失效）、GET members 成员列表。">
+<link rel="stylesheet" href="../../assets/style.css">
+<script src="../../assets/app.js"></script>
+</head>
+<body data-day="w08d2">
+<header class="site-header">
+  <a class="logo" href="../../index.html">Home<span>Cube</span> Roadmap</a>
+  <nav><a href="../../index.html">总览</a><a href="overview.html">本阶段 S4</a></nav>
+</header>
+
+<main class="page">
+<article>
+  <div class="crumb"><a href="../../index.html">首页</a> / <a href="overview.html">S4</a> / w08d2</div>
+  <div class="day-meta">
+    <span class="chip">S4 · DAY 8</span>
+    <span class="chip alt">预计 30 分钟</span>
+    <span class="chip">难度 ★★★☆☆</span>
+  </div>
+  <h1>邀请：发起、列表、接受与撤销</h1>
+  <p>家庭建好了，今天请人进门。四条接口一次落地：<code>POST /api/homeos/members/invite</code> 发起邀请（<b>仅 owner</b>）、<code>POST /api/homeos/family/invite/accept</code> 接受邀请、<code>DELETE /api/homeos/family/invites/{id}</code> 撤销邀请、<code>GET /api/homeos/members</code> 成员列表。邀请码是今天的主角：一个 8 位随机串，同时以「码 / 链接 / 二维码」三种形态出门——<b>三态共用同一入参口径</b>，服务端只认码本身。</p>
+
+  <section class="goals">
+    <h2>今日目标</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w08d2g1">邀请码用 crypto/rand 生成、唯一索引兜底、7 天有效、一次性消费</label></li>
+      <li><label><input type="checkbox" data-key="w08d2g2">说清「三态一口径」：链接与二维码只是码的两种包装，accept 入参永远是 <code>{code}</code></label></li>
+      <li><label><input type="checkbox" data-key="w08d2g3">accept 成功 = 写成员 + 会话切到新家庭（重签 token）+ 家庭数上限两侧都拦（3004）</label></li>
+      <li><label><input type="checkbox" data-key="w08d2g4">无效/过期/已用/已撤销的码统一 400 + 3002；撤销走软删，deleted_by 留痕</label></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>知识讲义</h2>
+
+    <h3>1. 邀请的生命周期</h3>
+    <pre><span class="code-label">片段 · 状态流转（无代码，看图）</span><code>owner 发起 ──► 在效期内 ──┬─► 被接受：写 member + used_at 落章，码死
+                          ├─► 被撤销：软删（deleted_at + deleted_by），三态同时失效
+                          └─► 过期（7 天）：什么都不用做，accept 时按 expires_at 判死
+所有死法在 accept 眼里是同一句话：400 + 3002「邀请无效或已过期」</code></pre>
+    <p>和上周验证码的四性质对照着记：<b>有效期、一次性、随机性</b>全同款，只是限流换成了「仅 owner 可发起」这道角色闸。这不是巧合——凡是「拿一串字符换一次权限」的机制，安全性质就这几条。</p>
+
+    <h3>2. 三态一口径：服务端永远只认 code</h3>
+    <p>邀请可以以三种形态到达被邀请人：手抄的 8 位码、分享链接（码在 URL 里）、二维码（码在图里）。服务端<b>不做三套接口</b>：链接由前端把码拆出来、二维码扫出来也是码，accept 的入参永远只有一个 <code>{code}</code>。这样撤销一次 = 三态全灭（都依赖同一条库记录），不存在「链接撤了二维码还能扫」的缝。二维码怎么生成？纯客户端的事，服务端不参与——清单里没有生成二维码的接口，也不许加。</p>
+
+    <h3>3. accept 是最像「登录」的一次写操作</h3>
+    <p>接受邀请发生三件事，顺序不能乱：① 验码（在效期、未用、未撤销，否则 3002）；② 写成员行（user_id 绑定被邀请人、role = member、relation 由入参给、码上 <code>used_at</code> 落章）——②之前先查家庭数上限，<b>两侧都拦 3004</b>（昨天拦创建侧，今天拦加入侧）；③ <b>会话切到新家庭 = 重签 token</b>（昨天的 <code>IssueForSession</code> 第二次上岗），响应把新 token 和新 member/family 一起带回。注意 accept 用的是<b>被邀请人自己的</b> access token——必须先注册登录，才谈得上接受邀请；「裸码进门」不存在。</p>
+    <div class="callout note"><p>「仅 owner 可发起/撤销邀请」今天先写在 service 里（一行角色判断 + 注释），这是<b>临时形态</b>：本阶段 D14 会把全部角色判定收进 <code>platform/authz</code> 的唯一实现，届时这些散落的 if 逐个删掉。先让它跑，再让它对，最后让它归位。</p></div>
+
+    <h3>4. 成员列表：小集合不分页</h3>
+    <p><code>GET /api/homeos/members</code> 返回当前家庭全部在档成员。一个家庭撑死十几口人——这是「非分页小集合」，响应就是 <code>{"list":[...]}</code>，<b>不带</b> <code>next_cursor / has_more</code>（游标分页留给流水那种无界列表）。每项含 <code>id / name / relation / role / status / avatar / guardian_id</code> 与「是否有账号」标记——注意不返回手机号：字段级可见性是 D16 的正课，今天先把「列表不等于全字段」的习惯立住。</p>
+  </section>
+
+  <section>
+    <h2>今日增量（在学习仓里落盘）</h2>
+    <p>今天属增量类型 <b>②+③：加四条路由与 handler + 补邀请生命周期测试</b>。表 <code>homeos_invite</code> S3 已建（列：<code>family_id / code / created_by / expires_at / used_at / used_by</code> + 通用列含软删对）；<code>code</code> 上有唯一索引。缺列就补迁移（类型④）。</p>
+
+    <h3>步骤 1 · service：邀请三动作</h3>
+    <pre><span class="code-label">完整 · server/internal/homeos/service/invite.go</span><code><span class="k">package</span> service
+
+<span class="k">import</span> (
+    <span class="s">"context"</span>
+    <span class="s">"crypto/rand"</span>
+    <span class="s">"errors"</span>
+    <span class="s">"fmt"</span>
+    <span class="s">"math/big"</span>
+    <span class="s">"time"</span>
+
+    <span class="s">"homecube/internal/homeos/model"</span>
+    <span class="s">"homecube/internal/homeos/repo"</span>
+    <span class="s">"homecube/pkg/response"</span>
+)
+
+<span class="k">const</span> inviteCodeAlphabet = <span class="s">"ABCDEFGHJKMNPQRSTUVWXYZ23456789"</span> <span class="c">// 去掉易混的 I/L/O/0/1，手抄友好</span>
+<span class="k">const</span> inviteTTL = <span class="n">7</span> * <span class="n">24</span> * time.<span class="t">Hour</span>
+
+<span class="k">type</span> <span class="t">InviteService</span> <span class="k">struct</span> {
+    invites repo.<span class="t">InviteRepo</span>
+    members repo.<span class="t">MemberRepo</span>
+    auth    *<span class="t">AuthService</span>
+}
+
+<span class="k">func</span> <span class="t">NewInviteService</span>(invites repo.<span class="t">InviteRepo</span>, members repo.<span class="t">MemberRepo</span>, auth *<span class="t">AuthService</span>) *<span class="t">InviteService</span> {
+    <span class="k">return</span> &amp;<span class="t">InviteService</span>{invites: invites, members: members, auth: auth}
+}
+
+<span class="c">// genInviteCode 8 位 crypto/rand 随机码。</span>
+<span class="k">func</span> <span class="t">genInviteCode</span>() (<span class="t">string</span>, <span class="t">error</span>) {
+    out := <span class="k">make</span>([]<span class="t">byte</span>, <span class="n">8</span>)
+    max := big.<span class="t">NewInt</span>(<span class="t">int64</span>(<span class="t">len</span>(inviteCodeAlphabet)))
+    <span class="k">for</span> i := <span class="k">range</span> out {
+        n, err := rand.<span class="t">Int</span>(rand.Reader, max)
+        <span class="k">if</span> err != <span class="t">nil</span> {
+            <span class="k">return</span> <span class="s">""</span>, fmt.<span class="t">Errorf</span>(<span class="s">"gen invite code: %w"</span>, err)
+        }
+        out[i] = inviteCodeAlphabet[n.<span class="t">Int64</span>()]
+    }
+    <span class="k">return</span> <span class="t">string</span>(out), <span class="t">nil</span>
+}
+
+<span class="c">// CreateInvite 仅 owner 可发起。撞唯一索引就重生成，最多 3 次。</span>
+<span class="k">func</span> (s *<span class="t">InviteService</span>) <span class="t">CreateInvite</span>(ctx context.<span class="t">Context</span>, familyID, memberID <span class="t">int64</span>, role model.<span class="t">Role</span>) (*model.<span class="t">Invite</span>, <span class="t">error</span>) {
+    <span class="k">if</span> role != model.RoleOwner { <span class="c">// TODO(S4·D14)：收进 platform/authz 唯一实现，届时删除本分支</span>
+        <span class="k">return</span> <span class="t">nil</span>, response.<span class="t">ErrForbidden</span> <span class="c">// → 1003 / 403</span>
+    }
+    <span class="k">for</span> attempt := <span class="n">0</span>; attempt &lt; <span class="n">3</span>; attempt++ {
+        code, err := <span class="t">genInviteCode</span>()
+        <span class="k">if</span> err != <span class="t">nil</span> {
+            <span class="k">return</span> <span class="t">nil</span>, err
+        }
+        inv := &amp;model.<span class="t">Invite</span>{FamilyID: familyID, Code: code, CreatedBy: memberID,
+            ExpiresAt: time.<span class="t">Now</span>().<span class="t">Add</span>(inviteTTL)}
+        err = s.invites.<span class="t">Create</span>(ctx, inv)
+        <span class="k">if</span> errors.<span class="t">Is</span>(err, response.ErrConflict) {
+            <span class="k">continue</span> <span class="c">// 31^8 的空间里撞码约等于中彩票，但代码必须兜住</span>
+        }
+        <span class="k">if</span> err != <span class="t">nil</span> {
+            <span class="k">return</span> <span class="t">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"create invite: %w"</span>, err)
+        }
+        <span class="k">return</span> inv, <span class="t">nil</span>
+    }
+    <span class="k">return</span> <span class="t">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"create invite: %w"</span>, response.<span class="t">ErrConflict</span>)
+}
+
+<span class="c">// AcceptInvite 验码 → 拦 3004 → 写成员 + 落章 → 重签 token（会话切到新家庭）。</span>
+<span class="k">func</span> (s *<span class="t">InviteService</span>) <span class="t">AcceptInvite</span>(ctx context.<span class="t">Context</span>, userID <span class="t">int64</span>, code, relation <span class="t">string</span>) (*<span class="t">LoginResult</span>, <span class="t">error</span>) {
+    inv, err := s.invites.<span class="t">FindByCode</span>(ctx, code) <span class="c">// 已软删（撤销）的查不出来</span>
+    <span class="k">if</span> err != <span class="t">nil</span> &amp;&amp; !errors.<span class="t">Is</span>(err, response.ErrNotFound) {
+        <span class="k">return</span> <span class="t">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"accept: %w"</span>, err)
+    }
+    <span class="k">if</span> inv == <span class="t">nil</span> || inv.UsedAt != <span class="t">nil</span> || time.<span class="t">Now</span>().<span class="t">After</span>(inv.ExpiresAt) {
+        <span class="k">return</span> <span class="t">nil</span>, response.<span class="t">ErrInviteInvalid</span> <span class="c">// → 3002 / 400：四种死法一句话</span>
+    }
+    n, err := s.members.<span class="t">CountActiveByUser</span>(ctx, userID)
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        <span class="k">return</span> <span class="t">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"accept: count: %w"</span>, err)
+    }
+    <span class="k">if</span> n &gt;= maxFamiliesPerUser {
+        <span class="k">return</span> <span class="t">nil</span>, response.<span class="t">ErrFamilyLimit</span> <span class="c">// → 3004：加入侧也拦</span>
+    }
+    mem, err := s.members.<span class="t">CreateForUser</span>(ctx, inv.FamilyID, userID, relation, model.RoleMember)
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        <span class="k">return</span> <span class="t">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"accept: create member: %w"</span>, err)
+    }
+    now := time.<span class="t">Now</span>()
+    <span class="k">if</span> err := s.invites.<span class="t">MarkUsed</span>(ctx, inv.ID, mem.ID, now); err != <span class="t">nil</span> {
+        <span class="k">return</span> <span class="t">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"accept: mark used: %w"</span>, err)
+    }
+    res, err := s.auth.<span class="t">IssueForSession</span>(ctx, userID, mem) <span class="c">// 会话切到新家庭：重签</span>
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        <span class="k">return</span> <span class="t">nil</span>, fmt.<span class="t">Errorf</span>(<span class="s">"accept: reissue: %w"</span>, err)
+    }
+    <span class="k">return</span> res, <span class="t">nil</span>
+}
+
+<span class="c">// RevokeInvite 仅 owner；软删留痕（deleted_at + deleted_by），三态同时失效。</span>
+<span class="k">func</span> (s *<span class="t">InviteService</span>) <span class="t">RevokeInvite</span>(ctx context.<span class="t">Context</span>, familyID, memberID <span class="t">int64</span>, role model.<span class="t">Role</span>, inviteID <span class="t">int64</span>) <span class="t">error</span> {
+    <span class="k">if</span> role != model.RoleOwner { <span class="c">// TODO(S4·D14)：同上，收进 authz</span>
+        <span class="k">return</span> response.<span class="t">ErrForbidden</span>
+    }
+    <span class="c">// 跨家庭撤销：invite 必须属于当前会话家庭，否则与「不存在」同形 → 1001（越权读语义）</span>
+    <span class="k">return</span> s.invites.<span class="t">SoftDeleteInFamily</span>(ctx, familyID, inviteID, memberID)
+}</code></pre>
+
+    <h3>步骤 2 · handler 四条 + 成员列表</h3>
+    <pre><span class="code-label">片段 · server/internal/homeos/handler/invite.go（前置：昨天的 context 六键取法）</span><code><span class="k">type</span> <span class="t">acceptInviteReq</span> <span class="k">struct</span> {
+    Code     <span class="t">string</span> <span class="s">`json:"code" binding:"required"`</span>      <span class="c">// 三态一口径：只认码</span>
+    Relation <span class="t">string</span> <span class="s">`json:"relation" binding:"required,max=10"`</span>
+}
+
+<span class="c">// AcceptInvite 处理 POST /api/homeos/family/invite/accept（受保护：用被邀请人自己的 token）</span>
+<span class="k">func</span> (h *<span class="t">InviteHandler</span>) <span class="t">AcceptInvite</span>(c *gin.<span class="t">Context</span>) {
+    <span class="k">var</span> req acceptInviteReq
+    <span class="k">if</span> err := c.<span class="t">ShouldBindJSON</span>(&amp;req); err != <span class="t">nil</span> {
+        response.<span class="t">Fail</span>(c, <span class="n">400</span>, response.CodeInvalidParam, <span class="s">"参数错误"</span>)
+        <span class="k">return</span>
+    }
+    res, err := h.invites.<span class="t">AcceptInvite</span>(c.<span class="t">Request</span>().<span class="t">Context</span>(),
+        c.<span class="t">GetInt64</span>(<span class="s">"userID"</span>), req.Code, req.Relation)
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        response.<span class="t">FailErr</span>(c, err)
+        <span class="k">return</span>
+    }
+    response.<span class="t">OK</span>(c, res) <span class="c">// 与登录同形：user/member/family/两个新 token</span>
+}
+
+<span class="c">// RevokeInvite 处理 DELETE /api/homeos/family/invites/{id}；id 非数字 → 1004</span>
+<span class="k">func</span> (h *<span class="t">InviteHandler</span>) <span class="t">RevokeInvite</span>(c *gin.<span class="t">Context</span>) {
+    id, err := strconv.<span class="t">ParseInt</span>(c.<span class="t">Param</span>(<span class="s">"id"</span>), <span class="n">10</span>, <span class="n">64</span>)
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        response.<span class="t">Fail</span>(c, <span class="n">400</span>, response.CodeInvalidParam, <span class="s">"参数错误"</span>)
+        <span class="k">return</span>
+    }
+    err = h.invites.<span class="t">RevokeInvite</span>(c.<span class="t">Request</span>().<span class="t">Context</span>(),
+        c.<span class="t">GetInt64</span>(<span class="s">"familyID"</span>), c.<span class="t">GetInt64</span>(<span class="s">"memberID"</span>), middleware.<span class="t">RoleOf</span>(c), id)
+    <span class="k">if</span> err != <span class="t">nil</span> {
+        response.<span class="t">FailErr</span>(c, err)
+        <span class="k">return</span>
+    }
+    response.<span class="t">OK</span>(c, gin.<span class="t">H</span>{<span class="s">"revoked"</span>: <span class="t">true</span>})
+}</code></pre>
+    <p>发起邀请 handler 同形（POST，响应带 <code>code</code> 与 <code>expires_at</code>）；<code>GET /api/homeos/members</code> 走 MemberService 列表查询，响应 <code>{"list":[...]}</code> 不带游标字段。路由四条全挂受保护组。哨兵集补 <code>ErrInviteInvalid</code>（→ 3002 / 400）。</p>
+
+    <h3>步骤 3 · 测试与验收</h3>
+    <pre><span class="code-label">片段 · 邀请生命周期测试要点（前置：handler 包 newTestRouter；两个用户各自注册登录）</span><code><span class="c">// 1) owner 发起 → 201，拿到 8 位码</span>
+<span class="c">// 2) member 角色发起 → 403 + 1003（临时判定分支今天就要有测试盯着）</span>
+<span class="c">// 3) 用户 B 用码 accept → 200，data 与登录同形，fam 已是 A 的家庭；members 列表出现 B</span>
+<span class="c">// 4) 同码再用 → 400 + 3002；乱码 → 3002；owner 撤销第三张码后 accept → 3002</span>
+<span class="c">// 5) 撤销后查库：deleted_at 非空且 deleted_by = owner 的 member id（软删成对，审计留痕）</span>
+<span class="c">// 6) B 再接受第 5 个家庭邀请前，把 B 塞满 5 个家庭 → 409 + 3004</span></code></pre>
+    <pre><span class="code-label">可跑 · 验收命令</span><code>make build &amp;&amp; make test &amp;&amp; make lint
+
+make run    <span class="c"># 终端 1：owner 的 token 发起邀请，抄出 code；用户 B 登录后：</span>
+curl -s -X POST http://localhost:8080/api/homeos/family/invite/accept \
+  -H "Authorization: Bearer &lt;B 的 access_token&gt;" -H 'Content-Type: application/json' \
+  -d '{"code":"&lt;刚抄的码&gt;","relation":"妈妈"}'
+<span class="c"># 期望 200，data 里 family 已是 A 家、两个新 token；把新 token 解码，fam/mid/role/pver 全换了</span>
+
+git add server
+git status
+git commit -m "feat(s4d8): 邀请发起/接受/撤销 + GET members，三态一口径"</code></pre>
+  </section>
+
+  <section>
+    <h2>常见坑（新手 100% 会踩）</h2>
+    <table>
+      <tr><th>坑</th><th>现象</th><th>正确姿势</th></tr>
+      <tr><td>邀请码用时间戳或自增 id 拼</td><td>码可预测，陌生人扫库进门</td><td>crypto/rand + 去混淆字母表；唯一索引兜底撞码</td></tr>
+      <tr><td>accept 不校验 used_at</td><td>一码多用，全家都能拿同一张码进来</td><td>一次性消费：UsedAt 非空即 3002</td></tr>
+      <tr><td>撤销用硬删（DELETE FROM）</td><td>谁撤的、何时撤的查无对证</td><td>软删成对：deleted_at + deleted_by，这就是最小审计</td></tr>
+      <tr><td>为链接/二维码各开一个接口</td><td>撤销链接后二维码还活着——三态不同步</td><td>三态一口径：服务端只认 code，包装是客户端的事</td></tr>
+      <tr><td>accept 成功不重签 token</td><td>B 的 fam 还停在旧家庭（或 0），进新家门却看旧家数据</td><td>会话家庭一变就 IssueForSession，昨天立的规矩今天用上</td></tr>
+      <tr><td>3004 只拦创建侧</td><td>被邀请加入绕过上限，一个账号进 20 个家庭</td><td>创建与加入两侧同一常量同一判断</td></tr>
+      <tr><td>members 列表返回手机号</td><td>家庭里 guest 也能看到全家号码</td><td>列表只给展示字段；敏感字段的可见性 D16 正式落地</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日名词卡</h2>
+    <table>
+      <tr><th>术语</th><th>一句话解释</th></tr>
+      <tr><td>邀请码三态</td><td>码 / 链接 / 二维码三种形态，同一个 code 字段，服务端只认码</td></tr>
+      <tr><td>3002 邀请无效</td><td>不存在/过期/已用/已撤销四种真相的统一出口，400</td></tr>
+      <tr><td>一次性消费</td><td>used_at 落章即死；与验证码同款性质</td></tr>
+      <tr><td>软删成对</td><td>deleted_at 与 deleted_by 必须同时写；「谁删的」是最小审计</td></tr>
+      <tr><td>仅 owner 闸</td><td>发起/撤销邀请的角色判断；D14 收进 authz 前的临时形态</td></tr>
+      <tr><td>小集合不分页</td><td>成员列表返回 <code>{"list":[...]}</code>；游标分页留给无界列表</td></tr>
+      <tr><td>去混淆字母表</td><td>剔除 I/L/O/0/1 的码表——邀请码要经得起电话里口述</td></tr>
+      <tr><td>accept = 小型登录</td><td>验凭证（码）→ 建会话（member）→ 发 token，三步与登录同构</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>卡壳时查什么</h2>
+    <p>正文自足，只有两种情况出去查：</p>
+    <ul>
+      <li><b>软删在 GORM 里的行为</b>（为什么 FindByCode 自动查不出已撤销的）：回 S3 阶段总览找软删那张卡，重点看 <code>deleted_at</code> 的默认查询条件。</li>
+      <li><b><code>c.Param("id")</code> 与路由 <code>{id}</code> 的对应</b>：S2 的路由那课讲过，一分钟能翻到。</li>
+    </ul>
+    <p>3002 排查心法：四种死法一个出口，所以先查库——<code>SELECT code, expires_at, used_at, deleted_at FROM homeos_invite</code>，四列里哪列「死」了一目了然。</p>
+  </section>
+
+  <section>
+    <h2>完成检查（全部勾掉才算毕业）</h2>
+    <ul class="check">
+      <li><label><input type="checkbox" data-key="w08d2c1">四条接口全跑通：发起（仅 owner，member 尝试 403+1003）、接受（响应与登录同形）、撤销（软删成对）、成员列表（无游标字段）</label></li>
+      <li><label><input type="checkbox" data-key="w08d2c2">邀请生命周期测试绿：同码重用 3002、乱码 3002、撤销后 3002、加入侧家庭数上限 3004</label></li>
+      <li><label><input type="checkbox" data-key="w08d2c3">accept 后解码新 token 确认 fam/mid/role 已切到新家庭；两处 TODO(S4·D14) 注释在 service 里可 grep 到</label></li>
+      <li><label><input type="checkbox" data-key="w08d2c4"><code>make build</code> / <code>make test</code> / <code>make lint</code> 全绿，commit 带卡号 <code>s4d8</code></label></li>
+      <li><label><input type="checkbox" data-key="w08d2c5"><code>notes/</code> 写三行：三态为什么一口径、3002 兜住哪四种真相、accept 与登录的三步同构</label></li>
+    </ul>
+  </section>
+
+  <nav class="day-nav">
+    <a href="w08d1.html"><span class="hint">← 昨天 · S4·D7</span>建家庭与成员建档</a>
+    <a href="w08d3.html"><span class="hint">明天 · S4·D9 →</span>多家庭与切换家庭 = 重签 token</a>
+  </nav>
+</article>
+</main>
+
+<footer class="site-footer">HomeCube Roadmap · w08d2 · 明天见 ⟩</footer>
+</body>
+</html>

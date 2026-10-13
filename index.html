@@ -3,182 +3,436 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Go 全栈修炼手册 · 前端转 Go 后端 8 周路线图</title>
-<meta name="description" content="面向前端开发者的 Go 全栈 8 周学习路线：每天具体知识点、可运行代码与练手任务，每周总结验收，从 net/http 到 Docker 部署上线。">
+<title>HomeCube 修炼手册 · 服务端主线 S1-S8 + 前端辅线 F1-F6</title>
+<meta name="description" content="从零手写 HomeCube 服务端（Go + Gin + GORM + Postgres）的 22 周路线：132 张服务端日卡 + 22 张周日前端卡，每天一个知识点加一个能收尾的增量。">
 <link rel="stylesheet" href="assets/style.css">
 <script src="assets/app.js"></script>
 </head>
 <body>
 <header class="site-header">
-  <a class="logo" href="index.html">Go<span>FullStack</span> Roadmap</a>
+  <a class="logo" href="index.html">Home<span>Cube</span> Roadmap</a>
   <nav>
-    <a href="#weeks" class="active">8 周路线</a>
-    <a href="#how">使用方法</a>
+    <a href="#how">每周节奏</a>
+    <a href="#stages">两条线</a>
+    <a href="#server" class="active">22 周路线</a>
     <a href="#goal">终点能力</a>
   </nav>
 </header>
 
 <main class="page">
   <section class="hero">
-    <div class="kicker">// FRONTEND → GO FULLSTACK</div>
-    <h1>8 周，从前端到 Go 全栈</h1>
-    <p>不需要先学 Express/Koa。每天一个页面：知识点讲义 + 可运行代码 + 练手任务 + 自测清单。<br>照着学、照着练，8 周后独立开发并部署一个全栈项目。</p>
+    <div class="kicker">// SERVER-FIRST · 22 WEEKS</div>
+    <h1>从零手写 HomeCube 服务端</h1>
+    <p>目标是 <b>app 壳基座 + 家庭记账全功能</b>的服务端：<b>72 条接口</b>、约 22-25 张表、一个模块化单体。<br>
+    每天一张卡：一个知识点 + 一个当天能收尾的增量。工作日 20-30 分钟，周六 4 小时，周日 2 小时读前端。</p>
     <div class="stack">
-      <span class="chip">Go 1.24+</span><span class="chip">Gin</span><span class="chip alt">GORM</span><span class="chip alt">MySQL 8</span><span class="chip">JWT 双 token</span><span class="chip">React</span><span class="chip alt">Docker Compose</span><span class="chip alt">Nginx</span>
+      <span class="chip">Go 1.24+</span><span class="chip">Gin</span><span class="chip alt">GORM</span>
+      <span class="chip alt">Postgres 16</span><span class="chip">golang-migrate</span><span class="chip">JWT 双 token</span>
+      <span class="chip alt">Vue 3</span><span class="chip alt">uni-app</span><span class="chip">Docker Compose</span>
     </div>
-    <div class="progress-panel">
-      <div class="row"><span>总体进度（勾选每日检查清单自动累计）</span><b>0%</b></div>
+    <div class="progress-panel" data-scope="all">
+      <div class="row"><span>总体进度（勾选每日「完成检查」自动累计）</span><b>0%</b></div>
+      <div class="row sub"></div>
       <div class="bar"><div class="fill"></div></div>
     </div>
   </section>
 
   <section id="how">
-    <h2>怎么用这套手册</h2>
+    <h2>每周怎么跑（~10 小时）</h2>
     <table>
-      <tr><th>步骤</th><th>做什么</th><th>耗时</th></tr>
-      <tr><td>1. 学习</td><td>通读当天页面的「知识讲义」，所有代码示例逐行手敲并运行，<b>不需要再查任何外部资料</b></td><td>约 90 分钟</td></tr>
-      <tr><td>2. 练习</td><td>完成「今日练习」任务卡，做完对照「完成检查」逐项打勾</td><td>约 60 分钟</td></tr>
-      <tr><td>3. 复盘</td><td>第二天先花 30 分钟复习前一天的检查清单，全部记得住再往前推</td><td>约 30 分钟</td></tr>
-      <tr><td>4. 周验收</td><td>周末打开「本周总结」页，跑通周项目、对照验收标准自评打分</td><td>4–6 小时</td></tr>
+      <tr><th>时段</th><th>做什么</th><th>投入</th></tr>
+      <tr><td>周一 ~ 周五</td><td>每天一张 <code>d1-d5</code> 卡：读讲义 → 落一个微增量。只允许六类（第六类只给 S8）：加字段/struct、加路由或 handler 骨架、补一个测试、写一条迁移、把假数据换成真查询、工程化收口产物</td><td>20-30 分钟 ×5</td></tr>
+      <tr><td>周六</td><td><code>d6</code> 卡：把本周 5 个微增量串成一条完整能力，补齐测试</td><td>约 4 小时</td></tr>
+      <tr><td>周日前半</td><td><code>f1</code> 卡：前端线。代码由 agent 写，你的判据是<b>能读懂、能改、能定位 bug 在哪一层</b></td><td>约 2 小时</td></tr>
+      <tr><td>周日后半</td><td>费曼复盘（不看资料把本周讲一遍）→ 提交 → 在 <code>notes/</code> 写下周第一天做什么</td><td>约 2 小时</td></tr>
     </table>
-    <div class="callout note"><p>勾选状态保存在你自己的浏览器里（localStorage），换设备会清零，属正常现象。建议每天固定用同一台电脑学习。</p></div>
+    <div class="callout warn"><p><b>收工时仓库必须绿</b>：<code>make build</code> 过、已有测试过。当天做不完说明切得太大，当场再切小——<b>不许留半成品到第二天</b>。</p></div>
+    <div class="callout note"><p><b>落后不追赶</b>：顺延，不裁剪判据。服务端与前端两条线各自顺延，互不挪用时间。卡面只写相对序号（S1·D3），不承诺任何日期。</p></div>
+    <div class="callout tip"><p>勾选状态存在你自己的浏览器里（localStorage），换设备会清零，属正常现象。</p></div>
   </section>
 
-  <section id="weeks">
-    <h2>8 周路线图</h2>
+  <section id="stages">
+    <h2>两条线</h2>
+    <h3>服务端主线 S1-S8（你亲手写，132 张卡）</h3>
+
+    <div class="strip">
+      <a class="strip-item" href="server/s1/overview.html"><b>S1</b>Go 与最小 HTTP（标准库 net/http）<span>w01-w02 · 12 张</span></a>
+      <a class="strip-item" href="server/s2/overview.html"><b>S2</b>Gin 与三层<span>w03-w04 · 12 张</span></a>
+      <a class="strip-item" href="server/s3/overview.html"><b>S3</b>Postgres 与迁移<span>w05-w06 · 12 张</span></a>
+      <a class="strip-item" href="server/s4/overview.html"><b>S4</b>鉴权与家庭隔离<span>w07-w09 · 18 张</span></a>
+      <a class="strip-item" href="server/s5/overview.html"><b>S5</b>并发与工程化<span>w10-w11 · 12 张</span></a>
+      <a class="strip-item" href="server/s6/overview.html"><b>S6</b>财务功能面<span>w12-w16 · 30 张</span></a>
+      <a class="strip-item" href="server/s7/overview.html"><b>S7</b>壳基座服务端<span>w17-w20 · 24 张</span></a>
+      <a class="strip-item" href="server/s8/overview.html"><b>S8</b>收口与部署<span>w21-w22 · 12 张</span></a>
+    </div>
+    <h3>前端辅线 F1-F6（agent 写代码，你学到能改，22 张周日卡）</h3>
+
+    <div class="strip alt">
+      <a class="strip-item" href="frontend/f1/overview.html"><b>F1</b>Vue 3 读法<span>w01-w04 · 4 张</span></a>
+      <a class="strip-item" href="frontend/f2/overview.html"><b>F2</b>uni-app 工程与路由<span>w05-w06 · 2 张</span></a>
+      <a class="strip-item" href="frontend/f3/overview.html"><b>F3</b>状态与对接<span>w07-w09 · 3 张</span></a>
+      <a class="strip-item" href="frontend/f4/overview.html"><b>F4</b>组件、样式与列表<span>w10-w16 · 7 张</span></a>
+      <a class="strip-item" href="frontend/f5/overview.html"><b>F5</b>壳基座前端<span>w17-w20 · 4 张</span></a>
+      <a class="strip-item" href="frontend/f6/overview.html"><b>F6</b>调试与定位<span>w21-w22 · 2 张</span></a>
+    </div>
+    <div class="callout js"><p>前端卡的判据全是「<b>你能不能讲清 / 能不能改</b>」，不是「代码写没写出来」。<b>不许拿「页面能跑」当自己通过了</b>。</p></div>
+  </section>
+
+  <section id="server">
+    <h2>22 周路线图</h2>
     <div class="weeks">
 
       <div class="week-card">
-        <h3>第 1 周 · Go 基础 + HTTP 后端入门</h3>
-        <div class="theme">PROJECT: 标准库 HTTP 待办服务</div>
+        <h3>w01 · Go 与最小 HTTP（标准库 net/http）</h3>
+        <div class="theme">服务端 6 张　·　周日 F1</div>
         <ol>
-          <li><a href="weeks/w1/day1.html">环境与基础语法</a></li>
-          <li><a href="weeks/w1/day2.html">结构体与方法</a></li>
-          <li><a href="weeks/w1/day3.html">slice、map、defer、文件 I/O</a></li>
-          <li><a href="weeks/w1/day4.html">接口、错误处理、包管理</a></li>
-          <li><a href="weeks/w1/day5.html">HTTP 基础 + net/http</a></li>
+          <li><a href="server/s1/w01d1.html" data-day="w01d1">环境、go mod 与仓库骨架</a></li>
+          <li><a href="server/s1/w01d2.html" data-day="w01d2">变量、类型、控制流与指针</a></li>
+          <li><a href="server/s1/w01d3.html" data-day="w01d3">结构体、方法与接收者</a></li>
+          <li><a href="server/s1/w01d4.html" data-day="w01d4">slice、map、defer 与 error 包装</a></li>
+          <li><a href="server/s1/w01d5.html" data-day="w01d5">接口与隐式实现</a></li>
+          <li><a href="server/s1/w01d6.html" data-day="w01d6">周六 · net/http 起服务，把本周串成 GET /healthz</a></li>
         </ol>
-        <div class="foot"><a href="weeks/w1/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
-        <div class="week-mini" data-week="1"><div class="fill"></div></div>
+        <div class="sunday">周日 · <a href="frontend/f1/w01f1.html" data-day="w01f1">Vue 3 是什么：SFC 三段与模板语法</a></div>
+        <div class="foot"><a href="server/s1/overview.html">S1 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
       </div>
-
       <div class="week-card">
-        <h3>第 2 周 · Gin + REST API 基础</h3>
-        <div class="theme">PROJECT: 内存版用户/文章 CRUD API</div>
+        <h3>w02 · Go 与最小 HTTP（标准库 net/http）</h3>
+        <div class="theme">服务端 6 张　·　周日 F1</div>
         <ol>
-          <li><a href="weeks/w2/day1.html">Gin 路由</a></li>
-          <li><a href="weeks/w2/day2.html">请求绑定与验证</a></li>
-          <li><a href="weeks/w2/day3.html">中间件</a></li>
-          <li><a href="weeks/w2/day4.html">项目分层</a></li>
-          <li><a href="weeks/w2/day5.html">接口测试与错误处理</a></li>
+          <li><a href="server/s1/w02d1.html" data-day="w02d1">HTTP 语义、handler 签名与路由模式</a></li>
+          <li><a href="server/s1/w02d2.html" data-day="w02d2">请求解析：JSON 解码与查询参数</a></li>
+          <li><a href="server/s1/w02d3.html" data-day="w02d3">响应写出与中间件：标准库怎么包 handler</a></li>
+          <li><a href="server/s1/w02d4.html" data-day="w02d4">表驱动测试与 httptest</a></li>
+          <li><a href="server/s1/w02d5.html" data-day="w02d5">internal/ 分层与收口前的重构</a></li>
+          <li><a href="server/s1/w02d6.html" data-day="w02d6">周六 · S1 收口与费曼自测</a></li>
         </ol>
-        <div class="foot"><a href="weeks/w2/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
-        <div class="week-mini" data-week="2"><div class="fill"></div></div>
+        <div class="sunday">周日 · <a href="frontend/f1/w02f1.html" data-day="w02f1">组合式 API：computed 与 watch</a></div>
+        <div class="foot"><a href="server/s1/overview.html">S1 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
       </div>
-
       <div class="week-card">
-        <h3>第 3 周 · MySQL + GORM + Docker 入门</h3>
-        <div class="theme">PROJECT: 数据库版用户/文章/标签 API</div>
+        <h3>w03 · Gin 与三层</h3>
+        <div class="theme">服务端 6 张　·　周日 F1</div>
         <ol>
-          <li><a href="weeks/w3/day1.html">Docker Compose + MySQL + GORM 入门</a></li>
-          <li><a href="weeks/w3/day2.html">模型与 CRUD</a></li>
-          <li><a href="weeks/w3/day3.html">关联查询（一对多 / 多对多）</a></li>
-          <li><a href="weeks/w3/day4.html">分页、搜索、排序</a></li>
-          <li><a href="weeks/w3/day5.html">事务、连接池、软删除</a></li>
+          <li><a href="server/s2/w03d1.html" data-day="w03d1">Gin 换入：路由、路由分组与 NoRoute</a></li>
+          <li><a href="server/s2/w03d2.html" data-day="w03d2">请求绑定与 validator</a></li>
+          <li><a href="server/s2/w03d3.html" data-day="w03d3">Gin 中间件：request-id、recovery 与请求日志</a></li>
+          <li><a href="server/s2/w03d4.html" data-day="w03d4">项目分层：handler / service / repo 各管什么</a></li>
+          <li><a href="server/s2/w03d5.html" data-day="w03d5">DTO 与领域模型：为什么要分开</a></li>
+          <li><a href="server/s2/w03d6.html" data-day="w03d6">周六 · 用「分类」6 条把三层走通</a></li>
         </ol>
-        <div class="foot"><a href="weeks/w3/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
-        <div class="week-mini" data-week="3"><div class="fill"></div></div>
+        <div class="sunday">周日 · <a href="frontend/f1/w03f1.html" data-day="w03f1">props / emit / slot 与组件拆分</a></div>
+        <div class="foot"><a href="server/s2/overview.html">S2 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
       </div>
-
       <div class="week-card">
-        <h3>第 4 周 · JWT + 工程化</h3>
-        <div class="theme">PROJECT: JWT 认证博客 API（双 token）</div>
+        <h3>w04 · Gin 与三层</h3>
+        <div class="theme">服务端 6 张　·　周日 F1</div>
         <ol>
-          <li><a href="weeks/w4/day1.html">密码哈希与注册登录</a></li>
-          <li><a href="weeks/w4/day2.html">JWT 鉴权（access + refresh）</a></li>
-          <li><a href="weeks/w4/day3.html">配置管理</a></li>
-          <li><a href="weeks/w4/day4.html">日志、请求 ID、优雅关闭</a></li>
-          <li><a href="weeks/w4/day5.html">单元测试与接口测试</a></li>
+          <li><a href="server/s2/w04d1.html" data-day="w04d1">分类的二级树与排序字段</a></li>
+          <li><a href="server/s2/w04d2.html" data-day="w04d2">分类停用与恢复：archived 的语义</a></li>
+          <li><a href="server/s2/w04d3.html" data-day="w04d3">接口测试：httptest 覆盖 6 条的矩阵</a></li>
+          <li><a href="server/s2/w04d4.html" data-day="w04d4">错误处理收口：FailErr 与哨兵映射</a></li>
+          <li><span class="todo">D5 · 待生成</span></li>
+          <li><span class="todo">周六 · 串起来 · 待生成</span></li>
         </ol>
-        <div class="foot"><a href="weeks/w4/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
-        <div class="week-mini" data-week="4"><div class="fill"></div></div>
+        <div class="sunday">周日 · <a href="frontend/f1/w04f1.html" data-day="w04f1">生命周期钩子与 composable</a></div>
+        <div class="foot"><a href="server/s2/overview.html">S2 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
       </div>
-
       <div class="week-card">
-        <h3>第 5 周 · 并发 + 测试</h3>
-        <div class="theme">PROJECT: 并发 URL 聚合 API</div>
+        <h3>w05 · Postgres 与迁移</h3>
+        <div class="theme">服务端 6 张　·　周日 F2</div>
         <ol>
-          <li><a href="weeks/w5/day1.html">goroutine 与 WaitGroup</a></li>
-          <li><a href="weeks/w5/day2.html">channel 与 select</a></li>
-          <li><a href="weeks/w5/day3.html">Mutex 与竞态检测</a></li>
-          <li><a href="weeks/w5/day4.html">context 超时与取消</a></li>
-          <li><a href="weeks/w5/day5.html">并发模式：worker pool 与 errgroup</a></li>
+          <li><a href="server/s3/w05d1.html" data-day="w05d1">docker-compose 起 Postgres 16：双 schema 与两个专属账号</a></li>
+          <li><a href="server/s3/w05d2.html" data-day="w05d2">GORM 基础：模型 tag 与 AutoMigrate 的边界</a></li>
+          <li><a href="server/s3/w05d3.html" data-day="w05d3">golang-migrate 接入与第一条迁移 homeos_0001_init_user</a></li>
+          <li><a href="server/s3/w05d4.html" data-day="w05d4">down 怎么写才真能回滚：up→down→up 重放判据</a></li>
+          <li><a href="server/s3/w05d5.html" data-day="w05d5">GORM 一对多关联与 Preload：family→members</a></li>
+          <li><a href="server/s3/w05d6.html" data-day="w05d6">周六 · 分类域从内存 map 换到 DB，接口一行不改</a></li>
         </ol>
-        <div class="foot"><a href="weeks/w5/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
-        <div class="week-mini" data-week="5"><div class="fill"></div></div>
+        <div class="sunday">周日 · <a href="frontend/f2/w05f1.html" data-day="w05f1">uni-app 工程结构怎么读：pages.json 与配置式路由</a></div>
+        <div class="foot"><a href="server/s3/overview.html">S3 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
       </div>
-
       <div class="week-card">
-        <h3>第 6 周 · 全栈联调</h3>
-        <div class="theme">PROJECT: React + Go 博客前端</div>
+        <h3>w06 · Postgres 与迁移</h3>
+        <div class="theme">服务端 6 张　·　周日 F2</div>
         <ol>
-          <li><a href="weeks/w6/day1.html">登录注册对接</a></li>
-          <li><a href="weeks/w6/day2.html">文章列表与详情</a></li>
-          <li><a href="weeks/w6/day3.html">文章创建、编辑、删除</a></li>
-          <li><a href="weeks/w6/day4.html">路由守卫与 axios 拦截器</a></li>
-          <li><a href="weeks/w6/day5.html">CORS、代理、构建</a></li>
+          <li><a href="server/s3/w06d1.html" data-day="w06d1">事务与软删：deleted_at 语义、Unscoped 与恢复入口</a></li>
+          <li><a href="server/s3/w06d2.html" data-day="w06d2">游标分页：(排序键,id) 不透明游标</a></li>
+          <li><a href="server/s3/w06d3.html" data-day="w06d3">金额列 *_cents BIGINT 与 finance_0002_init_account</a></li>
+          <li><a href="server/s3/w06d4.html" data-day="w06d4">repo 纪律：每条查询带 family_id，越权读返 404</a></li>
+          <li><span class="todo">D5 · 待生成</span></li>
+          <li><span class="todo">周六 · 串起来 · 待生成</span></li>
         </ol>
-        <div class="foot"><a href="weeks/w6/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
-        <div class="week-mini" data-week="6"><div class="fill"></div></div>
+        <div class="sunday">周日 · <a href="frontend/f2/w06f1.html" data-day="w06f1">请求层 http.js：baseURL、拦截器与 401 重放</a></div>
+        <div class="foot"><a href="server/s3/overview.html">S3 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
       </div>
-
       <div class="week-card">
-        <h3>第 7 周 · 容器化 + 部署</h3>
-        <div class="theme">PROJECT: 全栈博客 Docker 化上线</div>
+        <h3>w07 · 鉴权与家庭隔离</h3>
+        <div class="theme">服务端 6 张　·　周日 F3</div>
         <ol>
-          <li><a href="weeks/w7/day1.html">Go 多阶段 Dockerfile</a></li>
-          <li><a href="weeks/w7/day2.html">前端构建 + Nginx</a></li>
-          <li><a href="weeks/w7/day3.html">完整 Compose 编排</a></li>
-          <li><a href="weeks/w7/day4.html">数据库迁移</a></li>
-          <li><a href="weeks/w7/day5.html">部署到云服务器 + HTTPS</a></li>
+          <li><a href="server/s4/w07d1.html" data-day="w07d1">bcrypt 密码哈希与注册接口</a></li>
+          <li><a href="server/s4/w07d2.html" data-day="w07d2">验证码登录：sms-code 与 login</a></li>
+          <li><a href="server/s4/w07d3.html" data-day="w07d3">JWT 签发：claims、双密钥与 TTL</a></li>
+          <li><a href="server/s4/w07d4.html" data-day="w07d4">refresh 轮换与登出</a></li>
+          <li><a href="server/s4/w07d5.html" data-day="w07d5">鉴权中间件 middleware.Auth 与 context 键</a></li>
+          <li><a href="server/s4/w07d6.html" data-day="w07d6">周六 · 忘记/重置密码，登录全链路测试</a></li>
         </ol>
-        <div class="foot"><a href="weeks/w7/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
-        <div class="week-mini" data-week="7"><div class="fill"></div></div>
+        <div class="sunday">周日 · <a href="frontend/f3/w07f1.html" data-day="w07f1">Pinia 与 token 持久化</a></div>
+        <div class="foot"><a href="server/s4/overview.html">S4 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
       </div>
-
       <div class="week-card">
-        <h3>第 8 周 · 综合项目实战</h3>
-        <div class="theme">PROJECT: 博客扩展 RBAC + 文件上传并上线</div>
+        <h3>w08 · 鉴权与家庭隔离</h3>
+        <div class="theme">服务端 6 张　·　周日 F3</div>
         <ol>
-          <li><a href="weeks/w8/day1.html">角色与权限（RBAC）后端扩展</a></li>
-          <li><a href="weeks/w8/day2.html">文件上传</a></li>
-          <li><a href="weeks/w8/day3.html">前端权限与功能收尾</a></li>
-          <li><a href="weeks/w8/day4.html">联调、测试、修 bug</a></li>
-          <li><a href="weeks/w8/day5.html">部署、README、API 文档</a></li>
+          <li><a href="server/s4/w08d1.html" data-day="w08d1">建家庭与成员建档</a></li>
+          <li><a href="server/s4/w08d2.html" data-day="w08d2">邀请：发起、列表、接受与撤销</a></li>
+          <li><a href="server/s4/w08d3.html" data-day="w08d3">多家庭与切换家庭 = 重签 token</a></li>
+          <li><a href="server/s4/w08d4.html" data-day="w08d4">家庭上下文注入：scope helper 强制 family_id</a></li>
+          <li><a href="server/s4/w08d5.html" data-day="w08d5">越权测试先红后绿：404+1001 不是 403</a></li>
+          <li><span class="todo">周六 · 串起来 · 待生成</span></li>
         </ol>
-        <div class="foot"><a href="weeks/w8/summary.html">📋 本周总结与验收</a><span class="pct"></span></div>
-        <div class="week-mini" data-week="8"><div class="fill"></div></div>
+        <div class="sunday">周日 · <a href="frontend/f3/w08f1.html" data-day="w08f1">路由守卫与登录态</a></div>
+        <div class="foot"><a href="server/s4/overview.html">S4 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
       </div>
-
+      <div class="week-card">
+        <h3>w09 · 鉴权与家庭隔离</h3>
+        <div class="theme">服务端 6 张　·　周日 F3</div>
+        <ol>
+          <li><span class="todo">D1 · 待生成</span></li>
+          <li><span class="todo">D2 · 待生成</span></li>
+          <li><span class="todo">D3 · 待生成</span></li>
+          <li><span class="todo">D4 · 待生成</span></li>
+          <li><span class="todo">D5 · 待生成</span></li>
+          <li><span class="todo">周六 · 串起来 · 待生成</span></li>
+        </ol>
+        <div class="sunday">周日 · <a href="frontend/f3/w09f1.html" data-day="w09f1">家庭上下文与切换家庭</a></div>
+        <div class="foot"><a href="server/s4/overview.html">S4 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
+      </div>
+      <div class="week-card">
+        <h3>w10 · 并发与工程化</h3>
+        <div class="theme">服务端 6 张　·　周日 F4</div>
+        <ol>
+          <li><a href="server/s5/w10d1.html" data-day="w10d1">goroutine 与 WaitGroup：内存 repo 为什么需要锁</a></li>
+          <li><a href="server/s5/w10d2.html" data-day="w10d2">channel 与 select：goroutine 之间不共享、只传递</a></li>
+          <li><a href="server/s5/w10d3.html" data-day="w10d3">Mutex/RWMutex 与 -race：亲手抓一次数据竞争</a></li>
+          <li><a href="server/s5/w10d4.html" data-day="w10d4">context：超时与取消</a></li>
+          <li><a href="server/s5/w10d5.html" data-day="w10d5">并发模式：worker pool 与 errgroup</a></li>
+          <li><a href="server/s5/w10d6.html" data-day="w10d6">周六 · 统计聚合并发版：把本周串起来</a></li>
+        </ol>
+        <div class="sunday">周日 · <a href="frontend/f4/w10f1.html" data-day="w10f1">组件拆分实战：把流水列表页拆成四块</a></div>
+        <div class="foot"><a href="server/s5/overview.html">S5 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
+      </div>
+      <div class="week-card">
+        <h3>w11 · 并发与工程化</h3>
+        <div class="theme">服务端 6 张　·　周日 F4</div>
+        <ol>
+          <li><a href="server/s5/w11d1.html" data-day="w11d1">批量导入流水：部分失败语义</a></li>
+          <li><a href="server/s5/w11d2.html" data-day="w11d2">结构化日志：slog 与 request-id 串成一条线</a></li>
+          <li><a href="server/s5/w11d3.html" data-day="w11d3">优雅关闭：SIGTERM 三步曲</a></li>
+          <li><a href="server/s5/w11d4.html" data-day="w11d4">config 加载定稿：一张变量表全站唯一</a></li>
+          <li><a href="server/s5/w11d5.html" data-day="w11d5">httptest.NewServer：给接口上 50 路并发</a></li>
+          <li><a href="server/s5/w11d6.html" data-day="w11d6">周六 · S5 收口：CI 最小版与判据自测</a></li>
+        </ol>
+        <div class="sunday">周日 · <a href="frontend/f4/w11f1.html" data-day="w11f1">样式与主题令牌：rpx、scoped 与「颜色只能引用令牌」</a></div>
+        <div class="foot"><a href="server/s5/overview.html">S5 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
+      </div>
+      <div class="week-card">
+        <h3>w12 · 财务功能面</h3>
+        <div class="theme">服务端 6 张　·　周日 F4</div>
+        <ol>
+          <li><a href="server/s6/w12d1.html" data-day="w12d1">流水表与创建：client_request_id 幂等三态</a></li>
+          <li><a href="server/s6/w12d2.html" data-day="w12d2">收入、支出、转账：to_account_id 与 4001</a></li>
+          <li><a href="server/s6/w12d3.html" data-day="w12d3">余额计算口径：由流水推导，不维护余额列</a></li>
+          <li><a href="server/s6/w12d4.html" data-day="w12d4">软删与回收站：deleted_at 必须配恢复</a></li>
+          <li><a href="server/s6/w12d5.html" data-day="w12d5">乐观锁 version：并发编辑后到者 409+1009</a></li>
+          <li><a href="server/s6/w12d6.html" data-day="w12d6">周六 · 流水查询：筛选与游标分页</a></li>
+        </ol>
+        <div class="sunday">周日 · <a href="frontend/f4/w12f1.html" data-day="w12f1">深色模式：CSS 变量、theme.json 与图表重绘</a></div>
+        <div class="foot"><a href="server/s6/overview.html">S6 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
+      </div>
+      <div class="week-card">
+        <h3>w13 · 财务功能面</h3>
+        <div class="theme">服务端 6 张　·　周日 F4</div>
+        <ol>
+          <li><a href="server/s6/w13d1.html" data-day="w13d1">流水单条查询与编辑的正确流程</a></li>
+          <li><a href="server/s6/w13d2.html" data-day="w13d2">票据附件上传：三条限额与 4002</a></li>
+          <li><a href="server/s6/w13d3.html" data-day="w13d3">账户 CRUD 与默认账户唯一性</a></li>
+          <li><a href="server/s6/w13d4.html" data-day="w13d4">账户归档与恢复：余额非 0 拒绝归档</a></li>
+          <li><a href="server/s6/w13d5.html" data-day="w13d5">分类二级树收尾：停用、恢复、排序</a></li>
+          <li><a href="server/s6/w13d6.html" data-day="w13d6">周六 · 流水·附件·账户·分类接口测试全量</a></li>
+        </ol>
+        <div class="sunday">周日 · <a href="frontend/f4/w13f1.html" data-day="w13f1">游标分页的前端侧（上）：下拉刷新与触底加载</a></div>
+        <div class="foot"><a href="server/s6/overview.html">S6 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
+      </div>
+      <div class="week-card">
+        <h3>w14 · 财务功能面</h3>
+        <div class="theme">服务端 6 张　·　周日 F4</div>
+        <ol>
+          <li><a href="server/s6/w14d1.html" data-day="w14d1">私密流水 is_private：行级可见性过滤</a></li>
+          <li><a href="server/s6/w14d2.html" data-day="w14d2">时间窗五档参数：非法编码 400+1007 不回落</a></li>
+          <li><a href="server/s6/w14d3.html" data-day="w14d3">CSV 导出：行数必须等于查询行数</a></li>
+          <li><a href="server/s6/w14d4.html" data-day="w14d4">导出的权限口径：只导你读得到的行</a></li>
+          <li><a href="server/s6/w14d5.html" data-day="w14d5">面内设置：活配置与币种只存不算</a></li>
+          <li><span class="todo">周六 · 串起来 · 待生成</span></li>
+        </ol>
+        <div class="sunday">周日 · <a href="frontend/f4/w14f1.html" data-day="w14f1">游标分页的前端侧（下）：不重复、不漏、能续读</a></div>
+        <div class="foot"><a href="server/s6/overview.html">S6 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
+      </div>
+      <div class="week-card">
+        <h3>w15 · 财务功能面</h3>
+        <div class="theme">服务端 6 张　·　周日 F4</div>
+        <ol>
+          <li><a href="server/s6/w15d1.html" data-day="w15d1">预算模型与月度预算创建</a></li>
+          <li><a href="server/s6/w15d2.html" data-day="w15d2">分类级预算与超支判定</a></li>
+          <li><a href="server/s6/w15d3.html" data-day="w15d3">未设周期预算：budget_unset 红线</a></li>
+          <li><a href="server/s6/w15d4.html" data-day="w15d4">预算告警钩子：platform Notifier 占位</a></li>
+          <li><a href="server/s6/w15d5.html" data-day="w15d5">周期记账规则表 finance_recurring_rule</a></li>
+          <li><a href="server/s6/w15d6.html" data-day="w15d6">周六 · 周期记账的幂等自动入账</a></li>
+        </ol>
+        <div class="sunday">周日 · <a href="frontend/f4/w15f1.html" data-day="w15f1">ucharts 图表：把报表数据画对</a></div>
+        <div class="foot"><a href="server/s6/overview.html">S6 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
+      </div>
+      <div class="week-card">
+        <h3>w16 · 财务功能面</h3>
+        <div class="theme">服务端 6 张　·　周日 F4</div>
+        <ol>
+          <li><a href="server/s6/w16d1.html" data-day="w16d1">报表三视图：趋势/分类/成员 SQL 聚合</a></li>
+          <li><a href="server/s6/w16d2.html" data-day="w16d2">时间窗五档桶：ISO 周与季/年边界</a></li>
+          <li><a href="server/s6/w16d3.html" data-day="w16d3">环比与服务端逐期累计余额</a></li>
+          <li><a href="server/s6/w16d4.html" data-day="w16d4">报表游标与无上限返回禁令</a></li>
+          <li><a href="server/s6/w16d5.html" data-day="w16d5">面内设置与 CSV 导出</a></li>
+          <li><a href="server/s6/w16d6.html" data-day="w16d6">周六 · S6 收口：30 条划掉与三条判据自测</a></li>
+        </ol>
+        <div class="sunday">周日 · <a href="frontend/f4/w16f1.html" data-day="w16f1">时间窗切换器 + F4 收口</a></div>
+        <div class="foot"><a href="server/s6/overview.html">S6 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
+      </div>
+      <div class="week-card">
+        <h3>w17 · 壳基座服务端</h3>
+        <div class="theme">服务端 6 张　·　周日 F5</div>
+        <ol>
+          <li><a href="server/s7/w17d1.html" data-day="w17d1">registry 面目录：代码即配置</a></li>
+          <li><a href="server/s7/w17d2.html" data-day="w17d2">面启用配置：乐观锁 epoch 与变更审计</a></li>
+          <li><a href="server/s7/w17d3.html" data-day="w17d3">面清单接口：四层合成在服务端一处</a></li>
+          <li><a href="server/s7/w17d4.html" data-day="w17d4">分包清单接口：bundles 与校验回退</a></li>
+          <li><a href="server/s7/w17d5.html" data-day="w17d5">契约测试：客户端不得二次裁剪</a></li>
+          <li><a href="server/s7/w17d6.html" data-day="w17d6">周六 · 停用面的三条语义与最后一面保护</a></li>
+        </ol>
+        <div class="sunday">周日 · <a href="frontend/f5/w17f1.html" data-day="w17f1">壳的顶栏一行与自绘底栏</a></div>
+        <div class="foot"><a href="server/s7/overview.html">S7 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
+      </div>
+      <div class="week-card">
+        <h3>w18 · 壳基座服务端</h3>
+        <div class="theme">服务端 6 张　·　周日 F5</div>
+        <ol>
+          <li><a href="server/s7/w18d1.html" data-day="w18d1">home/summary 骨架：faces[] 与面清单同源</a></li>
+          <li><a href="server/s7/w18d2.html" data-day="w18d2">首屏只有一个业务请求：summary 塞什么、不塞什么</a></li>
+          <li><a href="server/s7/w18d3.html" data-day="w18d3">未读口径唯一：三个出口同值的第一个出口</a></li>
+          <li><a href="server/s7/w18d4.html" data-day="w18d4">动态流接口：按天分组、按面筛选、游标分页</a></li>
+          <li><a href="server/s7/w18d5.html" data-day="w18d5">未出生/未启用面的零请求服务端保证</a></li>
+          <li><span class="todo">周六 · 串起来 · 待生成</span></li>
+        </ol>
+        <div class="sunday">周日 · <a href="frontend/f5/w18f1.html" data-day="w18f1">面矩阵首页与 faces[] 唯一来源</a></div>
+        <div class="foot"><a href="server/s7/overview.html">S7 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
+      </div>
+      <div class="week-card">
+        <h3>w19 · 壳基座服务端</h3>
+        <div class="theme">服务端 6 张　·　周日 F5</div>
+        <ol>
+          <li><a href="server/s7/w19d1.html" data-day="w19d1">到期中心三对象与注册表</a></li>
+          <li><a href="server/s7/w19d2.html" data-day="w19d2">DueRegistry：跨模块调用收在 platform 接口后面</a></li>
+          <li><a href="server/s7/w19d3.html" data-day="w19d3">注册与撤销：registered / revoked 语义</a></li>
+          <li><a href="server/s7/w19d4.html" data-day="w19d4">到期触发与完成回写</a></li>
+          <li><a href="server/s7/w19d5.html" data-day="w19d5">财务侧接入：预算周期与周期记账规则注册</a></li>
+          <li><a href="server/s7/w19d6.html" data-day="w19d6">周六 · 提醒/待办 CRUD 串通与勾选完成</a></li>
+        </ol>
+        <div class="sunday">周日 · <a href="frontend/f5/w19f1.html" data-day="w19f1">subPackages 分包与按需加载</a></div>
+        <div class="foot"><a href="server/s7/overview.html">S7 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
+      </div>
+      <div class="week-card">
+        <h3>w20 · 壳基座服务端</h3>
+        <div class="theme">服务端 6 张　·　周日 F5</div>
+        <ol>
+          <li><a href="server/s7/w20d1.html" data-day="w20d1">通知表与三分型</a></li>
+          <li><a href="server/s7/w20d2.html" data-day="w20d2">通知列表与未读红点</a></li>
+          <li><a href="server/s7/w20d3.html" data-day="w20d3">已读回写与推送设备注册</a></li>
+          <li><a href="server/s7/w20d4.html" data-day="w20d4">设置：主题三态与日期格式</a></li>
+          <li><a href="server/s7/w20d5.html" data-day="w20d5">家庭设置：币种只存不算汇率</a></li>
+          <li><span class="todo">周六 · 串起来 · 待生成</span></li>
+        </ol>
+        <div class="sunday">周日 · <a href="frontend/f5/w20f1.html" data-day="w20f1">PIN 应用锁与 F5 收口</a></div>
+        <div class="foot"><a href="server/s7/overview.html">S7 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
+      </div>
+      <div class="week-card">
+        <h3>w21 · 收口与部署</h3>
+        <div class="theme">服务端 6 张　·　周日 F6</div>
+        <ol>
+          <li><a href="server/s8/w21d1.html" data-day="w21d1">多阶段 Dockerfile：从二进制到一个能跑的镜像</a></li>
+          <li><a href="server/s8/w21d2.html" data-day="w21d2">前端构建产物与 nginx：静态资源、前端路由与反向代理</a></li>
+          <li><a href="server/s8/w21d3.html" data-day="w21d3">docker-compose 编排：四个服务、健康检查与两段变量</a></li>
+          <li><a href="server/s8/w21d4.html" data-day="w21d4">容器内执行迁移：两套 schema、启动前跑还是启动时跑</a></li>
+          <li><a href="server/s8/w21d5.html" data-day="w21d5">兑现两条伏笔：可信代理、跨域收口与 /healthz 的依赖就绪态</a></li>
+          <li><a href="server/s8/w21d6.html" data-day="w21d6">周六 · 干净机器复现与 E2E 冒烟</a></li>
+        </ol>
+        <div class="sunday">周日 · <a href="frontend/f6/w21f1.html" data-day="w21f1">三段定位法与容器化后的前端连线</a></div>
+        <div class="foot"><a href="server/s8/overview.html">S8 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
+      </div>
+      <div class="week-card">
+        <h3>w22 · 收口与部署</h3>
+        <div class="theme">服务端 6 张　·　周日 F6</div>
+        <ol>
+          <li><a href="server/s8/w22d1.html" data-day="w22d1">CI 升级：-race 全量、覆盖率棘轮与四道门禁</a></li>
+          <li><span class="todo">D2 · 待生成</span></li>
+          <li><span class="todo">D3 · 待生成</span></li>
+          <li><span class="todo">D4 · 待生成</span></li>
+          <li><span class="todo">D5 · 待生成</span></li>
+          <li><span class="todo">周六 · 串起来 · 待生成</span></li>
+        </ol>
+        <div class="sunday">周日 · <a href="frontend/f6/w22f1.html" data-day="w22f1">前端线毕业自测与红线总核账</a></div>
+        <div class="foot"><a href="server/s8/overview.html">S8 阶段总览</a><span class="pct"></span></div>
+        <div class="week-mini"><div class="fill"></div></div>
+      </div>
     </div>
   </section>
 
   <section id="goal">
-    <h2>毕业时的你</h2>
+    <h2>走完 22 周的你</h2>
     <div class="grade">
-      <div><b>API 设计</b>独立设计 RESTful API，统一响应结构与错误码</div>
-      <div><b>Go 后端</b>Gin 路由/中间件/校验，GORM 关联/分页/事务</div>
-      <div><b>认证鉴权</b>bcrypt + JWT 双 token + RBAC 权限</div>
-      <div><b>并发编程</b>goroutine / channel / context / errgroup</div>
-      <div><b>测试</b>单元测试 + httptest 接口测试 + -race</div>
-      <div><b>交付上线</b>Docker Compose 编排，云服务器 + HTTPS 可访问</div>
+      <div><b>Go 与分层</b>徒手写出 handler / service / repo 三层，讲得清每层为什么在那</div>
+      <div><b>数据建模</b>Postgres 双 schema、迁移可 up→down→up 重放、每表带 family_id 与软删</div>
+      <div><b>鉴权与隔离</b>JWT 双 token + 四级角色矩阵，越权读返 404 与不存在同形</div>
+      <div><b>并发</b>能用 -race 证明自己修好了数据竞争，讲得清 channel 与 Mutex 各自该用在哪</div>
+      <div><b>财务口径</b>金额整数分、游标分页、时间窗五档、季/年 = 月桶之和且前端二次累加为 0</div>
+      <div><b>壳基座</b>面集合四层在服务端一处合成，客户端零裁剪；未读口径唯一、三个出口同值</div>
+      <div><b>交付</b>docker compose 起全套，干净机器照着 README 能复现</div>
+      <div><b>前端</b>能读懂任意一页、能改字段与样式、能不靠 agent 说出一个 bug 在哪一层</div>
+      <div><b>纪律</b>72 条接口逐条划掉，四条历史反例一条没犯</div>
     </div>
-    <div class="callout tip"><p>时间预算：每天 2–3 小时（工作日）+ 周末 4–6 小时，合计每周 15–20 小时。坚持 8 周，这个仓库的 commit 记录就是你最好的简历。</p></div>
   </section>
 </main>
 
 <footer class="site-footer">
-  Go FullStack Roadmap · 基于 <a href="docs/index.md">docs/index.md 学习规划</a> 生成 · 内容仅供学习使用
+  HomeCube Roadmap · 已生成 135/154 张日卡 · 基准见 <a href="docs/CANONICAL.md">docs/CANONICAL.md</a>
 </footer>
 </body>
 </html>
