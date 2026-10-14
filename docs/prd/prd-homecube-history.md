@@ -196,3 +196,94 @@
 - 〔4.2 系统边界·不做（原 L684）〕原与本条并列的「不做采购执行」「不做饮食消费决策」两项，其主语（那两个业务面）已按定版 ㉛ 整域移出施工范围（14.6）
 
 ---
+
+## 已移出的五个面（定版 ㉛ 归档）
+
+> 采购 `purchase`、饮食 `diet`、出行 `trip`、家人 `kin`、成长 `growth` 五个业务面于定版 ㉛ 整域移出当前施工范围。本节存的是**它们在原需求文档里被写过的正文与存档索引**，逐字照搬；**全量需求原文**（章文、字段、接口语义、验收条目）不在此重写，一律从 `prd-homecube.md` 的定版 ㉚ 口径的版本历史取回（`git log --follow docs/prd/prd-homecube.md`），回捞时不得凭记忆重写。
+
+### 五、采购系统
+
+**定版 ㉛ 移出当前施工范围**
+
+- **本章原定义**：家庭采购与库存管理系统（管物）——购物清单、库存（物品档案、位置、批次、保质期）、补货与低库存提醒、采购记录、人工比价与协作采购；本域为全家庭物品与库存的唯一权威源（含冰箱食材，饮食面不设独立库存实体）。
+- **原体量口径（本轮实测清点）**：数据模型 9 张实体表、接口 11 条、验收 7 条。
+- **回捞指针**：本章全量需求的原文在定版 ㉚ 版本的本文档中，按 **14.6 §范围外的「已移出范围的面（定版 ㉛）」**与 **23.1 ㉛ 记录末尾的回捞声明**从版本历史取回，**不得凭记忆重写**（23.1 的代价段①-⑥只记计数变化，不含本章内容）。
+
+**本章实体与接口清单（存档索引，只列名，不列字段与语义）**
+
+| 类别 | 名称 |
+|---|---|
+| 数据实体 | `ShoppingList`、`ShoppingItem`、`InventoryItem`、`Batch`、`PurchaseRecord`、`Supplier`、`Coupon`、`Stocktake`、`ConsumptionLog` |
+| 接口路由 | `POST /api/purchase/lists`、`POST /api/purchase/lists/{id}/items`、`PUT /api/purchase/items/{id}`、`POST /api/purchase/inventory`、`POST /api/purchase/inventory/{id}/out`、`GET /api/purchase/inventory/alerts`、`GET /api/purchase/inventory`、`POST /api/purchase/purchases`、`GET /api/purchase/purchases/stats`、`POST /api/purchase/coupons`、`POST /api/purchase/stocktakes` / `PUT /api/purchase/stocktakes/{id}` |
+| 跨面引用痕迹 | `ShoppingItem.assignee`（实为 Calendar `Todo` 分配，㉚）、`ShoppingItem.finance_category_id`（→ `finance.Category` 映射，16.5）、表名泛化例 `purchase_batch` |
+
+> 「跨面引用痕迹」表中 `ShoppingItem.finance_category_id`（→ `finance.Category` 映射）一句：本句为存活对象仍需消费的口径，PRD 侧的落点见 16.5。
+
+### 六、饮食系统
+
+**定版 ㉛ 移出当前施工范围**
+
+- **本章原定义**：家庭饮食管理系统（管吃）——菜谱、周菜单与点菜投票、冰箱临期只读视图与消耗登记、口味忌口过滤、做饭任务与打卡、外卖餐厅与饮食记录；食材库存唯一归属采购域（本域只读），口味偏好唯一归属家人域（本域只读消费）。
+- **原体量口径（本轮实测清点）**：数据模型 6 张实体表、接口 9 条、验收 7 条。
+- **回捞指针**：本章全量需求的原文在定版 ㉚ 版本的本文档中，按 **14.6 §范围外的「已移出范围的面（定版 ㉛）」**与 **23.1 ㉛ 记录末尾的回捞声明**从版本历史取回，**不得凭记忆重写**（23.1 的代价段①-⑥只记计数变化，不含本章内容）。
+
+**本章实体与接口清单（存档索引，只列名，不列字段与语义）**
+
+| 类别 | 名称 |
+|---|---|
+| 数据实体 | `Recipe`、`Menu`、`MealRecord`、`Restaurant`、`IngredientAlias`、`MenuVoteRef` |
+| 接口路由 | `POST /api/diet/recipes`、`GET /api/diet/recipes`、`POST /api/diet/menus`、`POST /api/diet/menus/{id}/purchase`、`GET /api/diet/fridge`、`POST /api/diet/fridge/{item_id}/consume`、`GET /api/diet/ingredients/alerts`、`POST /api/diet/meal-records`、`GET /api/diet/taste-prefs` |
+| 跨面引用痕迹 | `MenuVoteRef`（只引用 HomeOS `Vote`，不复制投票数据）、`Menu.assigned_to`（= Calendar `Todo` 分配，㉚）、`IngredientAlias`（↔ `purchase.InventoryItem` 别名对齐）、`kin.preference.updated`（订阅事件，源属家人面）、路由泛化例 `/api/{code}/` = `/api/diet/*` |
+
+### 七、出行系统
+
+**定版 ㉛ 移出当前施工范围**
+
+- **本章原定义**：家庭出行管理系统（管行）——行程、车辆与保养、接送轮值、旅行计划与行李清单、票务手工录入、出行记录；费用金额一律存财务交易引用、不建第二套流水，票务不接外部数据源。
+- **原体量口径（本轮实测清点）**：数据模型 6 张实体表、接口 8 条、验收 7 条。
+- **回捞指针**：本章全量需求的原文在定版 ㉚ 版本的本文档中，按 **14.6 §范围外的「已移出范围的面（定版 ㉛）」**与 **23.1 ㉛ 记录末尾的回捞声明**从版本历史取回，**不得凭记忆重写**（23.1 的代价段①-⑥只记计数变化，不含本章内容）。
+
+**本章实体与接口清单（存档索引，只列名，不列字段与语义）**
+
+| 类别 | 名称 |
+|---|---|
+| 数据实体 | `Trip`、`Vehicle`、`Maintenance`、`Ticket`、`TravelPlan`、`TripRecord` |
+| 接口路由 | `POST /api/trip/trips`、`GET /api/trip/trips`、`POST /api/trip/vehicles`、`POST /api/trip/maintenance`、`GET /api/trip/maintenance/alerts`、`POST /api/trip/tickets`、`POST /api/trip/travel-plans`、`POST /api/trip/travel-plans/{id}/packing` |
+| 跨面引用痕迹 | `TravelPlan.packing_list`（= `purchase.ShoppingList` 引用，不自建清单实体）、`Maintenance.cost` / `TripRecord.cost`（= `finance` 交易引用）、`Trip`（注册 `CalendarEvent`，16.4）、`trip.completed`（事件，10.3） |
+
+> 「跨面引用痕迹」表中 `Maintenance.cost` / `TripRecord.cost`（= `finance` 交易引用、不建第二套流水）一句：本句为存活对象仍需消费的口径，PRD 侧的落点见 16.5。
+
+### 八、家人系统
+
+**定版 ㉛ 移出当前施工范围**
+
+- **本章原定义**：家庭成员信息与照护管理系统（管人）——成员档案、偏好与忌口（全家庭偏好的唯一归属方）、照护与家务分工、纪念日与礼物计划、紧急信息（急救卡）、宠物；称谓/关系不在本面（权威归属见 16.2）。
+- **原体量口径（本轮实测清点）**：数据模型 7 张实体表、接口 10 条、验收 7 条。
+- **回捞指针**：本章全量需求的原文在定版 ㉚ 版本的本文档中，按 **14.6 §范围外的「已移出范围的面（定版 ㉛）」**与 **23.1 ㉛ 记录末尾的回捞声明**从版本历史取回，**不得凭记忆重写**（23.1 的代价段①-⑥只记计数变化，不含本章内容）。
+- **迁出记录（定版 ㉛）**：原 8.5.1 的 `Member.relation` 权威归属条款已迁至 **16.2**（归属表下方说明段）；原 8.5.6 与原 8.7 `EmergencyInfo` 行的锁定屏展示与免登录白名单规则已迁至 **20.2**。
+
+**本章实体与接口清单（存档索引，只列名，不列字段与语义）**
+
+| 类别 | 名称 |
+|---|---|
+| 数据实体 | `Profile`、`Preference`、`CareTask`、`Anniversary`、`Chore`、`EmergencyInfo`、`Pet` |
+| 接口路由 | `POST /api/kin/profiles`、`GET /api/kin/profiles`、`POST /api/kin/preferences`、`GET /api/kin/preferences`、`POST /api/kin/care-tasks`、`GET /api/kin/care-tasks/today`、`POST /api/kin/anniversaries`、`POST /api/kin/chores`、`GET /api/kin/emergency/{member_id}`、`POST /api/kin/pets` |
+| 跨面引用痕迹 | `CareTask` / `Chore`（实为 Calendar `Todo` 业务视图，本面存定义不存状态副本，㉚）、`Anniversary.gift_plan`（= 采购 `ShoppingItem` 引用，10.3）、`Preference.severity` / `visibility`（字段级可见性见 15.4）、`kin.birthday.upcoming`（事件，16.4）、血型/过敏属档案记录而非健康监测（20.3 边界） |
+
+> 「迁出记录（定版 ㉛）」一条：本句为存活对象仍需消费的口径，PRD 侧的落点见 16.2、20.2。
+
+### 九、成长系统
+
+**定版 ㉛ 移出当前施工范围**
+
+- **本章原定义**：家庭成长与学习管理系统（管长）——成长记录与曲线、课程与作业、习惯打卡、学习计划、兴趣班、成长报告与成人成长；不叠加 WHO/国标百分位，课程与作业的时间语义注册 Calendar 到期中心。
+- **原体量口径（本轮实测清点）**：数据模型 8 张实体表、接口 9 条、验收 7 条。
+- **回捞指针**：本章全量需求的原文在定版 ㉚ 版本的本文档中，按 **14.6 §范围外的「已移出范围的面（定版 ㉛）」**与 **23.1 ㉛ 记录末尾的回捞声明**从版本历史取回，**不得凭记忆重写**（23.1 的代价段①-⑥只记计数变化，不含本章内容）。
+
+**本章实体与接口清单（存档索引，只列名，不列字段与语义）**
+
+| 类别 | 名称 |
+|---|---|
+| 数据实体 | `GrowthRecord`、`Course`、`Homework`、`Habit`、`Plan`、`GrowthReport`、`Milestone`、`CheckinLog` |
+| 接口路由 | `POST /api/growth/growth-records`、`GET /api/growth/growth-records/{member_id}`、`POST /api/growth/courses`、`POST /api/growth/homework`、`PUT /api/growth/homework/{id}`、`POST /api/growth/habits`、`POST /api/growth/habits/{id}/checkin`、`POST /api/growth/plans`、`GET /api/growth/reports/{member_id}` |
+| 跨面引用痕迹 | 被记录对象 = `homeos.Member`（含无账号成员，定版 ⑭）、`Course.schedule`（注册 `CalendarEvent`）、`Course.fee`（= 财务交易引用）、`growth.course.scheduled` / `growth.course.fee`（事件，10.3、16.4） |
