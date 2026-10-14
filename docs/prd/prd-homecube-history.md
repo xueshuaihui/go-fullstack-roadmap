@@ -199,6 +199,10 @@
 - 〔10.1 homeos.family.module.updated·空转标注原文（原 L789）〕**定版 ㉛ 空转标注：面目录只剩一个业务面，而停用唯一面被 17.8 第 4 条下限拒绝，故本事件的「启用/停用后五处集合重建」传播断言当前没有正样本；`FamilyModule`、该事件、`version` 乐观锁与五处同源重建的机制定义保留，断言待面目录出现第二个业务面时复验，不因不可测而删除机制。**
 - 〔10.2 信封示例载体说明原文（原 L818）〕**（定版 ㉛：本信封示例原以 `purchase.order.completed` 为载体，该事件随采购面整域移出（14.6），故换用存活事件 `finance.budget.exceeded`；信封的 13 个字段、字段口径与 `business_id` 的既有取值规则一字未改，`business_id` 形态取 10.4 已定版的 `{budget_id}:{period}`，未新造语义。）**
 
+- 〔10.3 节首段剥离前原文（原 L832，含「十一条 → 一条」计数沿革链）〕联动目录条目**当前一条**（`finance.budget.exceeded`）。原十一条中有十条至少一端属采购 / 饮食 / 出行 / 家人 / 成长五个面，随定版 ㉛ 整域移出（14.6），条目连同其启用期从本表删除，全量语义按 14.6 回捞指针从版本历史取回。**本节唯一的计数变化是「十一条 → 一条」（按行计；按唯一事件计为「九个事件名 → 一个」）**，而目录机制的三条口径一字不改：条目全部在 P1-M1 登记进 registry、未出生面只有目录条目无生产者（14.5 第 6 项）、**启用期 = 源面出生期末**（11.1「联动随该面出生期交付」）。原「跨面全量启用与规则引擎在 P6 收口」随期次收为 P1 单期而失去收口时点——规则引擎的机制定义与三类动作保留、交付期标注见 3.4.7 与 14.6（定版 ㉛）。
+- 〔10.3 表现存行剥离前原文（原 L836，六列未变）〕| `finance.budget.exceeded` | 财务 | HomeOS（当前唯一订阅方；原「各系统」随面回捞恢复） | 提醒 | 广播给 HomeOS，由其按来源标签下发；各面不自建推送 | **P1-M1**（HomeOS 下发）；他面订阅随各自出生期接入——**当前无他面** |
+- 〔10.3 空转标注压缩前原文（原 L840）〕**（定版 ㉛ 空转标注：本节原按「源面出生期」逐条排定启用期（P2/P3/P4/P5/P6 各一批），并规定「跨面全量启用 + 规则引擎在末级期收口」；当前面目录只登记 `finance` 一个业务面，且它已在 P1 出生，故「启用期 = 源面出生期末」的复验、「他面订阅随各自出生期接入」的多面接入序列、以及 P6 的全量启用收口三条断言都没有执行样本。事件目录条目登记、启用期与出生期绑定的机制、以及规则引擎的定义全部保留，断言待面目录出现第二个业务面时按其出生期复验，不因不可测而删除机制；见 14.6。）**
+
 ---
 
 ## 已移出的五个面（定版 ㉛ 归档）
@@ -292,8 +296,10 @@
 | 接口路由 | `POST /api/growth/growth-records`、`GET /api/growth/growth-records/{member_id}`、`POST /api/growth/courses`、`POST /api/growth/homework`、`PUT /api/growth/homework/{id}`、`POST /api/growth/habits`、`POST /api/growth/habits/{id}/checkin`、`POST /api/growth/plans`、`GET /api/growth/reports/{member_id}` |
 | 跨面引用痕迹 | 被记录对象 = `homeos.Member`（含无账号成员，定版 ⑭）、`Course.schedule`（注册 `CalendarEvent`）、`Course.fee`（= 财务交易引用）、`growth.course.scheduled` / `growth.course.fee`（事件，10.3、16.4） |
 
-### 十、系统间接口与事件规范 · 随五面移出的事件条目（10.1/10.2）
+### 十、系统间接口与事件规范 · 随五面移出的事件条目（10.1—10.3）
 
 原清单里另有 `purchase.`　`diet.`　`trip.`　`kin.`　`growth.` 五个前缀，随五个业务面整域移出而不再登记（14.6）；其中 `kin.` 不写作 `family.`、`diet.` 不写作 `meal` 这两条命名避让说明保留在 16.1 的命名说明里，供日后回捞时沿用。
 
 原清单另含 `purchase.order.completed`、`diet.menu.created`、`trip.maintenance.due` / `trip.completed`、`kin.birthday.upcoming` / `kin.preference.updated`、`growth.course.scheduled` / `growth.course.fee` 八条业务事件名，其发布方与消费方均属已移出的五个面，故从本清单删除，全量定义随 14.6 的回捞指针从版本历史取回（**定版 ㉛：这些事件名此前也只是 10.3 的目录条目，从未有生产者，删除不改变任何存活判据**）。
+
+10.3 的存档索引整段随本轮剥离逐字移入本节（原 L838 原文，未作改写）：**存档索引（定版 ㉛ 删除的十条，只列名与源→目标，不列动作与语义）**：`diet.menu.created`（饮食→采购）、`purchase.order.completed`（采购→财务）、`purchase.order.completed`（采购→饮食）、`kin.birthday.upcoming`（家人→Calendar）、`kin.birthday.upcoming`（家人→采购）、`kin.preference.updated`（家人→饮食）、`trip.maintenance.due`（出行→Calendar）、`trip.completed`（出行→财务）、`growth.course.scheduled`（成长→Calendar）、`growth.course.fee`（成长→财务）。
