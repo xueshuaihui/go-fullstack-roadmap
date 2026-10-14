@@ -194,6 +194,10 @@
 - 〔4.7 Category 行·字典口径（原 L672）〕定版 ㉛：原措辞为「六面统一费用字典」——"六面"随五面移出失去指代对象，故改按全家庭计数
 - 〔4.7 Category 行·空转标注（原 L672）〕（定版 ㉛ 空转标注：当前面目录只登记 `finance` 一个业务面，「他面引用本字典」的断言没有执行样本；费用字典唯一源与 16.5 的映射确认、无金额副本纪律的机制定义保留，断言待面目录出现第二个业务面时复验，不因不可测而删除机制。）
 - 〔4.2 系统边界·不做（原 L684）〕原与本条并列的「不做采购执行」「不做饮食消费决策」两项，其主语（那两个业务面）已按定版 ㉛ 整域移出施工范围（14.6）
+- 〔10.1 命名规则句·前缀计数沿革（原 L779）〕——本条措辞按 ㉚ 原文保留，**定版 ㉛ 只把当前前缀数由八个改为三个，"可扩展"这一半不因条目减少而改写**
+- 〔10.1 registry 扩展断言·空转标注原文（原 L783）〕**（定版 ㉛ 空转标注：当前面目录只登记 `finance` 一个业务面，「新增一面即新增一个前缀、必须先进 registry 才能发事件」这条扩展断言没有执行样本；前缀规则、registry 前置校验与 CI 门禁的机制定义保留，断言待面目录出现第二个业务面时复验，不因不可测而删除机制。）**
+- 〔10.1 homeos.family.module.updated·空转标注原文（原 L789）〕**定版 ㉛ 空转标注：面目录只剩一个业务面，而停用唯一面被 17.8 第 4 条下限拒绝，故本事件的「启用/停用后五处集合重建」传播断言当前没有正样本；`FamilyModule`、该事件、`version` 乐观锁与五处同源重建的机制定义保留，断言待面目录出现第二个业务面时复验，不因不可测而删除机制。**
+- 〔10.2 信封示例载体说明原文（原 L818）〕**（定版 ㉛：本信封示例原以 `purchase.order.completed` 为载体，该事件随采购面整域移出（14.6），故换用存活事件 `finance.budget.exceeded`；信封的 13 个字段、字段口径与 `business_id` 的既有取值规则一字未改，`business_id` 形态取 10.4 已定版的 `{budget_id}:{period}`，未新造语义。）**
 
 ---
 
@@ -287,3 +291,9 @@
 | 数据实体 | `GrowthRecord`、`Course`、`Homework`、`Habit`、`Plan`、`GrowthReport`、`Milestone`、`CheckinLog` |
 | 接口路由 | `POST /api/growth/growth-records`、`GET /api/growth/growth-records/{member_id}`、`POST /api/growth/courses`、`POST /api/growth/homework`、`PUT /api/growth/homework/{id}`、`POST /api/growth/habits`、`POST /api/growth/habits/{id}/checkin`、`POST /api/growth/plans`、`GET /api/growth/reports/{member_id}` |
 | 跨面引用痕迹 | 被记录对象 = `homeos.Member`（含无账号成员，定版 ⑭）、`Course.schedule`（注册 `CalendarEvent`）、`Course.fee`（= 财务交易引用）、`growth.course.scheduled` / `growth.course.fee`（事件，10.3、16.4） |
+
+### 十、系统间接口与事件规范 · 随五面移出的事件条目（10.1/10.2）
+
+原清单里另有 `purchase.`　`diet.`　`trip.`　`kin.`　`growth.` 五个前缀，随五个业务面整域移出而不再登记（14.6）；其中 `kin.` 不写作 `family.`、`diet.` 不写作 `meal` 这两条命名避让说明保留在 16.1 的命名说明里，供日后回捞时沿用。
+
+原清单另含 `purchase.order.completed`、`diet.menu.created`、`trip.maintenance.due` / `trip.completed`、`kin.birthday.upcoming` / `kin.preference.updated`、`growth.course.scheduled` / `growth.course.fee` 八条业务事件名，其发布方与消费方均属已移出的五个面，故从本清单删除，全量定义随 14.6 的回捞指针从版本历史取回（**定版 ㉛：这些事件名此前也只是 10.3 的目录条目，从未有生产者，删除不改变任何存活判据**）。

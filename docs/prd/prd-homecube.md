@@ -776,24 +776,24 @@ AA 分账参与范围（默认）：仅标记为「共享」的流水参与分�
 
 ### 10.1 事件命名
 
-命名规则 `系统.对象.动作`。前缀取 16.1 的系统 code（**当前三个**：两个系统级面 `homeos` 与 `calendar`（定版 ㉚）+ 面目录里唯一登记的业务面 `finance`（定版 ㉛），不使用表外前缀；**面目录可扩展，新增一面即新增一个前缀，且必须先进 registry 才能发事件**（17.8）——本条措辞按 ㉚ 原文保留，**定版 ㉛ 只把当前前缀数由八个改为三个，"可扩展"这一半不因条目减少而改写**）：
+命名规则 `系统.对象.动作`。前缀取 16.1 的系统 code（**当前三个**：两个系统级面 `homeos` 与 `calendar`（定版 ㉚）+ 面目录里唯一登记的业务面 `finance`（定版 ㉛），不使用表外前缀；**面目录可扩展，新增一面即新增一个前缀，且必须先进 registry 才能发事件**，见 17.8；沿革 24.31）：
 
 `homeos.`　`calendar.`　`finance.`
 
-原清单里另有 `purchase.`　`diet.`　`trip.`　`kin.`　`growth.` 五个前缀，随五个业务面整域移出而不再登记（14.6）；其中 `kin.` 不写作 `family.`、`diet.` 不写作 `meal` 这两条命名避让说明保留在 16.1 的命名说明里，供日后回捞时沿用。**（定版 ㉛ 空转标注：当前面目录只登记 `finance` 一个业务面，「新增一面即新增一个前缀、必须先进 registry 才能发事件」这条扩展断言没有执行样本；前缀规则、registry 前置校验与 CI 门禁的机制定义保留，断言待面目录出现第二个业务面时复验，不因不可测而删除机制。）**新增事件必须先登记进事件目录（P1-M1 交付物，见 11.3）再发布。
+原清单里的五个前缀句（含命名避让说明）原文逐字归档于 `prd-homecube-history.md` 的「已移出的五个面」。（空转：机制保留、断言当前不判、触发条件=面目录出现第二个业务面、不因不可测而删机制；沿革 24.31）新增事件必须先登记进事件目录（P1-M1 交付物，见 11.3）再发布。
 
 当前事件清单：
 
 - `calendar.todo.completed`（**定版 ㉚ 由 `homeos.todo.completed` 换前缀**，语义不变；发布方 `svc-calendar`，完成回写的消费方为源面对象的归属服务——当前可判样本是 `finance` 的账单已付与 Calendar 自持待办，其余归属服务随面移出，14.6）
 - `homeos.permission.updated`（各服务据此失效权限缓存，15.6）
-- `homeos.family.module.updated`（某家庭启用/停用某个面；各服务据此失效 module 判定缓存、客户端据此重建首页矩阵与其余四个消费位，17.8、⑫。**定版 ㉛ 空转标注：面目录只剩一个业务面，而停用唯一面被 17.8 第 4 条下限拒绝，故本事件的「启用/停用后五处集合重建」传播断言当前没有正样本；`FamilyModule`、该事件、`version` 乐观锁与五处同源重建的机制定义保留，断言待面目录出现第二个业务面时复验，不因不可测而删除机制。**）
+- `homeos.family.module.updated`（某家庭启用/停用某个面；各服务据此失效 module 判定缓存、客户端据此重建首页矩阵与其余四个消费位，17.8、⑫；（空转：机制保留、断言当前不判、触发条件=面目录出现第二个业务面、不因不可测而删机制；沿革 24.31））
 - `{code}.due.registered` / `{code}.due.revoked`（**16.4 到期注册与撤销的唯一通道**，各面向 **Calendar 面的到期中心**（3.9）注册定时语义；`{code}` 取发布方自己的 code，符合「每服务只被授权发布自己那条流」——当前发布者只有 `svc-finance` 与 `svc-calendar`）
 - `calendar.reminder.fired`（**定版 ㉚ 由 `homeos.reminder.fired` 换前缀**，语义不变）：`svc-calendar` 到点触发后发布；**站内通知由 `svc-homeos` 消费本事件后落 `Notification`（分型 `reminder`）并下发**（3.4.2、3.9.3），业务面据此更新自身展示态
 - `finance.bill.paid`（账单标记已缴 → **`svc-calendar` 消费置完成**（定版 ㉚，原为 `svc-homeos` 消费），深链闭环见 17.6 与导航文档 §6.7）
 - `{code}.audit.recorded`（各服务在自己流上发审计事实，`svc-homeos` 消费后统一落 `homeos_audit_log`，21.5）
 - `finance.transaction.created` / `finance.budget.exceeded`
 
-原清单另含 `purchase.order.completed`、`diet.menu.created`、`trip.maintenance.due` / `trip.completed`、`kin.birthday.upcoming` / `kin.preference.updated`、`growth.course.scheduled` / `growth.course.fee` 八条业务事件名，其发布方与消费方均属已移出的五个面，故从本清单删除，全量定义随 14.6 的回捞指针从版本历史取回（**定版 ㉛：这些事件名此前也只是 10.3 的目录条目，从未有生产者，删除不改变任何存活判据**）。
+原清单里的八条已移出面业务事件名句，原文逐字归档于 `prd-homecube-history.md` 的「已移出的五个面」。
 
 ### 10.2 事件结构
 
@@ -815,7 +815,7 @@ AA 分账参与范围（默认）：仅标记为「共享」的流水参与分�
 }
 ```
 
-**（定版 ㉛：本信封示例原以 `purchase.order.completed` 为载体，该事件随采购面整域移出（14.6），故换用存活事件 `finance.budget.exceeded`；信封的 13 个字段、字段口径与 `business_id` 的既有取值规则一字未改，`business_id` 形态取 10.4 已定版的 `{budget_id}:{period}`，未新造语义。）**
+（本信封示例的载体事件为定版 ㉛ 所换，沿革 24.31）
 
 字段口径：
 
