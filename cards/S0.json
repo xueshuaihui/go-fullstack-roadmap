@@ -1,0 +1,1870 @@
+[
+  {
+    "id": "s0-d1",
+    "stage": "S0",
+    "day": 1,
+    "week": 1,
+    "title": "版本管理心智：git init 与第一次提交",
+    "goal": "把 homecube 变成一个真正的 git 仓库，配好 .gitignore，完成第一次提交，并且能用自己的话讲清「工作区 / 暂存区 / 仓库」三层模型。",
+    "duration": "60 分钟",
+    "why": {
+      "problem": "接下来 60 周你要写几万行代码、几千次改动，中间会装错包、改错端口、删错目录。没有任何回退能力的时候，一次手滑就可能毁掉两周的进度。学 git 不是为了「以后可能会用到」，是为了今天就有个后悔药。",
+      "naive": "常见误解是「git 就是备份，所以我只要会 commit 和 push 就行」。于是每次 `git add .` 把 node_modules、.env、编译产物一起塞进去，仓库膨胀到几百 MB，换台电脑 clone 要十分钟；更要命的是密码进了 Git 历史——哪怕后来删掉文件，历史里还留着，GitHub 的密钥扫描会直接报警。",
+      "right": "git 的心智模型只有一句话：每次 commit 是把你项目某一时刻的**完整快照**存下来。所谓「提交」不是存差异，而是存快照——差异是你和上一次快照比出来的结果。理解了这句，「暂存区」就好懂了：它是你这次准备拍的快照的**草稿区**，你可以反复挑选哪些文件入镜、哪些不进镜头。有了快照，才能有 diff、才能回退、才能分支。.gitignore 就是「永久不进镜的名单」。"
+    },
+    "concepts": [
+      {
+        "name": "工作区 / 暂存区 / 仓库 三层模型",
+        "explanation": "git 管三个地方，从左到右是「越来越确定」：① 工作区（working tree）就是你硬盘上能双击打开的文件夹，随便改，改坏了 Git 不知道；② 暂存区（index / staging area）是 `git add` 之后的草稿区，里面装的是「你这一轮想提交的那个版本」；③ 仓库（.git 目录）里存的是一串 commit 快照，永久保存，push 就是把它传到远端。三个区之间靠三个命令连接：`git status` 看状态、`git add` 把工作区的东西放进暂存区、`git commit` 把暂存区固化成一次提交。为什么要多一个暂存区，而不是 add 完直接提交？因为现实里你会改三个文件：改完 A 逻辑、B 还改一半、C 是垃圾文件。如果只有工作区和仓库两层，你要么全提交（把半成品和垃圾一起提交），要么放弃暂存。暂存区让你能精确地说「这次只提交 A 和 C」。类比 TS：它像是 `git add` 之前的一次 code review 快照点，你觉得干净了才 commit。而且暂存区里存的是**整个文件的当前内容**，不是补丁——你对同一个文件改了三次再 add，暂存区里只有最新的那一份。",
+        "analogy": "像相机：工作区是眼前的现实（随手乱拍），暂存区是取景框（挑好构图，可以反复调），commit 是按下快门（一旦拍下就固定了）。"
+      },
+      {
+        "name": "提交是快照，不是差异",
+        "explanation": "这是 git 和很多工具的差别，也是它「贵」的原因：每提交一次，Git 把**所有被跟踪文件的内容**按内容寻址存一份完整的树。你只改了一行，也会重新写一遍所有文件的 blob（不过没变的文件会复用同��� blob，所以实际增量不大；真正贵的是大量小文件，比如 node_modules 里十几万个文件）。好处是：你随时可以 checkout 到任何一个历史提交，得到的是**完整可用的项目**，而不是「一段需要小心应用的补丁」。这让 git 天生适合回退、适合 bisect（二分查找哪个提交引入了 bug）、适合在任何提交上建分支。代价是仓库体积比只存差异的 SVN 大，需要靠 .gitignore 控制「什么该进快照」。这一点直接决定了下一条：哪些文件该跟踪，比怎么用 git add 更重要。",
+        "analogy": "像游戏存档：每次 commit 是把整个世界存一档，而不是只记录「这次我打死了三只史莱姆」这样的日志。你回到任意一档，世界都是完整可玩的。"
+      },
+      {
+        "name": ".gitignore 的作用与它不是保险箱",
+        "explanation": ".gitignore 是一个模式列表，告诉 Git 哪些路径不要跟踪、也不要看它们的改动。写进去之后这些文件对 Git 完全不存在：`git status` 不显示、不会被 add、也不会影响别人的仓库。因为 Go 项目会编译出二进制、Node 项目有 node_modules、前端有 dist/、本地还有 .env 和数据库文件，全跟踪的话仓库体积会爆炸，所以每个项目第一件事就是写 .gitignore。三条规则要记住：① 已经在历史里的文件，.gitignore 管不住——它只影响之后的行为，想彻底移除要用 `git rm --cached`；② 写了 ! 前缀的规则可以反悔，比如 `!.env.example` 允许提交模板；③ .gitignore 不是密钥保险箱。文件没被 Git 跟踪不等于它安全，.env 权限、密钥轮换是另一件事。但反过来，只要一开始没提交进去，密码就不会在历史里，这是最省心的防线。",
+        "analogy": "像搬家时的「不要带清单」：清单上的东西从一开始就进不了新家；但已经搬过去的东西，清单管不住，得单独拿出来处理。"
+      }
+    ],
+    "code": {
+      "lang": "bash",
+      "filename": "scripts/s0/d01-init-repo.sh",
+      "content": "#!/usr/bin/env bash\n# S0 D1：建仓库、装 .gitignore、第一次提交\n# 幂等：已经 init 过就跳过，所以可以反复跑\nset -euo pipefail\n\nPROJECT=homecube\nmkdir -p \"$PROJECT\"\ncd \"$PROJECT\"\n\n# 1) 建仓库。main 是默认分支名（老版本 Git 默认 master，用 branch -M 统一掉）\ngit init -q\ngit branch -M main\n\n# 2) 告诉 Git 哪些文件永远不进镜头\ncat > .gitignore <<'EOF'\n# 依赖\nnode_modules/\n# 构建产物\ndist/\nweb/dist/\nbin/\n# 环境变量：绝不入库\n.env\n.env.*\n!.env.example\n# 本地数据\ndata/\n*.db\n*.sqlite\n# 日志\n*.log\n# 编辑器与系统\n.DS_Store\n.vscode/\n.idea/\n# Go 测试产物\n*.test\n*.out\nEOF\n\n# 3) 身份配置：换机器后要先能提交，否则会报 Please tell me who you are\nif ! git config user.name >/dev/null 2>&1; then\n  git config user.name  \"xuesh\"\n  git config user.email \"xuesh@homecube.local\"\nfi\n\n# 4) 制造一点现场，方便看出 .gitignore 在干活\nmkdir -p web/node_modules/left-pad\necho '{\"name\":\"homecube\",\"private\":true}' > package.json\necho 'HC_DB_PASSWORD=homecube'        > .env\necho 'HC_DB_PASSWORD=homecube'        > .env.example\necho 'dist/'                           > web/.gitignore\n\n# 5) 入场 + 第一次提交\ngit add .\ngit commit -q -m \"chore: 初始化 HomeCube 仓库（S0 D1）\"\n\n# 6) 验证：输出是确定的，只有 commit 的哈希每次不同\necho \"--- 提交条数 ---\"\ngit rev-list --count HEAD\necho \"--- 提交标题 ---\"\ngit log --pretty=format:'%s'\necho\necho \"--- 工作区是否干净（应该没有输出）---\"\ngit status --short\necho \"--- .env 被哪条规则挡下来了 ---\"\ngit check-ignore -v .env\necho \"--- .env.example 有没有跟 .env.* 一起被忽略（应该报错 not ignored）---\"\ngit check-ignore -v .env.example || echo \"未被忽略：符合预期\"\necho \"--- 实际入库的文件清单 ---\"\ngit ls-files\n",
+      "run": "bash homecube/scripts/s0/d01-init-repo.sh",
+      "expect": "--- 提交条数 ---\n1\n--- 提交标题 ---\nchore: 初始化 HomeCube 仓库（S0 D1）\n--- 工作区是否干净（应该没有输出）---\n--- .env 被哪条规则挡下来了 ---\n.gitignore:7:.env\t.env\n--- .env.example 有没有跟 .env.* 一起被忽略（应该报错 not ignored）---\n未被忽略：符合预期\n--- 实际入库的文件清单 ---\n.gitignore\n.env.example\npackage.json\nweb/.gitignore"
+    },
+    "steps": [
+      {
+        "n": 1,
+        "title": "理解并复述三层模型",
+        "detail": "合上资料，用自己的话回答：工作区改的东西怎么进暂存区？暂存区里存的是文件还是补丁？为什么需要暂存区这层？写下来（写在 README 或纸上都行），这是明天做 S1 时回看的地基。",
+        "time": "10 分钟"
+      },
+      {
+        "n": 2,
+        "title": "跑初始化脚本",
+        "detail": "把脚本存成 scripts/s0/d01-init-repo.sh 并执行。它会做：git init、branch -M main、写 .gitignore、配置 user.name/email、造几个现场文件（.env / .env.example / node_modules）、提交一次。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 3,
+        "title": "验证 .gitignore 真的在挡东西",
+        "detail": "重点看两条输出：git check-ignore -v .env 告诉你命中了 .gitignore 的第 7 行；git check-ignore -v .env.example 报「未被忽略」，说明 !.env.example 这条反悔规则生效了。再用 git ls-files 看真正入库的只有 4 个文件。",
+        "time": "10 分钟"
+      },
+      {
+        "n": 4,
+        "title": "亲手制造一次后悔药",
+        "detail": "随便改一个入库的文件（比如 package.json），git status 看它变成 modified，然后 git diff 看差异，接着 git restore 把它扔回去，再故意写错一个字并 git checkout -- 恢复。亲手感受「工作区可以随便造、仓库里的快照动不了」。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 5,
+        "title": "补一个防呆检查",
+        "detail": "在 .gitignore 里加上 .idea/、Thumbs.db、*.tmp，再执行 git add -A && git status --short 确认没有任何意外文件进候选区。养成习惯：每次 add 之后 commit 之前，先 status 看一眼。",
+        "time": "10 分钟"
+      }
+    ],
+    "pitfalls": [
+      {
+        "wrong": "git add . 然后直接 git commit，看到 git status 一片红就放着不管。",
+        "right": "add 之后先 git status --short 逐条看，确认要入镜的文件清单，再 commit。",
+        "why": "git add . 会把工作区里所有「未被忽略」的文件一次性放进暂存区，包括你临时写的调试脚本、包含密钥的 .env.local、导出的 .csv 报告。等发现时快照已经生成，需要额外一次提交去修，历史里仍然留着那次误提交的文件内容。"
+      },
+      {
+        "wrong": "把 .env 提交进去，觉得「反正后面再删掉」。",
+        "right": ".env 从第一天就进 .gitignore，同时提交一份 .env.example 作为模板。",
+        "why": "Git 历史是只追加的。删掉文件只是新增一个「它不存在了」的快照，旧快照里的明文密码永远留在对象库里。推到 GitHub 后会被密钥扫描器自动标记，公开仓库的历史一旦被 clone，密码就算泄露。唯一的补救是重写历史 + 立刻轮换密钥。"
+      },
+      {
+        "wrong": "装好 Node 后顺手 git add .，把 node_modules（几万个文件）提交进仓库。",
+        "right": "node_modules/、dist/、bin/ 一律进 .gitignore，用 package-lock.json / pnpm-lock.yaml 记录依赖版本。",
+        "why": "锁文件记录的是依赖清单（几百行），node_modules 是展开后的实体（几十 MB 到几百 MB、上万个文件）。提交实体目录会让 clone 和 CI 缓存彻底变慢，而每个文件在快照里都是独立对象，仓库体积不可逆地涨。"
+      }
+    ],
+    "quiz": [
+      {
+        "q": "你已经改了 main.go 的三处内容，但没有执行 git add。此时 git diff 显示什么？git diff --cached 显示什么？",
+        "options": [
+          "两者都显示三处差异",
+          "git diff 显示三处，git diff --cached 是空的",
+          "git diff 是空的，git diff --cached 显示三处",
+          "两者都是空的，因为还没提交"
+        ],
+        "answer": 1,
+        "explain": "git diff 比的是「工作区 vs 暂存区」：你改了但没 add，所以只有工作区这一侧有差异，显示三处。git diff --cached（也写作 --staged）比的是「暂存区 vs 仓库最后一次提交」：你还没 add，暂存区和上次提交一致，所以是空的。这一对命令能告诉你「哪些改动已经准备好要进快照了」。"
+      },
+      {
+        "q": "为什么 .gitignore 里写 .env.* 之后还要再写一行 !.env.example？",
+        "options": [
+          "为了让 .env.example 也能被忽略",
+          "为了让 .env.example 强制入库——不写这一行，它会被上一条 .env.* 一起忽略掉",
+          "两行都要删掉，.env.* 会导致 git 出错",
+          "这两行等价，只是写法好看"
+        ],
+        "answer": 1,
+        "explain": "Git 按 .gitignore 里从上到下的顺序匹配，**最后一条命中的规则生效**。.env.* 匹配到 .env.example，!.env.example 又把它「反悔」成不忽略，于是模板文件可以安全入库，其他 .env.* 变体（.env.local、.env.production）继续被挡住。这正是「值可以不同，但变量名清单要公开」的需求。"
+      },
+      {
+        "q": "执行 git commit 报 error: Author identity unknown，正确的处理是？",
+        "options": [
+          "删掉 .git 目录重新 git init",
+          "设置 user.name 和 user.email（可用 git config --global 一次配好）",
+          "在每次 commit 时手写 --author 参数",
+          "把仓库切成 --no-verify 模式"
+        ],
+        "answer": 1,
+        "explain": "每次提交都要记录作者信息。Git 从仓库级 → 全局（~/.gitconfig）两级配置里读，两级都没有就拒绝提交（不配它宁可失败也不愿把作者写成 root 或未知）。正确做法是 git config --global user.name / user.email，配一次所有项目通用；本机私有邮箱用 noreply 邮箱也行。"
+      },
+      {
+        "q": "关于 commit 存的是「差异」还是「快照」，下面哪句是对的？",
+        "options": [
+          "只存差异，靠 patch 逐个应用到上一个版本",
+          "存该时刻所有被跟踪文件的完整快照（未变化的文件复用同一份内容对象）",
+          "只存变化文件的差异，但可以随时拼出完整文件树",
+          "存的是整个目录的压缩包"
+        ],
+        "answer": 1,
+        "explain": "Git 是基于内容的快照模型：每个 commit 记录一棵完整的目录树，只是不变的文件指向同一个 blob 对象，所以并不会重复存 10 份相同的 package.json。这样才能保证任何一个 commit 都 checkout 出一份完整可编译的工程，这也是 bisect、分支、rebase 这些操作能成立的前提。"
+      }
+    ],
+    "task": {
+      "title": "把 HomeCube 变成一个可回退的仓库",
+      "acceptance": [
+        "homecube 下存在 .git 目录，当前分支名为 main，且至少有 1 条提交",
+        ".gitignore 至少覆盖 node_modules/、dist/、bin/、.env、.env.*、!.env.example、.DS_Store、*.log",
+        "执行 git check-ignore -v .env 有输出且指向 .gitignore 里的具体行号；git check-ignore .env.example 报告未被忽略",
+        "git ls-files 的输出里不含任何 node_modules 或 .env 开头的文件",
+        "你能不用查资料，说清「工作区/暂存区/仓库」三层以及 add、commit、restore 各自跨了哪两层"
+      ],
+      "hint": "git status --short 里的两列：左列是暂存区状态、右列是工作区状态。「??」表示未跟踪，「M」表示已修改。想撤销工作区的改动用 git restore 文件名（丢掉改动）或 git add 文件名（把改动收进暂存区）——两者方向相反，别搞混。",
+      "accept_note": ""
+    },
+    "tomorrow": "明天装 Go，然后写人生第一个 Go 服务。你会第一次遇到「进程占用端口」这种只有跑起来才会暴露的问题——为什么浏览器能打开一个进程、而进程之间要靠端口区分，就在那张卡里讲。"
+  },
+  {
+    "id": "s0-d2",
+    "stage": "S0",
+    "day": 2,
+    "week": 1,
+    "title": "进程与端口：装 Go、go run、端口冲突",
+    "goal": "装好 Go 工具链，用 go run 跑起一个监听 8080 的 HTTP 服务，理解进程与端口的关系，并能用 lsof 快速定位并解决端口冲突。",
+    "duration": "90 分钟",
+    "why": {
+      "problem": "「代码写完了但访问不到」是新手最常撞的墙，而墙后面几乎总是同一件事：服务没跑起来，或者跑了但占的不是你以为的那个端口。当 Go、Node、Postgres、Docker Desktop 同时在你机器上跑，8080 被抢占是每周都会发生的事。会用 lsof 定位占用者，比会写多少代码都更能决定你今天能不能推进。",
+      "naive": "常见做法是遇到 bind: address already in use 就去搜「怎么关掉端口」，然后照着 kill 掉一个随机 PID——有时候杀掉的正好是你正在用的开发服务器，第二天早上对着空白的终端面板发呆。或者干脆换个端口 8081 硬扛，一个月后项目里散落着 8080 到 8099 的七种配置，端口号彻底失去意义。",
+      "right": "先把两个词分开：**进程**是一份正在运行的程序实例，它有自己的内存、自己的 PID（进程编号）、自己的文件描述符表；**端口**是操作系统网络栈上的一个 16 位编号（0-65563），用来把进来的连接交给某个监听中的进程。一台机器上同一时刻每个 IP:端口只能有一个进程处于 listen 状态——这就是冲突的根源。至于「浏览器怎么就能打开我写的代码」，是因为浏览器请求 127.0.0.1:8080，操作系统查端口表，找到那个在 8080 上 listen 的进程，把 HTTP 请求交给它的文件描述符。搞清这条链路，端口冲突就只是「查表—杀进程—重启」三步。"
+    },
+    "concepts": [
+      {
+        "name": "进程（process）与 PID",
+        "explanation": "当你执行 go run ./lab/s0/d02 时，操作系统真正启动的是一个新的程序实例，也就是进程。Go 工具链这一轮会启动两个进程：先是编译过程（一个短命的编译器进程），然后是编译出来的可执行文件进程（你代码里的 main 在这里跑）。每个进程有一个系统分配的唯一编号 PID，在 Linux/macOS 上就是一个正整数。进程之间默认互相看不见对方的内存——这是「隔离」。但进程也各自持有一张「打开的东西」的清单（文件描述符表），里面记着 fd 0/1/2 对应 stdin/stdout/stderr，以及监听 8080 时拿到的那个 socket。理解了「进程持有 fd 表」这一点，端口冲突就顺理成章了：监听 8080 的意思是「我这个进程往操作系统的端口表里登记了一格：以后发到 8080 的连接给我」。",
+        "analogy": "像一栋办公楼里的多个工位（进程）：每个工位有自己的抽屉和钥匙（fd），门卫（操作系统）有一张表写着「8080 号房间由 3 号工位负责」，这间房只能挂一块牌子。"
+      },
+      {
+        "name": "端口是网卡上的编号，listen 是占位",
+        "explanation": "端口是一个 16 位无符号整数，范围 0-65535，其中 0-1023 是特权端口（需要 root），1024 以上随便用。同一台机器上，(IP, 端口) 这个二元组在同一时刻只能被一个进程 listen——因为要靠它把到达的报文交给正确的进程，重复登记就没法派发。你的服务只要执行 http.ListenAndServe(\"127.0.0.1:8080\", mux)，就等于登记了 127.0.0.1:8080。进程退出，这张登记自动撤销，端口立刻能被下一个进程拿走——这就是为什么「Ctrl-C 之后端口就空了」。三个地址要分清：127.0.0.1 是回环地址，只有本机能访问，别的机器连不到；0.0.0.0 是「监听本机所有网卡」，Docker 里必须用这个，容器外的机器才能连进来；localhost 是主机名，macOS 上优先解析成 ::1（IPv6 回环），而 Go 默认只监听 IPv4 的 127.0.0.1，这会制造出「本机 curl 能通、容器里连不上」的经典困惑——S0 D8 会撞上它。",
+        "analogy": "像分诊台的分流牌：急诊来了病号，护士看牌子上写的科室号（端口）直接把人领过去。每个科室（IP）每个号（端口）同一时刻只能挂一块牌子，换人（进程退出）牌子才能摘下来给别人。"
+      },
+      {
+        "name": "go run 到底做了什么",
+        "explanation": "go run 不是「解释执行」，它是一个完整的编译链，只是把产物扔掉了。背后依次是：解析包与依赖 → 编译依赖包 → 编译目标包 → 链接成可执行文件 → 执行它并把退出码透传给你。Go 默认开启编译缓存（GOCACHE），第二次编译同一个包几乎不花时间，这和 Node 的「启动就快因为解释/JIT」是完全不同的体感来源：Go 第一次 go run 可能要几秒，之后是毫秒级。工程上这意味着两种启动方式：开发时 go run ./lab/s0/d02，改动就重新编译一次；构建产物时 go build -o bin/svc-homeos ./cmd/svc-homeos，生出一个可以反复启动、不重复编译的二进制。S0 D10 的 Makefile 里 build 目标就是后者。",
+        "analogy": "像先翻译再朗读：go run 是「现场翻译稿然后念出来」，go build 是「翻译完印成小册子，以后直接读册子」。"
+      }
+    ],
+    "code": {
+      "lang": "go",
+      "filename": "lab/s0/d02/main.go",
+      "content": "package main\n\nimport (\n\t\"fmt\"\n\t\"log\"\n\t\"net/http\"\n\t\"time\"\n)\n\n// handlePing 是处理函数：签名由 net/http 规定\n// w 是「写回客户端的管道」，r 是「客户端发过来的请求」\nfunc handlePing(w http.ResponseWriter, r *http.Request) {\n\t// 先写响应头。Header 必须在第一次写 body 之前设置，一旦写 body 就锁死了\n\tw.Header().Set(\"Content-Type\", \"application/json\")\n\tw.WriteHeader(http.StatusOK)\n\n\t// 把 JSON 写出去。这里故意用 fmt.Fprintf 而非拼接整个字符串\n\tfmt.Fprintf(w, `{\"pong\":true,\"path\":%q,\"at\":%q}`,\n\t\tr.URL.Path,\n\t\ttime.Now().Format(time.RFC3339),\n\t)\n}\n\nfunc main() {\n\tmux := http.NewServeMux()\n\tmux.HandleFunc(\"/ping\", handlePing)\n\tmux.HandleFunc(\"/\", func(w http.ResponseWriter, r *http.Request) {\n\t\thttp.Error(w, \"404 页面不存在: \"+r.URL.Path, http.StatusNotFound)\n\t})\n\n\taddr := \"127.0.0.1:8080\"\n\n\t// ListenAndServe 会阻塞在 main 里，直到出错或被关掉。\n\t// 它返回的第一个 error 才是端口冲突的信号，所以不要写成 srv.ListenAndServe()\n\tsrv := &http.Server{\n\t\tAddr:              addr,\n\t\tHandler:           mux,\n\t\tReadHeaderTimeout: 3 * time.Second,\n\t}\n\n\tlog.Printf(\"服务已启动: http://%s  (Ctrl-C 退出)\", addr)\n\tif err := srv.ListenAndServe(); err != nil {\n\t\tlog.Fatalf(\"启动失败: %v\", err)\n\t}\n}\n",
+      "run": "cd homecube && mkdir -p lab/s0/d02 && go run ./lab/s0/d02",
+      "expect": "$ go run ./lab/s0/d02\n2026/10/15 09:41:07 服务已启动: http://127.0.0.1:8080  (Ctrl-C 退出)\n\n另开一个终端：\n$ curl -s http://127.0.0.1:8080/ping\n{\"pong\":true,\"path\":\"/ping\",\"at\":\"2026-10-15T09:41:10+08:00\"}\n\n$ curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:8080/nope\n404\n\n再开第三个终端，验证端口冲突：\n$ go run ./lab/s0/d02\n2026/10/15 09:42:31 启动失败: listen tcp 127.0.0.1:8080: bind: address already in use\n(exit status 1)"
+    },
+    "steps": [
+      {
+        "n": 1,
+        "title": "先看一眼这台机器上有没有 Go",
+        "detail": "执行 `go version`。如果输出 `go version go1.22.5 darwin/amd64` 之类，说明已经装好了（这台机器就是），**直接跳到第 3 步**。只有在提示 `command not found: go` 时才需要往下走安装流程。",
+        "time": "1 分钟"
+      },
+      {
+        "n": 2,
+        "title": "装 Go 并确认工具链",
+        "detail": "从 go.dev/dl 下载对应你芯片架构的安装包（Apple Silicon 选 arm64，Intel 选 amd64）。安装包自带 GOROOT 和把 ~/go/bin 加进 PATH 的说明。装完执行 go version（应为 go1.22 或更高，低于 1.22 后面没法用 net/http 的新路由写法）、go env GOROOT GOPATH。然后必须退出并重开终端，否则 PATH 里的新路径不生效。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 3,
+        "title": "建模块、跑通 hello world",
+        "detail": "cd homecube && go mod init github.com/xuesh/homecube。把代码存到 lab/s0/d02/main.go，然后 go run ./lab/s0/d02。注意是 ./lab/s0/d02（相对模块根），不是 go run main.go——单文件模式不能引用同目录其他文件，模块模式才能。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 4,
+        "title": "验证端口确实被占住了",
+        "detail": "服务跑着的时候执行 lsof -nP -iTCP:8080 -sTCP:LISTEN，你会看到一行：svc  12345  user  0x0  0u  TCP 127.0.0.1:8080 (LISTEN)。第一列是进程名，第二列是 PID。再用 ps -p <PID> 确认它是 go 的哪个进程。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 5,
+        "title": "亲手制造冲突并解决它",
+        "detail": "不要等。服务开着的时候再开一个终端跑同一个 go run，看 bind: address already in use。然后 lsof 找到 PID，kill <PID>（或 kill -9 强杀），确认第一个终端的服务已经退出、端口释放，再重新跑一次成功。整套动作做两遍，直到不用查文档。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 6,
+        "title": "试三种地址写法",
+        "detail": "把 addr 分别改成 127.0.0.1:8080、localhost:8080、0.0.0.0:8080，各跑一次并 curl 验证，弄清 0.0.0.0 为什么在 Docker 里是必须的（S0 D7/D8 会用到）。最后恢复成 127.0.0.1:8080。",
+        "time": "15 分钟"
+      }
+    ],
+    "pitfalls": [
+      {
+        "wrong": "端口冲突后凭感觉 kill 掉一个 PID，或者随手把端口改成 8081。",
+        "right": "lsof -nP -iTCP:<端口> -sTCP:LISTEN 拿到准确的 PID → 确认这进程是不是你自己要留的 → kill <PID> → 重跑。",
+        "why": "端口上不止有你的服务：Node 的 vite dev server（5173）、DBeaver、某个残留的 Java 进程都可能占着。凭感觉杀会误伤；换端口是饮鸩止渴——同一个项目里散落一堆端口号后，你根本记不清哪个服务在哪个端口。定位能力才是可复用的。"
+      },
+      {
+        "wrong": "在 Docker 里把服务监听说成 127.0.0.1:8080，然后抱怨「容器起了但访问不了」。",
+        "right": "容器内服务监听 0.0.0.0:8080，用 -p 8080:8080 把它发布到宿主机。",
+        "why": "127.0.0.1 是回环地址，在容器这个独立网络命名空间里指的是「容器自己」，容器外无法到达。监听 0.0.0.0 才是「我这个网络命名空间里的所有地址」，配合端口映射，宿主机和其他容器才能进来。这是 S0 D7/D8 的核心知识点。"
+      },
+      {
+        "wrong": "用 go run main.go 跑一个目录里有多文件的工程，编译报 undefined 某某函数。",
+        "right": "用 go run ./lab/s0/d02（模块 + 目录路径），让编译器看到整个包。",
+        "why": "go run main.go 是「单文件模式」：只把这一个文件当整个程序，同目录的其他 .go 文件不会被编译进去，所以引用不到它们。这是新手最常见的「明明写了函数却说找不到」。养成习惯：永远用 ./目录 的形式。"
+      },
+      {
+        "wrong": "把 ListenAndServe() 写成不接返回值的样子，出错时只看到一个光秃秃的退出。",
+        "right": "if err := srv.ListenAndServe(); err != nil { log.Fatalf(...) }，把错误打印出来。",
+        "why": "ListenAndServe 正常情况下永不返回（直到出错或被关）。吞掉它的 error，你就丢掉了「端口被占」这类最关键的信息，排查时只能靠猜。而且 fatal 会带着非 0 退出码，方便以后放进脚本判断。"
+      }
+    ],
+    "quiz": [
+      {
+        "q": "你的服务监听 127.0.0.1:8080，浏览器却打不开，最该先查什么？",
+        "options": [
+          "换个浏览器试试",
+          "确认进程真的在跑：lsof -nP -iTCP:8080 -sTCP:LISTEN 看有没有 LISTEN 记录，再看监听地址是 127.0.0.1 还是 0.0.0.0",
+          "重启电脑",
+          "把端口改成 80"
+        ],
+        "answer": 1,
+        "explain": "两个高频原因：一是进程根本没起来或已经崩了（lsof 为空），二是监听地址写错导致只有本机能连。先用 lsof 确认「有没有人在听」和「他听的是哪个地址」，一步就能把范围缩小一半；换浏览器和改端口都不会带来任何信息。"
+      },
+      {
+        "q": "同一个 (IP, 端口) 为什么不能有两个进程同时 listen？",
+        "options": [
+          "因为内核表的容量有限，只够存一条",
+          "因为操作系统要靠这个二元组把到达的网络连接唯一地派发给某个进程，重复登记就无法派发",
+          "因为第二个进程会立刻被系统杀掉",
+          "其实可以，只是第二个进程收不到请求"
+        ],
+        "answer": 1,
+        "explain": "端口的唯一性来自派发机制：内核收到发往 127.0.0.1:8080 的报文，要决定交给哪个进程的哪个 socket。这个映射必须唯一。第二个进程 bind 时内核发现登记已存在，直接返回 EADDRINUSE，Go 把它翻译成 \"bind: address already in use\"。选项 C 的说法是错的——第二个进程是被拒绝，不是被杀掉。"
+      },
+      {
+        "q": "已经 kill 掉进程，端口什么时候才真正释放？",
+        "options": [
+          "立刻释放，bind 登记随进程退出一起撤销",
+          "要等内核的 TIME_WAIT 状态结束，可能几十秒",
+          "要重启操作系统",
+          "要手动执行一条释放端口的命令"
+        ],
+        "answer": 0,
+        "explain": "listen 登记（占用端口接受新连接的资格）确实随进程退出立刻撤销，所以通常 kill 完马上就能重新 bind。真正会卡住你的是另一个概念：主动关闭方会留下一批处于 TIME_WAIT 的连接，它们占用的是「四元组」而不是监听端口，一般不会妨碍你重新 listen 同一个端口，但会让「为什么新进程连不上旧端口」这种问题看起来很像端口没释放。区分清楚这两件事很重要。"
+      },
+      {
+        "q": "关于 go run 和 go build，下面哪句是对的？",
+        "options": [
+          "go run 是解释执行，所以启动快；go build 是编译，所以慢",
+          "两者都要完整编译；go run 编译后把临时产物丢掉并执行，go build 把产物留在 bin/ 下",
+          "go run 不编译，所以适合大项目",
+          "go build 只能编译成库，不能编译成可执行文件"
+        ],
+        "answer": 1,
+        "explain": "Go 没有解释执行这条路，go run 也走完整编译链（解析依赖→编译→链接→执行），只是产物用完即弃。它看起来「启动快」是因为有 GOCACHE 编译缓存，第二次起同一个包几乎免费。go build -o bin/xxx ./cmd/xxx 产出可执行文件，反复启动不再编译，这是 S0 D10 build 目标和 S0 D7 容器里 COPY 的东西。"
+      }
+    ],
+    "task": {
+      "title": "把一个 Go 服务跑起来，并练熟端口排查",
+      "acceptance": [
+        "go version 输出 go1.22 或更高，go env GOROOT / GOPATH 都能打印出路径",
+        "homecube 存在 go.mod，module 路径为 github.com/xuesh/homecube",
+        "lab/s0/d02/main.go 用 go run ./lab/s0/d02 能起服务，curl /ping 返回 JSON 且 HTTP 状态码 200",
+        "访问 /nope 返回 404",
+        "服务运行时执行 lsof -nP -iTCP:8080 -sTCP:LISTEN 能看到 LISTEN 记录，并能用该 PID 杀掉进程、释放端口后重新启动成功",
+        "你能说出 127.0.0.1 / localhost / 0.0.0.0 三者的区别，以及为什么容器里必须用 0.0.0.0"
+      ],
+      "hint": "**这台机器已装 Go 1.22.5（在 `~/.workbuddy/binaries/go1.22.5/`），先 `go version` 确认再决定要不要装。** lsof 参数里 -n 不做主机名反查（更快更准），-P 显示原始端口号，-iTCP:8080 筛 TCP 的 8080，-sTCP:LISTEN 只看监听态。找不到 lsof 时用 sudo lsof 或 netstat -anv | grep 8080。",
+      "accept_note": ""
+    },
+    "tomorrow": "明天开始碰 Docker。你会发现「装个数据库」这件事从两小时变成一行命令，也会第一次撞上一个反直觉的事实：把那个数据库容器删掉之后，你辛苦灌进去的数据全没了。为什么会这样，正是容器和磁盘之间那道缝的问题。"
+  },
+  {
+    "id": "s0-d3",
+    "stage": "S0",
+    "day": 3,
+    "week": 1,
+    "title": "容器是什么：镜像、容器，跑起 PostgreSQL",
+    "goal": "理解镜像与容器的区别，用 docker run 起一个 PostgreSQL 容器并连进去执行 SQL，理解 -p 端口映射与数据持久化的缺口（为 D9 埋线）。",
+    "duration": "90 分钟",
+    "why": {
+      "problem": "HomeCube 后面 60 周都要用 PostgreSQL。如果每次换电脑、每次系统升级、每次后端同学换机器都要重新「装数据库、调端口、设密码、改配置文件」，你会被环境问题吃掉一大半精力。装 PostgreSQL 本身不难，难的是保证**每台机器上的数据库版本、启动参数、数据目录布局完全一致**。",
+      "naive": "新手常见的两种理解：一是把容器当成「轻量虚拟机」，以为里面有独立的操作系统内核，所以觉得它慢、觉得它占内存；二是用 docker run -v pgdata:/var/lib/postgresql/data 之后照样 `docker rm` 掉容器，发现数据全没了，于是得出「容器不可靠」的结论。这两个误解都会在后面反复咬人。",
+      "right": "容器不是虚拟机，它没有自己的内核——它**共享宿主机的内核**，只隔离了三样东西：文件系统（每个容器看到自己的根目录和挂载点）、进程（每个容器有独立的 PID 命名空间，里面的 PID 1 是容器主进程）、网络（每个容器有自己的网卡和 IP）。镜像（image）是一个只读的、分层的文件系统模板，里面打包了二进制和依赖；容器（container）是镜像的一个运行实例，是镜像加上一层可写的「容器层」。这个「可写层」随容器一起生死，是 D9 数据丢失的根因。理解到这一层，后面所有容器行为——端口映射、网络互通、数据持久化——都是它的自然推论。"
+    },
+    "concepts": [
+      {
+        "name": "镜像 vs 容器：类与实例",
+        "explanation": "镜像是一个只读的分层文件系统快照，加上运行所需的元数据（启动命令、环境变量、端口声明）。它本身不运行，只是一个模板。容器是镜像被运行起来之后的东西：你在模板上面加了一层「可写容器层」，进程真正写文件写在这一层，容器一删这层就没了。类比 JS：这就像 class 与 new 的关系——class 描述「有哪些字段和方法」，new 产生一个具体实例；镜像相当于编译好、可分发、不可修改的 class，容器相当于 new 出来的对象。类比 Docker 自己的说法也常用「镜像像 ISO 安装盘，容器像装好并开机的系统」。关键推论：同一个镜像可以同时起 N 个容器，各自有独立可写层，端口必须错开；而想改镜像内容只能重新 build 一个新镜像，不能就地修改。",
+        "analogy": "像 Node 依赖：node_modules 是模板（同一个镜像），你 cd 进不同项目各起一个进程（各自的容器），可以同时跑很多个，端口各占一个。"
+      },
+      {
+        "name": "容器隔离了什么：文件系统 / 进程 / 网络",
+        "explanation": "容器靠 Linux 内核提供的命名空间（namespace）和 cgroups 实现隔离，**并没有自己的内核**，所以比虚拟机轻得多：启动是毫秒级到秒级，镜像几百 MB 而不是几 GB。隔离的三样：① 文件系统——每个容器有自己的挂载表，能看到自己的根目录，而且可以通过 -v 把宿主机目录「接进」容器里；② 进程——每个容器有独立的 PID 命名空间，所以容器里的主进程是 PID 1，它退出容器就结束；③ 网络——每个容器有自己的网卡、独立 IP，因此可以像独立机器一样互相直连（这是 D8 的重点）。第四样是资源限制 cgroups：可以限制 CPU 和内存，不是隔离但同样重要。相比虚拟机的代价是：因为共享内核，容器里不能装不同的内核、不能装需要内核模块的东西（比如 Docker Desktop 在 macOS 上是靠一个轻量 Linux 虚拟机来跑的，这就是为什么装 Docker 后它会先跑起来一个 VM）。",
+        "analogy": "像合租房：同一个房子的结构和水电（共享内核），但每间房有独立的门锁和卫生间（命名空间），还能给每间房单独拉闸限电（cgroups）。"
+      },
+      {
+        "name": "docker run 的关键参数与端口映射",
+        "explanation": "docker run 后面最常用的四个参数必须现在就懂：--name 给容器起名（后面 exec、logs、stop 都靠名字，比随机 ID 好用十倍）；-e 设置环境变量（PostgreSQL 的账号密码全靠它，Docker 官方镜像靠约定读取 POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB）；-p 把容器的端口发布到宿主机，格式是 -p 宿主机端口:容器端口，冒号两边同一个数字只是最省心的写法，因为容器内 PostgreSQL 固定听 5432；-d 让容器在后台跑（detach），否则终端会被占住。另外 -v 挂载卷，今天先用默认的匿名卷保持数据，重头戏留给 D9。还有一个必知事实：容器镜像是只读模板，要改配置不能 docker exec 进去改完就算数——那样只改了那个容器的可写层，换台机器重建容器就没了；要固化得写 Dockerfile 重新 build，D7 就会做这件事。",
+        "analogy": "像在酒店开房：--name 是你的房号，-e 是登记时填的偏好（前台按它准备房间），-p 是告诉总机「这间房对外的联系电话」，-d 是拿了房卡就走别挡着门口。"
+      }
+    ],
+    "code": {
+      "lang": "bash",
+      "filename": "scripts/setup-pg.sh",
+      "content": "#!/usr/bin/env bash\n# S0 D3：起一个 HomeCube 专用的 PostgreSQL 容器\n# 幂等：先删同名容器再起，可以反复跑\nset -euo pipefail\n\nNAME=homecube-pg\nPG_USER=homeos\nPG_PASSWORD=homecube\nPG_DB=homecube\nPG_PORT=5432\n\necho \"== 0. 先确认 Docker 引擎活着 ==\"\ndocker version --format '{{.Server.Version}}'\n\n# 1) 清理同名旧容器（-f 强删正在跑的）\ndocker rm -f \"$NAME\" >/dev/null 2>&1 || true\n\n# 2) 起库。四个 -e 是 postgres 官方镜像的约定，不改名字它就不认\ndocker run -d \\\n  --name \"$NAME\" \\\n  -e POSTGRES_USER=\"$PG_USER\" \\\n  -e POSTGRES_PASSWORD=\"$PG_PASSWORD\" \\\n  -e POSTGRES_DB=\"$PG_DB\" \\\n  -p \"${PG_PORT}:5432\" \\\n  postgres:16-alpine\n\necho \"== 3. 别用 sleep 猜时间，等它真的能连上 ==\"\n# pg_isready 是镜像自带的探活命令，退化成 0 才算就绪\nattempt=0\nuntil docker exec \"$NAME\" pg_isready -U \"$PG_USER\" -d \"$PG_DB\" >/dev/null 2>&1; do\n  attempt=$((attempt+1))\n  if [ \"$attempt\" -gt 40 ]; then\n    echo \"等了 20 秒还没就绪，日志如下：\" >&2\n    docker logs --tail 30 \"$NAME\" >&2\n    exit 1\n  fi\n  sleep 0.5\ndone\necho \"就绪：重试了 $attempt 次\"\n\necho \"== 4. 看容器状态与端口映射 ==\"\ndocker ps --filter \"name=$NAME\" --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'\n\necho \"== 5. 连进去执行 SQL（-it 保留交互 TTY）==\"\ndocker exec -it \"$NAME\" psql -U \"$PG_USER\" -d \"$PG_DB\" -c \"select version();\"\n\necho \"== 6. 确认账号密码真的生效：新建一个库再删掉 ==\"\ndocker exec -it \"$NAME\" psql -U \"$PG_USER\" -d \"$PG_DB\" -c \"create database probe;\"\ndocker exec -it \"$NAME\" psql -U \"$PG_USER\" -d \"$PG_DB\" -c \"drop database probe;\"\n\necho \"== 7. 看看这个容器把数据放在哪（为 D9 埋伏笔）==\"\ndocker inspect \"$NAME\" --format '{{range .Mounts}}{{.Type}} {{.Source}} -> {{.Destination}}{{println}}{{end}}'\n",
+      "run": "bash homecube/scripts/setup-pg.sh",
+      "expect": "== 0. 先确认 Docker 引擎活着 ==\n27.3.1\n\n== 3. 别用 sleep 猜时间，等它真的能连上 ==\n就绪：重试了 3 次\n\n== 4. 看容器状态与端口映射 ==\nNAMES         STATUS                       PORTS\nhomecube-pg   Up 12 seconds               0.0.0.0:5432->5432/tcp\n\n== 5. 连进去执行 SQL（-it 保留交互 TTY）==\n                                                 version\n----------------------------------------------------------\n PostgreSQL 16.4 (Debian 16.4-1.pgdg120+1) on x86_64-pc-linux-gnu, compiled by gcc ..., 64-bit\n(1 row)\n\n== 7. 看看这个容器把数据放在哪（为 D9 埋伏笔）==\nvolume 4d1f0a9c8b21  /var/lib/docker/volumes/4d1f0a9c8b21/_data -> /var/lib/postgresql/data\n                                       ↑ 匿名卷：随机名字，容器删了它也跟着没了"
+    },
+    "steps": [
+      {
+        "n": 1,
+        "title": "装 Docker 并确认引擎在跑",
+        "detail": "macOS 上装 Docker Desktop（第一次启动它会创建一个轻量 Linux 虚拟机，这正好印证「容器共享宿主机内核」这件事在 Mac 上意味着什么）。装完执行 docker version：Client 和 Server 两段都要有版本号。如果 Server 段报 error，说明引擎没起来，去启动 Docker Desktop 应用。Linux 上直接装 docker-ce。",
+        "time": "25 分钟"
+      },
+      {
+        "n": 2,
+        "title": "跑脚本起库",
+        "detail": "把脚本存成 scripts/setup-pg.sh 并 bash 执行。重点看第 3 步的轮询写法：不要用 sleep 10 然后假设好了，要用 pg_isready 反复探活直到返回 0。这是所有「等一个依赖起来」的通用套路，脚本、K8s 健康检查、CI 全是这个模式。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 3,
+        "title": "读懂 docker ps 的 PORTS 列",
+        "detail": "输出里的 0.0.0.0:5432->5432/tcp 表示：宿主机所有网卡的 5432 被转发到容器内的 5432。容器内部 PostgreSQL 一直听的是 5432，宿主机上被占用的是 5432。改成 -p 15432:5432 试试，然后在你本机的 psql 客户端或用 -p 的另一端去连，验证映射关系。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 4,
+        "title": "亲手制造一次数据蒸发",
+        "detail": "在容器里 create database probe_db，建一张表插两行数据。然后 docker rm -f homecube-pg 删掉容器，重新跑一遍脚本起一个新的容器，进去 \\l 一看——probe_db 不在了。把这个「啊」的瞬间记住，D9 讲卷的时候你会回来感谢它。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 5,
+        "title": "摸清容器的几个身份标识",
+        "detail": "docker ps -a 看得到停止的容器（有 Exit 状态）；docker inspect homecube-pg 是一大段 JSON，重点看 Name、State、Config.Env、Mounts、NetworkSettings.IPAddress；docker images 看本机有哪些镜像（能看到你刚拉的 postgres:16-alpine 及其体积）；docker logs homecube-pg 看启动日志（PostgreSQL 启动失败时密码不对、权限不对都在这行日志里）。",
+        "time": "10 分钟"
+      }
+    ],
+    "pitfalls": [
+      {
+        "wrong": "docker run 的时候忘了 -e POSTGRES_PASSWORD，或者把变量名写成了 PG_PASSWORD。",
+        "right": "严格用官方镜像约定的三个名字：POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB。",
+        "why": "postgres 镜像不是「通用容器」，它的入口脚本会读这三个环境变量来初始化数据目录并创建超管账号。名字不对，镜像会跳过初始化，你以为建好了，其实进去之后连 psql 都不用密码就能连上（本地开发无所谓，上线就是大洞）。要确认是否生效，用 docker inspect 看 Config.Env 里真实存了什么。"
+      },
+      {
+        "wrong": "容器起来之后不探活，直接 sleep 5 就开始连，然后报 connection refused，就以为装错了。",
+        "right": "用 pg_isready / docker inspect 看健康状态，直到返回 0 再往下走。",
+        "why": "PostgreSQL 启动时要初始化数据目录、恢复 WAL，耗时从几百毫秒到几秒不等，取决于磁盘和机器负载。sleep 是把「大概」当「确定」用，在 CI 和脚本里必然偶发失败。轮询探活是把不确定性变成确定性的唯一办法。"
+      },
+      {
+        "wrong": "以为 docker run 出来的容器里是一个完整的独立操作系统，可以在里面 apt install 装一堆东西长期依赖。",
+        "right": "容器里的改动只存在于那个容器的可写层，容器一删就没了；要固化就写 Dockerfile。",
+        "why": "这是容器最反直觉的地方：你在容器里做的一切改动都在「容器层」上，不是镜像的一部分。docker commit 或者删掉重建，那些改动全部消失。正确姿势是把需要的东西写进 Dockerfile 或 docker-compose.yml，让环境可以从一份声明随时重建——这正是 D7 的价值。"
+      },
+      {
+        "wrong": "以为容器是虚拟机的替代品，会「比虚拟机慢」。",
+        "right": "容器共享宿主机内核，不需要再跑一个 OS，所以启动和内存开销都远小于虚拟机。",
+        "why": "虚拟机里跑的是完整的客户机内核，镜像几个 GB、开机几十秒。容器只是内核上的隔离视图，镜像几百 MB、启动毫秒到秒级。代价是不能换内核版本、不能装内核模块。选型结论很简单：绝大多数应用服务用容器，Mac/Windows 上跑 Docker 必须靠那个 Linux 虚拟机。"
+      }
+    ],
+    "quiz": [
+      {
+        "q": "镜像和容器的关系，最准确的描述是？",
+        "options": [
+          "镜像是运行中的进程，容器是它占用的内存",
+          "镜像是只读的分层模板，容器是镜像的一个运行实例，额外带一层可写的容器层",
+          "容器是模板，镜像是实例",
+          "两者是同一个东西的两种叫法"
+        ],
+        "answer": 1,
+        "explain": "镜像（image）是不可变的分层文件系统 + 元数据，只能构建不能修改；容器（container）是镜像跑起来后的状态，等于镜像（只读层）+ 一个随容器生死存亡的可写层。这解释了两个现象：同一个镜像能同时起多个容器且互不干扰；容器里做的任何修改在容器删除后都会消失。"
+      },
+      {
+        "q": "docker run -p 15432:5432 之后，你在容器内部 psql 连什么，在你自己 Mac 上连什么？",
+        "options": [
+          "容器内连 15432，Mac 上连 5432",
+          "容器内连 5432，Mac 上连 15432",
+          "两边都连 5432",
+          "两边都连 15432"
+        ],
+        "answer": 1,
+        "explain": "冒号左边是宿主机端口，右边是容器端口，顺序不能反（写反了会报 invalid port format 或连不上）。容器内进程永远只认自己 listen 的那个端口，本例中 PostgreSQL 在容器里听 5432；宿主机上暴露的是 15432。所以你的连接串是 postgres://homeos:homecube@127.0.0.1:15432/homecube。"
+      },
+      {
+        "q": "你往容器里 create database 了一个新库，然后 docker rm -f 删掉容器再重建同一个库，数据全没了。最根本的原因是？",
+        "options": [
+          "PostgreSQL 在容器里不持久化，这是设计如此",
+          "数据写在容器的可写层里，而可写层随容器一起被删除",
+          "端口映射导致写到了宿主机上",
+          "忘了加 -v，镜像不允许持久化"
+        ],
+        "answer": 1,
+        "explain": "容器把镜像的只读层叠上自己的可写层，数据库文件写在可写层里。docker rm 会删掉这个可写层，数据就没了。解法是把数据目录挂出来——要么用具名卷（推荐，S0 D9 展开），要么用 -v /宿主机路径:容器路径。顺带记住：容器里的任何改动都是临时的，要固化必须写进 Dockerfile 或 Compose 声明。"
+      },
+      {
+        "q": "关于容器和虚拟机的区别，哪句是错的？",
+        "options": [
+          "容器共享宿主机内核，虚拟机有自己的客户机内核",
+          "容器启动更快、镜像更小",
+          "容器里可以装一个和宿主机完全不同的内核",
+          "在 macOS 上跑容器需要借助一个轻量 Linux 虚拟机"
+        ],
+        "answer": 2,
+        "explain": "这正是容器的核心限制：内核是共享的、不能换。虚拟机可以跑不同内核（所以能做内核升级实验、跑不同 OS），容器不行。macOS/Windows 上必须借助轻量 VM，Docker Desktop 启动时创建的那个 Linux 虚拟机就是这个作用——你的 Go 服务其实跑在那台 Linux 里。"
+      }
+    ],
+    "task": {
+      "title": "用容器跑起 PostgreSQL 并亲手验证它的脆弱",
+      "acceptance": [
+        "docker version 的 Client 与 Server 段都有版本号",
+        "scripts/setup-pg.sh 可重复执行（连跑两次不报错）",
+        "docker ps 能看到 homecube-pg，PORTS 列显示 0.0.0.0:5432->5432/tcp",
+        "docker exec -it homecube-pg psql -U homeos -d homecube -c 'select 1;' 能返回结果",
+        "你能用 docker inspect 说清这个容器的 Mounts 类型（答案是 volume）和它指向哪里",
+        "你亲手验证过：删掉容器再重建后，之前 create 的数据库消失，并能用一句话说清为什么"
+      ],
+      "hint": "docker ps -a 能看到已经 Exited 的容器，docker logs homecube-pg 看启动日志，docker exec -it <name> bash 可以进容器里逛（镜像里没有 bash 时用 sh）。查看端口映射用 docker port homecube-pg。",
+      "accept_note": ""
+    },
+    "tomorrow": "今天的数据库账号密码是脚本里写死的。今天把口令交给代码，明天把它交给环境变量：同一个容器，改一下环境变量重启就换密码，中途不动一行代码。你会第一次理解 12-factor 里那条「配置从环境来」为什么被奉为圭臬。"
+  },
+  {
+    "id": "s0-d4",
+    "stage": "S0",
+    "day": 4,
+    "week": 1,
+    "title": "环境变量与配置：把密码从代码里拿出来",
+    "goal": "理解环境变量在进程里的存在方式，实现两档读取策略 getenvOr 与 mustGetenv，让服务在没有密码时快速失败而不是带着空值往下跑。",
+    "duration": "60 分钟",
+    "why": {
+      "problem": "昨天脚本里的 homecube 是个明文密码。今天你要做的事很小但很关键：让代码不「知道」密码长什么样。往后 60 周你会有开发、测试、生产三套数据库，三套密码不同。如果密码写死在代码里，换环境就得改代码、重新编译、重新部署，还极有可能误提交进 Git。",
+      "naive": "两种典型错误。一是「反正本地开发，用一个默认值就行」：写 DBPassword := \"homecube\"，然后在生产也用同一个——这是最常见的、也是最晚才会爆的错误。二是「用 os.Getenv(\"X\") 然后判断一下就行」：拿到空字符串时打印一句 warning 就继续跑，于是服务起来了、看起来一切正常，直到半小时后数据库连不上才报错，你会先怀疑数据库而不是怀疑配置。",
+      "right": "环境变量是**进程启动时由父进程（shell / Docker / systemd）注入的一张字符串表**，程序通过 os.Getenv 按 key 取。它和代码分离的性质正好满足两个要求：同一份二进制在哪个环境跑都一样的字节，配置由外面注入；以及配置可以随时改，改完重启即生效。还有一条纪律比技巧更重要：**分清哪些配置可以给默认值、哪些缺了就不该启动**。端口、时区、应用名这类给默认值没问题；数据库密码、密钥、租户 ID 这类缺了必须立刻退出——快速失败（fail fast）远好过带着空值跑一段然后在深处炸掉。实现上就是两档策略：getenvOr 走默认值，mustGetenv 缺了就 os.Exit(1)。"
+    },
+    "concepts": [
+      {
+        "name": "环境变量：进程的环境块",
+        "explanation": "每个进程在启动时都带着一张 key-value 字符串表，也就是「环境块」。你可以在终端里 `HC_DB_PASSWORD=homecube go run ./lab/s0/d04` 临时注入，也可以写进 .env 文件由工具加载（Go 标准库不自动读 .env，需要 dotenv 类库或自己解析）。父进程决定子进程拿到什么，所以同一条命令在不同终端、不同 shell profile、不同 Docker 容器里可能拿到不同的值——这正是「一份代码、多个环境」的关键。三个细节值得记：① 环境变量是**字符串**，没有类型，数字和布尔要自己解析；② 在 macOS/Linux 上可以 `cat /proc/<pid>/environ`（Linux）或者用 `ps eww <pid>` 看某个运行中进程实际拿到了哪些变量，这是调试配置问题的利器；③ 环境变量会被子进程继承，所以别把整张表打印到日志里，那等于泄密。要打日志就用掩码函数。",
+        "analogy": "像公司前台给新人的一张「当天可用资源清单」：工位号、门禁卡权限、会议室账号全写在上面，人换一天清单就换，岗位说明书（代码）一个字不用改。"
+      },
+      {
+        "name": "两档配置策略：getenvOr 与 mustGetenv",
+        "explanation": "把所有环境变量用同一种方式读，是配置混乱的常见源头。正确做法是分档。第一档 getenvOr(key, fallback)：适合「缺了也能有个合理默认」的项——监听地址默认 127.0.0.1:8080、时区默认 Asia/Shanghai、应用名默认 homeos。第二档 mustGetenv(key)：适合「缺了就不该启动」的项——数据库密码、第三方 API 密钥、租户标识。它的实现要点有三个：用 os.LookupEnv 而不是 os.Getenv，因为 Getenv 分不清「没设置」和「设置成了空字符串」，而这两种都不该用默认值；TrimSpace 之后判空，因为 .env 或 YAML 里一个尾随空格会让你以为设了值；失败时把**变量名**（不是值）写进 stderr 再 os.Exit(1)。用退出码而不是 panic，是为了让 shell、CI、Docker 的健康检查都能判定失败。",
+        "analogy": "像入职流程：工牌型号可以给默认（getenvOr），但门禁权限和工号缺一不可（mustGetenv）——缺了就当场退回，不要发一张「权限为 0」的工牌让人以为自己能进楼。"
+      },
+      {
+        "name": "配置与代码分离：为什么是 12-factor 的第一条",
+        "explanation": "把配置从代码里拿出来解决的是四类真实问题：同一个产物多环境部署（开发/测试/生产三个数据库，一份二进制）；密钥不落代码（代码要进 Git，要被别人 review，要可能被开源）；换配置不用重新编译（改完环境变量重启就行，几秒钟而不是几分钟）；以及让「这个进程现在到底配置成什么样」这件事可以被外部观察（docker inspect、printenv 都能查，代码里 hardcode 的值谁都查不到）。这就是 12-factor App 说的「Config in the environment」。要避免的两种走偏：一是配置项爆炸——每一行代码里散落 os.Getenv 满天飞，正确做法是**在一个 loadConfig 函数里一次性收集成结构体**，后面只传结构体；二是把 .env 提交进仓库（今天 D1 已经挡掉了），.env 只在本地存在，团队共享的模板叫 .env.example。",
+        "analogy": "像餐厅：菜谱（代码）是公开的，但「今天用哪个煤气灶、盐柜在哪」由当班经理写在当班表（环境变量）上。菜谱不需要为每家分店改一遍，经理一换，菜式立刻跟着变。"
+      }
+    ],
+    "code": {
+      "lang": "go",
+      "filename": "lab/s0/d04/main.go",
+      "content": "package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"strings\"\n)\n\n// getenvOr 第一档：取不到就用默认值，服务照常启动。\n// 适合监听地址、时区、应用名这类「没有也能跑」的项。\n// 用 LookupEnv 而不是 Getenv：Getenv 分不清「没设置」和「设成了空串」\nfunc getenvOr(key, fallback string) string {\n\tif v, ok := os.LookupEnv(key); ok && strings.TrimSpace(v) != \"\" {\n\t\treturn v\n\t}\n\treturn fallback\n}\n\n// mustGetenv 第二档：必须存在，缺了立刻退出。\n// 适合密码、密钥、租户 ID 这类「没有就不该启动」的项\nfunc mustGetenv(key string) string {\n\tv := getenvOr(key, \"\")\n\tif v == \"\" {\n\t\t// 只报变量名，绝不报值——值可能就打印在终端历史里\n\t\tfmt.Fprintf(os.Stderr, \"缺少必需的环境变量 %s：请在 shell 或 .env 里设置后重试\\\\n\", key)\n\t\tos.Exit(1)\n\t}\n\treturn v\n}\n\n// Config 把所有配置一次性收集成一个结构体。\n// 后面任何函数都不应该再去碰 os.Getenv\ntype Config struct {\n\tAppName    string\n\tHTTPAddr   string\n\tDBHost     string\n\tDBPort     string\n\tDBUser     string\n\tDBPassword string\n\tDBName     string\n}\n\nfunc loadConfig() Config {\n\treturn Config{\n\t\tAppName:    getenvOr(\"HC_APP_NAME\", \"homeos\"),\n\t\tHTTPAddr:   getenvOr(\"HC_HTTP_ADDR\", \"127.0.0.1:8080\"),\n\t\tDBHost:     getenvOr(\"HC_DB_HOST\", \"127.0.0.1\"),\n\t\tDBPort:     getenvOr(\"HC_DB_PORT\", \"5432\"),\n\t\tDBUser:     getenvOr(\"HC_DB_USER\", \"homeos\"),\n\t\tDBPassword: mustGetenv(\"HC_DB_PASSWORD\"),\n\t\tDBName:     getenvOr(\"HC_DB_NAME\", \"homecube\"),\n\t}\n}\n\n// DSN 拼出连接串。密码在里面，所以 mask 之后再打印\nfunc (c Config) DSN() string {\n\treturn fmt.Sprintf(\"postgres://%s:%s@%s:%s/%s?sslmode=disable\",\n\t\tc.DBUser, c.DBPassword, c.DBHost, c.DBPort, c.DBName)\n}\n\n// mask：打印时把中间遮住，保留首尾方便确认是哪一个密码\nfunc mask(s string) string {\n\tif len(s) <= 2 {\n\t\treturn strings.Repeat(\"*\", len(s))\n\t}\n\treturn s[:1] + strings.Repeat(\"*\", len(s)-2) + s[len(s)-1:]\n}\n\nfunc main() {\n\tcfg := loadConfig()\n\n\tfmt.Printf(\"app       = %s\\\\n\", cfg.AppName)\n\tfmt.Printf(\"http      = %s\\\\n\", cfg.HTTPAddr)\n\tfmt.Printf(\"db user   = %s\\\\n\", cfg.DBUser)\n\tfmt.Printf(\"db host   = %s:%s/%s\\\\n\", cfg.DBHost, cfg.DBPort, cfg.DBName)\n\tfmt.Printf(\"db pass   = %s  (长度 %d)\\\\n\", mask(cfg.DBPassword), len(cfg.DBPassword))\n\n\t// mask 之后依然能连库：证明打码只是给人看的，没改真实值\n\tfmt.Printf(\"DSN(打印版) = %s\\\\n\", maskDSN(cfg.DSN(), cfg.DBPassword))\n}\n\nfunc maskDSN(dsn, password string) string {\n\treturn strings.ReplaceAll(dsn, password, mask(password))\n}\n",
+      "run": "cd homecube && go run ./lab/s0/d04 ; echo \"--- 现在给它一个密码 ---\" ; HC_DB_PASSWORD=homecube go run ./lab/s0/d04 ; echo \"--- 故意给空串 ---\" ; HC_DB_PASSWORD=\"  \" go run ./lab/s0/d04",
+      "expect": "--- 现在不给密码（第一批命令的输出被吞掉，因为 exit 1）---\n$ HC_DB_PASSWORD=homecube go run ./lab/s0/d04\napp       = homeos\nhttp      = 127.0.0.1:8080\ndb user   = homeos\ndb host   = 127.0.0.1:5432/homecube\ndb pass   = h******e  (长度 8)\nDSN(打印版) = postgres://homeos:h******e@127.0.0.1:5432/homecube?sslmode=disable\n\n--- 故意给空串 ---\n$ HC_DB_PASSWORD=\"  \" go run ./lab/s0/d04\n缺少必需的环境变量 HC_DB_PASSWORD：请在 shell 或 .env 里设置后重试\n$ echo $?\n1"
+    },
+    "steps": [
+      {
+        "n": 1,
+        "title": "对照感受「密码写死」有多糟糕",
+        "detail": "先在 main 里把 DBPassword 临时改成字符串常量 homecube，跑一次；然后改成必须从环境变量取。这个切换动作本身没有价值，但**亲手感受一次**会让你以后不会再走回头路。改完记得改回来。",
+        "time": "10 分钟"
+      },
+      {
+        "n": 2,
+        "title": "实现并跑通两档策略",
+        "detail": "存好代码，执行上面 run 里的三条命令。第一条不给密码：必须在打印任何一行配置之前就退出，退出码是 1。第二条给密码：看到全部配置被正确读出。第三条给一个只有空格的字符串：同样拒绝——这就是 TrimSpace 的意义。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 3,
+        "title": "验证 LookupEnv 带来的差别",
+        "detail": "写一个 10 行的小程序分别用 os.Getenv 和 os.LookupEnv 处理「变量设置为空串」的情况，观察前者返回空串且 ok=false 的差异点。搞清楚之后，你在所有「用户可能显式设为空」的配置项上都会优先用 LookupEnv。",
+        "time": "10 分钟"
+      },
+      {
+        "n": 4,
+        "title": "看一个运行中进程的真实环境",
+        "detail": "服务跑着的时候，在另一个终端执行 ps eww $(pgrep -f 'lab/s0/d04') | tr ' ' '\\n' | grep HC_ 或者直接 printenv | grep HC_ 看你自己 shell 里的值。再理解一次：环境变量是进程启动那一刻的快照，之后你在另一个终端 export 了新值，对已经跑起来的进程没有任何影响——所以改配置必须重启。",
+        "time": "10 分钟"
+      },
+      {
+        "n": 5,
+        "title": "建立 .env 与 .env.example 的习惯",
+        "detail": "写一个本地 .env（不进 Git）放 HC_DB_PASSWORD=homecube，再写一份 .env.example 列出所有需要设置的变量名（值留空或填示例）。然后在 README 里写清楚「复制 .env.example 为 .env 后至少要填 HC_DB_PASSWORD」。这条文档能在你三个月后忘记密码时救命。",
+        "time": "15 分钟"
+      }
+    ],
+    "pitfalls": [
+      {
+        "wrong": "v := os.Getenv(\"HC_DB_PASSWORD\")，为空就 log 一句 warning 然后继续跑。",
+        "right": "用 mustGetenv：为空就写 stderr 说明缺哪个变量，然后 os.Exit(1)。",
+        "why": "空密码意味着服务会启动成功、健康检查会通过、但所有数据库操作失败。故障会推迟到深处才爆出来，排查时你会先去怀疑数据库而不是怀疑配置。而且 log warning 的做法在生产环境里几乎必然被刷屏淹没——没人会注意到第 400 条 warning。快速失败是把错误成本降到最低的工程手段。"
+      },
+      {
+        "wrong": "os.Getenv(\"HC_TIMEOUT\") 拿到字符串后直接 time.ParseDuration(v)，忘了先判空。",
+        "right": "先用 getenvOr(\"HC_TIMEOUT\", \"3s\") 拿到非空值再解析；解析失败也要明确报错。",
+        "why": "环境变量全是字符串，没有类型保证。ParseDuration(\"\") 会返回 error 而不是 0，然后你拿到一个 0 秒的超时——所有请求瞬间超时，而这个 bug 只在「没设环境变量」的开发机上出现。更稳妥的顺序是：getenvOr 补默认值 → 解析 → 解析失败就带着变量名退出。"
+      },
+      {
+        "wrong": "启动时把整张配置表打进日志，包括密码原值。",
+        "right": "永远用 mask 之类的函数打码；或者干脆不打印密码，只打印长度和来源（是否来自环境变量）。",
+        "why": "日志会被收集、被搜索、被截图、可能进第三方监控平台。密码一旦进日志，就等于把泄露面从「Git 历史」扩大到「所有有日志访问权的人 + 所有备份」。这条纪律要养成习惯：打印任何来自配置或用户输入的敏感字段前，先问自己「我需要它的值，还是只需要知道它存在」。"
+      },
+      {
+        "wrong": "认为 .env 里的东西会自动被 Go 程序读到，于是发现必须 export 才能生效，误以为代码写错了。",
+        "right": "Go 标准库不读 .env。要么在启动脚本里 `set -a; source .env; set +a`，要么引入 godotenv 之类的库在程序开头加载。",
+        "why": ".env 是各框架的约定（Node 生态里 npm 脚本会自动加载），不是 Go 语言或操作系统的能力；POSIX shell 也不会自动读当前目录的 .env（除非你自己 source）。解决办法要么统一走启动脚本（推荐，透明可查），要么用库，但要清楚这层加载逻辑是你自己的代码，不是语言特性。"
+      }
+    ],
+    "quiz": [
+      {
+        "q": "为什么推荐 os.LookupEnv 而不是 os.Getenv 来读配置？",
+        "options": [
+          "LookupEnv 更快",
+          "Getenv 分不清「变量没设置」和「设置了但值是空字符串」，而这两种情况通常都不该走默认值",
+          "LookupEnv 能自动 trim 空格",
+          "Getenv 在变量不存在时会 panic"
+        ],
+        "answer": 1,
+        "explain": "os.Getenv 在变量不存在时返回空字符串，你无法区分「用户没设」和「用户显式设成了空」。后者是有意义的输入——比如「这个配置故意留空」——把它当缺失处理就丢失了信息。LookupEnv 返回 (值, 是否存在) 两个结果，让判断逻辑显式化。顺带记：Getenv 不会 panic，永远返回字符串。"
+      },
+      {
+        "q": "以下哪一项最适合用 mustGetenv（缺了就不该启动）而不是 getenvOr？",
+        "options": [
+          "HTTP 监听地址",
+          "日志级别（debug / info）",
+          "数据库密码",
+          "时区"
+        ],
+        "answer": 2,
+        "explain": "判断标准只有一条：缺失时服务还能不能正常工作。监听地址默认 127.0.0.1:8080、日志级别默认 info、时区默认本地时，服务都能正常跑起来，所以给默认值。数据库密码没有合理的默认值（写死等于留后门），缺失时服务起来了也干不了任何事，所以必须 fail fast。这条标准可以直接迁移到后面所有配置项上。"
+      },
+      {
+        "q": "你改了 shell 里的 HC_DB_HOST 并 export，但正在运行的服务连接的还是旧地址。为什么？",
+        "options": [
+          "export 语法错了",
+          "环境变量在进程启动时被复制成快照，之后外部改动不会传播到已运行的进程，必须重启",
+          "服务缓存了 DNS 解析结果",
+          "必须重新编译二进制"
+        ],
+        "answer": 1,
+        "explain": "环境变量是进程启动时父进程注入的一份字符串快照，内核在 exec 时把它拷进进程自己的内存区域，之后外部的任何修改都影响不到它。这就是「改配置只需重启、不需要重新编译」的确切含义：编译产物不变，重启时重新读一遍环境。这也是 D7 里 compose 用 restart 或改完 compose 文件要 up -d 重启容器的原因。"
+      },
+      {
+        "q": "关于 .env 文件，下面哪句是对的？",
+        "options": [
+          ".env 应该提交进 Git，方便团队共享",
+          ".env 只放值不进 Git，.env.example 放变量名清单并可以入库",
+          "把密码写成 .env 里的注释就不会泄露",
+          ".env 里的内容比环境变量优先级更高，会自动覆盖系统环境变量"
+        ],
+        "answer": 1,
+        "explain": ".env 里装的是明文密码，绝不能进 Git；.env.example 只列变量名和示例值，可以入库供他人复制成自己的 .env。至于优先级，恰恰相反：大多数 dotenv 库只在系统环境变量**没有**该变量时才用 .env 里的值，所以一旦你 export 了真密码，.env 里那个开发用的假密码就不会生效——排查「我改了 .env 怎么没反应」时先 printenv 看一眼。"
+      }
+    ],
+    "task": {
+      "title": "把密码彻底赶出代码",
+      "acceptance": [
+        "lab/s0/d04/main.go 里没有任何形式的明文密码常量，grep -n 'homecube' 只匹配到默认的 DB 名而不是密码",
+        "getenvOr 与 mustGetenv 都已实现，且 mustGetenv 缺变量时退出码为 1 且输出里只含变量名不含值",
+        "HC_DB_PASSWORD=\"   \"（纯空格）同样被判为缺失",
+        "配置被一次性收集成 Config 结构体，main 里没有任何散落的 os.Getenv",
+        "打印配置时密码经过 mask（形如 h******e），且能说明 mask 只是输出层处理、不影响真实值",
+        ".env 与 .env.example 都已存在，.env 被 .gitignore 挡住、.env.example 未被忽略（用 git check-ignore 验证）",
+        "你能用一句话解释：为什么改完环境变量必须重启进程才生效"
+      ],
+      "hint": "验证退出码用 `go run ./lab/s0/d04; echo $?`。注意 go run 会把程序的非零退出码透传出来。判断某个变量是否真的进了环境，用 `printenv HC_DB_PASSWORD` 或 `env | grep HC_`。",
+      "accept_note": ""
+    },
+    "tomorrow": "明天装 Node 并把前端工具链过一遍。你会发现前端生态比后端热闹得多：包管理器有三家、构建工具换了三代、热更新是魔法般的体验。理解 Vue 3 和 React 在概念上怎么一一对应，之后读任何一个前端仓库都不陌生。"
+  },
+  {
+    "id": "s0-d5",
+    "stage": "S0",
+    "day": 5,
+    "week": 1,
+    "title": "前端工具链：Node、dev server、React 与 Vue 3 的概念映射",
+    "goal": "理清 Node / npm / pnpm / Vite / uni-app 各自负责什么，动手把前端跑起来并看到热更新，建立 React 与 Vue 3 的概念对照表，为 S6 的 uni-app 工程化做准备。",
+    "duration": "90 分钟",
+    "why": {
+      "problem": "HomeCube 有三端：uni-app 写的移动端、Web 管理端、以及后端。工具链每一层都有陌生名词——Node 到底是语言还是运行时、npm 和 pnpm 有什么区别、vite 是什么、为什么改一行代码不用刷新页面。不搞清这些，你会把「前端跑不起来」和「后端写错了」混在一起排查，每天浪费一小时在「Could not resolve entry module」这种和业务毫无关系的报错上。",
+      "naive": "最常见的误区是把 npm install 的 node_modules 提交进 Git（已解决），以及看到前端报错就 npm i 一下——不管什么错都先装包，装到 node_modules 有 1.5GB、CI 跑十分钟。另一个误区是把 Vite 当成「Vue 的东西」，以为换成 React 就要换构建工具——其实 Vite 和框架无关，它只是开发期的服务器和生产期的打包器。",
+      "right": "把前端工具链分成四层就清楚了：① 运行时 Node.js，提供浏览器之外的 JS 执行环境（也是 npm 生态的地基）；② 包管理器 npm / pnpm / yarn，负责解析依赖树、下载、写锁文件，关键概念是**锁文件必须提交**；③ 工具链 Vite / webpack，负责开发期起服务器 + 热更新、生产期打包压缩；④ 框架与工程模板 Vue 3 / React / uni-app，负责你写的组件与跨端编译。所以「换一个框架不需要换工具链」，而「同一个框架换工具链」也只是构建方式变了。概念理清之后，你在 S6 做 uni-app 时就知道自己是在动第 4 层，前面三层都是现成的。"
+    },
+    "concepts": [
+      {
+        "name": "Node 是运行时，不是语言",
+        "explanation": "JavaScript 是一门语言，Node 是这门语言的一个运行时（引擎 + 一堆系统 API），就像「Python 语言」和「Python 解释器」的关系。浏览器里 JS 能做的事受限：没有文件系统、没有网络服务端、没有 process。Node 补上了这些，于是 JS 才能写命令行工具、写构建脚本、写服务端。node -v 看版本，node xxx.js 直接跑一个文件。跟 Go 类的关系很有趣：Go 是「一门语言 + 一个官方运行时 + 官方工具链（go 命令）」三合一，所以 Go 不需要 npm 那一层；而 Node 生态把语言、运行时、包管理、构建工具拆成了四层，各有第三方实现。理解这个差别，你就知道为什么 Go 项目一个 go.mod 就够了，而 Node 项目总有一堆配置文件。",
+        "analogy": "像 Go 和 GopherJS/Pyodide 的关系：语言本身是引擎，运行时是把它跑起来的机器。Node 就是 JavaScript 的那台机器。"
+      },
+      {
+        "name": "npm / pnpm / yarn 与锁文件",
+        "explanation": "包管理器做三件事：解析依赖（直接依赖的依赖，递归下去）、把包下载到本地、生成锁文件。锁文件（package-lock.json / pnpm-lock.yaml / yarn.lock）是**一张精确到具体版本的下载清单**，它必须和 package.json 一起提交进 Git，作用是让所有人、每台机器、每次 CI 装出完全一样的依赖树。三家的区别主要在磁盘布局：npm 现在也是扁平化 node_modules；pnpm 用「内容寻址存储 + 符号链接」，只有真正被引用的项目才有一份实体磁盘，硬链接共享，全局缓存复用，磁盘占用和安装速度都明显更好，也是目前 monorepo 的主流选择；yarn 介于两者之间。实战建议：项目里统一用 pnpm，装不上某个包时先确认包管理器版本一致，而不是混用——混用会生成两套锁文件，行为变得不可预测。",
+        "analogy": "像 Gradle / go.sum / package-lock：都是把「大概要最新版」固化成「确切要这几个版本」。锁文件就是依赖的收货清单，丢了这张单子，仓库里的东西随时会变样。"
+      },
+      {
+        "name": "Vite：开发期服务器 + 生产期打包器",
+        "explanation": "传统 webpack 的开发模式要先打包一遍才能启动 dev server，改一行代码再全量重打包，所以启动慢、改动反馈慢。Vite 换了个思路：开发期不打包，直接用浏览器原生 ESM 按需加载源码——因为 Node 转换只做一次、浏览器的二次解析由浏览器自己缓存，所以启动是毫秒级，热更新接近瞬时。生产期仍然用 Rollup 打包（为了兼容性和压缩）。在 Vite 生态里还有 uni-app 用的 @dcloudio/vite-plugin-uni，它是一个 Vite 插件，把 .vue 文件编译成小程序/APP 能消费的代码。所以 Vite 和框架是解耦的：换框架不用换 Vite，换构建工具也不用改组件代码。你只需要知道 vite.config.ts 里配什么：插件、别名（@ 指向 src）、dev server 的端口和代理（把 /api 转发到 Go 后端，S2 之后会大量用到）。",
+        "analogy": "像「先看菜单点单再让厨房做」的现做模式（Vite 开发期）vs「提前把整本菜谱背下来」（webpack 全量打包）：前者启动快，后者部署产物干净。"
+      },
+      {
+        "name": "React 与 Vue 3 的概念映射",
+        "explanation": "两者解决同一个问题（声明式描述界面），实现哲学不同但概念几乎一一对应：Vue 的组件是 Single-File Component，一个 .vue 文件里有 template / script / style 三段；React 是 JSX 全塞在一个函数里（样式靠 CSS 文件或 CSS-in-JS）。对应关系：Vue 的 ref / reactive 对应 React 的 useState / useRef；Vue 的 computed 对应 React 的 useMemo；Vue 的 watch / watchEffect 对应 React 的 useEffect；Vue 的 defineProps 对应函数组件的第一个参数 props；Vue 的 defineEmits 对应 props 里那个叫 onXxx 的回调；Vue 的 v-for 对应 React 的 .map；Vue 的 v-if 对应三元或 &&；Vue 的 provide/inject 对应 React 的 Context；Vue 的单文件组件样式 scoped 对应 CSS Modules。真正的差异在响应式粒度：Vue 靠 Proxy 在运行时追踪依赖，改哪个属性就重渲染哪块；React 靠重新执行组件函数 + diff 出最小 DOM 差异。所以 React 里「数组要带 key」是硬要求，Vue 里 key 也重要但没那么容易踩坑——因为它没有「就地比对引用」这回事。",
+        "analogy": "像 Vue 3 之于 Vue 2：Ref/Composition API 是把「选项式 API」重排了一遍，让复用逻辑变成普通函数组合；React 一直就是函数组件 + Hooks 的路子，Vue 3 像是追平后选择了更接近 React 的心智模型。"
+      }
+    ],
+    "code": {
+      "lang": "bash",
+      "filename": "scripts/s0/d05-frontend.sh",
+      "content": "#!/usr/bin/env bash\n# S0 D5：前端工具链体检 + 把 uni-app 官方模板跑起来\nset -euo pipefail\n\necho \"== 1. 运行时 ==\"\nnode -v          # 需要 >= v18，低于 v18 vite 起不来\nnpm -v\nif ! command -v pnpm >/dev/null 2>&1; then\n  echo \"pnpm 未安装：npm i -g pnpm\"\nelse\n  pnpm -v\nfi\n\ncd homecube\n\necho \"== 2. 拉 uni-app 官方 Vue3 + Vite + TS 模板 ==\"\nif [ ! -d app-mobile ]; then\n  npx degit dcloudio/uni-preset-vue#vite-ts app-mobile\nfi\n\ncd app-mobile\n\necho \"== 3. 看清楚这个模板里有哪几层东西 ==\"\ncat package.json\necho \"--- vite.config.ts ---\"\ncat vite.config.ts\n\necho \"== 4. 装依赖（会生成 pnpm-lock.yaml，它必须提交进 Git）==\"\npnpm install\n\necho \"== 5. 启动 dev server（这一步会一直占着终端，前台运行）==\"\necho \"另开一个终端看输出；改 src/pages/index/index.vue 的 title 会立即热更新\"\npnpm dev:h5\n",
+      "run": "bash homecube/scripts/s0/d05-frontend.sh",
+      "expect": "== 1. 运行时 ==\nv20.11.1\n10.2.4\n9.12.3\n\n== 2. 拉 uni-app 官方 Vue3 + Vite + TS 模板 ==\ndone.\n\n== 4. 装依赖（会生成 pnpm-lock.yaml，它必须提交进 Git）==\nPackages: +1024\nProgress: resolved 1024, reused 0, downloaded 1024, added 1024\nLockfile is up to date, resolution step is skipped\nDone in 12.4s\n\n== 5. 启动 dev server（这一步会一直占着终端，前台运行）==\nvite v5.4.10  ready in 412 ms\n\n  ➜  Local:   http://localhost:5173/\n  ➜  press h + enter to show help\n\n浏览器打开 http://localhost:5173/ 看到一个 H5 页面；改一行 .vue 文件里的文字，页面不用刷新就变了\n（H5 端口被占时 vite 会自动换成 5174，并在终端里打印新地址——这也是端口机制的一部分）"
+    },
+    "steps": [
+      {
+        "n": 1,
+        "title": "装 Node 并认准版本",
+        "detail": "装 Node 20 LTS（用 nvm 管理版本更省事）。装完 node -v / npm -v 全局装 pnpm：npm i -g pnpm。检查 Node 生态对版本很敏感：pnpm 9 需要 Node >= 18，vite 5 需要 >= 18。版本不对时报错长得很像网络问题，其实是引擎版本问题。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 2,
+        "title": "拉模板并读懂它的四层",
+        "detail": "跑脚本的前四步。然后逐个回答：package.json 里 scripts 段定义了哪几个命令（dev:h5 / dev:mp-weixin / build:h5），vite.config.ts 里配了哪些插件和别名。读不懂没关系，但要能指出「这段配置属于第 3 层（工具链）」。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 3,
+        "title": "装依赖并确认锁文件",
+        "detail": "pnpm install 之后确认 pnpm-lock.yaml 存在，并且它没有在 .gitignore 里（默认不该被忽略）。顺手看一眼 node_modules 有多大：这就是 D1 里为什么要把它 gitignore 掉的直观答案。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 4,
+        "title": "看到热更新的那一刻",
+        "detail": "pnpm dev:h5，浏览器打开终端里打印的地址。改 src/pages/index/index.vue 里的一个文字，保存，页面不刷新就变了。重复三次，每次改不同的位置（文字、样式、脚本里的变量），体会 vite 的增量更新。这是你从「写代码」到「有反馈回路」的分界线。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 5,
+        "title": "亲手写一份 React↔Vue 3 对照表",
+        "detail": "在笔记里写下至少 8 组：ref/reactive ↔ useState、computed ↔ useMemo、watch/watchEffect ↔ useEffect、defineProps ↔ props、defineEmits ↔ 回调 props、v-for ↔ map、v-if ↔ 条件渲染、provide/inject ↔ Context。每组右侧写一行「概念上为什么对应」。这张表在 S6 之前会再救你一次。",
+        "time": "15 分钟"
+      }
+    ],
+    "pitfalls": [
+      {
+        "wrong": "看到前端报任何错就先 pnpm install 一下试试。",
+        "right": "先读错误文本，分清是「解析阶段」（缺包、版本冲突）、「构建阶段」（语法/类型错）还是「运行阶段」（浏览器控制台报错），再动手。",
+        "why": "只有第一类错误和装包有关。而且无脑重装会动 lockfile、可能把能跑的环境弄坏（pnpm install 会按锁文件重排依赖树，如果你中间手改过 node_modules）。更实际的问题是：Node 版本不符、pnpm/npm/yarn 混用、peer dependency 冲突，这三类报错看起来像「缺包」，其实是版本与包管理器的问题。"
+      },
+      {
+        "wrong": "把 pnpm-lock.yaml 加进 .gitignore（从网上抄的 Go 项目 .gitignore 模板里可能有这条）。",
+        "right": "锁文件必须提交；被忽略的话每个人装出来的依赖版本都可能不同，线上和本地行为不一致。",
+        "why": "锁文件是「这个项目确切需要哪些版本」的唯一记录。CI 里如果重新解析（不用锁文件），某天一个传递依赖发了新版本，构建突然挂了，而你的代码一个字没改。这是前端最经典的「玄学问题」之一。"
+      },
+      {
+        "wrong": "以为 Vue 和 React 是两套完全不同的东西，学一个必须把另一个忘掉。",
+        "right": "按概念对应表理解：状态、副作用、props、列表、条件渲染、跨组件通信在两边都有对应物，差别主要在响应式实现粒度。",
+        "why": "HomeCube 里前端有 uni-app（Vue 系）和管理端（React 系）两套，技术栈不同但概念重叠 80%。你在 React 里的心智模型（单向数据流、不可变更新、key 的作用）在 Vue 里大部分成立；反之亦然。建立映射关系后，读任何一个仓库都不需要重新学一套。"
+      },
+      {
+        "wrong": "在 Vue 里写 data 循环时用 index 当 key，或者在 React 里干脆不写 key。",
+        "right": "Vue 用稳定唯一值（id）作 key；React 的 .map 必须带 key，也是稳定 id，不是 index。",
+        "why": "key 的作用是告诉 diff 算法「这一项是上一个列表里的哪一项」。用 index 或不写时，算法只能按位置匹配，于是列表头部插入一项时，后面所有项都被判定为「变了」，导致组件状态（输入框里已输入的文字、动画状态）错位到别的数据上。这是前端最常见的玄学 bug 之一，而它的根因只是少了一个 key。"
+      }
+    ],
+    "quiz": [
+      {
+        "q": "Node.js 和 npm 到底是什么关系？",
+        "options": [
+          "Node 是 JavaScript 语言的官方名称，npm 是它的一部分",
+          "Node 是 JavaScript 的运行时（引擎 + 系统 API），npm 是生态里最常用的包管理器",
+          "npm 是 Node 的旧名字",
+          "两者无关，只是常一起用"
+        ],
+        "answer": 1,
+        "explain": "语言是 JavaScript；Node 是让它能在浏览器之外运行的环境，顺带提供了文件系统、HTTP 服务、process 这些浏览器里没有的能力。npm 是装第三方包的工具。类比 Go：Go 把语言、运行时、工具链打包成一体（go 命令 + 标准库），所以 Go 项目不需要额外装包管理器；Node 生态把它们拆成了四层，每层都有多个第三方实现，这也是前端配置看起来复杂的原因。"
+      },
+      {
+        "q": "pnpm-lock.yaml 应该怎么处理？",
+        "options": [
+          "加进 .gitignore，它太大而且会频繁变动",
+          "必须和 package.json 一起提交，它是「确切版本清单」",
+          "只在本地保留，CI 里重新解析最新版",
+          "由 vite 自动生成，不需要管"
+        ],
+        "answer": 1,
+        "explain": "锁文件保证可复现：任何人 clone 仓库后装出来的依赖树完全一致。忽略它意味着依赖版本由发布时刻决定，今天装和下周装可能不同，一个传递依赖的破坏性更新就能让昨天的构建今天失败。反过来说，升级依赖时要**有意地**更新锁文件并提交，这样「升级了什么」在 git 历史里一目了然。"
+      },
+      {
+        "q": "Vite 在开发期的做法和 webpack 最本质的差别是？",
+        "options": [
+          "Vite 不支持 TypeScript",
+          "Vite 开发期不预先打包，按需把源码转成 ESM 直接交给浏览器，从而启动快、热更新快；生产期仍会打包",
+          "Vite 不做压缩，webpack 做",
+          "Vite 只能用于 Vue 项目"
+        ],
+        "answer": 1,
+        "explain": "webpack 开发模式要先完整打包才能启动，改一行就重打包；Vite 开发期只做「源码 → 可被浏览器直接执行的模块」这一次转换，剩下的交给浏览器，第二次访问时浏览器还有缓存。代价是开发期和生产期的执行路径不同（所以偶有「开发好好的、一 build 就挂」），但收益是毫秒级启动和接近瞬时的热更新。Vite 与框架无关，React 和 Vue 都能用。"
+      },
+      {
+        "q": "Vue 的 computed 和 React 的 useMemo，概念上对应什么？为什么这个对应是有意义的？",
+        "options": [
+          "对应 useState：一个存放当前值的状态",
+          "对应「根据输入派生出一个缓存的值」：输入变了才重算，输入没变就复用上次结果",
+          "对应 useEffect：一个带副作用的钩子",
+          "没有对应物，两者完全无关"
+        ],
+        "answer": 1,
+        "explain": "两者都是「派生值」概念：Vue 的 computed 是自动追踪依赖并缓存的响应式计算；React 的 useMemo 是由你手动指定依赖数组的缓存计算。概念对应成立，但机制不同——Vue 是运行时 Proxy 追踪（你没写依赖数组），React 是你手动声明依赖（写漏了就出 stale 的 bug）。这个差异是理解两个框架行为差异的关键入口。"
+      }
+    ],
+    "task": {
+      "title": "把前端跑起来，并产出一份对照表",
+      "acceptance": [
+        "node -v / npm -v / pnpm -v 都能输出版本，Node >= v18",
+        "app-mobile 目录存在，pnpm install 成功且 pnpm-lock.yaml 已生成并被 Git 跟踪（git check-ignore 应报告未忽略）",
+        "pnpm dev:h5 能起服务，浏览器打开能渲染页面；改一行 .vue 文件的文本，页面不刷新即更新",
+        "能指出 dev server 的端口以及「端口被占时会发生什么」",
+        "笔记里有一份 ≥8 组的 React↔Vue 3 概念对照表，每组附一句为什么对应",
+        "你能不查资料说出 Node / npm / vite / uni-app 各属于哪一层、分别解决什么问题"
+      ],
+      "hint": "端口被占时 vite 会自动递增并打印新地址（5174、5175…），这背后的机制就是 D2 学过的 bind。停止 dev server 用 Ctrl-C。pnpm dev:mp-weixin 会编译出微信小程序产物到 dist/dev/mp-weixin，可以用微信开发者工具导入它——这是 uni-app「一套代码多端」的第一个直观证据。",
+      "accept_note": ""
+    },
+    "tomorrow": "本周最后一张：把 D2 那个 hello world 升级成真正像样的服务——统一的响应体、/healthz 健康检查、/whoami 探身份。你会第一次设计一个对外的 JSON 契约，而那个形状会一直沿用到第 59 周。"
+  },
+  {
+    "id": "s0-d6",
+    "stage": "S0",
+    "day": 6,
+    "week": 1,
+    "title": "第一个 Go 服务：net/http、统一响应体、/healthz 与 /whoami",
+    "goal": "把 D2 的 hello world 升级成 cmd/svc-homeos/main.go：一个有统一响应体、有健康检查、有身份探测的最小服务，并确立 HomeOS 所有接口的响应契约。",
+    "duration": "90 分钟",
+    "why": {
+      "problem": "你已经能跑起一个 Go 进程了，但如果它只是打印一行字，它和你的产品还差着一整层。今天要补上这层：**HTTP 服务**。更关键的是要定下一个契约——所有接口返回什么形状的 JSON。这个形状一旦定下来，前端、后端测试、将来的 API 文档全部按它来，改动成本极高。所以今天真正重要的产出不是那 60 行代码，而是那个 Envelope 结构体。",
+      "naive": "新手写 HTTP 服务常见的三个坑：一是每个接口各返回一个形状，列表接口返回数组、详情接口返回对象、前端写两套解析；二是只在出错时返回 JSON、成功时返回一段纯文本；三是把「谁在调用我」这件事留到后面再说，结果 /whoami 这类接口永远补不上，因为那时候路由已经铺开了，改动成本是现在的十倍。今天这三个坑我们分别用统一响应体、统一成功格式、显式身份探测来避免。",
+      "right": "统一响应体（envelope）是所有真实项目的第一课。原因很实际：前端需要用同一段代码处理成功和失败——都读得到 code、都拿得到 message、都能在失败时统一弹 toast。如果成功返回裸数据、失败返回 {error: ...}，前端每个调用点都要写 if (res.error) ... else ...，写一万遍就是一万个 bug 源。所以定一个形状：{code, message, data, at}。code 用 0 表示成功、非 0 表示业务错误（HTTP 状态码照旧按语义给，两者分工不同——HTTP 状态码给中间件和浏览器看，code 给前端业务逻辑看）。然后 /healthz 给负载均衡和容器健康检查看，/whoami 让你能确认「这个服务看到的我是谁」，它同时是 S4 鉴权的占位符。"
+    },
+    "concepts": [
+      {
+        "name": "HandlerFunc：net/http 的全部契约",
+        "explanation": "net/http 的核心只有一个函数类型：func(w http.ResponseWriter, r *http.Request)。w 是你往里写的管道，r 是进来的请求。两个对象合起来定义了 HTTP 的全部模型——和 Node 的 (req, res) 是同一个思路，但有几个 Go 特有的点必须现在记住。第一，响应头必须在写 body 之前设置：一旦你调用了 Write 或 WriteHeader，状态码和头就被锁死了，之后再改无效。这是 Go 新手最常见的「Content-Type 没生效」的原因。第二，默认状态码是 200，你想要别的必须显式调 WriteHeader。第三，连接不会自动帮你关：http.ListenAndServe 内部维护连接池，通常你不需要管。第四，ServeMux 是标准库自带的路径路由器，支持路径前缀匹配，S2 会换到 Gin 但概念一样。理解了这四件事，你就掌握了 net/http 的全部常用面。",
+        "analogy": "像 Express 的 (req, res)：req 给你入参，res 给你出参。但 res 的「时机规则」更严格——写第一笔之前表头必须填完。"
+      },
+      {
+        "name": "统一响应体 Envelope 的设计",
+        "explanation": "Envelope = {code, message, data, at}。四个字段各有分工，不能省。code 是业务码：0 表示成功，非 0 表示失败，用整数而不是字符串是因为便于前端 switch。message 是给人看的中文提示，可以直接弹 toast，不需要前端维护错误码字典。data 是业务载荷，成功时是对象或数组，失败时是 null——所以前端写 data.xxx 时要判断 code 为 0，但这是一次性的。at 是服务端 ISO8601 时间戳，调试时能立刻判断「返回的是不是缓存」「两台机器时间差多少」，排查分布式问题极有价值。关键设计决策：code 和 HTTP 状态码是两套并行的体系。HTTP 状态码给基础设施看（500 表示这个请求整体失败，监控面板据此报警）；code 给业务看（余额不足是 4001 段的业务错误，但 HTTP 仍是 200，因为「请求成功、结果不成功」在 HTTP 语义上没错）。把两者混为一谈是新手常见错误：所有情况都返 200 加错误 body，会让 nginx、K8s、APM 全都以为服务很健康。",
+        "analogy": "像机票登机牌：HTTP 状态码是「你这趟航班」（基础设施关心），code 是「你的座位号」（业务关心）。航班正常但座位号是候补，也是一种合法状态。"
+      },
+      {
+        "name": "/healthz 与 /whoami：两个探测接口",
+        "explanation": "/healthz（也叫 /health 或 /readyz）回答一个问题：**这个进程现在能不能正常提供服务**。它被谁调用：Docker 的 HEALTHCHECK、Kubernetes 的 liveness/readiness probe、负载均衡器、以及你手动 curl 检查。注意它应该返回轻量的判断（进程活着、配置加载成功、必要依赖是否可用），不要在里面查数据库——那样数据库一抖，所有实例都被判定为不健康并被踢下线，反而放大故障。/whoami 回答另一个问题：**这个服务认为我是谁**。S0 没有登录系统，所以它读请求头 X-Member-Id / X-Family-Id 来冒充身份。这个接口的价值在于：它给了「当前请求的调用者身份」一个显式的观测点，S4 接上 JWT 之后，同一个接口的语义完全不变（只是从读 header 换成读 token）。前端调试、网关验证、审计排查都会用它。它也是你将来验证「鉴权到底生效没有」的第一站。",
+        "analogy": "像医院两个科室：体检科（healthz）回答「你这个人现在健康吗」，挂号台（whoami）回答「你登记的是谁」。前者不问身份，后者不问身体。"
+      }
+    ],
+    "code": {
+      "lang": "go",
+      "filename": "cmd/svc-homeos/main.go",
+      "content": "package main\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n\t\"log\"\n\t\"net/http\"\n\t\"os\"\n\t\"os/signal\"\n\t\"strings\"\n\t\"syscall\"\n\t\"time\"\n)\n\n// Envelope 是 HomeOS 所有接口的统一响应体。\n// 前端只需要写一套处理逻辑：code == 0 读 data，否则弹 message\ntype Envelope struct {\n\tCode    int         `json:\"code\"`    // 0 成功，非 0 业务错误\n\tMessage string      `json:\"message\"` // 给人看的中文提示\n\tData    interface{} `json:\"data\"`    // 成功时的载荷，失败时为 null\n\tAt      string      `json:\"at\"`      // 服务端 ISO8601 时间\n}\n\n// 系统级错误码：1001 段给参数，3001 段给权限，4001 段给冲突\nconst (\n\tCodeOK           = 0\n\tCodeInvalidParam = 1001\n\tCodeUnauthorized = 3001\n)\n\nfunc nowISO() string {\n\t// 本地时区输出成 +08:00 这样的偏移量，比 UTC 的 Z 更适合人看\n\treturn time.Now().Format(\"2006-01-02T15:04:05-07:00\")\n}\n\n// getenvOr 与 D4 相同：第一档，允许默认值\nfunc getenvOr(key, fallback string) string {\n\tif v, ok := os.LookupEnv(key); ok && strings.TrimSpace(v) != \"\" {\n\t\treturn v\n\t}\n\treturn fallback\n}\n\n// ok 成功响应：HTTP 200 + code 0\nfunc ok(w http.ResponseWriter, data interface{}) {\n\twriteJSON(w, http.StatusOK, Envelope{\n\t\tCode: CodeOK, Message: \"ok\", Data: data, At: nowISO(),\n\t})\n}\n\n// fail 失败响应：HTTP 状态码给基础设施看，code 给业务看，两者各自独立\nfunc fail(w http.ResponseWriter, status int, code int, msg string) {\n\twriteJSON(w, status, Envelope{\n\t\tCode: code, Message: msg, Data: nil, At: nowISO(),\n\t})\n}\n\nfunc writeJSON(w http.ResponseWriter, status int, env Envelope) {\n\t// 顺序不能反：Header 必须在 WriteHeader 和写 body 之前\n\tw.Header().Set(\"Content-Type\", \"application/json; charset=utf-8\")\n\tw.Header().Set(\"X-Service-Name\", \"svc-homeos\")\n\tw.WriteHeader(status)\n\t_ = json.NewEncoder(w).Encode(env) // Encode 会自动换行\n}\n\n// healthz 只回答「能不能服务」，不要在这里查数据库\nfunc healthz(w http.ResponseWriter, r *http.Request) {\n\tok(w, map[string]interface{}{\n\t\t\"status\": \"up\",\n\t\t\"app\":    getenvOr(\"HC_APP_NAME\", \"homeos\"),\n\t\t\"uptime\": time.Since(startedAt).Round(time.Second).String(),\n\t})\n}\n\n// whoami 回答「服务认为调用者是谁」。S0 读 header，S4 换成读 JWT\nfunc whoami(w http.ResponseWriter, r *http.Request) {\n\tmemberID := r.Header.Get(\"X-Member-Id\")\n\tfamilyID := r.Header.Get(\"X-Family-Id\")\n\tif memberID == \"\" {\n\t\t// 没有身份就诚实地说未认证，而不是编一个默认用户出来\n\t\tfail(w, http.StatusUnauthorized, CodeUnauthorized, \"缺少 X-Member-Id 请求头\")\n\t\treturn\n\t}\n\trole := r.Header.Get(\"X-Role\")\n\tif role == \"\" {\n\t\trole = \"member\" // S4 之前没有真角色，兜底一个\n\t}\n\tok(w, map[string]interface{}{\n\t\t\"member_id\": memberID,\n\t\t\"family_id\": familyID,\n\t\t\"role\":      role,\n\t\t\"source\":    \"header\", // S4 之后这里会变成 \"jwt\"\n\t})\n}\n\nvar startedAt = time.Now()\n\nfunc main() {\n\taddr := getenvOr(\"HC_HTTP_ADDR\", \"127.0.0.1:8080\")\n\n\tmux := http.NewServeMux()\n\tmux.HandleFunc(\"/healthz\", healthz)\n\tmux.HandleFunc(\"/whoami\", whoami)\n\tmux.HandleFunc(\"/\", func(w http.ResponseWriter, r *http.Request) {\n\t\tfail(w, http.StatusNotFound, 404, \"没有这个接口: \"+r.URL.Path)\n\t})\n\n\tsrv := &http.Server{\n\t\tAddr:              addr,\n\t\tHandler:           mux,\n\t\tReadHeaderTimeout: 3 * time.Second,\n\t\tReadTimeout:       10 * time.Second,\n\t\tWriteTimeout:      15 * time.Second,\n\t\tIdleTimeout:       60 * time.Second,\n\t}\n\n\t// 优雅关闭：收到 SIGTERM/SIGINT 时，停止接新请求，等在途请求做完再退\n\t// 容器重启时会先发 SIGTERM，给 5 秒退出窗口（S13 会展开讲）\n\tidle := make(chan struct{})\n\tgo func() {\n\t\tsigCh := make(chan os.Signal, 1)\n\t\tsignal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)\n\t\t<-sigCh\n\t\tlog.Println(\"收到退出信号，开始优雅关闭...\")\n\t\tctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)\n\t\tdefer cancel()\n\t\tif err := srv.Shutdown(ctx); err != nil {\n\t\t\tlog.Printf(\"优雅关闭失败: %v\", err)\n\t\t}\n\t\tclose(idle)\n\t}()\n\n\tlog.Printf(\"svc-homeos 启动: http://%s\", addr)\n\tif err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {\n\t\tlog.Fatalf(\"启动失败: %v\", err)\n\t}\n\t<-idle\n\tlog.Println(\"已退出\")\n}\n",
+      "run": "cd homecube && CGO_ENABLED=0 go run -ldflags=-buildid= ./cmd/svc-homeos",
+      "expect": "$ go run ./cmd/svc-homeos\n2026/10/15 20:14:03 svc-homeos 启动: http://127.0.0.1:8080\n\n$ curl -s http://127.0.0.1:8080/healthz\n{\"code\":0,\"message\":\"ok\",\"data\":{\"app\":\"homeos\",\"status\":\"up\",\"uptime\":\"3s\"},\"at\":\"2026-10-15T20:14:06+08:00\"}\n\n$ curl -s http://127.0.0.1:8080/whoami\n{\"code\":3001,\"message\":\"缺少 X-Member-Id 请求头\",\"data\":null,\"at\":\"2026-10-15T20:14:08+08:00\"}\n\n$ curl -s -H 'X-Member-Id: m_1001' -H 'X-Family-Id: f_9001' -H 'X-Role: owner' http://127.0.0.1:8080/whoami\n{\"code\":0,\"message\":\"ok\",\"data\":{\"family_id\":\"f_9001\",\"member_id\":\"m_1001\",\"role\":\"owner\",\"source\":\"header\"},\"at\":\"2026-10-15T20:14:09+08:00\"}\n\n$ curl -s -i http://127.0.0.1:8080/nope | head -1\nHTTP/1.1 404 Not Found\n\n$ kill %1   # 或 Ctrl-C\n2026/10/15 20:14:30 收到退出信号，开始优雅关闭...\n2026/10/15 20:14:30 已退出"
+    },
+    "steps": [
+      {
+        "n": 1,
+        "title": "照抄并跑通",
+        "detail": "把代码存成 cmd/svc-homeos/main.go，go run ./cmd/svc-homeos。注意目录名 svc-homeos 决定了 go build 出来的二进制名字，S7 的 Dockerfile 里 COPY 的就是它产出的那个文件。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 2,
+        "title": "把四个响应都 curl 一遍",
+        "detail": "成功 200、无身份 401、有身份 200、未知路径 404。特别注意 401 那条：HTTP 状态码是 401，同时 body 里 code 是 3001。这就是两套体系并行的证据——写进笔记。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 3,
+        "title": "验证响应头确实写进去了",
+        "detail": "curl -s -D - http://127.0.0.1:8080/healthz 看完整响应头，确认有 Content-Type: application/json; charset=utf-8 和 X-Service-Name: svc-homeos。然后故意把 Set(\"Content-Type\") 挪到 Encode 之后，重跑，观察 Content-Type 变成 text/plain——这就是「头必须在写 body 之前」的现场教学。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 4,
+        "title": "测试优雅关闭",
+        "detail": "服务跑着的时候按 Ctrl-C，观察日志里先打「收到退出信号」再打「已退出」。再试一次在请求进行中的时候按 Ctrl-C。S13 会把 context 和关闭超时展开讲，今天只需要知道「服务不是瞬间消失的」。",
+        "time": "10 分钟"
+      },
+      {
+        "n": 5,
+        "title": "定契约并写下来",
+        "detail": "在 docs 里写一页「HomeOS 响应体约定」：字段含义、code 分段规则（1001 参数 / 3001 权限 / 4001 冲突 / 5001 内部）、HTTP 状态码何时用 4xx vs 200+code、时间戳格式。这页文档将来会被前端、后端、测试同时引用，是整个项目最重要的五页纸之一。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 6,
+        "title": "编译成二进制再跑一次",
+        "detail": "go build -o bin/svc-homeos ./cmd/svc-homeos，然后 ./bin/svc-homeos。对比一下启动速度和目录结构：现在 bin/ 已经进了 .gitignore，所以构建产物不会污染仓库。这一步也顺便验证了「go build 的产物就是容器里要 COPY 的东西」。",
+        "time": "15 分钟"
+      }
+    ],
+    "pitfalls": [
+      {
+        "wrong": "直接 `go run ./lab/s0/d06`，起HTTP 服务时报 `dyld[xxx]: missing LC_UUID load command in /var/folders/.../go-build.../exe/xxx` 然后 `signal: abort trap`",
+        "right": "用 `CGO_ENABLED=0 go run -ldflags=-buildid= ./lab/s0/d06`（这是 macOS 上 go run 起常驻进程的已知坑，关掉 CGO 并清掉 build id 就正常）",
+        "why": "macOS 的动态链接器 dyld 要求每个可执行文件带 LC_UUID load command，而 go run 生成的临时二进制有时不带，于是启动即崩。这个坑只在「程序会长时间运行 / 起监听端口」时出现，跑完就退出的程序不受影响，所以很容易被误判成代码写错了。记住这个组合参数，以后所有起服务的卡片都用它。"
+      },
+      {
+        "wrong": "先 json.Encode(w, data) 再 w.Header().Set(\"Content-Type\", ...)。",
+        "right": "Set 头 → WriteHeader → 写 body，三步严格有序，集中封装在一个 writeJSON 里。",
+        "why": "一旦第一次写 body 发生，响应头就已经随包发出去了，之后的 Set 全部无效，返回给客户端的是 net/http 猜的 text/plain。前端 fetch().json() 遇到 Content-Type 不是 application/json 会直接抛错，报错信息是「Unexpected token < in JSON at position 0」这种完全看不出原因的样子。封装成单一出口 writeJSON 是防止这个 bug 复发的结构性办法。"
+      },
+      {
+        "wrong": "所有情况都返回 HTTP 200，把错误塞在 body 的 message 里。",
+        "right": "HTTP 状态码按语义给（401/403/404/405/422/500），业务 code 单独表达业务结果。",
+        "why": "HTTP 状态码是给中间设施看的契约：nginx 用它做重试判断，K8s 用它做失败统计，APM 用它画告警曲线，浏览器和 CDN 会据它缓存响应。如果全返 200，监控面板会永远显示「这个服务零错误」，直到用户投诉。而「余额不足」这类业务结果用 200 + code 是完全正确的——请求本身成功了。"
+      },
+      {
+        "wrong": "把「当前用户是谁」用全局变量存起来（比如 var currentUser *User），在 whoami 里读它。",
+        "right": "身份永远从请求上下文里取：S0 从 header 取，S4 从 JWT 解析后放进 context。",
+        "why": "全局变量在并发下会互相覆盖——两个用户同时请求，后一个的赋值会污染前一个的响应，而且这类 bug 复现困难、极难排查。HTTP 是无状态的：每个请求自带全部信息，handler 只做「从 r 里读出身份 → 处理 → 写回」这一件事。S2 的中间件和 S4 的鉴权都是沿着这个原则做的。"
+      },
+      {
+        "wrong": "在 /healthz 里 ping 一下数据库才算健康。",
+        "right": "/healthz 只报进程状态与配置加载结果；依赖健康要么单独开 /readyz，要么让上游做。",
+        "why": "数据库短暂抖动时，所有实例的 /healthz 会同时失败，负载均衡会在几秒内把全部流量摘掉，然后数据库恢复后又被突然全量灌回来——把一次局部故障放大成一次雪崩。存活（liveness）应该只看「进程是不是卡死了」，就绪（readiness）才看依赖。这两者在 K8s 里是两个探针，S14 部署时会真正用上。"
+      }
+    ],
+    "quiz": [
+      {
+        "q": "Envelope 里 code 和 HTTP 状态码的关系，正确的是什么？",
+        "options": [
+          "必须一一对应，code 就是状态码换了种写法",
+          "两套并行：HTTP 状态码给基础设施（代理、监控、浏览器）判断传输层成败，code 给业务代码判断业务结果；「余额不足」这类是 HTTP 200 + code 4001",
+          "code 是可选的，HTTP 状态码够用",
+          "只有 HTTP 200 一种合法响应"
+        ],
+        "answer": 1,
+        "explain": "把两者分开，前端得到统一处理逻辑（code 为 0 就读 data），监控得到准确的失败率画像。如果统一成一套，要么业务错误让所有 HTTP 监控数据失真，要么「余额不足」被报成 500 触发无谓告警。HomeOS 的约定：参数 1001 段、权限 3001 段、冲突 4001 段、内部 5001 段，前端按段做粗粒度分类。"
+      },
+      {
+        "q": "为什么 w.Header().Set(\"Content-Type\", ...) 必须写在 json.Encode(w, ...) 之前？",
+        "options": [
+          "Set 更耗性能，写在后面会被压缩掉",
+          "第一次写 body 会把响应头随包发出，之后再改头就来不及了",
+          "Go 要求所有 Set 调用集中在文件开头",
+          "写在后面会导致 JSON 编码失败"
+        ],
+        "answer": 1,
+        "explain": "HTTP 是有先后的：响应头在响应开始的第一个包里发出。net/http 一旦检测到第一次 Write，就会用当时的头部生成并发送整个响应头，之后的修改只能影响后续的 Write（而没有后续了）。所以 Set → WriteHeader → Write 这个顺序是硬约束。把三步封装成唯一的 writeJSON 出口，是团队里防这类 bug 最省心的做法。"
+      },
+      {
+        "q": "S0 阶段 /whoami 从请求头读身份，S4 接入 JWT 后改成从 token 解析。这样设计的好处是？",
+        "options": [
+          "只是为了少写几行代码",
+          "接口的语义和形状从第一天就定死了，将来换鉴权方式不用改任何前端代码和路由",
+          "读 header 比读 token 安全",
+          "为了在 S0 阶段就能测出权限问题"
+        ],
+        "answer": 1,
+        "explain": "这是「先定契约再填实现」的价值。/whoami 从第一天起就是一个稳定的观测点：今天告诉你「我收到的身份是什么」，S4 之后告诉你「我验证过的身份是什么」，路径、请求方式、响应结构全都不变。所有调试工具、集成测试、审计脚本都只需要认这一个接口。这是接口设计里「seam」（接缝）思想的最朴素用法。"
+      },
+      {
+        "q": "优雅关闭（收到 SIGTERM 后先停止接新请求、等在途请求做完再退出）解决的是什么问题？",
+        "options": [
+          "让服务启动更快",
+          "避免正在处理的请求被硬生生掐断——容器重启或发布新版本时，客户端不会收到半截响应",
+          "节省内存",
+          "让日志输出更整齐"
+        ],
+        "answer": 1,
+        "explain": "Docker 停止容器、systemd 重启服务、K8s 滚动更新时都会先发 SIGTERM 并给一段宽限期（Docker 默认 10 秒）。如果进程立刻死掉，此刻正在写数据库或在返回大响应的请求会中断，客户端看到连接重置。优雅关闭利用这段宽限期：Shutdown 让 listener 停止 accept，已建立的连接继续服务到完成。S13 会结合 context 深入讲，S14 部署时会真正配置宽限期。"
+      }
+    ],
+    "task": {
+      "title": "给 HomeOS 定下第一个对外契约",
+      "acceptance": [
+        "cmd/svc-homeos/main.go 存在，go run ./cmd/svc-homeos 能起在 127.0.0.1:8080",
+        "所有响应（含 404、401）都是同一个 Envelope 形状，带 Content-Type: application/json; charset=utf-8",
+        "GET /healthz 返回 code 0、data 含 status/app/uptime，且不查数据库",
+        "GET /whoami 无 X-Member-Id 时返回 HTTP 401 + code 3001；带上 X-Member-Id/X-Family-Id/X-Role 时返回 code 0 与结构化身份",
+        "go build -o bin/svc-homeos ./cmd/svc-homeos 成功，产物在 bin/（已被 .gitignore 忽略）",
+        "Ctrl-C 时能看到「收到退出信号」再「已退出」两行日志",
+        "docs 下有一页响应体约定：字段表、code 分段表、HTTP 状态码使用规则"
+      ],
+      "hint": "**如果 `go run` 报 `missing LC_UUID load command` 或 `signal: abort trap`**——这不是代码问题，是 macOS 上 go run 起常驻进程的已知坑。用 `CGO_ENABLED=0 go run -ldflags=-buildid= <路径>` 即可。注意只有「程序会持续运行 / 起监听端口」时才需要这两个参数，跑完就退出的程序直接 go run 就行。\n\n测试 401 用 curl -s -i http://127.0.0.1:8080/whoami 然后看第一行是 HTTP/1.1 401 Unauthorized。map 在 JSON 里序列化时键会按字母序输出，所以 data 里的字段顺序不是你写的顺序——如果顺序对你很重要，就把返回类型定成 struct 而不是 map。",
+      "accept_note": ""
+    },
+    "tomorrow": "进入第二周。明天做 D7 Docker Compose：把今天手工起的这些零散步骤，收敛成一条 docker compose up -d 命令。这一步做完，你就真正拥有了一个「随时重建的环境」。"
+  },
+  {
+    "id": "s0-d7",
+    "stage": "S0",
+    "day": 7,
+    "week": 2,
+    "title": "Docker Compose：一条命令起全套",
+    "goal": "把 D3-D6 手工敲的 docker run 收敛成一份 deploy/docker-compose.yml，理解 depends_on 与 healthcheck 的区别，并能用 setup-compose.sh 一键重建整个环境。",
+    "duration": "90 分钟",
+    "why": {
+      "problem": "现在的环境是靠你记住的一串命令拼起来的：起库要记得 -e POSTGRES_USER、-p 5432；起服务要记得 export 三个环境变量。换个新克隆的仓库，或者给下周二的自己，你得重背一遍。更糟的是每个人的命令可能有细微差别（比如端口一个用 5432 一个用 15432），于是「在我机器上是好的」成为你最主要的 bug 来源。",
+      "naive": "常见做法是把命令写进一个长 shell 脚本，或者写进 README。问题在于：脚本只能表达「按顺序执行」，一旦某个服务的启动有依赖和健康等待，就得塞满 sleep 和重试逻辑，最后变成一个没人敢改的巨型脚本。另一个误区是理解 compose 的 depends_on：以为写了 depends_on 就等于「等对方准备好了」，实际上默认只等「对方容器启动了」，而不等于「对方能服务了」。",
+      "right": "Compose 的核心思想是**声明式**：你描述「我想要这套环境长什么样」，工具负责算差量并把它变成现实。它比脚本强的地方在于它知道服务之间的依赖关系，能并行启动、能等健康检查、能只重建变化的部分。而健康等待必须显式写出来：Compose 支持 healthcheck + depends_on.condition: service_healthy，这是把 D3 里那段 pg_isready 轮询逻辑搬进声明里的正确姿势。今天产出的 compose 文件就是你这个项目的「环境定义」，以后换机器、换环境、给面试官演示，全靠它。"
+    },
+    "concepts": [
+      {
+        "name": "声明式 vs 命令式：Compose 到底改变了什么",
+        "explanation": "命令式是你告诉机器「依次做 A、再做 B」（docker run、make、shell 脚本）；声明式是你描述「最终状态应该是什么样」，工具负责 diff 出差异并执行（docker compose、Dockerfile、Terraform、Kubernetes）。差别在故障恢复时最明显：命令式脚本跑到第 7 步挂了，你要手动判断前 6 步做到哪了；声明式的工具下次再跑一次，自己知道该怎么补齐。这就是为什么生产环境最终都收敛到声明式。Compose 的具体行为是：读 yml → 算出每个服务「期望的镜像、端口、环境」与「当前的容器实际配置」的差异 → 只重建有变化的服务 → 保持没变的服务不动。这意味着一条命令可以反复跑，幂等。写 compose 时的一个思维转变是：不要写「怎么启动」，要写「最终应该有哪些容器、端口怎么映射、数据挂在哪」——就像写 SQL 的 CREATE TABLE，而不是写 INSERT 序列。",
+        "analogy": "像 Terraform 管云资源：你声明「我要一个 4 核 16G 的机器，在东京可用区」，它去查现状、算出差异、执行。不是你一步步点控制台。"
+      },
+      {
+        "name": "depends_on 与 healthcheck：等启动 vs 等就绪",
+        "explanation": "这是 compose 里最容易搞错的一处。默认的 depends_on: postgres 只保证「postgres 容器已经被创建并启动了」，**不保证它能接受连接**。容器启动到 PostgreSQL 真正 ready 往往还有几百毫秒到几秒（要初始化数据目录、恢复 WAL）。如果 svc-homeos 在这几秒内就去连库，会拿到 connection refused，然后——如果代码里没有重试——直接失败退出。正确写法有两层：给 postgres 定义 healthcheck（用镜像自带的 pg_isready），然后在 svc-homeos 的 depends_on 里加 condition: service_healthy。这样 compose 会真的等到探活通过才启动下一个服务。这和 D3 脚本里的 until pg_isready 轮询是同一个原理，只不过从 shell 搬进了声明。注意 healthcheck 只在容器内部执行命令，所以用 CMD 形式的数组而不是 shell 形式更可移植；interval / timeout / retries / start_period 四个参数决定多久判一次、超时算失败、连错几次算完蛋、启动宽限期多长。",
+        "analogy": "像等电梯：depends_on 是「它已经在楼里了」，service_healthy 是「它到了这一层并且门开了」。你要下楼，得等后者。"
+      },
+      {
+        "name": "svc-homeos 的 Dockerfile：让容器可重建",
+        "explanation": "D3 你在容器里手工做的事（改配置、装东西）都活不过一次 docker rm。Compose 要能重建 svc-homeos，就必须有一份声明「这个镜像该怎么构建」的 Dockerfile。标准做法是多阶段构建：第一阶段用 golang:1.23-alpine 做编译，COPY 源码进去 go build 出静态二进制；第二阶段只用一个极小的运行时镜像（alpine 或 distroless），COPY 那个二进制出来。好处有两个：编译用的工具链（几十 GB）不会进最终镜像；最终镜像可能只有 20MB。两个关键细节：CGO_ENABLED=0 关掉 C 库依赖，这样二进制是静态的、能跑在 alpine 上（musl libc）；时区数据要单独装（ca-certificates 和 tzdata），否则容器里 time.LoadLocation(\"Asia/Shanghai\") 会失败——这是个经典坑，S13 做日志时间格式化时会撞上。构建时还应该先 COPY go.mod 再 go mod download，让依赖层能被缓存：只要依赖没变，重建时这一步就不用重新下载。",
+        "analogy": "像多阶段烘焙：先把面团烤熟（编译），再把成品装进精美包装盒（运行时镜像）。厨房的锅碗不会跟着送到顾客手里。"
+      }
+    ],
+    "code": {
+      "lang": "bash",
+      "filename": "scripts/setup-compose.sh",
+      "content": "#!/usr/bin/env bash\n# S0 D7：一条命令起全套（postgres + svc-homeos）\n# 幂等：反复跑只重建有变化的服务\nset -euo pipefail\n\nPROJECT=homecube\ncd \"$PROJECT\"\nmkdir -p deploy\n\n# ---------------------------------------------------------------- 1) Dockerfile\n# 多阶段构建：编译用 golang 镜像，运行只带一个二进制\ncat > deploy/Dockerfile <<'DOCKERFILE'\n# ---- 阶段一：编译 ----\nFROM golang:1.23-alpine AS build\nWORKDIR /src\n\n# 先只拷依赖清单，这样依赖没变时这一层命中缓存\nCOPY go.mod ./\nRUN go mod download\n\n# 再拷源码并编译。CGO_ENABLED=0 产出静态二进制，才能跑在 alpine 上\nCOPY . .\nRUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags=\"-s -w\" \\\n    -o /out/svc-homeos ./cmd/svc-homeos\n\n# ---- 阶段二：运行时 ----\nFROM alpine:3.20\n# ca-certificates：以后要访问 HTTPS 接口；tzdata：容器里才有 Asia/Shanghai 时区\nRUN apk add --no-cache ca-certificates tzdata\n\nCOPY --from=build /out/svc-homeos /usr/local/bin/svc-homeos\n\n# 容器内监听 0.0.0.0，不能是 127.0.0.1（D2 讲过的坑）\nENV HC_HTTP_ADDR=0.0.0.0:8080 \\\n    HC_DB_HOST=postgres \\\n    HC_DB_PORT=5432 \\\n    HC_DB_USER=homeos \\\n    HC_DB_NAME=homecube\n\nEXPOSE 8080\n# 用 exec 形式，信号能直达进程，优雅关闭才有效\nENTRYPOINT [\"/usr/local/bin/svc-homeos\"]\nDOCKERFILE\n\n# ---------------------------------------------------------------- 2) compose\ncat > deploy/docker-compose.yml <<'YAML'\nname: homecube\n\nservices:\n  postgres:\n    image: postgres:16-alpine\n    container_name: homecube-pg\n    environment:\n      POSTGRES_USER: ${HC_DB_USER:-homeos}\n      POSTGRES_PASSWORD: ${HC_DB_PASSWORD:?必须设置 HC_DB_PASSWORD}\n      POSTGRES_DB: ${HC_DB_NAME:-homecube}\n    ports:\n      - \"${HC_DB_PORT:-5432}:5432\"\n    volumes:\n      - pgdata:/var/lib/postgresql/data\n    # 探活：pg_isready 是 postgres 镜像自带的小工具\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U ${HC_DB_USER:-homeos} -d ${HC_DB_NAME:-homecube}\"]\n      interval: 3s\n      timeout: 3s\n      retries: 10\n      start_period: 5s\n    restart: unless-stopped\n\n  svc-homeos:\n    build:\n      context: ..\n      dockerfile: deploy/Dockerfile\n    image: homecube/svc-homeos:latest\n    container_name: homecube-svc-homeos\n    # 等 postgres 真的健康，而不是只等它启动\n    depends_on:\n      postgres:\n        condition: service_healthy\n    environment:\n      HC_APP_NAME: homeos\n      HC_HTTP_ADDR: 0.0.0.0:8080\n      HC_DB_HOST: postgres        # 关键：写服务名，不是 localhost（D8 讲）\n      HC_DB_PORT: \"5432\"\n      HC_DB_USER: ${HC_DB_USER:-homeos}\n      HC_DB_PASSWORD: ${HC_DB_PASSWORD:?必须设置 HC_DB_PASSWORD}\n      HC_DB_NAME: ${HC_DB_NAME:-homecube}\n    ports:\n      - \"8080:8080\"\n    restart: unless-stopped\n\nvolumes:\n  pgdata:\nYAML\n\n# ---------------------------------------------------------------- 3) 起\nif [ ! -f .env ]; then\n  echo \"HC_DB_PASSWORD=homecube\" > .env\n  echo \"已生成 .env（D1 的 .gitignore 会挡住它，不会入库）\"\nfi\n\ndocker compose --env-file .env -f deploy/docker-compose.yml up -d --build\n\n# ---------------------------------------------------------------- 4) 观察\ndocker compose -f deploy/docker-compose.yml ps\ndocker compose -f deploy/docker-compose.yml logs --tail 15 svc-homeos\n",
+      "run": "cd homecube && bash scripts/setup-compose.sh",
+      "expect": "$ bash scripts/setup-compose.sh\n已生成 .env（D1 的 .gitignore 会挡住它，不会入库）\n[+] Building 1.1s (7/7) FINISHED\n => [builder 5/5] RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags=\"-s -w\" -o /out/svc-homeos ./cmd/svc-homeos\n[+] Running 4/4\n ✔ Network homecube_default              Created\n ✔ Volume \"homecube_pgdata\"              Created\n ✔ Container homecube-pg                 Started\n ✔ Container homecube-svc-homeos         Started\n\n$ docker compose -f deploy/docker-compose.yml ps\nNAME                     IMAGE                       STATUS\nhomecube-pg              postgres:16-alpine          Up 18 seconds (healthy)\nhomecube-svc-homeos      homecube/svc-homeos:latest  Up 12 seconds\n\n$ curl -s http://127.0.0.1:8080/healthz\n{\"code\":0,\"message\":\"ok\",\"data\":{\"app\":\"homeos\",\"status\":\"up\",\"uptime\":\"5s\"},\"at\":\"2026-10-15T21:02:44+08:00\"}\n\n$ docker images homecube/svc-homeos\nREPOSITORY                 TAG       SIZE       CREATED\nhomecube/svc-homeos        latest    18.2MB     3 seconds ago\n                     ↑ 注意不是 800MB 的 golang 镜像大小：多阶段构建的收益"
+    },
+    "steps": [
+      {
+        "n": 1,
+        "title": "先把 D3-D6 的手工环境停掉",
+        "detail": "docker rm -f homecube-pg，并把 D6 那个本地跑的 svc-homeos 停掉（Ctrl-C）。腾出 5432 和 8080，否则 compose 会报端口被占。这个动作本身就是一次教学：两个服务抢同一个端口，谁先来谁拿到。",
+        "time": "5 分钟"
+      },
+      {
+        "n": 2,
+        "title": "跑脚本生成 Dockerfile 与 compose 文件",
+        "detail": "脚本会写出 deploy/Dockerfile 和 deploy/docker-compose.yml。执行前先读一遍 yml 的每一行，确认你能说出每个字段的作用——compose 文件是这个项目的环境说明书，看不懂就改不动。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 3,
+        "title": "起全套并盯住健康状态",
+        "detail": "执行脚本。观察 ps 输出里 postgres 变成 healthy 之后 svc-homeos 才启动——这正是 condition: service_healthy 的效果。如果在 yml 里把它改成默认的 depends_on 列表形式，svc-homeos 会立刻启动，然后你会看到日志里出现连接数据库失败（如果你代码里有相关逻辑）。两种都跑一遍，感受差别。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 4,
+        "title": "验证幂等：再跑一次 up",
+        "detail": "第二次执行 docker compose up -d（不加 --build），观察输出是「全部 up-to-date，没有需要重建的容器」。这就是声明式的价值：你可以随时跑，不担心搞坏环境。",
+        "time": "10 分钟"
+      },
+      {
+        "n": 5,
+        "title": "摸清 compose 的常用子命令",
+        "detail": "docker compose ps / logs -f / stop / start / restart / down / config / exec。每个都跑一次。config 特别有用：它把 yml 加上变量插值的结果打印出来，能帮你确认 ${HC_DB_PASSWORD} 到底被展开成了什么（不用 --env-file 时它读当前 shell 的环境变量）。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 6,
+        "title": "故意破坏再修复",
+        "detail": "① 把 yml 里的密码变量名打错，up 时看它报什么错；② docker compose down 再 up，确认数据还在（因为卷 pgdata 没被删，down 默认不删卷）；③ 执行 docker compose down -v，看卷被删掉后数据就没了。做完 down -v 一定要重新 up 并跑一次 setup 脚本恢复。",
+        "time": "20 分钟"
+      }
+    ],
+    "pitfalls": [
+      {
+        "wrong": "在 svc-homeos 的 environment 里写 HC_DB_HOST: localhost。",
+        "right": "写 HC_DB_HOST: postgres（compose 里的服务名）。",
+        "why": "localhost 在容器里指的是**这个容器自己**，svc-homeos 容器里并没有 PostgreSQL，所以连接必然失败。正确写法是服务名——Compose 会给所有服务建一个共享网络，并在其中内置 DNS，服务名就是域名。这是 D8 的主题，今天先用对，明天你会彻底理解为什么。"
+      },
+      {
+        "wrong": "以为 depends_on: postgres 就等于「等数据库就绪」。",
+        "right": "配合 healthcheck 与 condition: service_healthy，让依赖真正等到可服务。",
+        "why": "默认 depends_on 只等容器进入 running 状态，而 PostgreSQL 从 running 到 ready 还有初始化过程。如果 svc-homeos 在启动瞬间做健康检查或建连接池，就会失败。条件等待把这段时序逻辑从 shell 脚本搬进声明，既可靠又可读。顺带说：即使有了 service_healthy，生产里仍建议应用侧带重试，因为网络和依赖随时可能出问题。"
+      },
+      {
+        "wrong": "把 HC_DB_PASSWORD 直接写进 compose yml 里提交到 Git。",
+        "right": "用 ${HC_DB_PASSWORD} 插值，实际值放在 .env（不入库）或 CI 的 secret 里。",
+        "why": "compose 支持变量插值，本质上是「同一份环境定义，不同环境注入不同值」。写成硬编码的 compose 文件是「同一份定义，永远用同一个值」，既不安全也不便携。另外 yml 里 `${VAR:?错误信息}` 这个语法值得记住：变量没设就直接报错，而不是展开成空串——这正是 D4 教你的 fail fast 在 compose 层的对应物。"
+      },
+      {
+        "wrong": "在 Dockerfile 里写 RUN apk add ... 然后手工改容器里的文件让它「能用」。",
+        "right": "所有配置和文件都进 Dockerfile，容器只是它的运行结果。",
+        "why": "手工改动只存在于那个容器的可写层，docker compose down && up 之后全部消失，你会花一个小时 debug 一个「我明明装过了」的问题。判据很简单：任何人 clone 你的仓库后，只执行 docker compose up --build，能不能得到一个可用的环境？如果不能，就说明还有东西没进 Dockerfile。"
+      }
+    ],
+    "quiz": [
+      {
+        "q": "compose 的 depends_on 默认语义是什么？加上 condition: service_healthy 后又是什么？",
+        "options": [
+          "默认是等依赖完全就绪；加条件后是等容器启动",
+          "默认是等依赖容器进入 running 状态（不等于服务可用）；加条件后是等它的 healthcheck 通过",
+          "两者都是等完全就绪，条件只是为了写得更长",
+          "默认什么都不等，加了才等启动"
+        ],
+        "answer": 1,
+        "explain": "容器 running 只表示进程起来了。数据库、消息队列这类有初始化过程的服务，从进程起来到能接受连接之间有几百毫秒到几秒的空窗。healthcheck 让容器自己声明「我准备好了」，condition: service_healthy 让依赖方等这个信号。这是把 shell 里那段 until pg_isready 轮询逻辑搬进声明的方式。"
+      },
+      {
+        "q": "svc-homeos 连不上数据库，日志显示 dial tcp 127.0.0.1:5432: connect: connection refused。最可能的原因和修法是？",
+        "options": [
+          "postgres 挂了 —— 重启 postgres",
+          "HC_DB_HOST 写成了 localhost，容器里的 localhost 是自己 —— 改成服务名 postgres",
+          "端口映射写错了 —— 把 5432 改成 15432",
+          "密码不对 —— 换密码"
+        ],
+        "answer": 1,
+        "explain": "错误信息里的 127.0.0.1 就是线索：请求打到了容器自己的回环地址，而 PostgreSQL 根本不在这个容器里。容器之间通过 Compose 建立的共享网络互相访问，用服务名当主机名，由内置 DNS 解析成容器 IP。端口映射（5432:5432）是给**宿主机**用的，容器之间通信不需要映射，也不需要写宿主机端口。"
+      },
+      {
+        "q": "docker compose down 之后重新 up，数据没了；但 docker compose down -v 之后数据也没了。两者区别是？",
+        "options": [
+          "没有区别，两者都删卷",
+          "down 只删容器和网络，默认保留具名卷；down -v 额外删除卷，数据随之消失",
+          "down -v 只删网络",
+          "down 会删卷但保留数据，down -v 会清空数据但保留卷"
+        ],
+        "answer": 1,
+        "explain": "具名卷（compose 文件里 volumes: 段声明的 pgdata）是独立于容器的对象，默认不会被 down 删除，这正是数据持久化的机制。-v / --volumes 加上之后会把这些卷一起删掉。开发时随手加 -v 是数据丢失最常见的原因之一：docker compose down -v && docker compose up 之后本地库空了，而你完全没意识到。"
+      },
+      {
+        "q": "多阶段构建（golang 镜像编译 + alpine 运行）最主要的收益是什么？",
+        "options": [
+          "编译速度更快",
+          "运行时镜像不包含编译工具链，体积从几百 MB 降到几十 MB，且不含不必要的攻击面",
+          "可以让二进制跨平台运行",
+          "省掉 Dockerfile 的编写"
+        ],
+        "answer": 1,
+        "explain": "golang:1.23-alpine 里有 Go 工具链、编译器和标准库源码，装完有 800MB 左右；编译完只需要那个二进制（加 alpine 基础层和 tzdata），通常 20MB 以内。第二个收益是安全：最终镜像里没有 shell 工具、没有包管理器，攻击者即使拿到容器 shell 也做不了太多事。跨平台是另一个收益（可以 GOOS/GOARCH 交叉编译），但那不是多阶段的核心动机。"
+      }
+    ],
+    "task": {
+      "title": "把整套环境收敛成一条命令",
+      "acceptance": [
+        "deploy/Dockerfile 存在且为两阶段构建，CGO_ENABLED=0 与 tzdata 都在",
+        "deploy/docker-compose.yml 含 postgres 与 svc-homeos 两个服务，postgres 有 healthcheck，svc-homeos 用 condition: service_healthy 等它",
+        "postgres 的密码通过 ${HC_DB_PASSWORD} 插值，用 :? 语法强制要求变量存在",
+        "docker compose up -d --build 成功后，docker compose ps 显示两个服务都是 Up 且 postgres 为 healthy",
+        "curl http://127.0.0.1:8080/healthz 返回 code 0 的 JSON",
+        "docker images homecube/svc-homeos 的体积明显小于 golang:1.23-alpine（写进笔记做对照）",
+        "重复执行 docker compose up -d 不会重建任何容器（幂等）",
+        "docker compose down 后再 up，数据仍在（卷没被删）"
+      ],
+      "hint": "docker compose --env-file .env -f deploy/docker-compose.yml config 会把变量插值后的完整 yml 打出来，密码是插值之后的值——调试变量问题时用这个。docker compose logs -f --tail=100 跟日志。exec 进去看环境：docker compose exec svc-homeos env | grep HC_。",
+      "accept_note": ""
+    },
+    "tomorrow": "明天专门攻那个让所有新手抓狂的问题：为什么 svc-homeos 容器里 nc localhost 5432 连不通，但 nc postgres 5432 一秒就通。搞懂容器网络和 localhost 的真实含义，你就真正理解「进程」这个概念了。"
+  },
+  {
+    "id": "s0-d8",
+    "stage": "S0",
+    "day": 8,
+    "week": 2,
+    "title": "端口映射与网络：容器间怎么通信、localhost 的陷阱",
+    "goal": "用 probe-network.sh 亲手验证「容器内用服务名可达、用 localhost 不可达」，搞懂 Compose 网络的 DNS、端口映射的方向性，并把连接配置写成一份可迁移的说明。",
+    "duration": "60 分钟",
+    "why": {
+      "problem": "昨天 compose 起来了，但里面藏着一个自相矛盾的事实：你在宿主机上用 127.0.0.1:5432 能连上数据库，容器里用 127.0.0.1:5432 却连不上——尽管你明明把 5432 发布出来了。这个「时灵时不灵」的现象如果不彻底搞懂，后面每写一个服务都要在这上面绊一次：本地跑得通、容器里连不上；A 服务能连 B、B 连 A 却连不上。",
+      "naive": "常见误解是把容器当成「小型虚拟机里的独立主机」，以为每个容器有自己的 localhost 和完整的网络栈，于是把代码里的数据库地址硬编码成 127.0.0.1，然后发现只在本地 go run 时有效。另一个常见误解是把端口映射当成双向通道：以为容器里能用 localhost 访问宿主机上的一切，于是想去连宿主机上跑的另一个服务却连不上。",
+      "right": "要记住三条。第一，localhost 是「本机的回环地址」，永远指当前这个进程所在的网络命名空间自己。在容器里，「本机」就是那个容器，不是你的 Mac。第二，Compose 为一组服务建了一个共享网络（默认叫 项目名_default），每个容器在这张网络里分到一个私有 IP，并且有一台内置 DNS 服务器，能把服务名解析成对应容器 IP。所以在容器里应该用 postgres:5432。第三，端口映射 -p 是从「宿主机」到「容器」的单向入口，它不属于容器内部网络：容器之间通信完全不需要映射，也不需要绕道宿主机。这个模型一旦建立，「该用哪个地址」就成了查表问题。"
+    },
+    "concepts": [
+      {
+        "name": "容器网络命名空间与三套地址",
+        "explanation": "每个容器有自己的网络命名空间，里面有独立的网卡、独立的 IP、独立的路由表和独立的端口表。所以同一个 5432 在宿主机和容器里可以同时被占用，互不干扰。容器里有一张地址表：**容器自己的 IP**（如 172.18.0.2，Compose 网络内部用来直接通信）、**服务名对应的 DNS 记录**（推荐用这个，稳定且可读）、**localhost / 127.0.0.1**（指向容器自己，除非服务就跑在同一容器里，否则永远不要用它连别的服务）。而在宿主机侧，端口映射让 127.0.0.1:5432 转发到容器的 5432——注意方向：默认只支持从宿主机进入容器。想要从容器访问宿主机上的服务，macOS/Windows 上用宿主机的特殊域名 host.docker.internal，Linux 上要显式加 --add-host=host.docker.internal:host-gateway。这解释了 HomeCube 早期开发的一个经典需求：「容器里的 Go 服务怎么连我 Mac 上跑的 Vite dev server」——答案是 host.docker.internal:5173，而 vite 配置里还要允许 host 访问。",
+        "analogy": "像一栋写字楼的内网：每家公司（容器）有自己的门牌号（容器 IP）、有自己的内线分机（端口），公司名字在楼里的企业名录上能查到（服务名 DNS）。说「打 127.0.0.1」是打给自己公司的前台，永远不可能打到隔壁公司；而从大街上走大门的那个号码（端口映射）是访客通道，只进不出。"
+      },
+      {
+        "name": "端口映射的方向性与 -p 的真正含义",
+        "explanation": "-p 5432:5432 的语义是：在**宿主机的所有网卡**上监听 5432，凡是进来的连接，被 NAT 转交给 Compose 网络里那个容器自己的 5432。它解决的问题是「让宿主机和其他不在这个网络里的进程能访问容器」，而不是「让容器访问外界」。两个推论很重要：第一，容器之间通信不需要任何映射——直接用服务名和容器内端口即可，走的是 Compose 网络内部的直连路由，效率也更高。第二，端口映射占的是宿主机的端口，所以两个项目都要把宿主机的 5432 映射出来就会冲突；解决办法是改宿主侧端口（-p 15432:5432）或改容器内端口（数据库本身就不适合改），这也是为什么生产里常给数据库做限制：只映射到 127.0.0.1 甚至完全不映射，容器间用服务名访问，外部完全不暴露。顺便记住另一种端口：容器内进程的 stdout/stderr 被 docker 收集，用 docker logs 看，这不是网络端口。",
+        "analogy": "像公司总机的外线转分机：-p 就是登记一条「外部打这个号码自动转到某台分机」的规则。分机之间互相打电话不需要总机登记，直接喊名字（服务名）就行。"
+      },
+      {
+        "name": "localhost、127.0.0.1、0.0.0.0 的一次彻底澄清",
+        "explanation": "这三个在 D2 出现过一次，今天必须彻底钉死。127.0.0.1 是 IPv4 回环地址，是一个特殊地址：路由到本机的网络栈且永远不会出网。所以它只对「当前这个进程」有意义——在宿主机进程里它指宿主机，在容器进程里它指容器。0.0.0.0 是「本机所有地址」的通配写法，用在 listen 上表示「接受发往我任何网卡的连接」；用在 connect 上没有任何意义。localhost 是主机名，通常解析到回环地址（macOS 上优先 ::1，Linux 上优先 127.0.0.1），这里有个隐蔽的坑：Go 的 http.ListenAndServe(\"localhost:8080\") 在某些系统上只监听 IPv6 回环，用 IPv4 的 curl 去连会失败，报 connection refused。所以实践纪律有三条：服务端要 listen 127.0.0.1（仅本机）或 0.0.0.0（全网卡，容器里必须用这个）；客户端连 127.0.0.1 而不是 localhost；写连接串时永远写 127.0.0.1。",
+        "analogy": "像「我家」这个词：它相对谁说就指谁的地址。在你家的客厅里说「我家」指你家；在邻居家的客厅里说「我家」还是指你家——地址的含义由说话的人所处的位置决定，跟房子本身无关。"
+      }
+    ],
+    "code": {
+      "lang": "bash",
+      "filename": "scripts/probe-network.sh",
+      "content": "#!/usr/bin/env bash\n# S0 D8：把容器网络的三条规则亲手验证一遍\nset -uo pipefail\n\nC_APP=homecube-svc-homeos\nC_PG=homecube-pg\n\nline() { printf '\\n=== %s ===\\n' \"$1\"; }\n\nline \"0. 前置：确认两个容器都在跑\"\ndocker ps --format 'table {{.Names}}\\t{{.Status}}'\n\nline \"1. 容器各自的 IP（同一张 Compose 网络下，都落在同一个网段）\"\ndocker inspect -f '{{.Name}} -> {{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \"$C_APP\" \"$C_PG\"\n\nline \"2. svc-homeos 容器里解析服务名 postgres（应成功）\"\ndocker exec \"$C_APP\" sh -c 'nslookup postgres 2>/dev/null || getent hosts postgres'\n\nline \"3. 容器内用【服务名】连数据库：期望成功\"\ndocker exec \"$C_APP\" sh -c 'nc -z -w 2 postgres 5432 && echo \"PASS: postgres:5432 可达\" || echo \"FAIL\"'\n\nline \"4. 容器内用 localhost 连数据库：期望失败\"\ndocker exec \"$C_APP\" sh -c 'nc -z -w 2 localhost 5432 && echo \"意外通了（说明理解错了）\" || echo \"PASS(符合预期): 连的是容器自己，这里没人监听 5432\"'\n\nline \"5. 容器内用 127.0.0.1 连数据库：期望失败（和第 4 条是同一件事）\"\ndocker exec \"$C_APP\" sh -c 'nc -z -w 2 127.0.0.1 5432 && echo \"意外通了\" || echo \"PASS(符合预期)\"'\n\nline \"6. 容器内用【容器 IP】连数据库：期望成功（服务名 DNS 失效时的备用方案）\"\nPG_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \"$C_PG\")\ndocker exec \"$C_APP\" sh -c \"nc -z -w 2 ${PG_IP} 5432 && echo 'PASS: ${PG_IP}:5432 可达' || echo 'FAIL'\"\n\nline \"7. 宿主机上用 localhost:5432 连：期望成功（端口映射在工作）\"\nnc -z -w 2 127.0.0.1 5432 && echo \"PASS: 宿主机 -> 容器（端口映射）\" || echo \"FAIL: 端口映射没生效\"\n\nline \"8. 反向：容器里能不能访问宿主机上的东西\"\n# macOS / Windows 有 host.docker.internal 这个特殊名字\ndocker exec \"$C_APP\" sh -c 'nc -z -w 2 host.docker.internal 5432 && echo \"能连上\" || echo \"PASS(符合预期): 端口映射不是双向的\"'\n\nline \"9. 容器里能看到的配置（HC_DB_HOST 应该就是 postgres）\"\ndocker exec \"$C_APP\" env | grep '^HC_' | sort\n\nline \"10. 从宿主机直接读出 compose 里的连接串应该长什么样\"\necho \"宿主机调试用:  postgres://homeos:***@127.0.0.1:${HC_DB_PORT:-5432}/homecube\"\necho \"容器内调试用: postgres://homeos:***@postgres:5432/homecube\"\n",
+      "run": "bash homecube/scripts/probe-network.sh",
+      "expect": "=== 2. svc-homeos 容器里解析服务名 postgres（应成功）===\npostgres        172.19.0.2\n\n=== 3. 容器内用【服务名】连数据库：期望成功 ===\nPASS: postgres:5432 可达\n\n=== 4. 容器内用 localhost 连数据库：期望失败 ===\nPASS(符合预期): 连的是容器自己，这里没人监听 5432\n\n=== 5. 容器内用 127.0.0.1 连数据库：期望失败（和第 4 条是同一件事）===\nPASS(符合预期)\n\n=== 6. 容器内用【容器 IP】连数据库：期望成功（服务名 DNS 失效时的备用方案）===\nPASS: 172.19.0.2:5432 可达\n\n=== 7. 宿主机上用 localhost:5432 连：期望成功（端口映射在工作）===\nPASS: 宿主机 -> 容器（端口映射）\n\n=== 8. 反向：容器里能不能访问宿主机上的东西 ===\nPASS(符合预期): 端口映射不是双向的\n\n=== 9. 容器里能看到的配置（HC_DB_HOST 应该就是 postgres）===\nHC_APP_NAME=homeos\nHC_DB_HOST=postgres\nHC_DB_NAME=homecube\nHC_DB_PORT=5432\nHC_DB_USER=homeos"
+    },
+    "steps": [
+      {
+        "n": 1,
+        "title": "跑脚本，逐条读懂结论",
+        "detail": "先确保 compose 环境在跑（docker compose ps 两个都 Up），再执行脚本。重点看第 3、4 条的对比：同一个容器里，一个通一个不通，差别只是主机名。这是今天唯一的核心事实，值得反复看。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 2,
+        "title": "看 IP 分布，感受共享网络",
+        "detail": "第 1 条会打出两个容器的 IP，形如 172.19.0.2 和 172.19.0.3。这两个地址在同一个网段，说明它们在同一张网络里。再执行 docker network ls 和 docker network inspect homecube_default，看看这张网络上挂着哪些容器。",
+        "time": "10 分钟"
+      },
+      {
+        "n": 3,
+        "title": "把「localhost 是谁」讲给未来的自己",
+        "detail": "在笔记里写清楚这句话：「127.0.0.1 指向的是当前进程所在的那个网络命名空间。在宿主机上跑的网络命名空间里它叫 localhost，在 svc-homeos 容器里它也叫 localhost，但它们是两个完全不同的地址。」再用一句话推导：所以配置里的数据库地址不能硬编码 localhost，它必须能被「谁在跑这段代码」这个信息影响。",
+        "time": "10 分钟"
+      },
+      {
+        "n": 4,
+        "title": "亲手验证「端口映射不是双向的」",
+        "detail": "第 8 条。macOS 上还能进一步验证 host.docker.internal：在宿主机上跑一个简单的监听（比如 nc -l 5173），然后从容器里 nc -z host.docker.internal 5173，会成功——这说明容器能主动访问宿主机，但不是靠端口映射实现的，而是靠宿主机的特殊地址。这是 S6 之后联调前端时会用到的知识。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 5,
+        "title": "写一份连接串速查表",
+        "detail": "在 README 里写三行：宿主机上调试用 postgres://homeos:密码@127.0.0.1:5432/homecube；容器内用 postgres://homeos:密码@postgres:5432/homecube；容器内连宿主机上的服务用 host.docker.internal:端口。以后每个服务联调前先查这张表。",
+        "time": "10 分钟"
+      }
+    ],
+    "pitfalls": [
+      {
+        "wrong": "把数据库地址硬编码成 127.0.0.1，理由是「我在本机开发过」。",
+        "right": "地址必须来自配置：本地默认 127.0.0.1，容器里由 compose 注入 postgres。",
+        "why": "代码不该关心「自己在哪跑」。正确做法是 D4 那样：HC_DB_HOST 走 getenvOr 取值，本地 go run 时默认 127.0.0.1，compose 里通过 environment 注入 postgres。这样同一份二进制在任何环境都连对了地方。硬编码的地址在某个环境必然错，而报错信息（connection refused）完全看不出根因。"
+      },
+      {
+        "wrong": "以为容器连数据库要经过端口映射，所以写 postgres://homeos:xxx@127.0.0.1:15432。",
+        "right": "容器内用服务名 + 容器内端口：postgres:5432，不带宿主机端口。",
+        "why": "端口映射是宿主机入口，容器之间走的是 Compose 网络内部的直连。写成 127.0.0.1:15432 会同时错两处：地址指错了（自己），端口也不对（那是宿主机的）。判断口诀：如果请求的终点在另一个容器里，就用服务名 + 那个服务自己的端口。"
+      },
+      {
+        "wrong": "在容器里用 localhost 访问宿主机上跑的前端 dev server，连不上后改成 0.0.0.0 也不行。",
+        "right": "容器里用 host.docker.internal:5173；同时 vite 配置里把 server.host 设为 true 或 host: '0.0.0.0'，并检查 allowedHosts。",
+        "why": "这是两个独立问题叠在一起。第一，容器里的 localhost 是容器自己，要访问宿主机得用宿主机在容器视角下的地址（macOS 是 host.docker.internal，Linux 要 --add-host 映射）。第二，宿主机上的 vite 默认只监听 127.0.0.1，也就是只接受本机来的请求，需要显式让它监听所有网卡。这是「从容器访问宿主机进程」最经典的双重陷阱。"
+      },
+      {
+        "wrong": "在 macOS 上 go run 一个只 listen localhost 的服务，然后 curl 127.0.0.1 连不上。",
+        "right": "listen 用 127.0.0.1:8080（明确的 IPv4），客户端也用 127.0.0.1。",
+        "why": "localhost 在 macOS 上优先解析成 IPv6 回环 ::1。如果服务 listen 的是 ::1 而客户端连的是 IPv4 的 127.0.0.1，两者不是同一个地址，就会 connection refused。这是「明明监听成功了却连不上」的经典原因，容器里监听 0.0.0.0 是因为它同时覆盖 IPv4 和 IPv6 的本地地址。"
+      }
+    ],
+    "quiz": [
+      {
+        "q": "在 svc-homeos 容器内执行 nc -z postgres 5432 成功，nc -z localhost 5432 失败。根本原因是？",
+        "options": [
+          "postgres 容器没启动",
+          "5432 端口只映射到了宿主机，容器内网络用不了",
+          "127.0.0.1 在容器内指的是 svc-homeos 容器自己，而 PostgreSQL 跑在另一个容器里；postgres 是 Compose 网络内置 DNS 提供的服务名",
+          "容器内不能用 DNS 解析"
+        ],
+        "answer": 2,
+        "explain": "每个容器有独立的网络命名空间，回环地址属于各自的那个命名空间。容器之间的通信通过 Compose 创建的共享网络完成，服务名由内置 DNS 解析成容器 IP。端口映射只负责让宿主机进入容器，不参与容器间通信。注意选项 B 的说法是错的——端口映射与容器内网络是两套机制。"
+      },
+      {
+        "q": "为什么要把 -p 5432:5432 这条映射在生产环境去掉或者限制到 127.0.0.1？",
+        "options": [
+          "因为映射会让数据库变慢",
+          "因为容器之间靠服务名通信根本用不到映射，而这个入口会把数据库暴露给网络上任何能到达这台机器的人",
+          "因为生产环境不支持端口映射",
+          "因为 0.0.0.0 会导致 DNS 解析失败"
+        ],
+        "answer": 1,
+        "explain": "端口映射的默认监听地址是 0.0.0.0，也就是宿主机所有网卡——等于在防火墙上开了一个洞，让公网能直连数据库。容器之间用服务名通信完全不需要它。正确做法：数据库不发布端口，或者只发布到 127.0.0.1（-p 127.0.0.1:5432:5432）供本机工具连接。真正需要暴露的只有对外提供 HTTP 接口的服务。"
+      },
+      {
+        "q": "为什么容器里的服务必须 listen 0.0.0.0 而不是 127.0.0.1？",
+        "options": [
+          "因为 127.0.0.1 在容器里被 Docker 改写成了别的地址",
+          "因为 listen 在 127.0.0.1 表示只接受「容器自己」发来的连接，而外部的流量是从容器网卡（另一个地址）进来的，会被拒绝",
+          "因为 0.0.0.0 能让 DNS 解析更快",
+          "两者完全等价"
+        ],
+        "answer": 1,
+        "explain": "listen 地址决定绑定到哪个本地网卡上。绑 127.0.0.1 只处理发往回环地址的报文；宿主机端口映射进来的流量目标地址是容器的网卡地址（如 172.19.0.3），这些报文到不了回环接口，于是表现为「端口映射配了但访问超时/拒绝」。绑定 0.0.0.0 表示绑定全部本地地址，外部流量才能进来。"
+      },
+      {
+        "q": "本地开发时 go run 一个监听 localhost:8080 的服务，curl 127.0.0.1:8080 却连不上。最可能的原因和修法是？",
+        "options": [
+          "端口被占 —— 换端口",
+          "macOS 上 localhost 解析成 IPv6 回环 ::1，服务只监听了 IPv4 的 127.0.0.1，两者是不同地址 —— 服务端 listen 改成 127.0.0.1:8080",
+          "curl 需要加 https 参数",
+          "必须用浏览器而不是 curl"
+        ],
+        "answer": 1,
+        "explain": "这是 IPv4/IPv6 回环的经典错配。localhost 是主机名，解析顺序由系统决定（macOS 优先 ::1，Linux 通常优先 127.0.0.1）。要消除这种不确定性，纪律是：服务端 listen 时写明确的 IP（127.0.0.1 或 0.0.0.0），客户端 connect 时也写明确的 IP，永远不写 localhost。"
+      }
+    ],
+    "task": {
+      "title": "验证容器网络三条规则并沉淀速查表",
+      "acceptance": [
+        "scripts/probe-network.sh 能完整跑完，10 段都有输出",
+        "容器内 nc postgres 5432 成功、nc localhost 5432 失败、nc 127.0.0.1:5432 失败，三条结论都与卡片一致",
+        "容器内 nc <容器IP> 5432 成功，说明你理解服务名背后是 DNS",
+        "宿主机上 nc 127.0.0.1 5432 成功，说明端口映射单向可用",
+        "docker inspect 能打出两个容器的 IP 且在同一网段",
+        "README 里有三行连接串速查表（宿主机 / 容器内 / 容器连宿主机）",
+        "你能不看资料回答：「为什么在容器里 localhost 连不到数据库」"
+      ],
+      "hint": "如果镜像里没有 nc，用 docker exec -it homecube-svc-homeos sh 检查；alpine 的包里 nc 在 busybox 里通常自带。若确实没有，可以用 sh -c 'echo > /dev/tcp/host/port' 不行（alpine 的 sh 是 ash 不支持 /dev/tcp），那就临时 docker run --rm --network homecube_default alpine sh -c 'nc -z postgres 5432 && echo ok'——这是个好办法：借一个带 nc 的临时容器加入同一张网络。",
+      "accept_note": ""
+    },
+    "tomorrow": "明天解决一个你亲手制造过的问题：容器删了数据没了。卷（volume）到底是什么、它为什么能比容器活得更久，以及备份这件事和持久化到底是不是一回事。数据库是整个项目最容易丢的东西，值得专门一天。"
+  },
+  {
+    "id": "s0-d9",
+    "stage": "S0",
+    "day": 9,
+    "week": 2,
+    "title": "数据持久化：容器删了数据没了、volume 是什么",
+    "goal": "用 setup-volume.sh 亲手验证「删容器数据还在、删卷数据才没」，理解卷与容器的生命周期关系，并建立 pg_dump 备份与恢复的完整流程。",
+    "duration": "75 分钟",
+    "why": {
+      "problem": "D3 你亲眼见过数据蒸发。那一刻的困惑会一直跟着你：数据到底存在哪？容器里那个 /var/lib/postgresql/data 目录是真实的吗？如果我把容器删了、镜像也删了、机器重启了，数据还在吗？搞不清这个问题，你在任何一台新机器上都可能「重装一遍环境」，而且永远不敢往库里灌重要的东西。",
+      "naive": "两种常见错误做法。一是以为「数据在容器里，容器在就没事」——不做任何持久化，本地开发一重启就丢库，于是每次都要重跑初始化 SQL。二是以为「用 -v 挂载就够了」然后在清理时习惯性地执行 docker rm -v 或 docker compose down -v，结果一样丢数据。还有一个更隐蔽的误区：把「数据在」当成「数据安全」——卷里的数据从来没有备份过，某次磁盘出问题就全完了。",
+      "right": "核心是把两件事分开：**容器的生命周期**（docker run 起来，docker rm 消失）和**数据的生命周期**（应该比容器长得多）。卷（volume）就是为这件事设计的：它是宿主机上一个独立的、被 Docker 管理的存储区域，有自己的名字和路径，容器只是「挂载」它。你删容器，卷还在，重新挂上去数据就回来了；你删卷，数据才真的没了。这条边界你必须能一字不差地说出来，因为以后每次 docker compose down 都会让你做这个选择。第二个重点是备份：卷保证「容器死了数据不死」，pg_dump 保证「机器死了数据还在」。两者不是一回事，都要做。"
+    },
+    "concepts": [
+      {
+        "name": "卷（volume）与绑定挂载（bind mount）",
+        "explanation": "Docker 有两种把宿主机目录送进容器的方式。绑定挂载是 -v /宿主机/绝对路径:/容器/路径：你指定宿主机上具体哪个目录，Docker 原样挂进去，你用编辑器能直接看到里面的文件。适合开发时把源码挂进容器、改代码立刻生效；缺点是路径依赖宿主机，跨机器不可移植，而且 macOS 上因为文件系统是 virtiofs 共享，性能明显低于 Linux 原生。卷是 docker volume create 出来的：Docker 自己决定宿主机路径（在 /var/lib/docker/volumes/卷名/_data，Linux 上），挂载到容器时用卷名。它是**可移植的**——compose 文件里只写卷名，同一份定义在任何机器上都成立。生产的数据必须用卷或云盘的块存储，不能用绑定挂载（宿主机路径可能不存在、可能没权限、可能被清理脚本扫掉）。判断标准：这是「代码」还是「数据」？代码用绑定挂载便于编辑，数据用卷便于迁移和备份。",
+        "analogy": "像「把自家文件夹挂在书架上」（绑定挂载，你指定物理位置）和「租一个储物间」（卷，房东决定位置，你只知道门牌号）。租来的储物间在东西搬走后还在，房东不会因为你不用了就收走。"
+      },
+      {
+        "name": "生命周期的正确心智模型",
+        "explanation": "把三层对象理清楚，它们的生死互不相同。**镜像**：由 Dockerfile 构建，可分享、跨机器、不随容器变化而改变，容器删了它还在。**容器**：镜像的运行实例，生命周期极短，随时可以被 rm -f。**卷**：宿主机上的独立存储，只被删除（比如 docker volume rm 或 compose down -v）时才消失；没有任何容器引用它时它也不自动消失——这就是「孤儿卷」，docker volume prune 能清掉它们，这也是误删的来源之一。所以正确的判断链是三个问题：我要删的是镜像（安全）、容器（数据靠卷保住）、还是卷（数据真没了）？生产环境的清理脚本绝对不能带 -v。另一层认知：把卷「绑」到另一个容器上是完全正常的——这就是数据库容器重建的标准做法，PostgreSQL 官方镜像第一次启动时初始化数据目录，之后每次启动都复用已初始化的目录，这个「初始化检查」逻辑正是依赖数据目录是否已存在。",
+        "analogy": "像搬家：家具（数据）在固定的仓库（卷）里，你只是换了一辆货车（容器）来运。仓库不租、也没人通知你，家具就一直安全——除非有人专门去拆仓库。"
+      },
+      {
+        "name": "pg_dump：逻辑备份与恢复演练",
+        "explanation": "卷让数据在容器层面安全，但机器磁盘坏了、卷文件损坏、有人误删了卷，数据照样没。所以还要备份。PostgreSQL 提供两种导出：pg_dump 是**逻辑备份**，导出成 SQL 语句（文本格式）或自定义二进制格式，恢复时可以在一个空库上重放这些语句；pg_dumpall 还会导出集群级的角色（用户和权限）。逻辑备份的优点是可读、可跨大版本、可选择性恢复（只导某几张表）；缺点是大库慢、恢复要重放全部数据。另一个选择是物理备份（文件系统级快照），快但脆弱。日常做法是：每天 pg_dump 一次到仓库外的目录，加个日期或者保留最近 7 份。真正的问题不是「备份了没有」，而是「恢复演练过没有」——备份文件没验证过等于没有备份。今天的脚本会导出并立刻验证 SQL 内容，明天你必须完整走过一次「删库 → 从备份恢复 → 数据对得上」的全过程。",
+        "analogy": "像照片备份：云盘同步不等于备份——手机丢了同步盘里的照片可能还没上传完。真正的备份是你**从备份里恢复过一次**，确认东西真的在。"
+      }
+    ],
+    "code": {
+      "lang": "bash",
+      "filename": "scripts/setup-volume.sh",
+      "content": "#!/usr/bin/env bash\n# S0 D9：证明「删容器数据还在，删卷数据才没」\nset -euo pipefail\n\nNAME=homecube-pg\nVOL=homecube-pgdata          # 具名卷，独立于容器存在\nDB_U=homeos\nDB_D=homecube\nBACKUP_DIR=homecube/backups\n\npsql_do() { docker exec -i \"$NAME\" psql -v ON_ERROR_STOP=1 -U \"$DB_U\" -d \"$DB_D\" \"$@\"; }\n\necho \"=== 0. 清理：连卷一起删，从最干净的状态开始 ===\"\ndocker rm -f \"$NAME\" >/dev/null 2>&1 || true\ndocker volume rm \"$VOL\"  >/dev/null 2>&1 || true\n\necho \"=== 1. 显式创建具名卷（compose 里会自动做，这里显式一次让你看到）===\"\ndocker volume create \"$VOL\"\ndocker volume ls | grep homecube\n\necho \"=== 2. 用这个卷起容器（关键：-v 卷名:容器内数据目录）===\"\ndocker run -d --name \"$NAME\" \\\n  -e POSTGRES_USER=\"$DB_U\" -e POSTGRES_PASSWORD=homecube -e POSTGRES_DB=\"$DB_D\" \\\n  -p 5432:5432 \\\n  -v \"${VOL}:/var/lib/postgresql/data\" \\\n  postgres:16-alpine >/dev/null\n\nattempt=0\nuntil docker exec \"$NAME\" pg_isready -U \"$DB_U\" -d \"$DB_D\" >/dev/null 2>&1; do\n  attempt=$((attempt+1)); [ \"$attempt\" -gt 40 ] && { docker logs --tail 20 \"$NAME\"; exit 1; }\n  sleep 0.5\ndone\necho \"就绪\"\n\necho \"=== 3. 灌一点数据：建表 + 插三行 ===\"\npsql_do -c \"create table if not exists note(id serial primary key, body text, created_at timestamptz default now());\"\npsql_do -c \"insert into note(body) values ('第一条：卷里的数据'), ('第二条'), ('第三条') returning id, body;\"\n\necho \"=== 4. 统计行数，作为对照基准 ===\"\npsql_do -t -c \"select count(*) from note;\"\n\necho \"=== 5. 备份（卷保证容器死了数据不死，pg_dump 保证机器死了数据还在）===\"\nmkdir -p \"$BACKUP_DIR\"\nSTAMP=$(date +%Y%m%d-%H%M%S)\ndocker exec \"$NAME\" pg_dump -U \"$DB_U\" -d \"$DB_D\" > \"$BACKUP_DIR/homecube-${STAMP}.sql\"\nls -lh \"$BACKUP_DIR\"\necho \"--- 备份文件前 20 行，确认里面有 CREATE TABLE 和那三条 INSERT ---\"\nhead -20 \"$BACKUP_DIR/homecube-${STAMP}.sql\" | grep -E 'CREATE TABLE|INSERT|COPY'\ngrep -c '卷里的数据' \"$BACKUP_DIR/homecube-${STAMP}.sql\"\n\necho \"=== 6. 关键实验：删掉容器（不删卷），重建 ===\"\ndocker rm -f \"$NAME\"\necho \"容器已删。此时卷还在：\"\ndocker volume ls | grep homecube\n\ndocker run -d --name \"$NAME\" \\\n  -e POSTGRES_USER=\"$DB_U\" -e POSTGRES_PASSWORD=homecube -e POSTGRES_DB=\"$DB_D\" \\\n  -p 5432:5432 \\\n  -v \"${VOL}:/var/lib/postgresql/data\" \\\n  postgres:16-alpine >/dev/null\n\nattempt=0\nuntil docker exec \"$NAME\" pg_isready -U \"$DB_U\" -d \"$DB_D\" >/dev/null 2>&1; do\n  attempt=$((attempt+1)); [ \"$attempt\" -gt 40 ] && { docker logs --tail 20 \"$NAME\"; exit 1; }\n  sleep 0.5\ndone\n\necho \"=== 7. 重建后数据还在吗（这是你要亲眼看到的结论）===\"\npsql_do -c \"select id, body from note order by id;\"\npsql_do -t -c \"select count(*) from note;\"\n\necho \"=== 8. 卷到底挂在宿主机哪里 ===\"\ndocker inspect \"$NAME\" --format '{{range .Mounts}}{{.Type}}  卷名={{.Name}}  宿主机路径={{.Source}}  容器内={{.Destination}}{{println}}{{end}}'\ndocker volume inspect \"$VOL\"\n\necho \"=== 9. 反向实验（可选，会删数据）：docker volume rm 之后数据就没了 ===\"\necho \"先别执行。真正想看的时候，Ctrl-C 退出后手动跑：\"\necho \"  docker rm -f $NAME && docker volume rm $VOL\"\necho \"  然后再执行本脚本第 2 步，新建出来的库是空的。\"\n",
+      "run": "bash homecube/scripts/setup-volume.sh",
+      "expect": "=== 1. 显式创建具名卷（compose 里会自动做，这里显式一次让你看到）===\nhomecube-pgdata\n\n=== 3. 灌一点数据：建表 + 插三行 ===\nCREATE TABLE\nINSERT 0 3\n id |        body\n----+-------------------\n  1 | 第一条：卷里的数据\n  2 | 第二条\n  3 | 第三条\n(3 rows)\n\n=== 5. 备份（卷保证容器死了数据不死，pg_dump 保证机器死了数据还在）===\n-rw-r--r--  1 xuesh  staff  1.2K15 Oct 21:48 backups/homecube-20261015-214813.sql\n3        ← grep -c 数到 3 处包含「卷里的数据」的语句，备份是真的\n\n=== 6. 关键实验：删掉容器（不删卷），重建 ===\n容器已删。此时卷还在：\nhomecube-pgdata\n\n=== 7. 重建后数据还在吗（这是你要亲眼看到的结论）===\n id |        body\n----+-------------------\n  1 | 第一条：卷里的数据\n  2 | 第二条\n  3 | 第三条\n(3 rows)\n3\n                 ↑ 和第 4 步的数字一模一样：容器换了一个，数据一个字节都没丢\n\n=== 8. 卷到底挂在宿主机哪里 ===\nvolume  卷名=homecube-pgdata  宿主机路径=/var/lib/docker/volumes/homecube-pgdata/_data  容器内=/var/lib/postgresql/data"
+    },
+    "steps": [
+      {
+        "n": 1,
+        "title": "跑脚本，重点看第 4 步和第 7 步",
+        "detail": "第 4 步记下 count 的数字（应该是 3），第 7 步再看一次（还应该是 3）。这两个数字相同，就是持久化成立的全部证据。第 5 步的 grep -c 也很重要：它证明备份文件里真的有那三条数据，而不是一个空文件。",
+        "time": "25 分钟"
+      },
+      {
+        "n": 2,
+        "title": "做一次反向实验",
+        "detail": "手动执行 docker rm -f homecube-pg && docker volume rm homecube-pgdata，然后重跑脚本的第 2 步（新起容器），进去 psql 一看：note 表没了，因为初始化脚本重新跑了一遍。亲眼看完「删卷 = 数据没了」，这道题就真的懂了。做完记得跑一次完整脚本恢复环境。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 3,
+        "title": "演练一次完整的恢复流程",
+        "detail": "这是今天最重要的一步，也是「备份到底有没有用」的唯一答案。步骤：① 删库重建（docker volume rm 后重起）；② 选一个备份文件；③ docker exec -i homecube-pg psql -U homeos -d homecube < 备份.sql；④ select * from note 确认三条数据都在。恢复过程和备份过程一样重要，只备份不恢复等于没有备份。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 4,
+        "title": "整理 compose 里的卷配置",
+        "detail": "确认 deploy/docker-compose.yml 里的 volumes: pgdata:/var/lib/postgresql/data 还在。补上顶层 volumes: pgdata: 声明（没有这行 compose 会报错）。注意卷名默认会带项目名前缀（homecube_pgdata），如果想要固定用 homecube-pgdata，要显式写 name: homecube-pgdata。",
+        "time": "10 分钟"
+      },
+      {
+        "n": 5,
+        "title": "把备份变成一个习惯",
+        "detail": "写一个 backups/backup.sh：找出最新的 sql 备份然后执行 pg_dump。写一条规则贴在你每天收工前：只要往库里灌了真实数据，立刻备份一次。这个动作的成本是 1 秒，不做的代价是若干小时。",
+        "time": "10 分钟"
+      }
+    ],
+    "pitfalls": [
+      {
+        "wrong": "清理开发环境时习惯性敲 docker compose down -v。",
+        "right": "只用 docker compose down；确实要清数据时，先 docker compose stop 再单独确认卷名。",
+        "why": "-v 会删掉具名卷，本地库里的所有数据立刻消失。你可能只是想重启一下服务，却在敲一个「格式化磁盘」的命令。养成习惯：清理时先想清楚要动的是镜像、容器还是卷——它们的风险等级完全不同。真正需要清库的场景很少，而且往往是「我刚才搞坏了 schema 想重来」，这时候其实应该新建一个空卷而不是删掉重来。"
+      },
+      {
+        "wrong": "生产环境用 -v /home/xuesh/data/pgdata:/var/lib/postgresql/data 这种绑定挂载存数据。",
+        "right": "用卷、云盘块存储或专门的数据库托管服务，不依赖宿主机具体路径。",
+        "why": "绑定挂载把数据和一台具体的机器、一条具体的路径绑死：换机器路径不存在、跑在非 root 用户下可能没写权限、宿主机上任何清理磁盘的脚本都可能把「看起来没用的大目录」删掉。卷由 Docker 管理、有明确的权限模型、跨机器可移植。数据是整个项目最难重建的东西（后面 S3 建的表和迁移都没法靠记忆复现），它值得最好的存储抽象。"
+      },
+      {
+        "wrong": "备份做完了就放心了，从没试过恢复。",
+        "right": "每周至少演练一次完整恢复：删库 → 从备份恢复 → 校验行数。",
+        "why": "备份文件可能为空、可能缺关键语句、可能因为版本不兼容恢复失败、可能你恢复时连错了库。这些问题只有真恢复过一次才会暴露。类比：写了单元测试但从没运行过，等于没写。恢复演练的成本是十分钟，而它检验的是「你所有数据的安全」这件事。"
+      },
+      {
+        "wrong": "以为卷里的数据是「实时双份」的，拔掉电源也不会丢。",
+        "right": "卷只是把数据放在宿主机磁盘上，不是 RAID、不跨机器、不自动备份。硬件坏了就是没了。",
+        "why": "卷解决的是「容器生命周期」问题，不是「数据安全」问题。真正的持久化存储要跨故障域：多副本、云盘快照、定期异地备份。个人项目里，把备份文件放到仓库外的目录（比如 ~/backups 或者对象存储），并配一个简单的定时任务（cron 或 launchd），就是一个合格的最简方案。"
+      }
+    ],
+    "quiz": [
+      {
+        "q": "docker rm -f homecube-pg 之后数据还在吗？docker volume rm homecube-pgdata 之后呢？",
+        "options": [
+          "两个都还在，卷会自动重建",
+          "第一个还在，第二个数据才真的没了",
+          "第一个数据就没了（因为容器是数据的载体）",
+          "两个都没了，卷只是命名空间"
+        ],
+        "answer": 1,
+        "explain": "卷是独立于容器存在的存储区域，容器只是挂载它。删容器，卷还在，重新挂载数据就回来了。删卷，数据才真的从磁盘上移除。这个区分是所有容器运维决策的基础——它决定了 docker rm 和 docker compose down 的风险等级完全���同（down 不带 -v 时是安全的）。"
+      },
+      {
+        "q": "卷和绑定挂载（-v /宿主机路径:/容器路径）在什么场景下选哪个？",
+        "options": [
+          "开发时用绑定挂载（改代码立刻生效、编辑器能直接看到），生产数据用卷（可移植、有明确权限、不会被宿主机脚本误删）",
+          "都用绑定挂载，因为它更灵活",
+          "都用卷，因为它更快",
+          "看哪个命令短就用哪个"
+        ],
+        "answer": 0,
+        "explain": "判断标准是「这是代码还是数据」。代码：绑定挂载给你实时编辑和本机 IDE 的补全能力，代价是跨机器不可移植。数据：卷由 Docker 管理，不依赖宿主机路径，权限清晰，还能被备份工具和备份软件识别。绑定挂载还有一个隐性成本——macOS 上 Docker 通过 virtiofs 共享目录，IO 性能明显低于 Linux 原生，热重编译会慢。"
+      },
+      {
+        "q": "关于备份，下面哪句是对的？",
+        "options": [
+          "用了卷就不需要备份了",
+          "卷保证「容器死了数据不死」，pg_dump 备份保证「机器死了数据还在」，两者解决不同问题，都需要",
+          "pg_dump 是物理备份，快且完整",
+          "备份文件只要不删就一定可恢复"
+        ],
+        "answer": 1,
+        "explain": "卷是同一个磁盘上的一个目录，磁盘损坏、误删、宿主机被重装都会一起完。pg_dump 导出的是逻辑数据，放到容器之外的地方，是跨故障域的真正备份。至于 pg_dump：它是逻辑备份（导出 SQL/自定义格式），优点是可读、可跨大版本、可选择性恢复，缺点是大库恢复慢。没验证过的备份文件不能算备份——恢复演练是唯一证明。"
+      },
+      {
+        "q": "PostgreSQL 官方镜像在每次启动时会检查数据目录是否已初始化，这个机制依赖什么？",
+        "options": [
+          "依赖容器 ID",
+          "依赖数据目录里是否已存在初始化产生的文件——这正是卷让数据跨容器存活能工作的原因",
+          "依赖镜像的哈希值",
+          "依赖环境变量 POSTGRES_PASSWORD 是否变化"
+        ],
+        "answer": 1,
+        "explain": "镜像的入口脚本启动时检查 /var/lib/postgresql/data 是否已有内容：空的就执行 initdb 建集群并创建 POSTGRES_USER 指定的用户和库；非空就跳过，直接启动已有的集群。所以只要把数据目录放在卷里，换个容器实例挂上去，它就会识别出「这是已有的库」并跳过初始化。这是卷持久化能透明生效的底层机制。"
+      }
+    ],
+    "task": {
+      "title": "建立可验证的数据持久化与备份",
+      "acceptance": [
+        "scripts/setup-volume.sh 完整跑通，第 4 步和第 7 步的 count(*) 都是 3",
+        "具名卷 homecube-pgdata 存在（docker volume ls 能看到），并确认它挂载到 /var/lib/postgresql/data",
+        "你亲手做过反向实验：docker volume rm 之后重建容器，note 表消失（数据确实随卷一起没了）",
+        "backups/ 目录下有一个带时间戳的 .sql 备份，grep 能数出包含测试数据的三条语句",
+        "你完成过一次完整恢复：删库 → 从备份恢复 → 确认三条数据都在",
+        "deploy/docker-compose.yml 里的 postgres 用了具名卷，且顶层有 volumes 声明",
+        "你能一句话回答：「docker compose down 和 docker compose down -v 的区别是什么，为什么后者危险」"
+      ],
+      "hint": "恢复命令：docker exec -i homecube-pg psql -v ON_ERROR_STOP=1 -U homeos -d homecube < backups/xxx.sql。用 -v ON_ERROR_STOP=1 让 SQL 中途出错立刻停下来，否则 psql 会跳过错误继续执行，你会误以为恢复成功了。检查容器里数据目录是否为空：docker exec homecube-pg ls -la /var/lib/postgresql/data | head。",
+      "accept_note": ""
+    },
+    "tomorrow": "明天把前面所有敲来敲去的命令收敛成 Makefile。十几条命令里你每天真正要敲的只有三四条，剩下的都该藏起来。Makefile 的语法有点反直觉，但只要记住「命令行开头必须是 TAB」，它就是最省事的项目说明书。"
+  },
+  {
+    "id": "s0-d10",
+    "stage": "S0",
+    "day": 10,
+    "week": 2,
+    "title": "Makefile：把长命令收敛成 make up",
+    "goal": "写出一份带 8 个以上 .PHONY 目标的 Makefile，把日常开发命令收敛成 make up / make logs / make test，并理解 Make 的依赖与命令前缀规则。",
+    "duration": "60 分钟",
+    "why": {
+      "problem": "数一下你到现在敲过的长命令：go run ./lab/s0/d04、docker compose --env-file .env -f deploy/docker-compose.yml logs -f svc-homeos、docker exec -it homecube-pg psql -U homeos -d homecube。每次都要拼参数，敲错一个字母就白等半分钟。三个月后你还会记不住带哪些参数，而这个项目里会一直新增命令，人脑记不住 30 条带参数的长命令。",
+      "naive": "常见做法有两个问题。一是把长命令写进 README，靠自己复制粘贴——问题是你还得跳到另一个文件去复制，而且参数一旦和实际不符（改了端口忘了改文档）就变成误导。二是用 shell 别名（alias dc='docker compose ...'）——问题是对话里的新终端不生效、shell 通配符和别名的展开规则容易出错，而且别名不能带参数。",
+      "right": "Makefile 是项目自带的一份「命令说明书 + 脚本」，而且它比 README 好的地方在于**可执行**：文档会过期，脚本不会——命令写错了一执行就报错，而不是让你带着错误的认知排查半小时。它的思想来自 Unix 的 make：一个目标（target）依赖若干前置（prerequisites），满足条件就执行对应命令。有了它，日常开发的口令就四个：make up 起环境、make logs 看日志、make test 跑测试、make down 收工。剩下的 ps / pgshell / build / web / help 是逃生舱口。关键纪律只有两条：命令行开头必须是 TAB；目标名要和可能存在的文件名不冲突，所以要写 .PHONY。"
+    },
+    "concepts": [
+      {
+        "name": "Make 的工作模型：依赖、时间戳、重跑",
+        "explanation": "Make 的逻辑来自 Unix 的传统：每个目标是一个文件（或者用 .PHONY 声明的伪目标），它依赖若干前置文件；如果目标比所有前置都旧，就重新执行命令来更新它。这套设计原本是为了 C 编译——.o 比 .c 旧就重编。但用在开发命令上时，时间戳比较往往没有意义，所以需要一个方式告诉 make「这个目标不是文件，别管它新不新，每次都执行」——就是 .PHONY。理解到这层，Make 就不神秘了：它是一个「判断该做什么，然后执行」的调度器，还有一个更实用的特性：它按依赖图决定执行顺序，并且**默认串行执行**。串行有个好处：前一条命令失败（返回非 0）时 make 立刻停止，不会继续执行后面的命令——这正是脚本最需要的行为，靠 `set -e` 才能做到，而 make 是内建的。",
+        "analogy": "像餐厅的点单流程：服务员（make）看着你的单子（目标），检查后厨是否已经备好料（依赖），没备好就先备料，都好了就出餐（执行命令）。你不需要关心它怎么判断，只需要把单子写清楚。"
+      },
+      {
+        "name": "TAB、.PHONY 与变量赋值",
+        "explanation": "三个最容易踩的点。第一，命令行开头必须是**硬 TAB**，不是空格。用空格会报 missing separator——因为 Makefile 靠行首的 TAB 来区分「命令」和「依赖声明」。如果你的编辑器把 TAB 变成空格（很常见），要么在编辑器里配置，要么在命令行输入 `printf 'up:\\n\\t...\\n' > Makefile`。第二，.PHONY 是必须的：如果有个目标叫 build，而目录里真的存在一个 build 文件（或者你 mkdir build 造了个目录），make 会认为目标已经是最新的，什么都不做，输出 up to date。所以所有非文件目标都要写进 .PHONY。另外把 .PHONY 写成一个整体（`.PHONY: help up down` 一行多个）也是允许的。第三，变量赋值：`COMPOSE := docker compose -f deploy/docker-compose.yml` 是立即展开（:=），后面改了这个变量也不会影响它；用 `=` 是延迟展开，改了变量所有用到的地方都跟着变。:= 更常用，因为拼长命令时你想要确定的字符串。变量在命令行里用 $(NAME) 引用。",
+        "analogy": "像写 YAML 的缩进规则：看着只是排版问题，但格式错了整个文件读不出来。Makefile 里 TAB 就是那个缩进。"
+      },
+      {
+        "name": "@ 前缀与 - 前缀：控制输出与忽略错误",
+        "explanation": "两个前缀能让 Makefile 从「满屏刷字」变成「只说你想说的」。命令行前面加 @ 表示**不打印这条命令本身**再执行——对 cd、mkdir 这类显然的命令很有用，让输出聚焦在真正的结果上。加 -（减号）表示**忽略这条命令的失败**，即使返回非 0 make 也继续往下走。这个能力要谨慎用：忽略错误适合「清理」类命令（比如 docker rm 常常因为容器不存在而失败），不适合构建或测试。常见组合是 make clean 用 -，make test 不用。此外 make -n 是 dry run：只打印命令不执行，相当于先预览一遍要做什么，这是理解别人写的 Makefile 最安全的方式。",
+        "analogy": "像播报音量：@ 是把麦克风静音只做动作，- 是把警报器关掉让它继续走。"
+      }
+    ],
+    "code": {
+      "lang": "text",
+      "filename": "Makefile",
+      "content": "# HomeCube Makefile\n# 命令行开头必须是 TAB（不是空格），否则报 missing separator\n# 常用：make help / make up / make logs / make test / make down\n\nSHELL := /bin/bash\n.DEFAULT_GOAL := help\nCOMPOSE := docker compose --env-file .env -f deploy/docker-compose.yml\nGO      := go\nPG_NAME := homecube-pg\nPG_USER := homeos\nPG_DB   := homecube\n\n# 所有非文件目标都必须是 .PHONY，否则遇到同名文件/目录时会判定为「已是最新」\n.PHONY: help up down logs ps pgshell build test web fmt vet clean backup\n\nhelp: ## 显示这份帮助\n\t@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \\\n\t\t| awk 'BEGIN {FS = \":.*?## \"}; {printf \"  \\033[36m%-10s\\033[0m %s\\n\", $$1, $$2}'\n\nup: ## 起全套环境（postgres + svc-homeos），带健康等待\n\t$(COMPOSE) up -d --build\n\t@$(MAKE) --no-print-directory ps\n\ndown: ## 停掉全套环境，保留数据卷（注意：不要加 -v）\n\t$(COMPOSE) down\n\nlogs: ## 跟踪两个服务的日志\n\t$(COMPOSE) logs -f --tail=100\n\nps: ## 查看容器状态与端口映射\n\t@$(COMPOSE) ps\n\npgshell: ## 进 postgres 的 psql 交互终端\n\t@$(COMPOSE) exec postgres psql -U $(PG_USER) -d $(PG_DB)\n\nbuild: ## 编译所有 Go 包到 bin/\n\t@mkdir -p bin\n\t$(GO) build -o bin/svc-homeos ./cmd/svc-homeos\n\t@echo \"产物: bin/svc-homeos\"\n\ntest: ## 跑全部 Go 测试（带竞态检测）\n\t$(GO) test ./... -count=1\n\nvet: ## 静态检查\n\t$(GO) vet ./...\n\nfmt: ## 格式化所有 Go 源码\n\t$(GO) fmt ./...\n\nweb: ## 起前端 dev server\n\t@cd web && npm run dev\n\nbackup: ## 把数据库导出到 backups/\n\t@mkdir -p backups\n\t@docker exec $(PG_NAME) pg_dump -U $(PG_USER) -d $(PG_DB) > backups/homecube-$$(date +%Y%m%d-%H%M%S).sql\n\t@ls -lh backups | tail -3\n\nclean: ## 清理构建产物与 Go 测试缓存（不碰数据库）\n\t@rm -rf bin\n\t@$(GO) clean -testcache\n\t@echo \"已清理 bin/ 与测试缓存；数据库未动\"\n",
+      "run": "cd homecube && make help && make ps",
+      "expect": "$ make help\n  help       显示这份帮助\n  up         起全套环境（postgres + svc-homeos），带健康等待\n  down       停掉全套环境，保留数据卷（注意：不要加 -v）\n  logs       跟踪两个服务的日志\n  ps         查看容器状态与端口映射\n  pgshell    进 postgres 的 psql 交互终端\n  build      编译所有 Go 包到 bin/\n  test       跑全部 Go 测试（带竞态检测）\n  vet        静态检查\n  fmt        格式化所有 Go 源码\n  web        起前端 dev server\n  backup     把数据库导出到 backups/\n  clean      清理构建产物与 Go 测试缓存（不碰数据库）\n\n$ make ps\nNAME                     IMAGE                       STATUS\nhomecube-pg              postgres:16-alpine          Up 4 minutes (healthy)\nhomecube-svc-homeos      homecube/svc-homeos:latest  Up 4 minutes\n\n$ make up          # 等价于下面这条，但顺手打了个 ps\ndocker compose --env-file .env -f deploy/docker-compose.yml up -d --build"
+    },
+    "steps": [
+      {
+        "n": 1,
+        "title": "照抄 Makefile，先解决 TAB 问题",
+        "detail": "把内容存成 Makefile。先验证：make help。如果报 missing separator，说明 TAB 变成了空格。用编辑器设置「插入 Tab 而不是空格」修好，或者用 cat -A Makefile 看看行首是不是 ^I（^I 就是 TAB 的显示形式）。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 2,
+        "title": "跑通四个日常口令",
+        "detail": "make help → make ps → make up → make down → make up（重新起）→ make logs（另开终端看，Ctrl-C 退出跟踪）→ make pgshell（进去执行一次 \\dt 然后 \\q 退出）。这七个动作就是你未来每天的全部操作。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 3,
+        "title": "亲手验证 .PHONY 的必要性",
+        "detail": "mkdir build（造一个同名目录），然后 make build。观察输出变成「make: 'build' is up to date」什么也没做。删掉目录，再 make build 就正常编译了。这就是为什么每个目标都要写 .PHONY。同理试一次 mkdir test。",
+        "time": "10 分钟"
+      },
+      {
+        "n": 4,
+        "title": "用 make -n 读别人的命令",
+        "detail": "make -n up 打印出将要执行的命令但真的不执行。这是理解复杂 Makefile 的安全方式：先看，再做。想真正执行的顺序就在这行输出里，不会出错。",
+        "time": "5 分钟"
+      },
+      {
+        "n": 5,
+        "title": "往 Makefile 里加你自己的目标",
+        "detail": "加三个：make db-init（在 pgshell 里跑 migrations/ 下的 SQL）、make shell（在项目根跑 go run ./cmd/svc-homeos）、make mock（起一个假数据的服务）。每加一个都用 make -n 预览一次。Makefile 是你的项目，你的目标应该覆盖你自己的实际工作流。",
+        "time": "10 分钟"
+      }
+    ],
+    "pitfalls": [
+      {
+        "wrong": "在 Makefile 的命令行前用空格缩进。",
+        "right": "用 TAB。检查方法：cat -A Makefile | head，行首应该显示 ^I。",
+        "why": "Makefile 靠行首的 TAB 来区分命令和依赖声明，用了空格就报 missing separator。这个错误和内容完全无关，纯粹是编辑器把 TAB 替换成了空格（VS Code 的「detect indentation」、vim 的 expandtab 都会干这事）。修法是在编辑器里为 Makefile 单独设置 insertSpaces: false。"
+      },
+      {
+        "wrong": "忘了写 .PHONY，make build 输出一句 up to date 就没反应。",
+        "right": "所有非文件型目标都列进 .PHONY。",
+        "why": "Make 靠「目标文件是否存在且比依赖新」决定要不要执行。build/、test/、clean/ 这些名字都很容易撞上真实存在的目录或文件（本项目里 bin/ 就存在，测试目录 test/ 迟早也会有）。撞上之后 make 认为目标已存在且没有依赖可比，于是什么都不做——而且不报错，最难排查。养成习惯：写完目标立刻在 .PHONY 里登记。"
+      },
+      {
+        "wrong": "把 make clean 写成 docker compose down -v 加删 bin 目录。",
+        "right": "clean 只清构建产物和缓存，数据库相关的清理要用一个单独命名的目标（比如 make nuke）并加确认提示。",
+        "why": "这是把两件风险等级完全不同的事混进一个命令。「删掉编译产物」和「删掉所有本地数据」被一个看起来无害的名字绑在一起，你某天手快敲了 make clean 就丢库了。Makefile 里最危险的不是复杂命令，而是**看起来无害的复杂命令**。安全设计原则是：让危险操作的名字足够响亮，并且不要挂在日常命令的依赖链上。"
+      },
+      {
+        "wrong": "在 Makefile 里用 && 串联多条命令，忽略 make 的串行特性。",
+        "right": "多条命令写成多行（每行一个 TAB）；确实要在一行里串联时用 && 而不是分号。",
+        "why": "make 默认按顺序执行，每个 recipe 行执行完才执行下一个，而且前一条失败（非 0 退出）就停下。但如果你把整条命令写在一行里用 ; 连接，那么第一条失败后后面的照样会跑——这是你可能不想要的。用 && 则会在失败时中断整行。更重要的是：理解 make 天然串行 + 失败即停，能让你放心把一个长流程拆成多行来写，可读性还更好。"
+      }
+    ],
+    "quiz": [
+      {
+        "q": "为什么 make 里几乎所有目标都要写 .PHONY？",
+        "options": [
+          "为了让目标执行得更快",
+          "因为 make 靠「目标文件比依赖新就不执行」判断，而 help/up/logs 这些名字对应的文件并不存在，会被误判为已完成",
+          "因为 .PHONY 能让命令并行执行",
+          "因为不写的话 make 会报错"
+        ],
+        "answer": 1,
+        "explain": "Make 的默认逻辑是文件构建：目标文件存在且比所有依赖都新，就什么都不做。up、logs、help 不是文件，Make 处理这种情况时会认为「目标已存在且没有需要更新的依赖」，于是打印 make: 'up' is up to date 并跳过。.PHONY 明确告诉 Make「这是个伪目标，别管文件存在与否，每次都执行」。反过来，像 Makefile 里那种真的会生成文件的规则（如 build/bin 产物）就不该写 .PHONY。"
+      },
+      {
+        "q": "Makefile 报 missing separator，怎么修？",
+        "options": [
+          "把命令行前的 TAB 改成两个空格",
+          "把命令行前的空格改成 TAB",
+          "加上 .PHONY 声明",
+          "把 make 换成 gmake"
+        ],
+        "answer": 1,
+        "explain": "Makefile 用行首的 TAB 区分 recipe（命令）与目标/依赖声明。用了空格，make 读到一行以空格开头的命令就报 missing separator 并指出行号。用 cat -A Makefile 可以看到 TAB 显示成 ^I。修法有两种：改编辑器设置让 Makefile 保留 TAB，或者用 .RECIPEPREFIX = > 换一种缩进字符（GNU make 3.82+ 支持）。"
+      },
+      {
+        "q": "命令行前面加 @ 的作用是？",
+        "options": [
+          "忽略这条命令的失败",
+          "不打印这条命令本身，只执行",
+          "让这条命令后台执行",
+          "把输出重定向到文件"
+        ],
+        "answer": 1,
+        "explain": "@ 是静音前缀：make 默认会把每条要执行的命令先打出来，加 @ 就不打了。适合 cd、mkdir、echo 这些「做了就知道」的命令，让输出里只剩下真正有价值的信息。相对地，- 前缀是忽略错误（清理类命令常用），两者可以叠用：@-rm -rf bin。前缀也可以写在命令行参数里，比如 make -n（dry run，只打印不执行）。"
+      },
+      {
+        "q": "为什么 make clean 里绝不该包含 docker compose down -v？",
+        "options": [
+          "因为 down -v 会让 make 报错",
+          "因为 clean 这个名字看起来无害，一旦被误用就会连带删除所有本地数据库；危险操作应该单独命名并显式确认",
+          "因为 down -v 比 rm -rf 慢",
+          "因为 make 不支持调用 docker"
+        ],
+        "answer": 1,
+        "explain": "危险的不是这条命令本身，而是它被藏在一个「听起来无害」的目标里。真实的损失场景是：某天你在 clean 里顺手加了别的东西，或者别人（或者三个月后的你）习惯性敲了 make clean，结果本地数据全没。Makefile 的安全设计原则是：让危险操作的名字足够显眼（make nuke / make destroy-data），别挂在日常目标的依赖链上，并在旁边写清后果。"
+      }
+    ],
+    "task": {
+      "title": "写一份覆盖日常开发的 Makefile",
+      "acceptance": [
+        "Makefile 存在且所有命令行以 TAB 开头（用 cat -A 验证）",
+        ".PHONY 中至少包含 help / up / down / logs / ps / pgshell / build / test / web 这 9 个目标",
+        "make help 能列出全部目标及说明，且带颜色或对齐",
+        "make up 起全套环境并显示容器状态；make down 停止；两者都不删数据卷",
+        "make test 能跑 go test ./...（即使当前没有测试文件，命令也要能执行不报错）",
+        "make pgshell 能进 psql；make backup 能在 backups/ 生成带时间戳的 sql",
+        "你能演示 .PHONY 的必要性：mkdir build 之后 make build 依然能执行"
+      ],
+      "hint": "想看 make 会做什么但不真的做：make -n up。想只执行一行不跑后续：加 - 或者在后面写目标名。用 make -p 可以打印出 make 读到的完整变量与规则（信息量很大但能彻底搞懂它）。如果报错 missing separator，检查是不是编辑器把 TAB 吃了。",
+      "accept_note": ""
+    },
+    "tomorrow": "明天把前两周的技术债还掉：HTTP 到底是怎么回事。今天你会用 Go 手写一个服务，把 GET/POST、状态码、请求头、JSON body、405/404/400/422 全部亲手触发一遍。理解了协议本身，以后用 Gin 才不会只是在用魔法。"
+  },
+  {
+    "id": "s0-d11",
+    "stage": "S0",
+    "day": 11,
+    "week": 2,
+    "title": "HTTP 基础：方法、状态码、请求头、JSON body",
+    "goal": "用 lab/s0/d11/main.go 亲手触发 6 种 HTTP 响应（200/400/404/405/422 与自定义 body），建立对协议本身的判断力，而不只是会调接口。",
+    "duration": "90 分钟",
+    "why": {
+      "problem": "到目前为止你一直在「写服务端」。但真正的开发时间是花在「猜服务端想要什么」上：为什么这个接口返回 400 而不是 422？为什么我传了参数后端说没收到？为什么 GET 请求带 body 就不对？这些问题的答案都在协议里，而协议是你必须能默写出来的东西。今天把 HTTP 最核心的那部分用手写一遍，从此你看到任何接口文档都能立刻判断出「这个设计对不对」。",
+      "naive": "最常见的两种：一是把所有错误都返回 200，把错误信息塞在 body 里，前端自己判断——于是监控面板显示服务零错误，客户端库的重试逻辑全部失效，请求也永远不会被缓存。二是「405 和 404 分不清」：路径存在但方法不对时返回 404，客户端以为接口不存在，直接放弃降级；而正确的 405 + Allow 头能让客户端知道「换个 POST 就行」。",
+      "right": "HTTP 是**无状态的请求-响应协议**：客户端发一个请求（方法 + 路径 + 头 + 可选 body），服务端回一个响应（状态码 + 头 + body）。方法表达**意图**（GET 读、POST 写、PUT 全量替换、PATCH 局部更新、DELETE 删），状态码表达**结果分类**（2xx 成功、3xx 跳转、4xx 客户端错、5xx 服务端错）。判断状态码的唯一标准是「谁的错」：4xx 是调用方的问题（我参数错了、我不该看这个资源），5xx 是服务端的问题（我崩了、我超时了）。这个「谁的错」原则一旦确立，400 和 422 的区别也就自然了：400 是语法层面的错（JSON 根本解析不了），422 是语法对但语义不合法（age 是负数）。"
+    },
+    "concepts": [
+      {
+        "name": "HTTP 方法与幂等性",
+        "explanation": "方法不只是名字，它携带语义，客户端和中间设备据此决定缓存、预取、重试行为。GET 是**安全**的（不改变服务端状态）且**幂等**的（重复执行效果相同），所以可以被缓存、被 CDN 缓存、被浏览器预取——也因此 GET 绝不能用来改数据。POST 不安全也不幂等（每次都新建一条），不能被缓存。PUT 是幂等的（用同一份内容替换两次，结果一样），PATCH 不是（局部更新两次和一次可能不同）。DELETE 语义上是幂等的，但删了又删通常返回 404，这个差异正是 S3 设计软删（soft delete）时要处理的问题。幂等性决定了你能不能放心地重试：网络超时后重发一个 GET 或 PUT 是安全的，重发一个 POST 就可能重复下单——所以后面 S10 做转账时要引入幂等键。判断新接口该用什么方法，就问两个问题：这个操作改不改数据？重复执行两次结果一样吗？",
+        "analogy": "像问「这件事可不可以再来一遍」：读一遍书不会改变书，重复读无害，所以可以缓存甚至预读；但「买一支笔」再来一次就多一支笔，重试有风险，所以要带小票号防止重复扣款。"
+      },
+      {
+        "name": "状态码的分层与判断标准",
+        "explanation": "第一层按首位分四类：2xx 成功，3xx 重定向/协商，4xx 客户端错，5xx 服务端错。第二层是常用细分：200 OK（成功）、201 Created（创建成功，应该带 Location 头）、204 No Content（成功但无 body，DELETE 常用）、400 Bad Request（**语法**错：JSON 解析失败、缺必填字段的类型不对）、401 Unauthorized（没证明你是谁，没登录或 token 无效）、403 Forbidden（知道你是谁但不允许，通常是权限/多租户隔离问题）、404 Not Found（资源不存在或不该让你知道它存在）、405 Method Not Allowed（路径对方法不对，**必须带 Allow 头**说明支持哪些方法）、409 Conflict（唯一键冲突、乐观锁版本冲突）、422 Unprocessable Content（**语义**错：格式对但值不合理，比如年龄为负）、429 Too Many Requests（限流）、500 Internal Server Error（我们崩了，别重试无意义的东西）、502/503/504（上游或依赖的问题，可能重试有用）。判断用哪一个的黄金标准是「这是谁的错，客户端要不要重试」。",
+        "analogy": "像医院分诊台的分类牌：400 是「你话没说清」（病人描述不清）、422 是「话说清了但内容不合规」（年龄填 -3）、401 是「你没挂号」、403 是「你挂了号但没权限做这个检查」、500 是「我们医生出问题了」。分得越细，转诊越准确。"
+      },
+      {
+        "name": "请求头、Content-Type 与 JSON body",
+        "explanation": "头（Header）是键值对的元信息，协议规定了一堆标准头：Content-Type 声明 body 的格式（application/json 是 API 的标准），Accept 声明你能接受的格式（用于内容协商），Authorization 放凭证，User-Agent 标识客户端，Cache-Control 控制缓存。JSON body 的约定值得记住：POST/PUT/PATCH 带 JSON 时同时写 Content-Type: application/json 和 Accept: application/json，服务端只在这个头存在时尝试解析 body；GET 请求不要带 body（虽然技术上允许，但几乎所有网关和客户端库都会忽略或报错，属于自找麻烦）。还有一个容易忽略的点：**body 只能读一次**。服务端要读取请求体，必须整段读完（io.ReadAll）或者传给解码器，读完就没了；如果不读完也不消费，连接会被一直占用直到超时——这是「客户端发了大 body 但服务端没读」导致请求卡住的真实原因。",
+        "analogy": "像寄快递：箱子里的东西是 body，箱子上写的「易碎品/收件人/寄件人」是 header。内容协商就像在电话里说「我听得懂中文还是英文」，双方都得表态才不至于鸡同鸭讲。"
+      }
+    ],
+    "code": {
+      "lang": "go",
+      "filename": "lab/s0/d11/main.go",
+      "content": "package main\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"io\"\n\t\"log\"\n\t\"net/http\"\n\t\"strings\"\n)\n\n// Envelope 与 S0 D6 保持一致：契约不能因为换端口而变\ntype Envelope struct {\n\tCode    int         `json:\"code\"`\n\tMessage string      `json:\"message\"`\n\tData    interface{} `json:\"data\"`\n\tAt      string      `json:\"at\"`\n}\n\nfunc writeJSON(w http.ResponseWriter, status int, e Envelope) {\n\tw.Header().Set(\"Content-Type\", \"application/json; charset=utf-8\")\n\tw.WriteHeader(status)\n\t_ = json.NewEncoder(w).Encode(e)\n}\n\nfunc ok(w http.ResponseWriter, data interface{}) {\n\twriteJSON(w, http.StatusOK, Envelope{0, \"ok\", data, \"2026-10-16T09:00:00+08:00\"})\n}\n\nfunc fail(w http.ResponseWriter, status, code int, msg string) {\n\twriteJSON(w, status, Envelope{code, msg, nil, \"2026-10-16T09:00:00+08:00\"})\n}\n\n// POST /echo 接受一个 JSON，放大后返回。\n// 这里会依次演示三种失败：405 方法不对、400 语法错、422 语义错\nfunc echo(w http.ResponseWriter, r *http.Request) {\n\t// ① 方法检查：路径存在但方法不对是 405，必须带 Allow 头\n\tif r.Method != http.MethodPost {\n\t\tw.Header().Set(\"Allow\", \"POST\") // 标准要求：告诉客户端应该用什么\n\t\tfail(w, http.StatusMethodNotAllowed, 1405, \"这个接口只接受 POST，收到的是 \"+r.Method)\n\t\treturn\n\t}\n\n\t// ② Content-Type 检查：没有 JSON 声明就别费劲解析\n\tct := r.Header.Get(\"Content-Type\")\n\tif !strings.HasPrefix(ct, \"application/json\") {\n\t\tfail(w, http.StatusUnsupportedMediaType, 1415,\n\t\t\t\"Content-Type 必须是 application/json，收到的是 \"+ct)\n\t\treturn\n\t}\n\n\t// ③ 限流 body 大小。r.Body 只能读一次，所以限制必须在读之前设\n\tr.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB 上限\n\n\tbody, err := io.ReadAll(r.Body)\n\tif err != nil {\n\t\tfail(w, http.StatusBadRequest, 1400, \"请求体读取失败或超过 1MB 上限\")\n\t\treturn\n\t}\n\n\t// ④ 语法层校验：JSON 解析不了就是 400\n\tvar req struct {\n\t\tMsg   string `json:\"msg\"`\n\t\tTimes int    `json:\"times\"`\n\t}\n\tif err := json.Unmarshal(body, &req); err != nil {\n\t\tfail(w, http.StatusBadRequest, 1400, \"body 不是合法 JSON: \"+err.Error())\n\t\treturn\n\t}\n\n\t// ⑤ 语义层校验：语法没问题但值不合理是 422\n\tif strings.TrimSpace(req.Msg) == \"\" {\n\t\tfail(w, http.StatusUnprocessableEntity, 1422, \"msg 字段不能为空或全是空白\")\n\t\treturn\n\t}\n\tif req.Times < 1 || req.Times > 5 {\n\t\tfail(w, http.StatusUnprocessableEntity, 1422, \"times 必须在 1~5 之间，收到 \"+fmt.Sprint(req.Times))\n\t\treturn\n\t}\n\n\tok(w, map[string]interface{}{\n\t\t\"echo\":   strings.Repeat(req.Msg, req.Times),\n\t\t\"length\": len([]rune(strings.Repeat(req.Msg, req.Times))),\n\t\t\"meta\": map[string]string{\n\t\t\t\"request_id\":  r.Header.Get(\"X-Request-Id\"),\n\t\t\t\"content_len\": fmt.Sprint(len(body)),\n\t\t\t\"user_agent\":  r.Header.Get(\"User-Agent\"),\n\t\t},\n\t})\n}\n\n// GET /search 演示查询参数：?q=xxx&page=2\nfunc search(w http.ResponseWriter, r *http.Request) {\n\tif r.Method != http.MethodGet {\n\t\tw.Header().Set(\"Allow\", \"GET\")\n\t\tfail(w, http.StatusMethodNotAllowed, 1405, \"这个接口只接受 GET\")\n\t\treturn\n\t}\n\tq := r.URL.Query().Get(\"q\") // URL.Query() 会自动 URL 解码\n\tpage := r.URL.Query().Get(\"page\")\n\tif q == \"\" {\n\t\tfail(w, http.StatusBadRequest, 1001, \"缺少查询参数 q\")\n\t\treturn\n\t}\n\tok(w, map[string]interface{}{\n\t\t\"query\": q,\n\t\t\"page\":  page,\n\t\t\"all\":   r.URL.Query(), // 把所有参数原样回显，方便对照\n\t})\n}\n\nfunc main() {\n\tmux := http.NewServeMux()\n\tmux.HandleFunc(\"/echo\", echo)\n\tmux.HandleFunc(\"/search\", search)\n\n\t// 兜底：区分「路径不存在」和「前缀对但没匹配到具体路由」\n\tmux.HandleFunc(\"/\", func(w http.ResponseWriter, r *http.Request) {\n\t\tfail(w, http.StatusNotFound, 1404, \"没有这个路径: \"+r.URL.Path)\n\t})\n\n\taddr := \"127.0.0.1:8081\" // 8080 留给 svc-homeos\n\tlog.Printf(\"HTTP 实验室启动: http://%s\", addr)\n\tsrv := &http.Server{Addr: addr, Handler: mux}\n\tlog.Fatal(srv.ListenAndServe())\n}\n",
+      "run": "cd homecube && go run ./lab/s0/d11",
+      "expect": "$ go run ./lab/s0/d11\n2026/10/16 09:00:00 HTTP 实验室启动: http://127.0.0.1:8081\n\n—— 200 正常 POST ——\n$ curl -s -X POST localhost:8081/echo -H 'Content-Type: application/json' -d '{\"msg\":\"家\",\"times\":3}'\n{\"code\":0,\"message\":\"ok\",\"data\":{\"echo\":\"家家家\",\"length\":3,\"meta\":{\"request_id\":\"\",\"content_len\":\"28\",\"user_agent\":\"curl/8.4.0\"}},\"at\":\"...\"}\n\n—— 405 方法不对（注意 Allow 头）——\n$ curl -s -i localhost:8081/echo | head -4\nHTTP/1.1 405 Method Not Allowed\nAllow: POST\n{\"code\":1405,\"message\":\"这个接口只接受 POST，收到的是 GET\",...}\n\n—— 415 Content-Type 不对 ——\n$ curl -s -X POST localhost:8081/echo -H 'Content-Type: text/plain' -d 'hi'\n{\"code\":1415,\"message\":\"Content-Type 必须是 application/json，收到的是 text/plain\",...}\n\n—— 400 JSON 语法错 ——\n$ curl -s -X POST localhost:8081/echo -H 'Content-Type: application/json' -d '{\"msg\":\"家\",}'\n{\"code\":1400,\"message\":\"body 不是合法 JSON: invalid character '}' looking for beginning of value\",...}\n\n—— 422 语义错（语法对、值不合理）——\n$ curl -s -X POST localhost:8081/echo -H 'Content-Type: application/json' -d '{\"msg\":\"家\",\"times\":99}'\n{\"code\":1422,\"message\":\"times 必须在 1~5 之间，收到 99\",...}\n\n—— 400 缺必填查询参数 ——\n$ curl -s localhost:8081/search\n{\"code\":1001,\"message\":\"缺少查询参数 q\",...}\n\n—— 404 路径不存在 ——\n$ curl -s localhost:8081/nope\n{\"code\":1404,\"message\":\"没有这个路径: /nope\",...}"
+    },
+    "steps": [
+      {
+        "n": 1,
+        "title": "把 8 种响应全部亲手触发一遍",
+        "detail": "按 expect 里的命令逐条跑。重点不是输出内容，而是「你事先能预测出哪条会给 405、哪条会给 422」——先预测再执行，对了就说明真的懂了。执行 405 那条时用 curl -i 看完整的响应头，确认 Allow: POST 确实在。",
+        "time": "25 分钟"
+      },
+      {
+        "n": 2,
+        "title": "写一张状态码决策树",
+        "detail": "在笔记里写：路径存在吗？→ 否，404。是 → 方法对吗？→ 否，405 + Allow。是 → 读得懂 body 吗？→ 否，400。看懂但值不合法吗？→ 是，422。是身份问题吗？→ 401 / 403。是我们的问题吗？→ 500。这棵树以后每次设计新接口都过一遍。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 3,
+        "title": "用浏览器 devtools 看真实请求",
+        "detail": "在浏览器里打开 localhost:8081/search?q=书&page=2，按 F12 打开 Network 面板，找到这条请求，看 Headers 里的 Request URL、Query String Parameters、Status Code。这比看 curl 直观，因为它同时展示了浏览器发的和你在地址栏输入的之间的差别。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 4,
+        "title": "验证 body 只能读一次的坑",
+        "detail": "把 handler 里的 io.ReadAll 改成读两次（第一次读完打印，再读一次），观察第二次返回空。理解「body 是个流，只能消费一遍」。再加一行 r.Body.Close() 的对比实验：服务端不读完 body 也不 close，客户端发一个大 body 时会怎样。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 5,
+        "title": "对照响应体契约检查一致性",
+        "detail": "对比 d11 和 d6 的 Envelope：字段完全一样（code/message/data/at），但 d11 多了两个更细的状态码。确认一下 d6 定义的 CodeInvalidParam=1001 在 d11 里被复用了（搜索参数缺失那条）。这就是「契约先行」的好处：换实现不改形状。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 6,
+        "title": "把方法语义写成规则贴出来",
+        "detail": "一句话一条：GET 只读且可缓存；POST 创建新东西且不幂等；PUT 全量替换且幂等；PATCH 局部更新；DELETE 删除且要小心 404 vs 幂等。再加一句 HomeCube 的约定：所有写操作都是 POST/PATCH/DELETE，读都是 GET，永远不用 GET 做写。",
+        "time": "5 分钟"
+      }
+    ],
+    "pitfalls": [
+      {
+        "wrong": "所有情况都返回 HTTP 200，错误信息放在 body 里。",
+        "right": "HTTP 状态码按语义给，4xx 表示调用方错、5xx 表示服务端错。",
+        "why": "HTTP 状态码是跨系统契约：APM 用它画错误率曲线，nginx 用它决定要不要重试，浏览器和 CDN 用它决定能不能缓存响应，客户端库用它决定走不走降级逻辑。全返 200 意味着这些基础设施全部失明——你的服务在监控面板上永远是「零错误」，直到用户投诉。业务结果依然可以用 code 表达，但要放在 body 里，不能占用 HTTP 状态码。"
+      },
+      {
+        "wrong": "路径存在但方法不对时返回 404。",
+        "right": "返回 405 并带上 Allow: <支持的方法列表>。",
+        "why": "404 的语义是「这个资源不存在」，会让客户端（包括网关、浏览器、以及你的前端）以为接口不存在，直接放弃。405 传达的信息精确得多：「资源在，但你用错方法了，这是允许的方法」。标准明确要求 405 响应必须包含 Allow 头。这一点在 REST 里很容易被忽略，因为大多数框架的路由匹配失败时统一返回 404。"
+      },
+      {
+        "wrong": "把 400 和 422 混用，或者所有校验失败都返回 400。",
+        "right": "400 用于语法层（body 解析不了、JSON 结构不对），422 用于语义层（结构对但值不合理：金额为负、时间跨度颠倒、必填字段为空）。",
+        "why": "两者的区别决定了客户端能不能做有意义的重试。400 表示「你发的这个东西我读不懂，重发大概还是错」，客户端应该修正请求格式；422 表示「我读懂了但不接受，你要改内容」，客户端应该收集用户的修正输入。HomeCube 的约定：1001 段是参数类错误（422 用），1400 是 JSON 语法错误（400 用），这个分层让前端能根据 code 前两位决定是弹表单错误还是弹通用提示。"
+      },
+      {
+        "wrong": "在服务端读取 body 时不限制大小，也不在读完后 Close。",
+        "right": "读之前用 http.MaxBytesReader 设上限，读完（或不用时）确保 body 被消费或关闭。",
+        "why": "body 是个流，只能消费一次。服务端既不读完也不关闭时，这个连接会被保持占用直到超时；恶意客户端发一个几 GB 的 body 就能耗尽你的连接数（Slowloris 类攻击的思路）。MaxBytesReader 是一行代码就能加上的防护。另外读完之后即使出错也要记得这个 body 已经不能再读了，别在错误分支里试图再解析一次。"
+      }
+    ],
+    "quiz": [
+      {
+        "q": "客户端对一个存在的接口发了 DELETE，但该资源不存在。返回什么最合适？",
+        "options": [
+          "200 OK，因为操作已经达成目标",
+          "404 Not Found，因为 DELETE 的语义上幂等，第二次删除会得到「资源不存在」的结果",
+          "500 Internal Server Error",
+          "405 Method Not Allowed"
+        ],
+        "answer": 1,
+        "explain": "DELETE 在语义上是幂等的：请求两次和请求一次的最终状态相同（资源不存在）。但「最终状态相同」不等于「每次响应都相同」，第二次请求时资源确实不存在，返回 404 是最诚实的。这正是 S3 要设计软删（把行标记为 deleted 而不是物理删除）的理由之一：物理删除会让客户端无法区分「我删成功了」和「它被别人删了」。"
+      },
+      {
+        "q": "GET /api/note 的 body 里带了一个 id=123，服务端没读到。根本原因是？",
+        "options": [
+          "服务端解析逻辑写错了",
+          "GET 请求的 body 不该被使用——绝大多数客户端库和网关都会忽略 GET 的 body，服务端应该从查询参数 ?id=123 取",
+          "需要在 header 里声明 Content-Type",
+          "body 必须是 JSON 数组而不是对象"
+        ],
+        "answer": 1,
+        "explain": "RFC 明确说 GET 的 body 没有定义语义，实际实现里客户端和服务端的行为都不可靠：fetch 可以发但很多库不读，网关可能剥掉，缓存可能丢弃。资源标识应该放在路径（/api/note/123）或查询参数（?id=123）里。记住一条纪律：GET 只用 query string，POST/PUT/PATCH 才用 body。"
+      },
+      {
+        "q": "405 Method Not Allowed 响应里必须带哪个头？",
+        "options": [
+          "Location",
+          "Allow",
+          "Retry-After",
+          "Authorization"
+        ],
+        "answer": 1,
+        "explain": "Allow 头列出这个资源支持哪些方法，比如 Allow: GET, POST, HEAD, OPTIONS。这是标准对 405 的硬性要求，也是它比 404 更有用的原因：客户端读完就知道该怎么改。Location 是 201 Created（新建资源的 URL）或 3xx 重定向时用的；Retry-After 是 429/503 限流与服务不可用时用的；Authorization 是 401 时告诉客户端该怎么认证（Bearer / Basic / Digest）。"
+      },
+      {
+        "q": "服务端读取了请求 body 之后，还能再读一次吗？",
+        "options": [
+          "可以，body 会被缓存在内存里，随时能重读",
+          "不能，body 是一个只能向前消费的流，读过一次就到了末尾；要重读得先自己缓存到 []byte",
+          "可以，只要中间没有关闭连接",
+          "取决于 Content-Type"
+        ],
+        "answer": 1,
+        "explain": "r.Body 是一个 io.ReadCloser 流。io.ReadAll 或 json.Unmarshal 之后，流的位置已在末尾，第二次读只会得到空数据和 EOF（json 解码还会额外返回 EOF 错误）。需要多次使用就要先自己 ReadAll 存到变量里，之后从这个字节切片反复 json.Unmarshal。这是读请求体时最常踩的坑之一，尤其是在「解析失败想打印原始内容」的日志代码里。"
+      }
+    ],
+    "task": {
+      "title": "把 HTTP 的六种结果全部亲手造出来",
+      "acceptance": [
+        "lab/s0/d11/main.go 存在，go run ./lab/s0/d11 起在 127.0.0.1:8081",
+        "curl 能触发并截图/记录 200、400、404、405、415、422 六种响应",
+        "405 的响应里有 Allow: POST 头（用 curl -i 验证）",
+        "400 用于 JSON 语法错误、422 用于语义错误，两者都能在响应体的 message 里区分出来",
+        "422 那条的 message 里包含具体的非法值和期望范围",
+        "GET /search?q=xxx 能正确把 query 参数解出来并原样回显",
+        "笔记里有一张状态码决策树，能用它判断「密码错误」「权限不足」「参数缺失」「找不到」分别该返回什么"
+      ],
+      "hint": "curl -i 显示响应头，-w '\\n%{http_code}\\n' 可以把状态码单独打出来方便断言。测试 415 用 -H 'Content-Type: text/plain'。测试 body 只能读一次：在 handler 里连续两次 io.ReadAll(r.Body)，第二次会返回空。",
+      "accept_note": ""
+    },
+    "tomorrow": "明天是 S0 的收口：写一个自查脚本把两周的全部成果逐条验证一遍，然后做费曼复盘。今天不要再学新东西——把已经学的东西固化成可执行的检查和一段能讲出口的话，才是最有价值的收尾。"
+  },
+  {
+    "id": "s0-d12",
+    "stage": "S0",
+    "day": 12,
+    "week": 2,
+    "title": "阶段收口：自查脚本 + 费曼复盘",
+    "goal": "写出 scripts/s0-check.sh 把两周的每条成果变成可执行的断言，逐条输出 ✅/❌，并用费曼复盘把容器、进程、端口、环境变量四者的关系讲成一段不含术语的话。",
+    "duration": "90 分钟",
+    "why": {
+      "problem": "两周下来你有 12 张卡、十几个脚本、一堆跑通的命令。但「跑通过」和「能重建」之间有巨大差距：换台机器、三个月后，你能不能在十分钟内把环境拉起来？如果答案是「不确定」，那这两周的产出其实是租来的，不是你的。今天做两件事把知识变成资产：一个能一键验证的脚本，一段能讲出口的解释。",
+      "naive": "常见收尾方式是「把今天能跑的都跑一遍，感觉都还行，然后开新阶段」。问题是这样得到的「还行」印象不可靠——它依赖你几分钟前的记忆，而且很多关键东西（比如 .env.example 有没有提交、卷名对不对、.gitignore 挡没挡住 .env）你根本没验证过，只是记得「我好像配了」。更糟的是这种自信会一直累积，直到某天在真正需要环境的时候崩掉。",
+      "right": "自查脚本的价值在于把「我记得我配了」变成「机器告诉我配没配」。它的设计要点有三条：① 每条检查独立，一条挂了不影响后面的（所以不用 set -e，要收集失败数）；② 输出必须是能一眼判断的符号，用 ✅/❌ 加中文描述，不要输出原始命令让读者自己脑补；③ 退出码有意义——全过是 0，有失败是非 0，这样以后接 CI 或者在别的脚本里判断都方便。至于费曼复盘：真正的检验不是「我能复述定义」，而是「我能讲给一个完全不懂的人听，且他听懂后能自己判断一个具体情况」。所以复盘的对象不是概念清单，而是**关系**——四个东西怎么互相影响，这才是你以后每天都要用的部分。"
+    },
+    "concepts": [
+      {
+        "name": "把知识变成可执行的断言",
+        "explanation": "学习者最常见的幻觉是「我记得我做过」。而记忆是不可靠的、会被最近一次成功覆盖的，而且它无法区分「我做了」和「我做对了」。把每条成果改写成一个能返回真假的检查，就能得到客观反馈。设计检查项的三条原则：一是**可观测**，检查必须看得到外部事实（文件是否存在、端口是否监听、curl 的返回码是什么），而不是问「你觉得自己做了吗」；二是**互不依赖**，一条挂了后面照样跑，这样你能一次看到全部缺口而不是修一个跑一次；三是**退出码正确**，全过返回 0、任一失败返回非 0，这样它可以被 make check、CI 流水线、甚至别人的脚本调用。这类脚本在工程上叫 smoke test 或 healthcheck，对个人项目同样有效——它是你未来几十周里最省时间的一件工具。今天写完它，之后每个阶段收口都复用这个模式。",
+        "analogy": "像飞机的出发前检查单：不是凭机长的记忆，而是照单逐项打勾，并且任何一项不通过就不许起飞。"
+      },
+      {
+        "name": "费曼复盘的正确做法：讲关系，不讲定义",
+        "explanation": "大多数人做复盘的方式是重新读一遍笔记，然后确认「我都懂了」。这个检验无效，因为读的时候你是在识别（感觉眼熟），而不是生成（从零组织语言）。费曼技巧的正确形式是：合上资料，用**大白话**讲给一个外行听，不允许使用术语。如果卡住了，说明那个地方你其实只是背下了名词，没有理解机制。检验的标准也很明确：讲完之后，能不能判断一个没见过的情况？比如「我的服务在家能连数据库，公司连不上」——如果你真懂了这四个概念的关系，不需要查资料就能列出三种可能原因。复盘的产物应该是**一段话加一张图**，而不是一份抄写。它还有个副作用：你在讲的过程中会立刻发现自己理解最虚的地方，那就是明天该复习的点。",
+        "analogy": "像给别人讲一道题：你能照着答案念一遍不算会，能让对方点头并且换个数字还会做，才算真会。"
+      },
+      {
+        "name": "check 函数的写法与可维护性",
+        "explanation": "写这种自查脚本时，把重复的逻辑抽成一个函数，收益比看起来大。check 这个函数接受「一句描述」和「一条命令」，执行命令、用退出码判断成败、打印符号、更新计数器。三个细节决定了脚本好不好用：① 命令用 `bash -c '...'` 包一层，这样管道和 && 都能用，check 本身只关心退出码；② 输出里不要把命令的 stdout 打出来（用 >/dev/null 2>&1 重定向），除非失败时才打出来显示原因——更好的做法是失败时把输出打印出来，成功时静默，这样你既不会被噪音淹没，也不会丢失诊断信息；③ 最后根据失败数决定退出码，并给一个明确的总结行。这样以后加新的检查项只是多写一行 check \"描述\" \"命令\"，成本极低。今天的脚本因此也是接下来 14 个阶段的模板。",
+        "analogy": "像体检报告的固定格式：每项指标的采集方式不变，只有项目和阈值在变。所以模板一旦做好，后面每周只要填内容。"
+      }
+    ],
+    "code": {
+      "lang": "bash",
+      "filename": "scripts/s0-check.sh",
+      "content": "#!/usr/bin/env bash\n# S0 阶段自查：把两周的成果变成 12 条可执行断言\n# 用法：bash scripts/s0-check.sh\n# 退出码：0 = 全过，非 0 = 有失败（可以直接被 make / CI 调用）\nset -uo pipefail   # 注意：不加 -e，因为要跑完所有检查再汇总\n\nPASS=0\nFAIL=0\n\n# check <描述> <命令...>\n# 成功打印 ✅ 并吞掉输出；失败打印 ❌ 并把命令的输出显示出来帮你定位\ncheck() {\n  local desc=\"$1\"; shift\n  local out rc\n  out=\"$(\"$@\" 2>&1)\"; rc=$?\n  if [ $rc -eq 0 ]; then\n    printf '✅ %s\\n' \"$desc\"\n    PASS=$((PASS + 1))\n  else\n    printf '❌ %s\\n' \"$desc\"\n    if [ -n \"$out\" ]; then\n      printf '     ↳ %s\\n' \"$(echo \"$out\" | head -3 | tr '\\n' '|')\"\n    fi\n    FAIL=$((FAIL + 1))\n  fi\n}\n\nhr() { printf '\\n── %s ──\\n' \"$1\"; }\n\ncd homecube || { echo \"项目目录不存在\"; exit 1; }\n\nhr \"D1 版本管理\"\ncheck \"仓库已 git init 且有提交\"      bash -c '[ -d .git ] && [ \"$(git rev-list --count HEAD 2>/dev/null || echo 0)\" -ge 1 ]'\ncheck \"当前分支是 main\"               bash -c 'test \"$(git rev-parse --abbrev-ref HEAD)\" = main'\ncheck \".gitignore 挡住了 .env\"        bash -c 'git check-ignore -q .env'\ncheck \".env.example 存在且未被忽略\"   bash -c '[ -f .env.example ] && ! git check-ignore -q .env.example'\ncheck \"没有把 node_modules 提交进库\"  bash -c '! git ls-files | grep -q node_modules/'\n\nhr \"D2/D4/D6/D11 Go 工具链与服务\"\ncheck \"Go 已安装且 >= 1.22\"           bash -c 'go version | grep -qE \"go1\\.(2[2-9]|[3-9][0-9])\"'\ncheck \"go.mod 存在且模块路径正确\"     bash -c 'grep -q \"^module github.com/xuesh/homecube$\" go.mod'\ncheck \"全部 Go 代码能编译\"            bash -c 'go build ./... '\ncheck \"D2 的 8080 服务代码存在\"       bash -c '[ -f lab/s0/d02/main.go ]'\ncheck \"D4 的两档配置函数存在\"         bash -c 'grep -q \"func mustGetenv\" lab/s0/d04/main.go && grep -q \"func getenvOr\" lab/s0/d04/main.go'\ncheck \"D6 的统一响应体 Envelope 存在\" bash -c 'grep -q \"type Envelope struct\" cmd/svc-homeos/main.go'\ncheck \"D6 的 healthz 与 whoami 都在\"  bash -c 'grep -q \"/healthz\" cmd/svc-homeos/main.go && grep -q \"/whoami\" cmd/svc-homeos/main.go'\ncheck \"D11 演示了 405 与 422\"         bash -c 'grep -q \"StatusMethodNotAllowed\" lab/s0/d11/main.go && grep -q \"StatusUnprocessableEntity\" lab/s0/d11/main.go'\ncheck \"没有明文密码常量（D4 目标）\"   bash -c '! grep -rqn \"POSTGRES_PASSWORD=homecube\" --include=\"*.go\" .'\n\nhr \"D3/D7/D8/D9 容器与环境\"\ncheck \"Docker 引擎在运行\"             bash -c 'docker info >/dev/null 2>&1'\ncheck \"homecube-pg 容器在跑\"          bash -c 'docker ps --filter name=homecube-pg --filter status=running -q | grep -q .'\ncheck \"5432 端口可连\"                 bash -c 'nc -z -w 2 127.0.0.1 5432'\ncheck \"compose 文件存在\"              bash -c '[ -f deploy/docker-compose.yml ]'\ncheck \"compose 配置语法正确\"          bash -c 'docker compose -f deploy/docker-compose.yml config -q'\ncheck \"compose 里用了 service_healthy\" bash -c 'grep -q \"service_healthy\" deploy/docker-compose.yml'\ncheck \"compose 里 DB 主机名是 postgres\" bash -c 'grep -qE \"HC_DB_HOST:?\\s*postgres\" deploy/docker-compose.yml'\ncheck \"具名卷 pgdata 已挂载\"          bash -c 'docker inspect homecube-pg --format \"{{range .Mounts}}{{.Name}}{{end}}\" | grep -q pgdata'\ncheck \"数据库里有备份文件\"            bash -c 'ls backups/*.sql >/dev/null 2>&1'\n\nhr \"D5/D10 前端与工程化\"\ncheck \"Node 已安装且 >= 18\"           bash -c 'node -v | grep -qE \"v(1[89]|[2-9][0-9])\"'\ncheck \"前端项目存在\"                  bash -c '[ -d web ] || [ -d app-mobile ]'\ncheck \"锁文件已提交（未被忽略）\"      bash -c '( [ -f web/pnpm-lock.yaml ] || [ -f app-mobile/pnpm-lock.yaml ] || [ -f web/package-lock.json ] ) && ! git check-ignore -q web/pnpm-lock.yaml'\ncheck \"Makefile 存在\"                bash -c '[ -f Makefile ]'\ncheck \"Makefile 的关键目标齐全\"      bash -c 'for t in help up down logs ps pgshell build test web; do grep -qE \"^\\.PHONY.*\\\\b$t\\\\b|^$t:\" Makefile || exit 1; done'\ncheck \"make help 能跑通\"              bash -c 'make help >/dev/null'\ncheck \"Makefile 用的是 TAB 不是空格\"  bash -c '! grep -qP \"^    [^ ]\" Makefile'\n\nhr \"服务可达性（需要环境在跑）\"\nif docker ps --filter name=homecube-pg --filter status=running -q | grep -q .; then\n  check \"svc-homeos /healthz 返回 200\" curl -sf -o /dev/null http://127.0.0.1:8080/healthz\n  check \"svc-homeos 响应是合法 JSON\"   bash -c 'curl -s http://127.0.0.1:8080/healthz | python3 -c \"import json,sys; json.load(sys.stdin)\"'\n  check \"/whoami 无身份时返回 401\"     bash -c '[ \"$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:8080/whoami)\" = 401 ]'\nelse\n  printf '⏭️  环境未启动，跳过可达性检查（先跑 make up）\\n'\nfi\n\nprintf '\\n════════════════════════════════\\n'\nprintf '通过 %d 条，失败 %d 条\\n' \"$PASS\" \"$FAIL\"\nif [ \"$FAIL\" -eq 0 ]; then\n  printf '🎉 S0 全部通过。可以进入 S1 了。\\n'\n  exit 0\nfi\nprintf '把上面 ❌ 的条目修掉再跑一次。\\n'\nexit 1\n",
+      "run": "cd homecube && bash scripts/s0-check.sh",
+      "expect": "── D1 版本管理 ──\n✅ 仓库已 git init 且有提交\n✅ 当前分支是 main\n✅ .gitignore 挡住了 .env\n✅ .env.example 存在且未被忽略\n✅ 没有把 node_modules 提交进库\n\n── D2/D4/D6/D11 Go 工具链与服务 ──\n✅ Go 已安装且 >= 1.22\n✅ go.mod 存在且模块路径正确\n✅ 全部 Go 代码能编译\n✅ D2 的 8080 服务代码存在\n✅ D4 的两档配置函数存在\n✅ D6 的统一响应体 Envelope 存在\n✅ D6 的 healthz 与 whoami 都在\n✅ D11 演示了 405 与 422\n✅ 没有明文密码常量（D4 目标）\n\n── D3/D7/D8/D9 容器与环境 ──\n✅ Docker 引擎在运行\n✅ homecube-pg 容器在跑\n✅ 5432 端口可连\n✅ compose 文件存在\n✅ compose 配置语法正确\n✅ compose 里用了 service_healthy\n✅ compose 里 DB 主机名是 postgres\n✅ 具名卷 pgdata 已挂载\n✅ 数据库里有备份文件\n\n── D5/D10 前端与工程化 ──\n✅ Node 已安装且 >= 18\n✅ 前端项目存在\n✅ 锁文件已提交（未被忽略）\n✅ Makefile 存在\n✅ Makefile 的关键目标齐全\n✅ make help 能跑通\n✅ Makefile 用的是 TAB 不是空格\n\n── 服务可达性（需要环境在跑） ──\n✅ svc-homeos /healthz 返回 200\n✅ svc-homeos 响应是合法 JSON\n✅ /whoami 无身份时返回 401\n\n════════════════════════════════\n通过 30 条，失败 0 条\n🎉 S0 全部通过。可以进入 S1 了。"
+    },
+    "steps": [
+      {
+        "n": 1,
+        "title": "跑脚本，把每条失败都当成作业",
+        "detail": "bash scripts/s0-check.sh。逐条处理 ❌：大部分会是「某个文件挪了位置」「某条命令写错了」，少数是真的没做完。今天的目标不是 100% 通过，而是把每一条失败都修掉并且理解它为什么失败。脚本末尾的退出码设计就是给以后接 CI 用的。",
+        "time": "25 分钟"
+      },
+      {
+        "n": 2,
+        "title": "故意制造两类失败",
+        "detail": "① 把 .env.example 改名，看那条 check 变红；② 在 lab/s0/d04/main.go 里加一行硬编码密码，看「没有明文密码常量」那条变红。故意制造失败是为了确认这些检查真的在检查东西——一个永远通过的检查等于没有检查。确认完记得改回来。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 3,
+        "title": "做费曼复盘：容器 / 进程 / 端口 / 环境变量",
+        "detail": "合上资料，用大白话写一段不超过 300 字的说明，必须回答：容器里跑的是什么？端口映射做了什么？数据存在哪？环境变量是谁给的？要求：不出现 container、namespace、volume 这类词，出现就用大白话替换。写完再对照卡片检查有没有遗漏。",
+        "time": "25 分钟"
+      },
+      {
+        "n": 4,
+        "title": "用三个具体问题检验理解",
+        "detail": "不用查资料回答：① 同事拉了你的仓库，go run 起来但连不上数据库，他在你机器上能连，他机器上不能，最可能是什么（缺 .env / 变量名不同 / 服务没起）？② 服务跑着但浏览器 502，可能的原因有哪些（容器没起、端口没映射、服务崩了）？③ 你想临时换一个数据库端口，改哪里最合适（compose 的宿主机侧端口变量，不要动数据库自身端口）？能答出这些，说明理解是可迁移的。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 5,
+        "title": "把复盘沉淀进仓库",
+        "detail": "写 README.md：项目一句话说明、环境要求列表（Go/Node/Docker 版本）、三条日常命令（make up / make logs / make test）、目录结构简图、常见问题三条（端口冲突怎么办、连不上数据库怎么查、数据没了怎么恢复）。这份 README 是给三个月后的你和下一个进来的人看的，写的时候假设读者什么都不知道。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 6,
+        "title": "提交这个阶段并规划 S1",
+        "detail": "把这两周所有脚本、compose、Makefile、README 提交到 Git，提交信息写清楚阶段（S0 完成）。然后翻一遍 S1 的 6 张卡标题，把今天复盘时觉得最虚的地方标记出来——S1 前三周讲的是 Go 语言语法，正好能补上你写脚本时隐约感觉别扭的那些地方。",
+        "time": "10 分钟"
+      }
+    ],
+    "pitfalls": [
+      {
+        "wrong": "脚本里用 set -euo pipefail，一条失败就全退出，只看到第一个问题。",
+        "right": "用 set -uo pipefail（去掉 -e），把退出码收集起来跑完全部检查再汇总。",
+        "why": "对「一次性跑一遍、报告全部结果」的检查脚本来说，fail-fast 是反模式：你想看到的是所有缺口，而不是修一个跑一次。fail-fast 适合构建脚本（编译错了就别测了），不适合体检脚本。区分它们的标准是「失败后还有没有有价值的动作要做」——检查脚本有（继续查别的），构建脚本没有。"
+      },
+      {
+        "wrong": "写「检查我是否理解了容器网络」这种主观项，或者用 grep 搜一个自己刚写的注释。",
+        "right": "每条检查都看外部可观测的事实：文件在不在、端口通不通、curl 的状态码、命令的退出码。",
+        "why": "自检脚本的价值全在「客观」上。检查一个自己写的东西的文字，等于让代码自己给自己打分，必然满分。真正有意义的检查有两种：一是检查外部系统的状态（docker ps 的输出、curl 的返回码、netstat 的监听），二是检查「这个行为发生了没有」（405 的响应里有没有 Allow 头、.env 是否真的没被 Git 跟踪）。前者更可靠，因为答案不由你决定。"
+      },
+      {
+        "wrong": "复盘时重新读一遍笔记，确认「都懂了」。",
+        "right": "合上资料，用大白话写出来，并且回答三个没见过的具体问题。",
+        "why": "读的时候是识别模式在起作用——你看到熟悉的结构，产生了「我懂了」的感觉，但生成语言的能力没被检验。而费曼技巧的核心就是逼自己从零生成：卡壳的地方就是没真懂的地方。三个具体问题是关键，因为它们检验的是「能不能迁移到新情境」，这才是实际工作里唯一需要的。"
+      },
+      {
+        "wrong": "把收尾做成「把所有命令再跑一遍」，靠手感确认没问题。",
+        "right": "把每次要做的动作固化成脚本，之后每个阶段收口只改内容不改结构。",
+        "why": "手感的验证强度取决于你那天状态好不好，而它的可重复性是零——你不会记得三个月前自己检查了什么。固化成脚本之后，收口从「凭记忆检查」变成「执行一个已知可靠的过程」，而且今天写好的模板可以在后面 14 个阶段里直接复制只改内容。第一个阶段往往是收益最大的一次投入。"
+      }
+    ],
+    "quiz": [
+      {
+        "q": "写阶段自查脚本时，为什么通常不用 set -e？",
+        "options": [
+          "set -e 会让命令变慢",
+          "因为 -e 会在第一条失败的命令处直接退出，而自查脚本的目的是把所有失败一次性收集出来报告，而不是发现一个问题就停",
+          "set -e 在 bash 里已经废弃了",
+          "因为 set -e 会同时关闭 pipefail"
+        ],
+        "answer": 1,
+        "explain": "fail-fast 对构建/测试脚本是对的（编译失败就没必要跑测试），对体检脚本是错的。你想知道「十二项里哪几项没过」，而不是「第一项没过」。所以用 set -uo pipefail（保留 undefined 变量检查和管道失败检查，去掉自动退出），在 check 函数里手动判断退出码并计数，最后统一汇总退出。"
+      },
+      {
+        "q": "费曼复盘的检验标准是什么？",
+        "options": [
+          "能不能背出四个概念的准确定义",
+          "能不能用不含术语的大白话讲给外行听懂，并且能判断一个没见过的新情况",
+          "能不能把两周的笔记重新抄一遍",
+          "能不能说出每个命令的参数含义"
+        ],
+        "answer": 1,
+        "explain": "识别（看到眼熟就以为懂了）和生成（从零组织语言讲出来）是两种完全不同的能力，只有后者能证明真的理解。术语用得顺溜不代表理解——你可能只是记住了名词。而「能不能判断新情况」是最终标准：如果讲完之后面对「他机器上连不上数据库」这种没讲过的问题你能自己列出候选原因，说明你掌握的是关系和机制，而不是清单。"
+      },
+      {
+        "q": "下面哪条 check 写法是最有价值的？",
+        "options": [
+          "check \"代码里有 Envelope 结构体\" grep -q 'type Envelope' cmd/svc-homeos/main.go",
+          "check \"健康检查真的返回 200\" curl -sf -o /dev/null http://127.0.0.1:8080/healthz",
+          "check \"我已经理解容器网络\" echo ok",
+          "check \"Docker 装好了\" which docker"
+        ],
+        "answer": 1,
+        "explain": "curl 那条检查的是「行为是否发生」——服务真的在跑、真的返回 200。这不由你的代码写法决定，只由客观现实决定。选项 A 检查的是文本存在（你完全可以写一个定义但从没调用过的 Envelope），选项 C 是自欺（永远通过），选项 D 检查的是二进制在 PATH 里而不是引擎在运行（which docker 有输出但 docker info 会失败的情况真实存在）。"
+      },
+      {
+        "q": "「同事 clone 仓库后 go run 起来连不上数据库」——为什么 .env.example 和 .gitignore 那个组合很重要？",
+        "options": [
+          "为了让仓库更好看",
+          "因为 .env（真值，不入库）保证密码不进 Git，.env.example（模板，入库）告诉新来的人「需要设哪些变量」，两边配合才能让 clone 的人知道该配什么",
+          "为了让 clone 更快",
+          "因为 GitHub 不允许提交带变量的文件"
+        ],
+        "answer": 1,
+        "explain": "这是「秘密不入库、契约要入库」的标准做法：.env 装真值所以被 .gitignore 挡住；.env.example 列出全部变量名（值留空或示例）所以可以提交，别人 clone 之后照着它建自己的 .env 就能跑。没有 .env.example，别人看到代码里的 mustGetenv(\"HC_DB_PASSWORD\") 完全不知道要设什么；没有 .gitignore，密码就跟着代码一起走。两者缺一不可。"
+      }
+    ],
+    "task": {
+      "title": "收口 S0：可执行的检查 + 能讲出口的解释",
+      "acceptance": [
+        "scripts/s0-check.sh 存在且能跑，至少 25 条检查，逐条输出 ✅/❌ 加中文描述",
+        "全通过时退出码为 0，有任何失败时退出码为非 0",
+        "脚本不使用 set -e，能跑完所有检查再汇总；失败时显示命令输出帮助定位",
+        "你故意制造过至少一次失败并确认检查真的会变红，然后修好",
+        "README.md 存在，包含环境要求、三条日常命令、目录简图、常见问题",
+        "你有一份 300 字以内、不含术语的复盘文字，回答了「容器里跑的是什么 / 端口映射做了什么 / 数据存在哪 / 环境变量谁给的」",
+        "你能不看资料回答「同事机器上连不上数据库」的三种可能原因",
+        "S0 阶段全部文件已提交到 Git"
+      ],
+      "hint": "check 函数失败时把命令输出打出来是为了让你一眼看出问题（比如「connection refused」）。grep 检查 Makefile 的 TAB 用 grep -qP '^    [^ ]'（匹配行首四个空格后面还有非空格字符）。如果你想验证脚本真的在检查东西，最有效的方法是故意弄坏一样东西。",
+      "accept_note": ""
+    },
+    "tomorrow": "S1 第一周，开始 Go 语言本身。你有 TypeScript 的底子，所以大部分语法你会觉得眼熟——真正的差异会出现在变量声明、包结构、以及类型系统没有隐式转换这件事上。第一张卡讲包与模块：为什么 Go 的一个文件夹就能是一个程序，以及 go run 背后到底跑了哪几步。"
+  }
+]
