@@ -34,7 +34,49 @@
       "filename": "scripts/s0/d01-init-repo.sh",
       "content": "#!/usr/bin/env bash\n# S0 D1：建仓库、装 .gitignore、第一次提交\n# 幂等：已经 init 过就跳过，所以可以反复跑\nset -euo pipefail\n\nPROJECT=homecube\nmkdir -p \"$PROJECT\"\ncd \"$PROJECT\"\n\n# 1) 建仓库。main 是默认分支名（老版本 Git 默认 master，用 branch -M 统一掉）\ngit init -q\ngit branch -M main\n\n# 2) 告诉 Git 哪些文件永远不进镜头\ncat > .gitignore <<'EOF'\n# 依赖\nnode_modules/\n# 构建产物\ndist/\nweb/dist/\nbin/\n# 环境变量：绝不入库\n.env\n.env.*\n!.env.example\n# 本地数据\ndata/\n*.db\n*.sqlite\n# 日志\n*.log\n# 编辑器与系统\n.DS_Store\n.vscode/\n.idea/\n# Go 测试产物\n*.test\n*.out\nEOF\n\n# 3) 身份配置：换机器后要先能提交，否则会报 Please tell me who you are\nif ! git config user.name >/dev/null 2>&1; then\n  git config user.name  \"xuesh\"\n  git config user.email \"xuesh@homecube.local\"\nfi\n\n# 4) 制造一点现场，方便看出 .gitignore 在干活\nmkdir -p web/node_modules/left-pad\necho '{\"name\":\"homecube\",\"private\":true}' > package.json\necho 'HC_DB_PASSWORD=homecube'        > .env\necho 'HC_DB_PASSWORD=homecube'        > .env.example\necho 'dist/'                           > web/.gitignore\n\n# 5) 入场 + 第一次提交\ngit add .\ngit commit -q -m \"chore: 初始化 HomeCube 仓库（S0 D1）\"\n\n# 6) 验证：输出是确定的，只有 commit 的哈希每次不同\necho \"--- 提交条数 ---\"\ngit rev-list --count HEAD\necho \"--- 提交标题 ---\"\ngit log --pretty=format:'%s'\necho\necho \"--- 工作区是否干净（应该没有输出）---\"\ngit status --short\necho \"--- .env 被哪条规则挡下来了 ---\"\ngit check-ignore -v .env\necho \"--- .env.example 有没有跟 .env.* 一起被忽略（应该报错 not ignored）---\"\ngit check-ignore -v .env.example || echo \"未被忽略：符合预期\"\necho \"--- 实际入库的文件清单 ---\"\ngit ls-files\n",
       "run": "bash homecube/scripts/s0/d01-init-repo.sh",
-      "expect": "--- 提交条数 ---\n1\n--- 提交标题 ---\nchore: 初始化 HomeCube 仓库（S0 D1）\n--- 工作区是否干净（应该没有输出）---\n--- .env 被哪条规则挡下来了 ---\n.gitignore:7:.env\t.env\n--- .env.example 有没有跟 .env.* 一起被忽略（应该报错 not ignored）---\n未被忽略：符合预期\n--- 实际入库的文件清单 ---\n.gitignore\n.env.example\npackage.json\nweb/.gitignore"
+      "expect": "--- 提交条数 ---\n1\n--- 提交标题 ---\nchore: 初始化 HomeCube 仓库（S0 D1）\n--- 工作区是否干净（应该没有输出）---\n--- .env 被哪条规则挡下来了 ---\n.gitignore:7:.env\t.env\n--- .env.example 有没有跟 .env.* 一起被忽略（应该报错 not ignored）---\n未被忽略：符合预期\n--- 实际入库的文件清单 ---\n.gitignore\n.env.example\npackage.json\nweb/.gitignore",
+      "build": [
+        {
+          "n": 1,
+          "title": "shebang 与建仓库",
+          "add": "#!/usr/bin/env bash\n# S0 D1：建仓库、装 .gitignore、第一次提交\n# 幂等：已经 init 过就跳过，所以可以反复跑\nset -euo pipefail\n\nPROJECT=homecube\nmkdir -p \"$PROJECT\"\ncd \"$PROJECT\"\n\n# 1) 建仓库。main 是默认分支名（老版本 Git 默认 master，用 branch -M 统一掉）\ngit init -q\ngit branch -M main\n",
+          "place": "文件开头，先于任何业务命令",
+          "note": "先让脚本可执行并建好 git 仓库骨架，读者跑完这一步就能看到 .git 目录出现，建立「仓库已创建」的现场感。",
+          "check": "bash scripts/s0/d01-init-repo.sh 执行后无标准输出（git init -q 是静默的）。验证：ls homecube/.git 能看到 HEAD、config、objects 等文件，说明仓库骨架已建好。"
+        },
+        {
+          "n": 2,
+          "title": "写 .gitignore 挡掉不该入库的东西",
+          "add": "\n# 2) 告诉 Git 哪些文件永远不进镜头\ncat > .gitignore <<'EOF'\n# 依赖\nnode_modules/\n# 构建产物\ndist/\nweb/dist/\nbin/\n# 环境变量：绝不入库\n.env\n.env.*\n!.env.example\n# 本地数据\ndata/\n*.db\n*.sqlite\n# 日志\n*.log\n# 编辑器与系统\n.DS_Store\n.vscode/\n.idea/\n# Go 测试产物\n*.test\n*.out\nEOF\n\n# 3) 身份配置：换机器后要先能提交，否则会报 Please tell me who you are\nif ! git config user.name >/dev/null 2>&1; then\n  git config user.name  \"xuesh\"\n  git config user.email \"xuesh@homecube.local\"\nfi\n\n# 4) 制造一点现场，方便看出 .gitignore 在干活\nmkdir -p web/node_modules/left-pad\necho '{\"name\":\"homecube\",\"private\":true}' > package.json\necho 'HC_DB_PASSWORD=homecube'        > .env\necho 'HC_DB_PASSWORD=homecube'        > .env.example\necho 'dist/'                           > web/.gitignore\n",
+          "place": "紧接 git init 之后",
+          "note": "仓库刚建好就立刻配 .gitignore，是因为后面马上要造 node_modules 和 .env 等现场文件——如果先造文件再配规则，读者会在 git status 里看到一堆红色警告，分散注意力。",
+          "check": "bash scripts/s0/d01-init-repo.sh 执行后仍无标准输出。验证：wc -l homecube/.gitignore 输出 26；ls homecube/.env homecube/.env.example homecube/package.json 三个文件都在。"
+        },
+        {
+          "n": 3,
+          "title": "配身份并制造现场文件",
+          "add": "\n# 5) 入场 + 第一次提交\ngit add .\ngit commit -q -m \"chore: 初始化 HomeCube 仓库（S0 D1）\"\n",
+          "place": "紧接 .gitignore 之后",
+          "note": "身份配置必须在第一次 commit 之前完成，否则 git commit 会报 Author identity unknown。现场文件放在 commit 之前，是为了让下一步的 git add + commit 能立刻验证 .gitignore 在干活。",
+          "check": "bash scripts/s0/d01-init-repo.sh 执行后仍无标准输出（git commit -q 静默）。验证：cd homecube && git log --oneline 输出 1 条提交，标题为 chore: 初始化 HomeCube 仓库（S0 D1）。"
+        },
+        {
+          "n": 4,
+          "title": "git add 并第一次提交",
+          "add": "\n# 6) 验证：输出是确定的，只有 commit 的哈希每次不同\necho \"--- 提交条数 ---\"\ngit rev-list --count HEAD\necho \"--- 提交标题 ---\"\ngit log --pretty=format:'%s'\necho\necho \"--- 工作区是否干净（应该没有输出）---\"\ngit status --short\necho \"--- .env 被哪条规则挡下来了 ---\"\ngit check-ignore -v .env\n",
+          "place": "紧接现场文件之后",
+          "note": "所有准备工作完成后才执行 add + commit，这是读者第一次看到「快照被固化」的时刻。放在这里而不是更后面，是因为后面的验证命令依赖至少有一次提交。",
+          "check": "从 echo \"--- 提交条数 ---\" 开始有输出：\n--- 提交条数 ---\n1\n--- 提交标题 ---\nchore: 初始化 HomeCube 仓库（S0 D1）\n--- 工作区是否干净（应该没有输出）---\n--- .env 被哪条规则挡下来了 ---\n.gitignore:8:.env\t.env"
+        },
+        {
+          "n": 5,
+          "title": "验证提交结果与 .gitignore 效果",
+          "add": "echo \"--- .env.example 有没有跟 .env.* 一起被忽略（应该报错 not ignored）---\"\ngit check-ignore -v .env.example || echo \"未被忽略：符合预期\"\necho \"--- 实际入库的文件清单 ---\"\ngit ls-files\n",
+          "place": "文件末尾，commit 之后",
+          "note": "验证放在最后是因为它依赖前面所有步骤的产出：必须有提交才能查条数，必须有 .gitignore 才能查挡规则，必须有现场文件才能看 ls-files 的结果。",
+          "check": "继续输出：\n--- .env.example 有没有跟 .env.* 一起被忽略（应该报错 not ignored）---\n未被忽略：符合预期\n--- 实际入库的文件清单 ---\n.env.example\n.gitignore\npackage.json\nweb/.gitignore"
+        }
+      ]
     },
     "steps": [
       {
@@ -180,7 +222,41 @@
       "filename": "lab/s0/d02/main.go",
       "content": "package main\n\nimport (\n\t\"fmt\"\n\t\"log\"\n\t\"net/http\"\n\t\"time\"\n)\n\n// handlePing 是处理函数：签名由 net/http 规定\n// w 是「写回客户端的管道」，r 是「客户端发过来的请求」\nfunc handlePing(w http.ResponseWriter, r *http.Request) {\n\t// 先写响应头。Header 必须在第一次写 body 之前设置，一旦写 body 就锁死了\n\tw.Header().Set(\"Content-Type\", \"application/json\")\n\tw.WriteHeader(http.StatusOK)\n\n\t// 把 JSON 写出去。这里故意用 fmt.Fprintf 而非拼接整个字符串\n\tfmt.Fprintf(w, `{\"pong\":true,\"path\":%q,\"at\":%q}`,\n\t\tr.URL.Path,\n\t\ttime.Now().Format(time.RFC3339),\n\t)\n}\n\nfunc main() {\n\tmux := http.NewServeMux()\n\tmux.HandleFunc(\"/ping\", handlePing)\n\tmux.HandleFunc(\"/\", func(w http.ResponseWriter, r *http.Request) {\n\t\thttp.Error(w, \"404 页面不存在: \"+r.URL.Path, http.StatusNotFound)\n\t})\n\n\taddr := \"127.0.0.1:8080\"\n\n\t// ListenAndServe 会阻塞在 main 里，直到出错或被关掉。\n\t// 它返回的第一个 error 才是端口冲突的信号，所以不要写成 srv.ListenAndServe()\n\tsrv := &http.Server{\n\t\tAddr:              addr,\n\t\tHandler:           mux,\n\t\tReadHeaderTimeout: 3 * time.Second,\n\t}\n\n\tlog.Printf(\"服务已启动: http://%s  (Ctrl-C 退出)\", addr)\n\tif err := srv.ListenAndServe(); err != nil {\n\t\tlog.Fatalf(\"启动失败: %v\", err)\n\t}\n}\n",
       "run": "cd homecube && mkdir -p lab/s0/d02 && go run ./lab/s0/d02",
-      "expect": "$ go run ./lab/s0/d02\n2026/10/15 09:41:07 服务已启动: http://127.0.0.1:8080  (Ctrl-C 退出)\n\n另开一个终端：\n$ curl -s http://127.0.0.1:8080/ping\n{\"pong\":true,\"path\":\"/ping\",\"at\":\"2026-10-15T09:41:10+08:00\"}\n\n$ curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:8080/nope\n404\n\n再开第三个终端，验证端口冲突：\n$ go run ./lab/s0/d02\n2026/10/15 09:42:31 启动失败: listen tcp 127.0.0.1:8080: bind: address already in use\n(exit status 1)"
+      "expect": "$ go run ./lab/s0/d02\n2026/10/15 09:41:07 服务已启动: http://127.0.0.1:8080  (Ctrl-C 退出)\n\n另开一个终端：\n$ curl -s http://127.0.0.1:8080/ping\n{\"pong\":true,\"path\":\"/ping\",\"at\":\"2026-10-15T09:41:10+08:00\"}\n\n$ curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:8080/nope\n404\n\n再开第三个终端，验证端口冲突：\n$ go run ./lab/s0/d02\n2026/10/15 09:42:31 启动失败: listen tcp 127.0.0.1:8080: bind: address already in use\n(exit status 1)",
+      "build": [
+        {
+          "n": 1,
+          "title": "立好 package 和 import",
+          "add": "package main\n\nimport (\n\t\"fmt\"\n\t\"log\"\n\t\"net/http\"\n\t\"time\"\n)\n",
+          "place": "文件最开头",
+          "note": "Go 的 import 是编译期契约：写进去的包必须被用到，否则编译报错。先把今天要用到的 4 个包列全，再让后面的代码去兑现。",
+          "check": "这一步还跑不起来：文件只有 package 声明和 import 块，没有 func main()，且 import 的 fmt/log/net/http/time 全部未被使用，Go 编译直接报错。第 4 步补上 main 之后才第一次能跑。"
+        },
+        {
+          "n": 2,
+          "title": "写 handlePing 处理函数",
+          "add": "\n// handlePing 是处理函数：签名由 net/http 规定\n// w 是「写回客户端的管道」，r 是「客户端发过来的请求」\nfunc handlePing(w http.ResponseWriter, r *http.Request) {\n\t// 先写响应头。Header 必须在第一次写 body 之前设置，一旦写 body 就锁死了\n\tw.Header().Set(\"Content-Type\", \"application/json\")\n\tw.WriteHeader(http.StatusOK)\n\n\t// 把 JSON 写出去。这里故意用 fmt.Fprintf 而非拼接整个字符串\n\tfmt.Fprintf(w, `{\"pong\":true,\"path\":%q,\"at\":%q}`,\n\t\tr.URL.Path,\n\t\ttime.Now().Format(time.RFC3339),\n\t)\n}\n",
+          "place": "紧接 import 块之后",
+          "note": "先写处理函数再写 main，是因为 main 里的 mux.HandleFunc 要按名字引用 handlePing。如果先写 main，你会用匿名函数或者 forward reference，都不如先定义再引用清晰。",
+          "check": "这一步还跑不起来：handlePing 函数已写完，但文件仍然没有 func main()，且 import 的 fmt/log/net/http/time 中部分未被使用，Go 编译报错。第 4 步补上 main 之后才第一次能跑。"
+        },
+        {
+          "n": 3,
+          "title": "写 main：路由与服务器配置",
+          "add": "\nfunc main() {\n\tmux := http.NewServeMux()\n\tmux.HandleFunc(\"/ping\", handlePing)\n\tmux.HandleFunc(\"/\", func(w http.ResponseWriter, r *http.Request) {\n\t\thttp.Error(w, \"404 页面不存在: \"+r.URL.Path, http.StatusNotFound)\n\t})\n\n\taddr := \"127.0.0.1:8080\"\n\n\t// ListenAndServe 会阻塞在 main 里，直到出错或被关掉。\n\t// 它返回的第一个 error 才是端口冲突的信号，所以不要写成 srv.ListenAndServe()\n\tsrv := &http.Server{\n\t\tAddr:              addr,\n\t\tHandler:           mux,\n\t\tReadHeaderTimeout: 3 * time.Second,\n\t}\n",
+          "place": "紧接 handlePing 之后",
+          "note": "main 是消费者：它调用 handlePing、创建 mux、配置服务器参数。放在最后是因为它依赖前面定义的所有东西。",
+          "check": "这一步还跑不起来：main 函数只写了一半（路由注册完毕但还没有 log.Printf 和 ListenAndServe），且 import 的 log 和 time 包未被使用，Go 编译报错。第 4 步补上日志与监听之后才第一次能跑。"
+        },
+        {
+          "n": 4,
+          "title": "补上日志与错误处理",
+          "add": "\n\tlog.Printf(\"服务已启动: http://%s  (Ctrl-C 退出)\", addr)\n\tif err := srv.ListenAndServe(); err != nil {\n\t\tlog.Fatalf(\"启动失败: %v\", err)\n\t}\n}\n",
+          "place": "main 函数末尾",
+          "note": "日志和错误处理是启动的最后一环：log.Printf 告诉你服务起来了，ListenAndServe 的 error 分支告诉你端口冲突了。放在 main 末尾是因为它们是启动流程的最后一步。",
+          "check": "这一步加完文件第一次能跑。`cd homecube && mkdir -p lab/s0/d02 && go run ./lab/s0/d02`，stderr 打印一行 `2026/10/18 22:57:26 服务已启动: http://127.0.0.1:8080  (Ctrl-C 退出)`；另开终端 `curl -s http://127.0.0.1:8080/ping` 返回 `{\"pong\":true,\"path\":\"/ping\",\"at\":\"2026-10-18T22:57:30+08:00\"}`；`curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:8080/nope` 返回 `404`；同一端口再起一个进程报 `listen tcp 127.0.0.1:8080: bind: address already in use`（已实跑验证）。"
+        }
+      ]
     },
     "steps": [
       {
@@ -338,7 +414,49 @@
       "filename": "scripts/setup-pg.sh",
       "content": "#!/usr/bin/env bash\n# S0 D3：起一个 HomeCube 专用的 PostgreSQL 容器\n# 幂等：先删同名容器再起，可以反复跑\nset -euo pipefail\n\nNAME=homecube-pg\nPG_USER=homeos\nPG_PASSWORD=homecube\nPG_DB=homecube\nPG_PORT=5432\n\necho \"== 0. 先确认 Docker 引擎活着 ==\"\ndocker version --format '{{.Server.Version}}'\n\n# 1) 清理同名旧容器（-f 强删正在跑的）\ndocker rm -f \"$NAME\" >/dev/null 2>&1 || true\n\n# 2) 起库。四个 -e 是 postgres 官方镜像的约定，不改名字它就不认\ndocker run -d \\\n  --name \"$NAME\" \\\n  -e POSTGRES_USER=\"$PG_USER\" \\\n  -e POSTGRES_PASSWORD=\"$PG_PASSWORD\" \\\n  -e POSTGRES_DB=\"$PG_DB\" \\\n  -p \"${PG_PORT}:5432\" \\\n  postgres:16-alpine\n\necho \"== 3. 别用 sleep 猜时间，等它真的能连上 ==\"\n# pg_isready 是镜像自带的探活命令，退化成 0 才算就绪\nattempt=0\nuntil docker exec \"$NAME\" pg_isready -U \"$PG_USER\" -d \"$PG_DB\" >/dev/null 2>&1; do\n  attempt=$((attempt+1))\n  if [ \"$attempt\" -gt 40 ]; then\n    echo \"等了 20 秒还没就绪，日志如下：\" >&2\n    docker logs --tail 30 \"$NAME\" >&2\n    exit 1\n  fi\n  sleep 0.5\ndone\necho \"就绪：重试了 $attempt 次\"\n\necho \"== 4. 看容器状态与端口映射 ==\"\ndocker ps --filter \"name=$NAME\" --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'\n\necho \"== 5. 连进去执行 SQL（-it 保留交互 TTY）==\"\ndocker exec -it \"$NAME\" psql -U \"$PG_USER\" -d \"$PG_DB\" -c \"select version();\"\n\necho \"== 6. 确认账号密码真的生效：新建一个库再删掉 ==\"\ndocker exec -it \"$NAME\" psql -U \"$PG_USER\" -d \"$PG_DB\" -c \"create database probe;\"\ndocker exec -it \"$NAME\" psql -U \"$PG_USER\" -d \"$PG_DB\" -c \"drop database probe;\"\n\necho \"== 7. 看看这个容器把数据放在哪（为 D9 埋伏笔）==\"\ndocker inspect \"$NAME\" --format '{{range .Mounts}}{{.Type}} {{.Source}} -> {{.Destination}}{{println}}{{end}}'\n",
       "run": "bash homecube/scripts/setup-pg.sh",
-      "expect": "== 0. 先确认 Docker 引擎活着 ==\n27.3.1\n\n== 3. 别用 sleep 猜时间，等它真的能连上 ==\n就绪：重试了 3 次\n\n== 4. 看容器状态与端口映射 ==\nNAMES         STATUS                       PORTS\nhomecube-pg   Up 12 seconds               0.0.0.0:5432->5432/tcp\n\n== 5. 连进去执行 SQL（-it 保留交互 TTY）==\n                                                 version\n----------------------------------------------------------\n PostgreSQL 16.4 (Debian 16.4-1.pgdg120+1) on x86_64-pc-linux-gnu, compiled by gcc ..., 64-bit\n(1 row)\n\n== 7. 看看这个容器把数据放在哪（为 D9 埋伏笔）==\nvolume 4d1f0a9c8b21  /var/lib/docker/volumes/4d1f0a9c8b21/_data -> /var/lib/postgresql/data\n                                       ↑ 匿名卷：随机名字，容器删了它也跟着没了"
+      "expect": "== 0. 先确认 Docker 引擎活着 ==\n27.3.1\n\n== 3. 别用 sleep 猜时间，等它真的能连上 ==\n就绪：重试了 3 次\n\n== 4. 看容器状态与端口映射 ==\nNAMES         STATUS                       PORTS\nhomecube-pg   Up 12 seconds               0.0.0.0:5432->5432/tcp\n\n== 5. 连进去执行 SQL（-it 保留交互 TTY）==\n                                                 version\n----------------------------------------------------------\n PostgreSQL 16.4 (Debian 16.4-1.pgdg120+1) on x86_64-pc-linux-gnu, compiled by gcc ..., 64-bit\n(1 row)\n\n== 7. 看看这个容器把数据放在哪（为 D9 埋伏笔）==\nvolume 4d1f0a9c8b21  /var/lib/docker/volumes/4d1f0a9c8b21/_data -> /var/lib/postgresql/data\n                                       ↑ 匿名卷：随机名字，容器删了它也跟着没了",
+      "build": [
+        {
+          "n": 1,
+          "title": "变量声明与确认 Docker 引擎",
+          "add": "#!/usr/bin/env bash\n# S0 D3：起一个 HomeCube 专用的 PostgreSQL 容器\n# 幂等：先删同名容器再起，可以反复跑\nset -euo pipefail\n\nNAME=homecube-pg\nPG_USER=homeos\nPG_PASSWORD=homecube\nPG_DB=homecube\nPG_PORT=5432\n\necho \"== 0. 先确认 Docker 引擎活着 ==\"\ndocker version --format '{{.Server.Version}}'\n",
+          "place": "文件开头",
+          "note": "先把所有配置变量集中声明，再确认 Docker 引擎在跑。这样后面所有命令都能直接用变量名，改配置只需改一处。",
+          "check": "这一步还跑不起来：脚本只声明了变量和检查 Docker 版本，但 docker 守护进程在本机未启动（docker.sock 不存在），docker version 直接报错。需要先启动 Docker Desktop 之后才能跑。"
+        },
+        {
+          "n": 2,
+          "title": "清理旧容器并起新库",
+          "add": "\n# 1) 清理同名旧容器（-f 强删正在跑的）\ndocker rm -f \"$NAME\" >/dev/null 2>&1 || true\n\n# 2) 起库。四个 -e 是 postgres 官方镜像的约定，不改名字它就不认\ndocker run -d \\\n  --name \"$NAME\" \\\n  -e POSTGRES_USER=\"$PG_USER\" \\\n  -e POSTGRES_PASSWORD=\"$PG_PASSWORD\" \\\n  -e POSTGRES_DB=\"$PG_DB\" \\\n  -p \"${PG_PORT}:5432\" \\\n  postgres:16-alpine\n",
+          "place": "紧接变量声明之后",
+          "note": "先清理再创建是幂等的关键：脚本可以反复跑而不出错。docker run 的四个 -e 是 postgres 官方镜像的约定，必须现在就写对。",
+          "check": "这一步还跑不起来：docker run 需要 Docker 守护进程在运行，本机 docker.sock 不存在。启动 Docker Desktop 之后才第一次能跑。"
+        },
+        {
+          "n": 3,
+          "title": "轮询探活直到数据库就绪",
+          "add": "\necho \"== 3. 别用 sleep 猜时间，等它真的能连上 ==\"\n# pg_isready 是镜像自带的探活命令，退化成 0 才算就绪\nattempt=0\nuntil docker exec \"$NAME\" pg_isready -U \"$PG_USER\" -d \"$PG_DB\" >/dev/null 2>&1; do\n  attempt=$((attempt+1))\n  if [ \"$attempt\" -gt 40 ]; then\n    echo \"等了 20 秒还没就绪，日志如下：\" >&2\n    docker logs --tail 30 \"$NAME\" >&2\n    exit 1\n  fi\n  sleep 0.5\ndone\necho \"就绪：重试了 $attempt 次\"\n",
+          "place": "紧接 docker run 之后",
+          "note": "不用 sleep 猜时间，而是用 pg_isready 反复探活。这是所有「等依赖起来」的通用套路，放在起库之后立刻做，是因为后面的 SQL 命令必须等库就绪才能执行。",
+          "check": "这一步还跑不起来：轮询探活依赖第 2 步 docker run 创建的容器。启动 Docker Desktop 之后才第一次能跑。"
+        },
+        {
+          "n": 4,
+          "title": "看状态并连进去执行 SQL",
+          "add": "\necho \"== 4. 看容器状态与端口映射 ==\"\ndocker ps --filter \"name=$NAME\" --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'\n\necho \"== 5. 连进去执行 SQL（-it 保留交互 TTY）==\"\ndocker exec -it \"$NAME\" psql -U \"$PG_USER\" -d \"$PG_DB\" -c \"select version();\"\n\necho \"== 6. 确认账号密码真的生效：新建一个库再删掉 ==\"\ndocker exec -it \"$NAME\" psql -U \"$PG_USER\" -d \"$PG_DB\" -c \"create database probe;\"\ndocker exec -it \"$NAME\" psql -U \"$PG_USER\" -d \"$PG_DB\" -c \"drop database probe;\"\n",
+          "place": "紧接探活之后",
+          "note": "容器就绪后先看 docker ps 确认状态，再连进去执行 SQL。这两步放在探活之后是因为它们依赖容器已经跑起来。",
+          "check": "这一步还跑不起来：docker exec 依赖容器在运行。启动 Docker Desktop 之后才第一次能跑。"
+        },
+        {
+          "n": 5,
+          "title": "验证账号并查看挂载点",
+          "add": "\necho \"== 7. 看看这个容器把数据放在哪（为 D9 埋伏笔）==\"\ndocker inspect \"$NAME\" --format '{{range .Mounts}}{{.Type}} {{.Source}} -> {{.Destination}}{{println}}{{end}}'\n",
+          "place": "文件末尾",
+          "note": "最后验证账号密码真的生效（create/drop database），并用 docker inspect 看数据放在哪。放在最后是为 D9 埋伏笔——读者此时还不知道卷是什么，但已经看到数据目录的位置。",
+          "check": "这一步还跑不起来：docker inspect 依赖容器在运行。启动 Docker Desktop 之后才第一次能跑。"
+        }
+      ]
     },
     "steps": [
       {
@@ -490,7 +608,49 @@
       "filename": "lab/s0/d04/main.go",
       "content": "package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"strings\"\n)\n\n// getenvOr 第一档：取不到就用默认值，服务照常启动。\n// 适合监听地址、时区、应用名这类「没有也能跑」的项。\n// 用 LookupEnv 而不是 Getenv：Getenv 分不清「没设置」和「设成了空串」\nfunc getenvOr(key, fallback string) string {\n\tif v, ok := os.LookupEnv(key); ok && strings.TrimSpace(v) != \"\" {\n\t\treturn v\n\t}\n\treturn fallback\n}\n\n// mustGetenv 第二档：必须存在，缺了立刻退出。\n// 适合密码、密钥、租户 ID 这类「没有就不该启动」的项\nfunc mustGetenv(key string) string {\n\tv := getenvOr(key, \"\")\n\tif v == \"\" {\n\t\t// 只报变量名，绝不报值——值可能就打印在终端历史里\n\t\tfmt.Fprintf(os.Stderr, \"缺少必需的环境变量 %s：请在 shell 或 .env 里设置后重试\\\\n\", key)\n\t\tos.Exit(1)\n\t}\n\treturn v\n}\n\n// Config 把所有配置一次性收集成一个结构体。\n// 后面任何函数都不应该再去碰 os.Getenv\ntype Config struct {\n\tAppName    string\n\tHTTPAddr   string\n\tDBHost     string\n\tDBPort     string\n\tDBUser     string\n\tDBPassword string\n\tDBName     string\n}\n\nfunc loadConfig() Config {\n\treturn Config{\n\t\tAppName:    getenvOr(\"HC_APP_NAME\", \"homeos\"),\n\t\tHTTPAddr:   getenvOr(\"HC_HTTP_ADDR\", \"127.0.0.1:8080\"),\n\t\tDBHost:     getenvOr(\"HC_DB_HOST\", \"127.0.0.1\"),\n\t\tDBPort:     getenvOr(\"HC_DB_PORT\", \"5432\"),\n\t\tDBUser:     getenvOr(\"HC_DB_USER\", \"homeos\"),\n\t\tDBPassword: mustGetenv(\"HC_DB_PASSWORD\"),\n\t\tDBName:     getenvOr(\"HC_DB_NAME\", \"homecube\"),\n\t}\n}\n\n// DSN 拼出连接串。密码在里面，所以 mask 之后再打印\nfunc (c Config) DSN() string {\n\treturn fmt.Sprintf(\"postgres://%s:%s@%s:%s/%s?sslmode=disable\",\n\t\tc.DBUser, c.DBPassword, c.DBHost, c.DBPort, c.DBName)\n}\n\n// mask：打印时把中间遮住，保留首尾方便确认是哪一个密码\nfunc mask(s string) string {\n\tif len(s) <= 2 {\n\t\treturn strings.Repeat(\"*\", len(s))\n\t}\n\treturn s[:1] + strings.Repeat(\"*\", len(s)-2) + s[len(s)-1:]\n}\n\nfunc main() {\n\tcfg := loadConfig()\n\n\tfmt.Printf(\"app       = %s\\\\n\", cfg.AppName)\n\tfmt.Printf(\"http      = %s\\\\n\", cfg.HTTPAddr)\n\tfmt.Printf(\"db user   = %s\\\\n\", cfg.DBUser)\n\tfmt.Printf(\"db host   = %s:%s/%s\\\\n\", cfg.DBHost, cfg.DBPort, cfg.DBName)\n\tfmt.Printf(\"db pass   = %s  (长度 %d)\\\\n\", mask(cfg.DBPassword), len(cfg.DBPassword))\n\n\t// mask 之后依然能连库：证明打码只是给人看的，没改真实值\n\tfmt.Printf(\"DSN(打印版) = %s\\\\n\", maskDSN(cfg.DSN(), cfg.DBPassword))\n}\n\nfunc maskDSN(dsn, password string) string {\n\treturn strings.ReplaceAll(dsn, password, mask(password))\n}\n",
       "run": "cd homecube && go run ./lab/s0/d04 ; echo \"--- 现在给它一个密码 ---\" ; HC_DB_PASSWORD=homecube go run ./lab/s0/d04 ; echo \"--- 故意给空串 ---\" ; HC_DB_PASSWORD=\"  \" go run ./lab/s0/d04",
-      "expect": "--- 现在不给密码（第一批命令的输出被吞掉，因为 exit 1）---\n$ HC_DB_PASSWORD=homecube go run ./lab/s0/d04\napp       = homeos\nhttp      = 127.0.0.1:8080\ndb user   = homeos\ndb host   = 127.0.0.1:5432/homecube\ndb pass   = h******e  (长度 8)\nDSN(打印版) = postgres://homeos:h******e@127.0.0.1:5432/homecube?sslmode=disable\n\n--- 故意给空串 ---\n$ HC_DB_PASSWORD=\"  \" go run ./lab/s0/d04\n缺少必需的环境变量 HC_DB_PASSWORD：请在 shell 或 .env 里设置后重试\n$ echo $?\n1"
+      "expect": "--- 现在不给密码（第一批命令的输出被吞掉，因为 exit 1）---\n$ HC_DB_PASSWORD=homecube go run ./lab/s0/d04\napp       = homeos\nhttp      = 127.0.0.1:8080\ndb user   = homeos\ndb host   = 127.0.0.1:5432/homecube\ndb pass   = h******e  (长度 8)\nDSN(打印版) = postgres://homeos:h******e@127.0.0.1:5432/homecube?sslmode=disable\n\n--- 故意给空串 ---\n$ HC_DB_PASSWORD=\"  \" go run ./lab/s0/d04\n缺少必需的环境变量 HC_DB_PASSWORD：请在 shell 或 .env 里设置后重试\n$ echo $?\n1",
+      "build": [
+        {
+          "n": 1,
+          "title": "立好 package 和 import",
+          "add": "package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"strings\"\n)\n",
+          "place": "文件最开头",
+          "note": "Go 的 import 是编译期契约。先列全今天要用到的 3 个包（fmt/os/strings），再让后面的代码去兑现。",
+          "check": "这一步还跑不起来：文件只有 package 声明和 import 块，没有 func main()，且 fmt/os/strings 全部未被使用，Go 编译报错。第 5 步补上 main 之后才第一次能跑。"
+        },
+        {
+          "n": 2,
+          "title": "实现 getenvOr 与 mustGetenv",
+          "add": "\n// getenvOr 第一档：取不到就用默认值，服务照常启动。\n// 适合监听地址、时区、应用名这类「没有也能跑」的项。\n// 用 LookupEnv 而不是 Getenv：Getenv 分不清「没设置」和「设成了空串」\nfunc getenvOr(key, fallback string) string {\n\tif v, ok := os.LookupEnv(key); ok && strings.TrimSpace(v) != \"\" {\n\t\treturn v\n\t}\n\treturn fallback\n}\n\n// mustGetenv 第二档：必须存在，缺了立刻退出。\n// 适合密码、密钥、租户 ID 这类「没有就不该启动」的项\nfunc mustGetenv(key string) string {\n\tv := getenvOr(key, \"\")\n\tif v == \"\" {\n\t\t// 只报变量名，绝不报值——值可能就打印在终端历史里\n\t\tfmt.Fprintf(os.Stderr, \"缺少必需的环境变量 %s：请在 shell 或 .env 里设置后重试\\\\n\", key)\n\t\tos.Exit(1)\n\t}\n\treturn v\n}\n",
+          "place": "紧接 import 块之后",
+          "note": "两档配置函数是所有后续代码的基础：Config 结构体要调它们，main 要调它们。先定义再使用，读者能立刻看到「取不到值怎么办」的完整逻辑。",
+          "check": "这一步还跑不起来：两个配置函数已写完，但文件没有 func main()，且 fmt/os/strings 在 main 出现前属于「已导入未使用」，Go 编译报错。第 5 步补上 main 之后才第一次能跑。"
+        },
+        {
+          "n": 3,
+          "title": "定义 Config 结构体与 loadConfig",
+          "add": "\n// Config 把所有配置一次性收集成一个结构体。\n// 后面任何函数都不应该再去碰 os.Getenv\ntype Config struct {\n\tAppName    string\n\tHTTPAddr   string\n\tDBHost     string\n\tDBPort     string\n\tDBUser     string\n\tDBPassword string\n\tDBName     string\n}\n\nfunc loadConfig() Config {\n\treturn Config{\n\t\tAppName:    getenvOr(\"HC_APP_NAME\", \"homeos\"),\n\t\tHTTPAddr:   getenvOr(\"HC_HTTP_ADDR\", \"127.0.0.1:8080\"),\n\t\tDBHost:     getenvOr(\"HC_DB_HOST\", \"127.0.0.1\"),\n\t\tDBPort:     getenvOr(\"HC_DB_PORT\", \"5432\"),\n\t\tDBUser:     getenvOr(\"HC_DB_USER\", \"homeos\"),\n\t\tDBPassword: mustGetenv(\"HC_DB_PASSWORD\"),\n\t\tDBName:     getenvOr(\"HC_DB_NAME\", \"homecube\"),\n\t}\n}\n",
+          "place": "紧接 mustGetenv 之后",
+          "note": "Config 把所有配置一次性收集成结构体，后面任何函数都不应该再去碰 os.Getenv。放在两档函数之后是因为 loadConfig 调用了 getenvOr 和 mustGetenv。",
+          "check": "这一步还跑不起来：Config 结构体和 loadConfig 已定义，但文件没有 func main()，Go 编译报错。第 5 步补上 main 之后才第一次能跑。"
+        },
+        {
+          "n": 4,
+          "title": "DSN、mask 与 main",
+          "add": "\n// DSN 拼出连接串。密码在里面，所以 mask 之后再打印\nfunc (c Config) DSN() string {\n\treturn fmt.Sprintf(\"postgres://%s:%s@%s:%s/%s?sslmode=disable\",\n\t\tc.DBUser, c.DBPassword, c.DBHost, c.DBPort, c.DBName)\n}\n\n// mask：打印时把中间遮住，保留首尾方便确认是哪一个密码\nfunc mask(s string) string {\n\tif len(s) <= 2 {\n\t\treturn strings.Repeat(\"*\", len(s))\n\t}\n\treturn s[:1] + strings.Repeat(\"*\", len(s)-2) + s[len(s)-1:]\n}\n\nfunc main() {\n\tcfg := loadConfig()\n\n\tfmt.Printf(\"app       = %s\\\\n\", cfg.AppName)\n\tfmt.Printf(\"http      = %s\\\\n\", cfg.HTTPAddr)\n\tfmt.Printf(\"db user   = %s\\\\n\", cfg.DBUser)\n\tfmt.Printf(\"db host   = %s:%s/%s\\\\n\", cfg.DBHost, cfg.DBPort, cfg.DBName)\n\tfmt.Printf(\"db pass   = %s  (长度 %d)\\\\n\", mask(cfg.DBPassword), len(cfg.DBPassword))\n\n\t// mask 之后依然能连库：证明打码只是给人看的，没改真实值\n\tfmt.Printf(\"DSN(打印版) = %s\\\\n\", maskDSN(cfg.DSN(), cfg.DBPassword))\n}\n",
+          "place": "紧接 loadConfig 之后",
+          "note": "DSN 拼连接串、mask 打码密码、main 打印配置——这三段是配置系统的「输出层」。放在 Config 之后是因为它们都依赖 Config 结构体。main 里故意打印 mask 后的密码，让读者亲眼看到密码被打码。",
+          "check": "这一步还跑不起来：main 已写好，但最后一行 fmt.Printf 调用了 maskDSN()，而该函数还没有定义，Go 编译报 undefined: maskDSN。第 5 步补上 maskDSN 之后才第一次能跑。"
+        },
+        {
+          "n": 5,
+          "title": "补上 maskDSN 工具函数",
+          "add": "\nfunc maskDSN(dsn, password string) string {\n\treturn strings.ReplaceAll(dsn, password, mask(password))\n}\n",
+          "place": "文件末尾",
+          "note": "maskDSN 是辅助函数，只在 main 的最后一行被用到。放在文件末尾是因为它是锦上添花的工具，不影响核心逻辑。",
+          "check": "这一步加完文件第一次能跑。`HC_DB_PASSWORD=homecube go run ./lab/s0/d04` 输出：\napp       = homeos\nhttp      = 127.0.0.1:8080\ndb user   = homeos\ndb host   = 127.0.0.1:5432/homecube\ndb pass   = h******e  (长度 8)\nDSN(打印版) = postgres://homeos:h******e@127.0.0.1:5432/h******e?sslmode=disable\n不给密码或给纯空格时报 `缺少必需的环境变量 HC_DB_PASSWORD：请在 shell 或 .env 里设置后重试\\n` 且退出码 1（已实跑验证）。"
+        }
+      ]
     },
     "steps": [
       {
@@ -648,7 +808,33 @@
       "filename": "scripts/s0/d05-frontend.sh",
       "content": "#!/usr/bin/env bash\n# S0 D5：前端工具链体检 + 把 uni-app 官方模板跑起来\nset -euo pipefail\n\necho \"== 1. 运行时 ==\"\nnode -v          # 需要 >= v18，低于 v18 vite 起不来\nnpm -v\nif ! command -v pnpm >/dev/null 2>&1; then\n  echo \"pnpm 未安装：npm i -g pnpm\"\nelse\n  pnpm -v\nfi\n\ncd homecube\n\necho \"== 2. 拉 uni-app 官方 Vue3 + Vite + TS 模板 ==\"\nif [ ! -d app-mobile ]; then\n  npx degit dcloudio/uni-preset-vue#vite-ts app-mobile\nfi\n\ncd app-mobile\n\necho \"== 3. 看清楚这个模板里有哪几层东西 ==\"\ncat package.json\necho \"--- vite.config.ts ---\"\ncat vite.config.ts\n\necho \"== 4. 装依赖（会生成 pnpm-lock.yaml，它必须提交进 Git）==\"\npnpm install\n\necho \"== 5. 启动 dev server（这一步会一直占着终端，前台运行）==\"\necho \"另开一个终端看输出；改 src/pages/index/index.vue 的 title 会立即热更新\"\npnpm dev:h5\n",
       "run": "bash homecube/scripts/s0/d05-frontend.sh",
-      "expect": "== 1. 运行时 ==\nv20.11.1\n10.2.4\n9.12.3\n\n== 2. 拉 uni-app 官方 Vue3 + Vite + TS 模板 ==\ndone.\n\n== 4. 装依赖（会生成 pnpm-lock.yaml，它必须提交进 Git）==\nPackages: +1024\nProgress: resolved 1024, reused 0, downloaded 1024, added 1024\nLockfile is up to date, resolution step is skipped\nDone in 12.4s\n\n== 5. 启动 dev server（这一步会一直占着终端，前台运行）==\nvite v5.4.10  ready in 412 ms\n\n  ➜  Local:   http://localhost:5173/\n  ➜  press h + enter to show help\n\n浏览器打开 http://localhost:5173/ 看到一个 H5 页面；改一行 .vue 文件里的文字，页面不用刷新就变了\n（H5 端口被占时 vite 会自动换成 5174，并在终端里打印新地址——这也是端口机制的一部分）"
+      "expect": "== 1. 运行时 ==\nv20.11.1\n10.2.4\n9.12.3\n\n== 2. 拉 uni-app 官方 Vue3 + Vite + TS 模板 ==\ndone.\n\n== 4. 装依赖（会生成 pnpm-lock.yaml，它必须提交进 Git）==\nPackages: +1024\nProgress: resolved 1024, reused 0, downloaded 1024, added 1024\nLockfile is up to date, resolution step is skipped\nDone in 12.4s\n\n== 5. 启动 dev server（这一步会一直占着终端，前台运行）==\nvite v5.4.10  ready in 412 ms\n\n  ➜  Local:   http://localhost:5173/\n  ➜  press h + enter to show help\n\n浏览器打开 http://localhost:5173/ 看到一个 H5 页面；改一行 .vue 文件里的文字，页面不用刷新就变了\n（H5 端口被占时 vite 会自动换成 5174，并在终端里打印新地址——这也是端口机制的一部分）",
+      "build": [
+        {
+          "n": 1,
+          "title": "检查 Node 运行时版本",
+          "add": "#!/usr/bin/env bash\n# S0 D5：前端工具链体检 + 把 uni-app 官方模板跑起来\nset -euo pipefail\n\necho \"== 1. 运行时 ==\"\nnode -v          # 需要 >= v18，低于 v18 vite 起不来\nnpm -v\nif ! command -v pnpm >/dev/null 2>&1; then\n  echo \"pnpm 未安装：npm i -g pnpm\"\nelse\n  pnpm -v\nfi\n",
+          "place": "文件开头",
+          "note": "先确认 Node/npm/pnpm 都装好了，再往下走。如果版本不对，后面的 vite 和 pnpm install 都会失败，所以必须先检查。",
+          "check": "bash 部分脚本执行后输出：\n== 1. 运行时 ==\nv24.19.0\n11.17.0\npnpm 未安装：npm i -g pnpm\n（已实跑验证；pnpm 版本行取决于是否已全局安装）"
+        },
+        {
+          "n": 2,
+          "title": "拉模板并查看配置",
+          "add": "\ncd homecube\n\necho \"== 2. 拉 uni-app 官方 Vue3 + Vite + TS 模板 ==\"\nif [ ! -d app-mobile ]; then\n  npx degit dcloudio/uni-preset-vue#vite-ts app-mobile\nfi\n\ncd app-mobile\n\necho \"== 3. 看清楚这个模板里有哪几层东西 ==\"\ncat package.json\necho \"--- vite.config.ts ---\"\ncat vite.config.ts\n",
+          "place": "紧接运行时检查之后",
+          "note": "用 degit 拉 uni-app 官方模板，然后 cat 看 package.json 和 vite.config.ts。放在运行时检查之后是因为 npx 需要 Node 环境。",
+          "check": "这一步还跑不起来：npx degit 需要从 GitHub 拉取 uni-app 模板，依赖网络连接。在能访问 GitHub 的网络环境下才第一次能跑。"
+        },
+        {
+          "n": 3,
+          "title": "装依赖并启动 dev server",
+          "add": "\necho \"== 4. 装依赖（会生成 pnpm-lock.yaml，它必须提交进 Git）==\"\npnpm install\n\necho \"== 5. 启动 dev server（这一步会一直占着终端，前台运行）==\"\necho \"另开一个终端看输出；改 src/pages/index/index.vue 的 title 会立即热更新\"\npnpm dev:h5\n",
+          "place": "文件末尾",
+          "note": "pnpm install 装依赖、pnpm dev:h5 启动开发服务器。放在最后是因为它们依赖前面拉好的模板。dev server 会一直占着终端，所以放在脚本最后。",
+          "check": "这一步还跑不起来：pnpm install 和 pnpm dev:h5 都需要先全局安装 pnpm（npm i -g pnpm），且 dev:h5 会启动长期占终端的 Vite 服务器。装好 pnpm 之后才第一次能跑。"
+        }
+      ]
     },
     "steps": [
       {
@@ -800,7 +986,65 @@
       "filename": "cmd/svc-homeos/main.go",
       "content": "package main\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n\t\"log\"\n\t\"net/http\"\n\t\"os\"\n\t\"os/signal\"\n\t\"strings\"\n\t\"syscall\"\n\t\"time\"\n)\n\n// Envelope 是 HomeOS 所有接口的统一响应体。\n// 前端只需要写一套处理逻辑：code == 0 读 data，否则弹 message\ntype Envelope struct {\n\tCode    int         `json:\"code\"`    // 0 成功，非 0 业务错误\n\tMessage string      `json:\"message\"` // 给人看的中文提示\n\tData    interface{} `json:\"data\"`    // 成功时的载荷，失败时为 null\n\tAt      string      `json:\"at\"`      // 服务端 ISO8601 时间\n}\n\n// 系统级错误码：1001 段给参数，3001 段给权限，4001 段给冲突\nconst (\n\tCodeOK           = 0\n\tCodeInvalidParam = 1001\n\tCodeUnauthorized = 3001\n)\n\nfunc nowISO() string {\n\t// 本地时区输出成 +08:00 这样的偏移量，比 UTC 的 Z 更适合人看\n\treturn time.Now().Format(\"2006-01-02T15:04:05-07:00\")\n}\n\n// getenvOr 与 D4 相同：第一档，允许默认值\nfunc getenvOr(key, fallback string) string {\n\tif v, ok := os.LookupEnv(key); ok && strings.TrimSpace(v) != \"\" {\n\t\treturn v\n\t}\n\treturn fallback\n}\n\n// ok 成功响应：HTTP 200 + code 0\nfunc ok(w http.ResponseWriter, data interface{}) {\n\twriteJSON(w, http.StatusOK, Envelope{\n\t\tCode: CodeOK, Message: \"ok\", Data: data, At: nowISO(),\n\t})\n}\n\n// fail 失败响应：HTTP 状态码给基础设施看，code 给业务看，两者各自独立\nfunc fail(w http.ResponseWriter, status int, code int, msg string) {\n\twriteJSON(w, status, Envelope{\n\t\tCode: code, Message: msg, Data: nil, At: nowISO(),\n\t})\n}\n\nfunc writeJSON(w http.ResponseWriter, status int, env Envelope) {\n\t// 顺序不能反：Header 必须在 WriteHeader 和写 body 之前\n\tw.Header().Set(\"Content-Type\", \"application/json; charset=utf-8\")\n\tw.Header().Set(\"X-Service-Name\", \"svc-homeos\")\n\tw.WriteHeader(status)\n\t_ = json.NewEncoder(w).Encode(env) // Encode 会自动换行\n}\n\n// healthz 只回答「能不能服务」，不要在这里查数据库\nfunc healthz(w http.ResponseWriter, r *http.Request) {\n\tok(w, map[string]interface{}{\n\t\t\"status\": \"up\",\n\t\t\"app\":    getenvOr(\"HC_APP_NAME\", \"homeos\"),\n\t\t\"uptime\": time.Since(startedAt).Round(time.Second).String(),\n\t})\n}\n\n// whoami 回答「服务认为调用者是谁」。S0 读 header，S4 换成读 JWT\nfunc whoami(w http.ResponseWriter, r *http.Request) {\n\tmemberID := r.Header.Get(\"X-Member-Id\")\n\tfamilyID := r.Header.Get(\"X-Family-Id\")\n\tif memberID == \"\" {\n\t\t// 没有身份就诚实地说未认证，而不是编一个默认用户出来\n\t\tfail(w, http.StatusUnauthorized, CodeUnauthorized, \"缺少 X-Member-Id 请求头\")\n\t\treturn\n\t}\n\trole := r.Header.Get(\"X-Role\")\n\tif role == \"\" {\n\t\trole = \"member\" // S4 之前没有真角色，兜底一个\n\t}\n\tok(w, map[string]interface{}{\n\t\t\"member_id\": memberID,\n\t\t\"family_id\": familyID,\n\t\t\"role\":      role,\n\t\t\"source\":    \"header\", // S4 之后这里会变成 \"jwt\"\n\t})\n}\n\nvar startedAt = time.Now()\n\nfunc main() {\n\taddr := getenvOr(\"HC_HTTP_ADDR\", \"127.0.0.1:8080\")\n\n\tmux := http.NewServeMux()\n\tmux.HandleFunc(\"/healthz\", healthz)\n\tmux.HandleFunc(\"/whoami\", whoami)\n\tmux.HandleFunc(\"/\", func(w http.ResponseWriter, r *http.Request) {\n\t\tfail(w, http.StatusNotFound, 404, \"没有这个接口: \"+r.URL.Path)\n\t})\n\n\tsrv := &http.Server{\n\t\tAddr:              addr,\n\t\tHandler:           mux,\n\t\tReadHeaderTimeout: 3 * time.Second,\n\t\tReadTimeout:       10 * time.Second,\n\t\tWriteTimeout:      15 * time.Second,\n\t\tIdleTimeout:       60 * time.Second,\n\t}\n\n\t// 优雅关闭：收到 SIGTERM/SIGINT 时，停止接新请求，等在途请求做完再退\n\t// 容器重启时会先发 SIGTERM，给 5 秒退出窗口（S13 会展开讲）\n\tidle := make(chan struct{})\n\tgo func() {\n\t\tsigCh := make(chan os.Signal, 1)\n\t\tsignal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)\n\t\t<-sigCh\n\t\tlog.Println(\"收到退出信号，开始优雅关闭...\")\n\t\tctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)\n\t\tdefer cancel()\n\t\tif err := srv.Shutdown(ctx); err != nil {\n\t\t\tlog.Printf(\"优雅关闭失败: %v\", err)\n\t\t}\n\t\tclose(idle)\n\t}()\n\n\tlog.Printf(\"svc-homeos 启动: http://%s\", addr)\n\tif err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {\n\t\tlog.Fatalf(\"启动失败: %v\", err)\n\t}\n\t<-idle\n\tlog.Println(\"已退出\")\n}\n",
       "run": "cd homecube && CGO_ENABLED=0 go run -ldflags=-buildid= ./cmd/svc-homeos",
-      "expect": "$ go run ./cmd/svc-homeos\n2026/10/15 20:14:03 svc-homeos 启动: http://127.0.0.1:8080\n\n$ curl -s http://127.0.0.1:8080/healthz\n{\"code\":0,\"message\":\"ok\",\"data\":{\"app\":\"homeos\",\"status\":\"up\",\"uptime\":\"3s\"},\"at\":\"2026-10-15T20:14:06+08:00\"}\n\n$ curl -s http://127.0.0.1:8080/whoami\n{\"code\":3001,\"message\":\"缺少 X-Member-Id 请求头\",\"data\":null,\"at\":\"2026-10-15T20:14:08+08:00\"}\n\n$ curl -s -H 'X-Member-Id: m_1001' -H 'X-Family-Id: f_9001' -H 'X-Role: owner' http://127.0.0.1:8080/whoami\n{\"code\":0,\"message\":\"ok\",\"data\":{\"family_id\":\"f_9001\",\"member_id\":\"m_1001\",\"role\":\"owner\",\"source\":\"header\"},\"at\":\"2026-10-15T20:14:09+08:00\"}\n\n$ curl -s -i http://127.0.0.1:8080/nope | head -1\nHTTP/1.1 404 Not Found\n\n$ kill %1   # 或 Ctrl-C\n2026/10/15 20:14:30 收到退出信号，开始优雅关闭...\n2026/10/15 20:14:30 已退出"
+      "expect": "$ go run ./cmd/svc-homeos\n2026/10/15 20:14:03 svc-homeos 启动: http://127.0.0.1:8080\n\n$ curl -s http://127.0.0.1:8080/healthz\n{\"code\":0,\"message\":\"ok\",\"data\":{\"app\":\"homeos\",\"status\":\"up\",\"uptime\":\"3s\"},\"at\":\"2026-10-15T20:14:06+08:00\"}\n\n$ curl -s http://127.0.0.1:8080/whoami\n{\"code\":3001,\"message\":\"缺少 X-Member-Id 请求头\",\"data\":null,\"at\":\"2026-10-15T20:14:08+08:00\"}\n\n$ curl -s -H 'X-Member-Id: m_1001' -H 'X-Family-Id: f_9001' -H 'X-Role: owner' http://127.0.0.1:8080/whoami\n{\"code\":0,\"message\":\"ok\",\"data\":{\"family_id\":\"f_9001\",\"member_id\":\"m_1001\",\"role\":\"owner\",\"source\":\"header\"},\"at\":\"2026-10-15T20:14:09+08:00\"}\n\n$ curl -s -i http://127.0.0.1:8080/nope | head -1\nHTTP/1.1 404 Not Found\n\n$ kill %1   # 或 Ctrl-C\n2026/10/15 20:14:30 收到退出信号，开始优雅关闭...\n2026/10/15 20:14:30 已退出",
+      "build": [
+        {
+          "n": 1,
+          "title": "立好 package 和 import",
+          "add": "package main\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n\t\"log\"\n\t\"net/http\"\n\t\"os\"\n\t\"os/signal\"\n\t\"strings\"\n\t\"syscall\"\n\t\"time\"\n)\n",
+          "place": "文件最开头",
+          "note": "Go 的 import 是编译期契约。先列全今天要用到的 9 个包，再让后面的代码去兑现。",
+          "check": "这一步还跑不起来：文件只有 package 声明和 import 块，没有 func main()，Go 编译报错。第 7 步补上 main 之后才第一次能跑。"
+        },
+        {
+          "n": 2,
+          "title": "定出 Envelope 与错误码常量",
+          "add": "\n// Envelope 是 HomeOS 所有接口的统一响应体。\n// 前端只需要写一套处理逻辑：code == 0 读 data，否则弹 message\ntype Envelope struct {\n\tCode    int         `json:\"code\"`    // 0 成功，非 0 业务错误\n\tMessage string      `json:\"message\"` // 给人看的中文提示\n\tData    interface{} `json:\"data\"`    // 成功时的载荷，失败时为 null\n\tAt      string      `json:\"at\"`      // 服务端 ISO8601 时间\n}\n\n// 系统级错误码：1001 段给参数，3001 段给权限，4001 段给冲突\nconst (\n\tCodeOK           = 0\n\tCodeInvalidParam = 1001\n\tCodeUnauthorized = 3001\n)\n\nfunc nowISO() string {\n\t// 本地时区输出成 +08:00 这样的偏移量，比 UTC 的 Z 更适合人看\n\treturn time.Now().Format(\"2006-01-02T15:04:05-07:00\")\n}\n",
+          "place": "紧接 import 块之后",
+          "note": "Envelope 是所有接口的统一响应体，必须在任何 handler 之前定义。错误码常量也在这里定好，后面 handler 直接引用。",
+          "check": "这一步还跑不起来：Envelope 结构体和错误码常量已定义好，但文件没有 func main()，Go 编译报错。第 7 步补上 main 之后才第一次能跑。"
+        },
+        {
+          "n": 3,
+          "title": "nowISO 到 writeJSON 基础设施",
+          "add": "\n// getenvOr 与 D4 相同：第一档，允许默认值\nfunc getenvOr(key, fallback string) string {\n\tif v, ok := os.LookupEnv(key); ok && strings.TrimSpace(v) != \"\" {\n\t\treturn v\n\t}\n\treturn fallback\n}\n\n// ok 成功响应：HTTP 200 + code 0\nfunc ok(w http.ResponseWriter, data interface{}) {\n\twriteJSON(w, http.StatusOK, Envelope{\n\t\tCode: CodeOK, Message: \"ok\", Data: data, At: nowISO(),\n\t})\n}\n\n// fail 失败响应：HTTP 状态码给基础设施看，code 给业务看，两者各自独立\nfunc fail(w http.ResponseWriter, status int, code int, msg string) {\n\twriteJSON(w, status, Envelope{\n\t\tCode: code, Message: msg, Data: nil, At: nowISO(),\n\t})\n}\n",
+          "place": "紧接 Envelope 之后",
+          "note": "这些是所有 handler 共用的基础设施函数。先定义好 writeJSON（写响应头的唯一出口）、ok（成功响应）、fail（失败响应），后面每个 handler 只需一行调用。",
+          "check": "这一步还跑不起来：基础设施函数已写好，但文件没有 func main()，Go 编译报错。第 7 步补上 main 之后才第一次能跑。"
+        },
+        {
+          "n": 4,
+          "title": "写 healthz 健康检查",
+          "add": "\nfunc writeJSON(w http.ResponseWriter, status int, env Envelope) {\n\t// 顺序不能反：Header 必须在 WriteHeader 和写 body 之前\n\tw.Header().Set(\"Content-Type\", \"application/json; charset=utf-8\")\n\tw.Header().Set(\"X-Service-Name\", \"svc-homeos\")\n\tw.WriteHeader(status)\n\t_ = json.NewEncoder(w).Encode(env) // Encode 会自动换行\n}\n\n// healthz 只回答「能不能服务」，不要在这里查数据库\nfunc healthz(w http.ResponseWriter, r *http.Request) {\n\tok(w, map[string]interface{}{\n\t\t\"status\": \"up\",\n\t\t\"app\":    getenvOr(\"HC_APP_NAME\", \"homeos\"),\n\t\t\"uptime\": time.Since(startedAt).Round(time.Second).String(),\n\t})\n}\n",
+          "place": "紧接 writeJSON 之后",
+          "note": "healthz 是最简单的 handler，只调 ok 返回进程状态。放在 writeJSON 之后是因为它调用了 ok 和 getenvOr。",
+          "check": "这一步还跑不起来：healthz handler 已写完，但文件没有 func main()，Go 编译报错。第 7 步补上 main 之后才第一次能跑。"
+        },
+        {
+          "n": 5,
+          "title": "写 whoami 身份探测",
+          "add": "\n// whoami 回答「服务认为调用者是谁」。S0 读 header，S4 换成读 JWT\nfunc whoami(w http.ResponseWriter, r *http.Request) {\n\tmemberID := r.Header.Get(\"X-Member-Id\")\n\tfamilyID := r.Header.Get(\"X-Family-Id\")\n\tif memberID == \"\" {\n\t\t// 没有身份就诚实地说未认证，而不是编一个默认用户出来\n\t\tfail(w, http.StatusUnauthorized, CodeUnauthorized, \"缺少 X-Member-Id 请求头\")\n\t\treturn\n\t}\n\trole := r.Header.Get(\"X-Role\")\n\tif role == \"\" {\n\t\trole = \"member\" // S4 之前没有真角色，兜底一个\n\t}\n\tok(w, map[string]interface{}{\n\t\t\"member_id\": memberID,\n\t\t\"family_id\": familyID,\n\t\t\"role\":      role,\n\t\t\"source\":    \"header\", // S4 之后这里会变成 \"jwt\"\n\t})\n}\n",
+          "place": "紧接 healthz 之后",
+          "note": "whoami 比 healthz 复杂：要读请求头、判断身份、返回结构化数据。放在 healthz 之后是因为难度递增——先看最简单的，再看有分支逻辑的。",
+          "check": "这一步还跑不起来：whoami handler 已写完，但文件没有 func main()，Go 编译报错。第 7 步补上 main 之后才第一次能跑。"
+        },
+        {
+          "n": 6,
+          "title": "var startedAt 与 main 路由装配",
+          "add": "\nvar startedAt = time.Now()\n\nfunc main() {\n\taddr := getenvOr(\"HC_HTTP_ADDR\", \"127.0.0.1:8080\")\n\n\tmux := http.NewServeMux()\n\tmux.HandleFunc(\"/healthz\", healthz)\n\tmux.HandleFunc(\"/whoami\", whoami)\n\tmux.HandleFunc(\"/\", func(w http.ResponseWriter, r *http.Request) {\n\t\tfail(w, http.StatusNotFound, 404, \"没有这个接口: \"+r.URL.Path)\n\t})\n\n\tsrv := &http.Server{\n\t\tAddr:              addr,\n\t\tHandler:           mux,\n\t\tReadHeaderTimeout: 3 * time.Second,\n\t\tReadTimeout:       10 * time.Second,\n\t\tWriteTimeout:      15 * time.Second,\n\t\tIdleTimeout:       60 * time.Second,\n\t}\n",
+          "place": "紧接 whoami 之后",
+          "note": "main 是所有前面定义的函数的消费者：它创建 mux、注册路由、配置服务器参数。放在最后是因为它依赖 healthz、whoami 等所有 handler。",
+          "check": "这一步还跑不起来：main 函数只写了一半（路由注册完毕但还没有优雅关闭和 ListenAndServe），Go 编译报错。第 7 步补上监听之后才第一次能跑。"
+        },
+        {
+          "n": 7,
+          "title": "优雅关闭与启动监听",
+          "add": "\n\t// 优雅关闭：收到 SIGTERM/SIGINT 时，停止接新请求，等在途请求做完再退\n\t// 容器重启时会先发 SIGTERM，给 5 秒退出窗口（S13 会展开讲）\n\tidle := make(chan struct{})\n\tgo func() {\n\t\tsigCh := make(chan os.Signal, 1)\n\t\tsignal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)\n\t\t<-sigCh\n\t\tlog.Println(\"收到退出信号，开始优雅关闭...\")\n\t\tctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)\n\t\tdefer cancel()\n\t\tif err := srv.Shutdown(ctx); err != nil {\n\t\t\tlog.Printf(\"优雅关闭失败: %v\", err)\n\t\t}\n\t\tclose(idle)\n\t}()\n\n\tlog.Printf(\"svc-homeos 启动: http://%s\", addr)\n\tif err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {\n\t\tlog.Fatalf(\"启动失败: %v\", err)\n\t}\n\t<-idle\n\tlog.Println(\"已退出\")\n}\n",
+          "place": "main 函数末尾",
+          "note": "优雅关闭是启动流程的最后一环：用 goroutine 监听信号，收到后停止接新请求、等在途请求做完。放在 main 末尾是因为它是服务生命周期的最后阶段。",
+          "check": "这一步加完文件第一次能跑。`cd homecube && CGO_ENABLED=0 go run -ldflags=-buildid= ./cmd/svc-homeos`，stderr 打印启动日志，/healthz 返回 {\"code\":0,\"message\":\"ok\",\"data\":{\"service\":\"svc-homeos\",\"status\":\"up\",\"at\":\"...\"},\"request_id\":\"\"}，/whoami 无身份时返回 401（未实跑，输出参照 expect 字段）。"
+        }
+      ]
     },
     "steps": [
       {
@@ -964,7 +1208,49 @@
       "filename": "scripts/setup-compose.sh",
       "content": "#!/usr/bin/env bash\n# S0 D7：一条命令起全套（postgres + svc-homeos）\n# 幂等：反复跑只重建有变化的服务\nset -euo pipefail\n\nPROJECT=homecube\ncd \"$PROJECT\"\nmkdir -p deploy\n\n# ---------------------------------------------------------------- 1) Dockerfile\n# 多阶段构建：编译用 golang 镜像，运行只带一个二进制\ncat > deploy/Dockerfile <<'DOCKERFILE'\n# ---- 阶段一：编译 ----\nFROM golang:1.23-alpine AS build\nWORKDIR /src\n\n# 先只拷依赖清单，这样依赖没变时这一层命中缓存\nCOPY go.mod ./\nRUN go mod download\n\n# 再拷源码并编译。CGO_ENABLED=0 产出静态二进制，才能跑在 alpine 上\nCOPY . .\nRUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags=\"-s -w\" \\\n    -o /out/svc-homeos ./cmd/svc-homeos\n\n# ---- 阶段二：运行时 ----\nFROM alpine:3.20\n# ca-certificates：以后要访问 HTTPS 接口；tzdata：容器里才有 Asia/Shanghai 时区\nRUN apk add --no-cache ca-certificates tzdata\n\nCOPY --from=build /out/svc-homeos /usr/local/bin/svc-homeos\n\n# 容器内监听 0.0.0.0，不能是 127.0.0.1（D2 讲过的坑）\nENV HC_HTTP_ADDR=0.0.0.0:8080 \\\n    HC_DB_HOST=postgres \\\n    HC_DB_PORT=5432 \\\n    HC_DB_USER=homeos \\\n    HC_DB_NAME=homecube\n\nEXPOSE 8080\n# 用 exec 形式，信号能直达进程，优雅关闭才有效\nENTRYPOINT [\"/usr/local/bin/svc-homeos\"]\nDOCKERFILE\n\n# ---------------------------------------------------------------- 2) compose\ncat > deploy/docker-compose.yml <<'YAML'\nname: homecube\n\nservices:\n  postgres:\n    image: postgres:16-alpine\n    container_name: homecube-pg\n    environment:\n      POSTGRES_USER: ${HC_DB_USER:-homeos}\n      POSTGRES_PASSWORD: ${HC_DB_PASSWORD:?必须设置 HC_DB_PASSWORD}\n      POSTGRES_DB: ${HC_DB_NAME:-homecube}\n    ports:\n      - \"${HC_DB_PORT:-5432}:5432\"\n    volumes:\n      - pgdata:/var/lib/postgresql/data\n    # 探活：pg_isready 是 postgres 镜像自带的小工具\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U ${HC_DB_USER:-homeos} -d ${HC_DB_NAME:-homecube}\"]\n      interval: 3s\n      timeout: 3s\n      retries: 10\n      start_period: 5s\n    restart: unless-stopped\n\n  svc-homeos:\n    build:\n      context: ..\n      dockerfile: deploy/Dockerfile\n    image: homecube/svc-homeos:latest\n    container_name: homecube-svc-homeos\n    # 等 postgres 真的健康，而不是只等它启动\n    depends_on:\n      postgres:\n        condition: service_healthy\n    environment:\n      HC_APP_NAME: homeos\n      HC_HTTP_ADDR: 0.0.0.0:8080\n      HC_DB_HOST: postgres        # 关键：写服务名，不是 localhost（D8 讲）\n      HC_DB_PORT: \"5432\"\n      HC_DB_USER: ${HC_DB_USER:-homeos}\n      HC_DB_PASSWORD: ${HC_DB_PASSWORD:?必须设置 HC_DB_PASSWORD}\n      HC_DB_NAME: ${HC_DB_NAME:-homecube}\n    ports:\n      - \"8080:8080\"\n    restart: unless-stopped\n\nvolumes:\n  pgdata:\nYAML\n\n# ---------------------------------------------------------------- 3) 起\nif [ ! -f .env ]; then\n  echo \"HC_DB_PASSWORD=homecube\" > .env\n  echo \"已生成 .env（D1 的 .gitignore 会挡住它，不会入库）\"\nfi\n\ndocker compose --env-file .env -f deploy/docker-compose.yml up -d --build\n\n# ---------------------------------------------------------------- 4) 观察\ndocker compose -f deploy/docker-compose.yml ps\ndocker compose -f deploy/docker-compose.yml logs --tail 15 svc-homeos\n",
       "run": "cd homecube && bash scripts/setup-compose.sh",
-      "expect": "$ bash scripts/setup-compose.sh\n已生成 .env（D1 的 .gitignore 会挡住它，不会入库）\n[+] Building 1.1s (7/7) FINISHED\n => [builder 5/5] RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags=\"-s -w\" -o /out/svc-homeos ./cmd/svc-homeos\n[+] Running 4/4\n ✔ Network homecube_default              Created\n ✔ Volume \"homecube_pgdata\"              Created\n ✔ Container homecube-pg                 Started\n ✔ Container homecube-svc-homeos         Started\n\n$ docker compose -f deploy/docker-compose.yml ps\nNAME                     IMAGE                       STATUS\nhomecube-pg              postgres:16-alpine          Up 18 seconds (healthy)\nhomecube-svc-homeos      homecube/svc-homeos:latest  Up 12 seconds\n\n$ curl -s http://127.0.0.1:8080/healthz\n{\"code\":0,\"message\":\"ok\",\"data\":{\"app\":\"homeos\",\"status\":\"up\",\"uptime\":\"5s\"},\"at\":\"2026-10-15T21:02:44+08:00\"}\n\n$ docker images homecube/svc-homeos\nREPOSITORY                 TAG       SIZE       CREATED\nhomecube/svc-homeos        latest    18.2MB     3 seconds ago\n                     ↑ 注意不是 800MB 的 golang 镜像大小：多阶段构建的收益"
+      "expect": "$ bash scripts/setup-compose.sh\n已生成 .env（D1 的 .gitignore 会挡住它，不会入库）\n[+] Building 1.1s (7/7) FINISHED\n => [builder 5/5] RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags=\"-s -w\" -o /out/svc-homeos ./cmd/svc-homeos\n[+] Running 4/4\n ✔ Network homecube_default              Created\n ✔ Volume \"homecube_pgdata\"              Created\n ✔ Container homecube-pg                 Started\n ✔ Container homecube-svc-homeos         Started\n\n$ docker compose -f deploy/docker-compose.yml ps\nNAME                     IMAGE                       STATUS\nhomecube-pg              postgres:16-alpine          Up 18 seconds (healthy)\nhomecube-svc-homeos      homecube/svc-homeos:latest  Up 12 seconds\n\n$ curl -s http://127.0.0.1:8080/healthz\n{\"code\":0,\"message\":\"ok\",\"data\":{\"app\":\"homeos\",\"status\":\"up\",\"uptime\":\"5s\"},\"at\":\"2026-10-15T21:02:44+08:00\"}\n\n$ docker images homecube/svc-homeos\nREPOSITORY                 TAG       SIZE       CREATED\nhomecube/svc-homeos        latest    18.2MB     3 seconds ago\n                     ↑ 注意不是 800MB 的 golang 镜像大小：多阶段构建的收益",
+      "build": [
+        {
+          "n": 1,
+          "title": "脚本骨架与创建 deploy 目录",
+          "add": "#!/usr/bin/env bash\n# S0 D7：一条命令起全套（postgres + svc-homeos）\n# 幂等：反复跑只重建有变化的服务\nset -euo pipefail\n\nPROJECT=homecube\ncd \"$PROJECT\"\nmkdir -p deploy\n",
+          "place": "文件开头",
+          "note": "先设好变量、进入项目目录、创建 deploy 目录。这是后面写 Dockerfile 和 compose 文件的前提。",
+          "check": "bash scripts/setup-compose.sh 执行后无标准输出（只做了 mkdir -p deploy 和变量声明）。验证：ls -d deploy 目录已创建。"
+        },
+        {
+          "n": 2,
+          "title": "写多阶段 Dockerfile",
+          "add": "\n# ---------------------------------------------------------------- 1) Dockerfile\n# 多阶段构建：编译用 golang 镜像，运行只带一个二进制\ncat > deploy/Dockerfile <<'DOCKERFILE'\n# ---- 阶段一：编译 ----\nFROM golang:1.23-alpine AS build\nWORKDIR /src\n\n# 先只拷依赖清单，这样依赖没变时这一层命中缓存\nCOPY go.mod ./\nRUN go mod download\n\n# 再拷源码并编译。CGO_ENABLED=0 产出静态二进制，才能跑在 alpine 上\nCOPY . .\nRUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags=\"-s -w\" \\\n    -o /out/svc-homeos ./cmd/svc-homeos\n\n# ---- 阶段二：运行时 ----\nFROM alpine:3.20\n# ca-certificates：以后要访问 HTTPS 接口；tzdata：容器里才有 Asia/Shanghai 时区\nRUN apk add --no-cache ca-certificates tzdata\n\nCOPY --from=build /out/svc-homeos /usr/local/bin/svc-homeos\n\n# 容器内监听 0.0.0.0，不能是 127.0.0.1（D2 讲过的坑）\nENV HC_HTTP_ADDR=0.0.0.0:8080 \\\n    HC_DB_HOST=postgres \\\n    HC_DB_PORT=5432 \\\n    HC_DB_USER=homeos \\\n    HC_DB_NAME=homecube\n\nEXPOSE 8080\n# 用 exec 形式，信号能直达进程，优雅关闭才有效\nENTRYPOINT [\"/usr/local/bin/svc-homeos\"]\nDOCKERFILE\n",
+          "place": "紧接 mkdir 之后",
+          "note": "Dockerfile 是构建 svc-homeos 镜像的声明。放在 compose 之前是因为 compose 的 build 指令要引用它。多阶段构建（编译 + 运行时）是 Docker 最佳实践，先写出来让读者看到完整结构。",
+          "check": "这一步还跑不起来：脚本写到 Dockerfile 的 heredoc 中间，文件还不完整，后面的 docker compose 命令还没写到。第 5 步补完观察命令之后才第一次能跑。"
+        },
+        {
+          "n": 3,
+          "title": "写 docker-compose.yml",
+          "add": "\n# ---------------------------------------------------------------- 2) compose\ncat > deploy/docker-compose.yml <<'YAML'\nname: homecube\n\nservices:\n  postgres:\n    image: postgres:16-alpine\n    container_name: homecube-pg\n    environment:\n      POSTGRES_USER: ${HC_DB_USER:-homeos}\n      POSTGRES_PASSWORD: ${HC_DB_PASSWORD:?必须设置 HC_DB_PASSWORD}\n      POSTGRES_DB: ${HC_DB_NAME:-homecube}\n    ports:\n      - \"${HC_DB_PORT:-5432}:5432\"\n    volumes:\n      - pgdata:/var/lib/postgresql/data\n    # 探活：pg_isready 是 postgres 镜像自带的小工具\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U ${HC_DB_USER:-homeos} -d ${HC_DB_NAME:-homecube}\"]\n      interval: 3s\n      timeout: 3s\n      retries: 10\n      start_period: 5s\n    restart: unless-stopped\n\n  svc-homeos:\n    build:\n      context: ..\n      dockerfile: deploy/Dockerfile\n    image: homecube/svc-homeos:latest\n    container_name: homecube-svc-homeos\n    # 等 postgres 真的健康，而不是只等它启动\n    depends_on:\n      postgres:\n        condition: service_healthy\n    environment:\n      HC_APP_NAME: homeos\n      HC_HTTP_ADDR: 0.0.0.0:8080\n      HC_DB_HOST: postgres        # 关键：写服务名，不是 localhost（D8 讲）\n      HC_DB_PORT: \"5432\"\n      HC_DB_USER: ${HC_DB_USER:-homeos}\n      HC_DB_PASSWORD: ${HC_DB_PASSWORD:?必须设置 HC_DB_PASSWORD}\n      HC_DB_NAME: ${HC_DB_NAME:-homecube}\n    ports:\n      - \"8080:8080\"\n    restart: unless-stopped\n\nvolumes:\n  pgdata:\nYAML\n",
+          "place": "紧接 Dockerfile 之后",
+          "note": "compose 文件是环境的完整声明：postgres + svc-homeos 两个服务，带健康检查和依赖等待。放在 Dockerfile 之后是因为 svc-homeos 的 build 指令引用了前面的 Dockerfile。",
+          "check": "这一步还跑不起来：脚本写到 compose YAML 的 heredoc 中间，docker compose up 和观察命令还没写到。第 5 步补完观察命令之后才第一次能跑。"
+        },
+        {
+          "n": 4,
+          "title": "生成 .env 并起全套环境",
+          "add": "\n# ---------------------------------------------------------------- 3) 起\nif [ ! -f .env ]; then\n  echo \"HC_DB_PASSWORD=homecube\" > .env\n  echo \"已生成 .env（D1 的 .gitignore 会挡住它，不会入库）\"\nfi\n\ndocker compose --env-file .env -f deploy/docker-compose.yml up -d --build\n",
+          "place": "紧接 compose 文件之后",
+          "note": "先确保 .env 存在（密码不入库），再 docker compose up -d --build 起全套环境。放在 compose 文件之后是因为 up 命令要读取它。",
+          "check": "这一步还跑不起来：docker compose up --build 需要 Docker 守护进程在运行，本机 docker.sock 不存在。启动 Docker Desktop 之后才第一次能跑。"
+        },
+        {
+          "n": 5,
+          "title": "观察容器状态与日志",
+          "add": "\n# ---------------------------------------------------------------- 4) 观察\ndocker compose -f deploy/docker-compose.yml ps\ndocker compose -f deploy/docker-compose.yml logs --tail 15 svc-homeos\n",
+          "place": "文件末尾",
+          "note": "最后用 docker compose ps 和 logs 观察环境是否正常运行。放在最后是因为它依赖前面所有步骤都已完成。",
+          "check": "这一步还跑不起来：docker compose ps 和 logs 需要容器在运行。启动 Docker Desktop 并完成第 4 步 up 之后才第一次能跑。"
+        }
+      ]
     },
     "steps": [
       {
@@ -1124,7 +1410,41 @@
       "filename": "scripts/probe-network.sh",
       "content": "#!/usr/bin/env bash\n# S0 D8：把容器网络的三条规则亲手验证一遍\nset -uo pipefail\n\nC_APP=homecube-svc-homeos\nC_PG=homecube-pg\n\nline() { printf '\\n=== %s ===\\n' \"$1\"; }\n\nline \"0. 前置：确认两个容器都在跑\"\ndocker ps --format 'table {{.Names}}\\t{{.Status}}'\n\nline \"1. 容器各自的 IP（同一张 Compose 网络下，都落在同一个网段）\"\ndocker inspect -f '{{.Name}} -> {{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \"$C_APP\" \"$C_PG\"\n\nline \"2. svc-homeos 容器里解析服务名 postgres（应成功）\"\ndocker exec \"$C_APP\" sh -c 'nslookup postgres 2>/dev/null || getent hosts postgres'\n\nline \"3. 容器内用【服务名】连数据库：期望成功\"\ndocker exec \"$C_APP\" sh -c 'nc -z -w 2 postgres 5432 && echo \"PASS: postgres:5432 可达\" || echo \"FAIL\"'\n\nline \"4. 容器内用 localhost 连数据库：期望失败\"\ndocker exec \"$C_APP\" sh -c 'nc -z -w 2 localhost 5432 && echo \"意外通了（说明理解错了）\" || echo \"PASS(符合预期): 连的是容器自己，这里没人监听 5432\"'\n\nline \"5. 容器内用 127.0.0.1 连数据库：期望失败（和第 4 条是同一件事）\"\ndocker exec \"$C_APP\" sh -c 'nc -z -w 2 127.0.0.1 5432 && echo \"意外通了\" || echo \"PASS(符合预期)\"'\n\nline \"6. 容器内用【容器 IP】连数据库：期望成功（服务名 DNS 失效时的备用方案）\"\nPG_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \"$C_PG\")\ndocker exec \"$C_APP\" sh -c \"nc -z -w 2 ${PG_IP} 5432 && echo 'PASS: ${PG_IP}:5432 可达' || echo 'FAIL'\"\n\nline \"7. 宿主机上用 localhost:5432 连：期望成功（端口映射在工作）\"\nnc -z -w 2 127.0.0.1 5432 && echo \"PASS: 宿主机 -> 容器（端口映射）\" || echo \"FAIL: 端口映射没生效\"\n\nline \"8. 反向：容器里能不能访问宿主机上的东西\"\n# macOS / Windows 有 host.docker.internal 这个特殊名字\ndocker exec \"$C_APP\" sh -c 'nc -z -w 2 host.docker.internal 5432 && echo \"能连上\" || echo \"PASS(符合预期): 端口映射不是双向的\"'\n\nline \"9. 容器里能看到的配置（HC_DB_HOST 应该就是 postgres）\"\ndocker exec \"$C_APP\" env | grep '^HC_' | sort\n\nline \"10. 从宿主机直接读出 compose 里的连接串应该长什么样\"\necho \"宿主机调试用:  postgres://homeos:***@127.0.0.1:${HC_DB_PORT:-5432}/homecube\"\necho \"容器内调试用: postgres://homeos:***@postgres:5432/homecube\"\n",
       "run": "bash homecube/scripts/probe-network.sh",
-      "expect": "=== 2. svc-homeos 容器里解析服务名 postgres（应成功）===\npostgres        172.19.0.2\n\n=== 3. 容器内用【服务名】连数据库：期望成功 ===\nPASS: postgres:5432 可达\n\n=== 4. 容器内用 localhost 连数据库：期望失败 ===\nPASS(符合预期): 连的是容器自己，这里没人监听 5432\n\n=== 5. 容器内用 127.0.0.1 连数据库：期望失败（和第 4 条是同一件事）===\nPASS(符合预期)\n\n=== 6. 容器内用【容器 IP】连数据库：期望成功（服务名 DNS 失效时的备用方案）===\nPASS: 172.19.0.2:5432 可达\n\n=== 7. 宿主机上用 localhost:5432 连：期望成功（端口映射在工作）===\nPASS: 宿主机 -> 容器（端口映射）\n\n=== 8. 反向：容器里能不能访问宿主机上的东西 ===\nPASS(符合预期): 端口映射不是双向的\n\n=== 9. 容器里能看到的配置（HC_DB_HOST 应该就是 postgres）===\nHC_APP_NAME=homeos\nHC_DB_HOST=postgres\nHC_DB_NAME=homecube\nHC_DB_PORT=5432\nHC_DB_USER=homeos"
+      "expect": "=== 2. svc-homeos 容器里解析服务名 postgres（应成功）===\npostgres        172.19.0.2\n\n=== 3. 容器内用【服务名】连数据库：期望成功 ===\nPASS: postgres:5432 可达\n\n=== 4. 容器内用 localhost 连数据库：期望失败 ===\nPASS(符合预期): 连的是容器自己，这里没人监听 5432\n\n=== 5. 容器内用 127.0.0.1 连数据库：期望失败（和第 4 条是同一件事）===\nPASS(符合预期)\n\n=== 6. 容器内用【容器 IP】连数据库：期望成功（服务名 DNS 失效时的备用方案）===\nPASS: 172.19.0.2:5432 可达\n\n=== 7. 宿主机上用 localhost:5432 连：期望成功（端口映射在工作）===\nPASS: 宿主机 -> 容器（端口映射）\n\n=== 8. 反向：容器里能不能访问宿主机上的东西 ===\nPASS(符合预期): 端口映射不是双向的\n\n=== 9. 容器里能看到的配置（HC_DB_HOST 应该就是 postgres）===\nHC_APP_NAME=homeos\nHC_DB_HOST=postgres\nHC_DB_NAME=homecube\nHC_DB_PORT=5432\nHC_DB_USER=homeos",
+      "build": [
+        {
+          "n": 1,
+          "title": "变量声明与确认容器在跑",
+          "add": "#!/usr/bin/env bash\n# S0 D8：把容器网络的三条规则亲手验证一遍\nset -uo pipefail\n\nC_APP=homecube-svc-homeos\nC_PG=homecube-pg\n\nline() { printf '\\n=== %s ===\\n' \"$1\"; }\n\nline \"0. 前置：确认两个容器都在跑\"\ndocker ps --format 'table {{.Names}}\\t{{.Status}}'\n",
+          "place": "文件开头",
+          "note": "先声明容器名变量，再用 docker ps 确认两个容器都在跑。这是后面所有探测命令的前提。",
+          "check": "这一步还跑不起来：docker ps 需要 Docker 守护进程在运行，本机 docker.sock 不存在。启动 Docker Desktop 并确认 homecube-pg 容器在跑之后才第一次能跑。"
+        },
+        {
+          "n": 2,
+          "title": "查 IP 与验证服务名连通",
+          "add": "\nline \"1. 容器各自的 IP（同一张 Compose 网络下，都落在同一个网段）\"\ndocker inspect -f '{{.Name}} -> {{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \"$C_APP\" \"$C_PG\"\n\nline \"2. svc-homeos 容器里解析服务名 postgres（应成功）\"\ndocker exec \"$C_APP\" sh -c 'nslookup postgres 2>/dev/null || getent hosts postgres'\n\nline \"3. 容器内用【服务名】连数据库：期望成功\"\ndocker exec \"$C_APP\" sh -c 'nc -z -w 2 postgres 5432 && echo \"PASS: postgres:5432 可达\" || echo \"FAIL\"'\n\nline \"4. 容器内用 localhost 连数据库：期望失败\"\ndocker exec \"$C_APP\" sh -c 'nc -z -w 2 localhost 5432 && echo \"意外通了（说明理解错了）\" || echo \"PASS(符合预期): 连的是容器自己，这里没人监听 5432\"'\n",
+          "place": "紧接容器检查之后",
+          "note": "先看两个容器的 IP（确认在同一网段），再用服务名连数据库（应成功）。这两步建立了「容器在同一张网络里」的事实。",
+          "check": "这一步还跑不起来：docker exec 需要容器在运行。启动 Docker Desktop 之后才第一次能跑。"
+        },
+        {
+          "n": 3,
+          "title": "验证 localhost 与容器 IP 对比",
+          "add": "\nline \"5. 容器内用 127.0.0.1 连数据库：期望失败（和第 4 条是同一件事）\"\ndocker exec \"$C_APP\" sh -c 'nc -z -w 2 127.0.0.1 5432 && echo \"意外通了\" || echo \"PASS(符合预期)\"'\n\nline \"6. 容器内用【容器 IP】连数据库：期望成功（服务名 DNS 失效时的备用方案）\"\nPG_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \"$C_PG\")\ndocker exec \"$C_APP\" sh -c \"nc -z -w 2 ${PG_IP} 5432 && echo 'PASS: ${PG_IP}:5432 可达' || echo 'FAIL'\"\n\nline \"7. 宿主机上用 localhost:5432 连：期望成功（端口映射在工作）\"\nnc -z -w 2 127.0.0.1 5432 && echo \"PASS: 宿主机 -> 容器（端口映射）\" || echo \"FAIL: 端口映射没生效\"\n\nline \"8. 反向：容器里能不能访问宿主机上的东西\"\n# macOS / Windows 有 host.docker.internal 这个特殊名字\ndocker exec \"$C_APP\" sh -c 'nc -z -w 2 host.docker.internal 5432 && echo \"能连上\" || echo \"PASS(符合预期): 端口映射不是双向的\"'\n",
+          "place": "紧接服务名验证之后",
+          "note": "用 localhost 和 127.0.0.1 连数据库（应失败），再用容器 IP 连（应成功）。这三步对比是今天的核心事实：localhost 在容器里指的是自己。",
+          "check": "这一步还跑不起来：docker exec 需要容器在运行。启动 Docker Desktop 之后才第一次能跑。"
+        },
+        {
+          "n": 4,
+          "title": "宿主机端口映射与反向探测",
+          "add": "\nline \"9. 容器里能看到的配置（HC_DB_HOST 应该就是 postgres）\"\ndocker exec \"$C_APP\" env | grep '^HC_' | sort\n\nline \"10. 从宿主机直接读出 compose 里的连接串应该长什么样\"\necho \"宿主机调试用:  postgres://homeos:***@127.0.0.1:${HC_DB_PORT:-5432}/homecube\"\necho \"容器内调试用: postgres://homeos:***@postgres:5432/homecube\"\n",
+          "place": "文件末尾",
+          "note": "最后验证宿主机到容器的端口映射（应成功），以及容器到宿主机的反向连接（应失败，端口映射不是双向的）。放在最后是因为它依赖前面所有网络知识。",
+          "check": "这一步还跑不起来：需要容器在运行且端口映射已配置。启动 Docker Desktop 之后才第一次能跑。"
+        }
+      ]
     },
     "steps": [
       {
@@ -1277,7 +1597,57 @@
       "filename": "scripts/setup-volume.sh",
       "content": "#!/usr/bin/env bash\n# S0 D9：证明「删容器数据还在，删卷数据才没」\nset -euo pipefail\n\nNAME=homecube-pg\nVOL=homecube-pgdata          # 具名卷，独立于容器存在\nDB_U=homeos\nDB_D=homecube\nBACKUP_DIR=homecube/backups\n\npsql_do() { docker exec -i \"$NAME\" psql -v ON_ERROR_STOP=1 -U \"$DB_U\" -d \"$DB_D\" \"$@\"; }\n\necho \"=== 0. 清理：连卷一起删，从最干净的状态开始 ===\"\ndocker rm -f \"$NAME\" >/dev/null 2>&1 || true\ndocker volume rm \"$VOL\"  >/dev/null 2>&1 || true\n\necho \"=== 1. 显式创建具名卷（compose 里会自动做，这里显式一次让你看到）===\"\ndocker volume create \"$VOL\"\ndocker volume ls | grep homecube\n\necho \"=== 2. 用这个卷起容器（关键：-v 卷名:容器内数据目录）===\"\ndocker run -d --name \"$NAME\" \\\n  -e POSTGRES_USER=\"$DB_U\" -e POSTGRES_PASSWORD=homecube -e POSTGRES_DB=\"$DB_D\" \\\n  -p 5432:5432 \\\n  -v \"${VOL}:/var/lib/postgresql/data\" \\\n  postgres:16-alpine >/dev/null\n\nattempt=0\nuntil docker exec \"$NAME\" pg_isready -U \"$DB_U\" -d \"$DB_D\" >/dev/null 2>&1; do\n  attempt=$((attempt+1)); [ \"$attempt\" -gt 40 ] && { docker logs --tail 20 \"$NAME\"; exit 1; }\n  sleep 0.5\ndone\necho \"就绪\"\n\necho \"=== 3. 灌一点数据：建表 + 插三行 ===\"\npsql_do -c \"create table if not exists note(id serial primary key, body text, created_at timestamptz default now());\"\npsql_do -c \"insert into note(body) values ('第一条：卷里的数据'), ('第二条'), ('第三条') returning id, body;\"\n\necho \"=== 4. 统计行数，作为对照基准 ===\"\npsql_do -t -c \"select count(*) from note;\"\n\necho \"=== 5. 备份（卷保证容器死了数据不死，pg_dump 保证机器死了数据还在）===\"\nmkdir -p \"$BACKUP_DIR\"\nSTAMP=$(date +%Y%m%d-%H%M%S)\ndocker exec \"$NAME\" pg_dump -U \"$DB_U\" -d \"$DB_D\" > \"$BACKUP_DIR/homecube-${STAMP}.sql\"\nls -lh \"$BACKUP_DIR\"\necho \"--- 备份文件前 20 行，确认里面有 CREATE TABLE 和那三条 INSERT ---\"\nhead -20 \"$BACKUP_DIR/homecube-${STAMP}.sql\" | grep -E 'CREATE TABLE|INSERT|COPY'\ngrep -c '卷里的数据' \"$BACKUP_DIR/homecube-${STAMP}.sql\"\n\necho \"=== 6. 关键实验：删掉容器（不删卷），重建 ===\"\ndocker rm -f \"$NAME\"\necho \"容器已删。此时卷还在：\"\ndocker volume ls | grep homecube\n\ndocker run -d --name \"$NAME\" \\\n  -e POSTGRES_USER=\"$DB_U\" -e POSTGRES_PASSWORD=homecube -e POSTGRES_DB=\"$DB_D\" \\\n  -p 5432:5432 \\\n  -v \"${VOL}:/var/lib/postgresql/data\" \\\n  postgres:16-alpine >/dev/null\n\nattempt=0\nuntil docker exec \"$NAME\" pg_isready -U \"$DB_U\" -d \"$DB_D\" >/dev/null 2>&1; do\n  attempt=$((attempt+1)); [ \"$attempt\" -gt 40 ] && { docker logs --tail 20 \"$NAME\"; exit 1; }\n  sleep 0.5\ndone\n\necho \"=== 7. 重建后数据还在吗（这是你要亲眼看到的结论）===\"\npsql_do -c \"select id, body from note order by id;\"\npsql_do -t -c \"select count(*) from note;\"\n\necho \"=== 8. 卷到底挂在宿主机哪里 ===\"\ndocker inspect \"$NAME\" --format '{{range .Mounts}}{{.Type}}  卷名={{.Name}}  宿主机路径={{.Source}}  容器内={{.Destination}}{{println}}{{end}}'\ndocker volume inspect \"$VOL\"\n\necho \"=== 9. 反向实验（可选，会删数据）：docker volume rm 之后数据就没了 ===\"\necho \"先别执行。真正想看的时候，Ctrl-C 退出后手动跑：\"\necho \"  docker rm -f $NAME && docker volume rm $VOL\"\necho \"  然后再执行本脚本第 2 步，新建出来的库是空的。\"\n",
       "run": "bash homecube/scripts/setup-volume.sh",
-      "expect": "=== 1. 显式创建具名卷（compose 里会自动做，这里显式一次让你看到）===\nhomecube-pgdata\n\n=== 3. 灌一点数据：建表 + 插三行 ===\nCREATE TABLE\nINSERT 0 3\n id |        body\n----+-------------------\n  1 | 第一条：卷里的数据\n  2 | 第二条\n  3 | 第三条\n(3 rows)\n\n=== 5. 备份（卷保证容器死了数据不死，pg_dump 保证机器死了数据还在）===\n-rw-r--r--  1 xuesh  staff  1.2K15 Oct 21:48 backups/homecube-20261015-214813.sql\n3        ← grep -c 数到 3 处包含「卷里的数据」的语句，备份是真的\n\n=== 6. 关键实验：删掉容器（不删卷），重建 ===\n容器已删。此时卷还在：\nhomecube-pgdata\n\n=== 7. 重建后数据还在吗（这是你要亲眼看到的结论）===\n id |        body\n----+-------------------\n  1 | 第一条：卷里的数据\n  2 | 第二条\n  3 | 第三条\n(3 rows)\n3\n                 ↑ 和第 4 步的数字一模一样：容器换了一个，数据一个字节都没丢\n\n=== 8. 卷到底挂在宿主机哪里 ===\nvolume  卷名=homecube-pgdata  宿主机路径=/var/lib/docker/volumes/homecube-pgdata/_data  容器内=/var/lib/postgresql/data"
+      "expect": "=== 1. 显式创建具名卷（compose 里会自动做，这里显式一次让你看到）===\nhomecube-pgdata\n\n=== 3. 灌一点数据：建表 + 插三行 ===\nCREATE TABLE\nINSERT 0 3\n id |        body\n----+-------------------\n  1 | 第一条：卷里的数据\n  2 | 第二条\n  3 | 第三条\n(3 rows)\n\n=== 5. 备份（卷保证容器死了数据不死，pg_dump 保证机器死了数据还在）===\n-rw-r--r--  1 xuesh  staff  1.2K15 Oct 21:48 backups/homecube-20261015-214813.sql\n3        ← grep -c 数到 3 处包含「卷里的数据」的语句，备份是真的\n\n=== 6. 关键实验：删掉容器（不删卷），重建 ===\n容器已删。此时卷还在：\nhomecube-pgdata\n\n=== 7. 重建后数据还在吗（这是你要亲眼看到的结论）===\n id |        body\n----+-------------------\n  1 | 第一条：卷里的数据\n  2 | 第二条\n  3 | 第三条\n(3 rows)\n3\n                 ↑ 和第 4 步的数字一模一样：容器换了一个，数据一个字节都没丢\n\n=== 8. 卷到底挂在宿主机哪里 ===\nvolume  卷名=homecube-pgdata  宿主机路径=/var/lib/docker/volumes/homecube-pgdata/_data  容器内=/var/lib/postgresql/data",
+      "build": [
+        {
+          "n": 1,
+          "title": "变量声明与清理旧数据",
+          "add": "#!/usr/bin/env bash\n# S0 D9：证明「删容器数据还在，删卷数据才没」\nset -euo pipefail\n\nNAME=homecube-pg\nVOL=homecube-pgdata          # 具名卷，独立于容器存在\nDB_U=homeos\nDB_D=homecube\nBACKUP_DIR=homecube/backups\n\npsql_do() { docker exec -i \"$NAME\" psql -v ON_ERROR_STOP=1 -U \"$DB_U\" -d \"$DB_D\" \"$@\"; }\n",
+          "place": "文件开头",
+          "note": "先声明所有变量，再连卷带容器一起删掉，从最干净的状态开始。这是幂等实验的前提。",
+          "check": "这一步还跑不起来：docker rm 和 psql_do 函数定义依赖 Docker 守护进程在运行，本机 docker.sock 不存在。启动 Docker Desktop 之后才第一次能跑。"
+        },
+        {
+          "n": 2,
+          "title": "创建具名卷并起容器",
+          "add": "\necho \"=== 0. 清理：连卷一起删，从最干净的状态开始 ===\"\ndocker rm -f \"$NAME\" >/dev/null 2>&1 || true\ndocker volume rm \"$VOL\"  >/dev/null 2>&1 || true\n\necho \"=== 1. 显式创建具名卷（compose 里会自动做，这里显式一次让你看到）===\"\ndocker volume create \"$VOL\"\ndocker volume ls | grep homecube\n",
+          "place": "紧接清理之后",
+          "note": "显式创建具名卷（compose 里会自动做，这里显式一次让你看到），然后用这个卷起 PostgreSQL 容器。",
+          "check": "这一步还跑不起来：docker volume create 和 docker run 需要 Docker 守护进程。启动 Docker Desktop 之后才第一次能跑。"
+        },
+        {
+          "n": 3,
+          "title": "灌数据并统计行数",
+          "add": "\necho \"=== 2. 用这个卷起容器（关键：-v 卷名:容器内数据目录）===\"\ndocker run -d --name \"$NAME\" \\\n  -e POSTGRES_USER=\"$DB_U\" -e POSTGRES_PASSWORD=homecube -e POSTGRES_DB=\"$DB_D\" \\\n  -p 5432:5432 \\\n  -v \"${VOL}:/var/lib/postgresql/data\" \\\n  postgres:16-alpine >/dev/null\n\nattempt=0\nuntil docker exec \"$NAME\" pg_isready -U \"$DB_U\" -d \"$DB_D\" >/dev/null 2>&1; do\n  attempt=$((attempt+1)); [ \"$attempt\" -gt 40 ] && { docker logs --tail 20 \"$NAME\"; exit 1; }\n  sleep 0.5\ndone\necho \"就绪\"\n",
+          "place": "紧接容器就绪之后",
+          "note": "建表、插三行数据、统计行数作为对照基准。这些数据是后面验证持久化的证据。",
+          "check": "这一步还跑不起来：docker exec psql 需要容器在运行。启动 Docker Desktop 之后才第一次能跑。"
+        },
+        {
+          "n": 4,
+          "title": "备份数据库",
+          "add": "\necho \"=== 3. 灌一点数据：建表 + 插三行 ===\"\npsql_do -c \"create table if not exists note(id serial primary key, body text, created_at timestamptz default now());\"\npsql_do -c \"insert into note(body) values ('第一条：卷里的数据'), ('第二条'), ('第三条') returning id, body;\"\n\necho \"=== 4. 统计行数，作为对照基准 ===\"\npsql_do -t -c \"select count(*) from note;\"\n",
+          "place": "紧接灌数据之后",
+          "note": "用 pg_dump 导出数据到 backups 目录。卷保证容器死了数据不死，pg_dump 保证机器死了数据还在。",
+          "check": "这一步还跑不起来：docker exec pg_dump 需要容器在运行。启动 Docker Desktop 之后才第一次能跑。"
+        },
+        {
+          "n": 5,
+          "title": "删容器重建并验证数据还在",
+          "add": "\necho \"=== 5. 备份（卷保证容器死了数据不死，pg_dump 保证机器死了数据还在）===\"\nmkdir -p \"$BACKUP_DIR\"\nSTAMP=$(date +%Y%m%d-%H%M%S)\ndocker exec \"$NAME\" pg_dump -U \"$DB_U\" -d \"$DB_D\" > \"$BACKUP_DIR/homecube-${STAMP}.sql\"\nls -lh \"$BACKUP_DIR\"\necho \"--- 备份文件前 20 行，确认里面有 CREATE TABLE 和那三条 INSERT ---\"\nhead -20 \"$BACKUP_DIR/homecube-${STAMP}.sql\" | grep -E 'CREATE TABLE|INSERT|COPY'\ngrep -c '卷里的数据' \"$BACKUP_DIR/homecube-${STAMP}.sql\"\n\necho \"=== 6. 关键实验：删掉容器（不删卷），重建 ===\"\ndocker rm -f \"$NAME\"\necho \"容器已删。此时卷还在：\"\ndocker volume ls | grep homecube\n",
+          "place": "紧接备份之后",
+          "note": "这是今天最关键的实验：删掉容器（不删卷），重建后数据还在。读者亲眼看到行数一致，持久化成立。",
+          "check": "这一步还跑不起来：docker rm 和重建容器需要 Docker 守护进程。启动 Docker Desktop 之后才第一次能跑。"
+        },
+        {
+          "n": 6,
+          "title": "查看卷挂载点与反向实验说明",
+          "add": "\ndocker run -d --name \"$NAME\" \\\n  -e POSTGRES_USER=\"$DB_U\" -e POSTGRES_PASSWORD=homecube -e POSTGRES_DB=\"$DB_D\" \\\n  -p 5432:5432 \\\n  -v \"${VOL}:/var/lib/postgresql/data\" \\\n  postgres:16-alpine >/dev/null\n\nattempt=0\nuntil docker exec \"$NAME\" pg_isready -U \"$DB_U\" -d \"$DB_D\" >/dev/null 2>&1; do\n  attempt=$((attempt+1)); [ \"$attempt\" -gt 40 ] && { docker logs --tail 20 \"$NAME\"; exit 1; }\n  sleep 0.5\ndone\n\necho \"=== 7. 重建后数据还在吗（这是你要亲眼看到的结论）===\"\npsql_do -c \"select id, body from note order by id;\"\npsql_do -t -c \"select count(*) from note;\"\n\necho \"=== 8. 卷到底挂在宿主机哪里 ===\"\ndocker inspect \"$NAME\" --format '{{range .Mounts}}{{.Type}}  卷名={{.Name}}  宿主机路径={{.Source}}  容器内={{.Destination}}{{println}}{{end}}'\ndocker volume inspect \"$VOL\"\n\necho \"=== 9. 反向实验（可选，会删数据）：docker volume rm 之后数据就没了 ===\"\necho \"先别执行。真正想看的时候，Ctrl-C 退出后手动跑：\"\necho \"  docker rm -f $NAME && docker volume rm $VOL\"\necho \"  然后再执行本脚本第 2 步，新建出来的库是空的。\"\n",
+          "place": "文件末尾",
+          "note": "最后用 docker inspect 看卷到底挂在宿主机哪里，并提示读者可以手动做反向实验（删卷后数据就没了）。",
+          "check": "这一步还跑不起来：docker volume inspect 需要卷存在。启动 Docker Desktop 之后才第一次能跑。"
+        }
+      ]
     },
     "steps": [
       {
@@ -1430,7 +1800,49 @@
       "filename": "Makefile",
       "content": "# HomeCube Makefile\n# 命令行开头必须是 TAB（不是空格），否则报 missing separator\n# 常用：make help / make up / make logs / make test / make down\n\nSHELL := /bin/bash\n.DEFAULT_GOAL := help\nCOMPOSE := docker compose --env-file .env -f deploy/docker-compose.yml\nGO      := go\nPG_NAME := homecube-pg\nPG_USER := homeos\nPG_DB   := homecube\n\n# 所有非文件目标都必须是 .PHONY，否则遇到同名文件/目录时会判定为「已是最新」\n.PHONY: help up down logs ps pgshell build test web fmt vet clean backup\n\nhelp: ## 显示这份帮助\n\t@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \\\n\t\t| awk 'BEGIN {FS = \":.*?## \"}; {printf \"  \\033[36m%-10s\\033[0m %s\\n\", $$1, $$2}'\n\nup: ## 起全套环境（postgres + svc-homeos），带健康等待\n\t$(COMPOSE) up -d --build\n\t@$(MAKE) --no-print-directory ps\n\ndown: ## 停掉全套环境，保留数据卷（注意：不要加 -v）\n\t$(COMPOSE) down\n\nlogs: ## 跟踪两个服务的日志\n\t$(COMPOSE) logs -f --tail=100\n\nps: ## 查看容器状态与端口映射\n\t@$(COMPOSE) ps\n\npgshell: ## 进 postgres 的 psql 交互终端\n\t@$(COMPOSE) exec postgres psql -U $(PG_USER) -d $(PG_DB)\n\nbuild: ## 编译所有 Go 包到 bin/\n\t@mkdir -p bin\n\t$(GO) build -o bin/svc-homeos ./cmd/svc-homeos\n\t@echo \"产物: bin/svc-homeos\"\n\ntest: ## 跑全部 Go 测试（带竞态检测）\n\t$(GO) test ./... -count=1\n\nvet: ## 静态检查\n\t$(GO) vet ./...\n\nfmt: ## 格式化所有 Go 源码\n\t$(GO) fmt ./...\n\nweb: ## 起前端 dev server\n\t@cd web && npm run dev\n\nbackup: ## 把数据库导出到 backups/\n\t@mkdir -p backups\n\t@docker exec $(PG_NAME) pg_dump -U $(PG_USER) -d $(PG_DB) > backups/homecube-$$(date +%Y%m%d-%H%M%S).sql\n\t@ls -lh backups | tail -3\n\nclean: ## 清理构建产物与 Go 测试缓存（不碰数据库）\n\t@rm -rf bin\n\t@$(GO) clean -testcache\n\t@echo \"已清理 bin/ 与测试缓存；数据库未动\"\n",
       "run": "cd homecube && make help && make ps",
-      "expect": "$ make help\n  help       显示这份帮助\n  up         起全套环境（postgres + svc-homeos），带健康等待\n  down       停掉全套环境，保留数据卷（注意：不要加 -v）\n  logs       跟踪两个服务的日志\n  ps         查看容器状态与端口映射\n  pgshell    进 postgres 的 psql 交互终端\n  build      编译所有 Go 包到 bin/\n  test       跑全部 Go 测试（带竞态检测）\n  vet        静态检查\n  fmt        格式化所有 Go 源码\n  web        起前端 dev server\n  backup     把数据库导出到 backups/\n  clean      清理构建产物与 Go 测试缓存（不碰数据库）\n\n$ make ps\nNAME                     IMAGE                       STATUS\nhomecube-pg              postgres:16-alpine          Up 4 minutes (healthy)\nhomecube-svc-homeos      homecube/svc-homeos:latest  Up 4 minutes\n\n$ make up          # 等价于下面这条，但顺手打了个 ps\ndocker compose --env-file .env -f deploy/docker-compose.yml up -d --build"
+      "expect": "$ make help\n  help       显示这份帮助\n  up         起全套环境（postgres + svc-homeos），带健康等待\n  down       停掉全套环境，保留数据卷（注意：不要加 -v）\n  logs       跟踪两个服务的日志\n  ps         查看容器状态与端口映射\n  pgshell    进 postgres 的 psql 交互终端\n  build      编译所有 Go 包到 bin/\n  test       跑全部 Go 测试（带竞态检测）\n  vet        静态检查\n  fmt        格式化所有 Go 源码\n  web        起前端 dev server\n  backup     把数据库导出到 backups/\n  clean      清理构建产物与 Go 测试缓存（不碰数据库）\n\n$ make ps\nNAME                     IMAGE                       STATUS\nhomecube-pg              postgres:16-alpine          Up 4 minutes (healthy)\nhomecube-svc-homeos      homecube/svc-homeos:latest  Up 4 minutes\n\n$ make up          # 等价于下面这条，但顺手打了个 ps\ndocker compose --env-file .env -f deploy/docker-compose.yml up -d --build",
+      "build": [
+        {
+          "n": 1,
+          "title": "Makefile 头部与变量声明",
+          "add": "# HomeCube Makefile\n# 命令行开头必须是 TAB（不是空格），否则报 missing separator\n# 常用：make help / make up / make logs / make test / make down\n\nSHELL := /bin/bash\n.DEFAULT_GOAL := help\nCOMPOSE := docker compose --env-file .env -f deploy/docker-compose.yml\nGO      := go\nPG_NAME := homecube-pg\nPG_USER := homeos\nPG_DB   := homecube\n\n# 所有非文件目标都必须是 .PHONY，否则遇到同名文件/目录时会判定为「已是最新」\n.PHONY: help up down logs ps pgshell build test web fmt vet clean backup\n",
+          "place": "文件开头",
+          "note": "先写注释说明 Makefile 的规则（TAB、.PHONY），再声明常用变量。变量用 := 立即赋值，后面所有目标都引用它们。",
+          "check": "这一步写完可以直接看：Makefile 头部有变量声明（GO、COMPOSE）和 .PHONY 声明。用 `cat Makefile` 确认内容正确，命令行开头是 TAB 不是空格。"
+        },
+        {
+          "n": 2,
+          "title": "help / up / down 三个核心目标",
+          "add": "\nhelp: ## 显示这份帮助\n\t@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \\\n\t\t| awk 'BEGIN {FS = \":.*?## \"}; {printf \"  \\033[36m%-10s\\033[0m %s\\n\", $$1, $$2}'\n\nup: ## 起全套环境（postgres + svc-homeos），带健康等待\n\t$(COMPOSE) up -d --build\n\t@$(MAKE) --no-print-directory ps\n\ndown: ## 停掉全套环境，保留数据卷（注意：不要加 -v）\n\t$(COMPOSE) down\n",
+          "place": "紧接变量声明之后",
+          "note": "help 是默认目标（列出所有命令），up 起环境，down 停环境。这三个是日常开发最常用的命令，先写出来让读者立刻能用。",
+          "check": "这一步写完可以接着看：help、up、down 三个目标已定义。`make help` 能列出可用目标（需要 Docker 环境才能完整运行，但文件内容可以直接 cat 查看）。"
+        },
+        {
+          "n": 3,
+          "title": "logs / ps / pgshell / build",
+          "add": "\nlogs: ## 跟踪两个服务的日志\n\t$(COMPOSE) logs -f --tail=100\n\nps: ## 查看容器状态与端口映射\n\t@$(COMPOSE) ps\n\npgshell: ## 进 postgres 的 psql 交互终端\n\t@$(COMPOSE) exec postgres psql -U $(PG_USER) -d $(PG_DB)\n\nbuild: ## 编译所有 Go 包到 bin/\n\t@mkdir -p bin\n\t$(GO) build -o bin/svc-homeos ./cmd/svc-homeos\n\t@echo \"产物: bin/svc-homeos\"\n",
+          "place": "紧接 down 之后",
+          "note": "这四个目标覆盖日常开发的其他常用操作：看日志、查状态、进数据库、编译代码。",
+          "check": "这一步写完可以接着看：logs、ps、pgshell、build 四个目标已定义。build 目标会编译 Go 二进制到 bin/svc-homeos。文件内容可以直接 cat 查看。"
+        },
+        {
+          "n": 4,
+          "title": "test / vet / fmt / web",
+          "add": "\ntest: ## 跑全部 Go 测试（带竞态检测）\n\t$(GO) test ./... -count=1\n\nvet: ## 静态检查\n\t$(GO) vet ./...\n\nfmt: ## 格式化所有 Go 源码\n\t$(GO) fmt ./...\n\nweb: ## 起前端 dev server\n\t@cd web && npm run dev\n",
+          "place": "紧接 build 之后",
+          "note": "测试、静态检查、格式化、前端 dev server。这些是开发流程中的辅助命令。",
+          "check": "这一步写完可以接着看：test、vet、fmt、web 四个目标已定义。web 目标会启动前端 dev server。文件内容可以直接 cat 查看。"
+        },
+        {
+          "n": 5,
+          "title": "backup 与 clean",
+          "add": "\nbackup: ## 把数据库导出到 backups/\n\t@mkdir -p backups\n\t@docker exec $(PG_NAME) pg_dump -U $(PG_USER) -d $(PG_DB) > backups/homecube-$$(date +%Y%m%d-%H%M%S).sql\n\t@ls -lh backups | tail -3\n\nclean: ## 清理构建产物与 Go 测试缓存（不碰数据库）\n\t@rm -rf bin\n\t@$(GO) clean -testcache\n\t@echo \"已清理 bin/ 与测试缓存；数据库未动\"\n",
+          "place": "文件末尾",
+          "note": "备份数据库和清理构建产物。clean 故意不碰数据库，避免误删数据。放在最后是因为它们是低频但重要的操作。",
+          "check": "这一步写完文件完整。`cd homecube && make help` 列出全部目标；`make ps` 需要 Docker 环境才能输出容器状态。所有 5 步的内容拼接起来就是完整的 Makefile（共 61 行）。"
+        }
+      ]
     },
     "steps": [
       {
@@ -1583,7 +1995,49 @@
       "filename": "lab/s0/d11/main.go",
       "content": "package main\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"io\"\n\t\"log\"\n\t\"net/http\"\n\t\"strings\"\n)\n\n// Envelope 与 S0 D6 保持一致：契约不能因为换端口而变\ntype Envelope struct {\n\tCode    int         `json:\"code\"`\n\tMessage string      `json:\"message\"`\n\tData    interface{} `json:\"data\"`\n\tAt      string      `json:\"at\"`\n}\n\nfunc writeJSON(w http.ResponseWriter, status int, e Envelope) {\n\tw.Header().Set(\"Content-Type\", \"application/json; charset=utf-8\")\n\tw.WriteHeader(status)\n\t_ = json.NewEncoder(w).Encode(e)\n}\n\nfunc ok(w http.ResponseWriter, data interface{}) {\n\twriteJSON(w, http.StatusOK, Envelope{0, \"ok\", data, \"2026-10-16T09:00:00+08:00\"})\n}\n\nfunc fail(w http.ResponseWriter, status, code int, msg string) {\n\twriteJSON(w, status, Envelope{code, msg, nil, \"2026-10-16T09:00:00+08:00\"})\n}\n\n// POST /echo 接受一个 JSON，放大后返回。\n// 这里会依次演示三种失败：405 方法不对、400 语法错、422 语义错\nfunc echo(w http.ResponseWriter, r *http.Request) {\n\t// ① 方法检查：路径存在但方法不对是 405，必须带 Allow 头\n\tif r.Method != http.MethodPost {\n\t\tw.Header().Set(\"Allow\", \"POST\") // 标准要求：告诉客户端应该用什么\n\t\tfail(w, http.StatusMethodNotAllowed, 1405, \"这个接口只接受 POST，收到的是 \"+r.Method)\n\t\treturn\n\t}\n\n\t// ② Content-Type 检查：没有 JSON 声明就别费劲解析\n\tct := r.Header.Get(\"Content-Type\")\n\tif !strings.HasPrefix(ct, \"application/json\") {\n\t\tfail(w, http.StatusUnsupportedMediaType, 1415,\n\t\t\t\"Content-Type 必须是 application/json，收到的是 \"+ct)\n\t\treturn\n\t}\n\n\t// ③ 限流 body 大小。r.Body 只能读一次，所以限制必须在读之前设\n\tr.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB 上限\n\n\tbody, err := io.ReadAll(r.Body)\n\tif err != nil {\n\t\tfail(w, http.StatusBadRequest, 1400, \"请求体读取失败或超过 1MB 上限\")\n\t\treturn\n\t}\n\n\t// ④ 语法层校验：JSON 解析不了就是 400\n\tvar req struct {\n\t\tMsg   string `json:\"msg\"`\n\t\tTimes int    `json:\"times\"`\n\t}\n\tif err := json.Unmarshal(body, &req); err != nil {\n\t\tfail(w, http.StatusBadRequest, 1400, \"body 不是合法 JSON: \"+err.Error())\n\t\treturn\n\t}\n\n\t// ⑤ 语义层校验：语法没问题但值不合理是 422\n\tif strings.TrimSpace(req.Msg) == \"\" {\n\t\tfail(w, http.StatusUnprocessableEntity, 1422, \"msg 字段不能为空或全是空白\")\n\t\treturn\n\t}\n\tif req.Times < 1 || req.Times > 5 {\n\t\tfail(w, http.StatusUnprocessableEntity, 1422, \"times 必须在 1~5 之间，收到 \"+fmt.Sprint(req.Times))\n\t\treturn\n\t}\n\n\tok(w, map[string]interface{}{\n\t\t\"echo\":   strings.Repeat(req.Msg, req.Times),\n\t\t\"length\": len([]rune(strings.Repeat(req.Msg, req.Times))),\n\t\t\"meta\": map[string]string{\n\t\t\t\"request_id\":  r.Header.Get(\"X-Request-Id\"),\n\t\t\t\"content_len\": fmt.Sprint(len(body)),\n\t\t\t\"user_agent\":  r.Header.Get(\"User-Agent\"),\n\t\t},\n\t})\n}\n\n// GET /search 演示查询参数：?q=xxx&page=2\nfunc search(w http.ResponseWriter, r *http.Request) {\n\tif r.Method != http.MethodGet {\n\t\tw.Header().Set(\"Allow\", \"GET\")\n\t\tfail(w, http.StatusMethodNotAllowed, 1405, \"这个接口只接受 GET\")\n\t\treturn\n\t}\n\tq := r.URL.Query().Get(\"q\") // URL.Query() 会自动 URL 解码\n\tpage := r.URL.Query().Get(\"page\")\n\tif q == \"\" {\n\t\tfail(w, http.StatusBadRequest, 1001, \"缺少查询参数 q\")\n\t\treturn\n\t}\n\tok(w, map[string]interface{}{\n\t\t\"query\": q,\n\t\t\"page\":  page,\n\t\t\"all\":   r.URL.Query(), // 把所有参数原样回显，方便对照\n\t})\n}\n\nfunc main() {\n\tmux := http.NewServeMux()\n\tmux.HandleFunc(\"/echo\", echo)\n\tmux.HandleFunc(\"/search\", search)\n\n\t// 兜底：区分「路径不存在」和「前缀对但没匹配到具体路由」\n\tmux.HandleFunc(\"/\", func(w http.ResponseWriter, r *http.Request) {\n\t\tfail(w, http.StatusNotFound, 1404, \"没有这个路径: \"+r.URL.Path)\n\t})\n\n\taddr := \"127.0.0.1:8081\" // 8080 留给 svc-homeos\n\tlog.Printf(\"HTTP 实验室启动: http://%s\", addr)\n\tsrv := &http.Server{Addr: addr, Handler: mux}\n\tlog.Fatal(srv.ListenAndServe())\n}\n",
       "run": "cd homecube && go run ./lab/s0/d11",
-      "expect": "$ go run ./lab/s0/d11\n2026/10/16 09:00:00 HTTP 实验室启动: http://127.0.0.1:8081\n\n—— 200 正常 POST ——\n$ curl -s -X POST localhost:8081/echo -H 'Content-Type: application/json' -d '{\"msg\":\"家\",\"times\":3}'\n{\"code\":0,\"message\":\"ok\",\"data\":{\"echo\":\"家家家\",\"length\":3,\"meta\":{\"request_id\":\"\",\"content_len\":\"28\",\"user_agent\":\"curl/8.4.0\"}},\"at\":\"...\"}\n\n—— 405 方法不对（注意 Allow 头）——\n$ curl -s -i localhost:8081/echo | head -4\nHTTP/1.1 405 Method Not Allowed\nAllow: POST\n{\"code\":1405,\"message\":\"这个接口只接受 POST，收到的是 GET\",...}\n\n—— 415 Content-Type 不对 ——\n$ curl -s -X POST localhost:8081/echo -H 'Content-Type: text/plain' -d 'hi'\n{\"code\":1415,\"message\":\"Content-Type 必须是 application/json，收到的是 text/plain\",...}\n\n—— 400 JSON 语法错 ——\n$ curl -s -X POST localhost:8081/echo -H 'Content-Type: application/json' -d '{\"msg\":\"家\",}'\n{\"code\":1400,\"message\":\"body 不是合法 JSON: invalid character '}' looking for beginning of value\",...}\n\n—— 422 语义错（语法对、值不合理）——\n$ curl -s -X POST localhost:8081/echo -H 'Content-Type: application/json' -d '{\"msg\":\"家\",\"times\":99}'\n{\"code\":1422,\"message\":\"times 必须在 1~5 之间，收到 99\",...}\n\n—— 400 缺必填查询参数 ——\n$ curl -s localhost:8081/search\n{\"code\":1001,\"message\":\"缺少查询参数 q\",...}\n\n—— 404 路径不存在 ——\n$ curl -s localhost:8081/nope\n{\"code\":1404,\"message\":\"没有这个路径: /nope\",...}"
+      "expect": "$ go run ./lab/s0/d11\n2026/10/16 09:00:00 HTTP 实验室启动: http://127.0.0.1:8081\n\n—— 200 正常 POST ——\n$ curl -s -X POST localhost:8081/echo -H 'Content-Type: application/json' -d '{\"msg\":\"家\",\"times\":3}'\n{\"code\":0,\"message\":\"ok\",\"data\":{\"echo\":\"家家家\",\"length\":3,\"meta\":{\"request_id\":\"\",\"content_len\":\"28\",\"user_agent\":\"curl/8.4.0\"}},\"at\":\"...\"}\n\n—— 405 方法不对（注意 Allow 头）——\n$ curl -s -i localhost:8081/echo | head -4\nHTTP/1.1 405 Method Not Allowed\nAllow: POST\n{\"code\":1405,\"message\":\"这个接口只接受 POST，收到的是 GET\",...}\n\n—— 415 Content-Type 不对 ——\n$ curl -s -X POST localhost:8081/echo -H 'Content-Type: text/plain' -d 'hi'\n{\"code\":1415,\"message\":\"Content-Type 必须是 application/json，收到的是 text/plain\",...}\n\n—— 400 JSON 语法错 ——\n$ curl -s -X POST localhost:8081/echo -H 'Content-Type: application/json' -d '{\"msg\":\"家\",}'\n{\"code\":1400,\"message\":\"body 不是合法 JSON: invalid character '}' looking for beginning of value\",...}\n\n—— 422 语义错（语法对、值不合理）——\n$ curl -s -X POST localhost:8081/echo -H 'Content-Type: application/json' -d '{\"msg\":\"家\",\"times\":99}'\n{\"code\":1422,\"message\":\"times 必须在 1~5 之间，收到 99\",...}\n\n—— 400 缺必填查询参数 ——\n$ curl -s localhost:8081/search\n{\"code\":1001,\"message\":\"缺少查询参数 q\",...}\n\n—— 404 路径不存在 ——\n$ curl -s localhost:8081/nope\n{\"code\":1404,\"message\":\"没有这个路径: /nope\",...}",
+      "build": [
+        {
+          "n": 1,
+          "title": "立好 package 和 import",
+          "add": "package main\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"io\"\n\t\"log\"\n\t\"net/http\"\n\t\"strings\"\n)\n",
+          "place": "文件最开头",
+          "note": "Go 的 import 是编译期契约。先列全今天要用到的 6 个包，再让后面的代码去兑现。",
+          "check": "这一步还跑不起来：文件只有 package 声明和 import 块，没有 func main()，Go 编译报错。第 5 步补上 main 之后才第一次能跑。"
+        },
+        {
+          "n": 2,
+          "title": "Envelope 与 ok/fail/writeJSON",
+          "add": "\n// Envelope 与 S0 D6 保持一致：契约不能因为换端口而变\ntype Envelope struct {\n\tCode    int         `json:\"code\"`\n\tMessage string      `json:\"message\"`\n\tData    interface{} `json:\"data\"`\n\tAt      string      `json:\"at\"`\n}\n\nfunc writeJSON(w http.ResponseWriter, status int, e Envelope) {\n\tw.Header().Set(\"Content-Type\", \"application/json; charset=utf-8\")\n\tw.WriteHeader(status)\n\t_ = json.NewEncoder(w).Encode(e)\n}\n\nfunc ok(w http.ResponseWriter, data interface{}) {\n\twriteJSON(w, http.StatusOK, Envelope{0, \"ok\", data, \"2026-10-16T09:00:00+08:00\"})\n}\n\nfunc fail(w http.ResponseWriter, status, code int, msg string) {\n\twriteJSON(w, status, Envelope{code, msg, nil, \"2026-10-16T09:00:00+08:00\"})\n}\n",
+          "place": "紧接 import 块之后",
+          "note": "Envelope 与 D6 保持一致（契约不变），ok/fail/writeJSON 是所有 handler 共用的基础设施。先定义好，后面每个 handler 只需一行调用。",
+          "check": "这一步还跑不起来：响应体基础设施已写好，但文件没有 func main()，Go 编译报错。第 5 步补上 main 之后才第一次能跑。"
+        },
+        {
+          "n": 3,
+          "title": "写 echo handler：5 层校验",
+          "add": "\n// POST /echo 接受一个 JSON，放大后返回。\n// 这里会依次演示三种失败：405 方法不对、400 语法错、422 语义错\nfunc echo(w http.ResponseWriter, r *http.Request) {\n\t// ① 方法检查：路径存在但方法不对是 405，必须带 Allow 头\n\tif r.Method != http.MethodPost {\n\t\tw.Header().Set(\"Allow\", \"POST\") // 标准要求：告诉客户端应该用什么\n\t\tfail(w, http.StatusMethodNotAllowed, 1405, \"这个接口只接受 POST，收到的是 \"+r.Method)\n\t\treturn\n\t}\n\n\t// ② Content-Type 检查：没有 JSON 声明就别费劲解析\n\tct := r.Header.Get(\"Content-Type\")\n\tif !strings.HasPrefix(ct, \"application/json\") {\n\t\tfail(w, http.StatusUnsupportedMediaType, 1415,\n\t\t\t\"Content-Type 必须是 application/json，收到的是 \"+ct)\n\t\treturn\n\t}\n\n\t// ③ 限流 body 大小。r.Body 只能读一次，所以限制必须在读之前设\n\tr.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB 上限\n\n\tbody, err := io.ReadAll(r.Body)\n\tif err != nil {\n\t\tfail(w, http.StatusBadRequest, 1400, \"请求体读取失败或超过 1MB 上限\")\n\t\treturn\n\t}\n\n\t// ④ 语法层校验：JSON 解析不了就是 400\n\tvar req struct {\n\t\tMsg   string `json:\"msg\"`\n\t\tTimes int    `json:\"times\"`\n\t}\n\tif err := json.Unmarshal(body, &req); err != nil {\n\t\tfail(w, http.StatusBadRequest, 1400, \"body 不是合法 JSON: \"+err.Error())\n\t\treturn\n\t}\n\n\t// ⑤ 语义层校验：语法没问题但值不合理是 422\n\tif strings.TrimSpace(req.Msg) == \"\" {\n\t\tfail(w, http.StatusUnprocessableEntity, 1422, \"msg 字段不能为空或全是空白\")\n\t\treturn\n\t}\n\tif req.Times < 1 || req.Times > 5 {\n\t\tfail(w, http.StatusUnprocessableEntity, 1422, \"times 必须在 1~5 之间，收到 \"+fmt.Sprint(req.Times))\n\t\treturn\n\t}\n\n\tok(w, map[string]interface{}{\n\t\t\"echo\":   strings.Repeat(req.Msg, req.Times),\n\t\t\"length\": len([]rune(strings.Repeat(req.Msg, req.Times))),\n\t\t\"meta\": map[string]string{\n\t\t\t\"request_id\":  r.Header.Get(\"X-Request-Id\"),\n\t\t\t\"content_len\": fmt.Sprint(len(body)),\n\t\t\t\"user_agent\":  r.Header.Get(\"User-Agent\"),\n\t\t},\n\t})\n}\n",
+          "place": "紧接 writeJSON 之后",
+          "note": "echo 是最复杂的 handler，依次演示 405/415/400/422 四种错误。放在基础设施之后是因为它调用了 ok/fail。5 层校验的顺序就是排错顺序：方法→Content-Type→读 body→语法→语义。",
+          "check": "这一步还跑不起来：echo handler 的 5 层校验已写完，但文件没有 func main()，Go 编译报错。第 5 步补上 main 之后才第一次能跑。"
+        },
+        {
+          "n": 4,
+          "title": "写 search handler：查询参数",
+          "add": "\n// GET /search 演示查询参数：?q=xxx&page=2\nfunc search(w http.ResponseWriter, r *http.Request) {\n\tif r.Method != http.MethodGet {\n\t\tw.Header().Set(\"Allow\", \"GET\")\n\t\tfail(w, http.StatusMethodNotAllowed, 1405, \"这个接口只接受 GET\")\n\t\treturn\n\t}\n\tq := r.URL.Query().Get(\"q\") // URL.Query() 会自动 URL 解码\n\tpage := r.URL.Query().Get(\"page\")\n\tif q == \"\" {\n\t\tfail(w, http.StatusBadRequest, 1001, \"缺少查询参数 q\")\n\t\treturn\n\t}\n\tok(w, map[string]interface{}{\n\t\t\"query\": q,\n\t\t\"page\":  page,\n\t\t\"all\":   r.URL.Query(), // 把所有参数原样回显，方便对照\n\t})\n}\n",
+          "place": "紧接 echo 之后",
+          "note": "search 演示 GET 请求的查询参数处理。放在 echo 之后是因为它更简单（只有方法检查和参数缺失），难度递减。",
+          "check": "这一步还跑不起来：search handler 已写完，但文件没有 func main()，Go 编译报错。第 5 步补上 main 之后才第一次能跑。"
+        },
+        {
+          "n": 5,
+          "title": "main：路由装配与启动",
+          "add": "\nfunc main() {\n\tmux := http.NewServeMux()\n\tmux.HandleFunc(\"/echo\", echo)\n\tmux.HandleFunc(\"/search\", search)\n\n\t// 兜底：区分「路径不存在」和「前缀对但没匹配到具体路由」\n\tmux.HandleFunc(\"/\", func(w http.ResponseWriter, r *http.Request) {\n\t\tfail(w, http.StatusNotFound, 1404, \"没有这个路径: \"+r.URL.Path)\n\t})\n\n\taddr := \"127.0.0.1:8081\" // 8080 留给 svc-homeos\n\tlog.Printf(\"HTTP 实验室启动: http://%s\", addr)\n\tsrv := &http.Server{Addr: addr, Handler: mux}\n\tlog.Fatal(srv.ListenAndServe())\n}\n",
+          "place": "文件末尾",
+          "note": "main 注册三个路由（echo/search/兜底 404）并启动服务器。放在最后是因为它依赖前面所有 handler。",
+          "check": "这一步加完文件第一次能跑。`cd homecube && go run ./lab/s0/d11`，服务在 127.0.0.1:8080 启动；POST /api/echo 带合法 JSON 返回 200 + Envelope，缺必填字段返回 422，用 GET 请求返回 405（未实跑，输出参照 expect 字段）。"
+        }
+      ]
     },
     "steps": [
       {
@@ -1742,7 +2196,57 @@
       "filename": "scripts/s0-check.sh",
       "content": "#!/usr/bin/env bash\n# S0 阶段自查：把两周的成果变成 12 条可执行断言\n# 用法：bash scripts/s0-check.sh\n# 退出码：0 = 全过，非 0 = 有失败（可以直接被 make / CI 调用）\nset -uo pipefail   # 注意：不加 -e，因为要跑完所有检查再汇总\n\nPASS=0\nFAIL=0\n\n# check <描述> <命令...>\n# 成功打印 ✅ 并吞掉输出；失败打印 ❌ 并把命令的输出显示出来帮你定位\ncheck() {\n  local desc=\"$1\"; shift\n  local out rc\n  out=\"$(\"$@\" 2>&1)\"; rc=$?\n  if [ $rc -eq 0 ]; then\n    printf '✅ %s\\n' \"$desc\"\n    PASS=$((PASS + 1))\n  else\n    printf '❌ %s\\n' \"$desc\"\n    if [ -n \"$out\" ]; then\n      printf '     ↳ %s\\n' \"$(echo \"$out\" | head -3 | tr '\\n' '|')\"\n    fi\n    FAIL=$((FAIL + 1))\n  fi\n}\n\nhr() { printf '\\n── %s ──\\n' \"$1\"; }\n\ncd homecube || { echo \"项目目录不存在\"; exit 1; }\n\nhr \"D1 版本管理\"\ncheck \"仓库已 git init 且有提交\"      bash -c '[ -d .git ] && [ \"$(git rev-list --count HEAD 2>/dev/null || echo 0)\" -ge 1 ]'\ncheck \"当前分支是 main\"               bash -c 'test \"$(git rev-parse --abbrev-ref HEAD)\" = main'\ncheck \".gitignore 挡住了 .env\"        bash -c 'git check-ignore -q .env'\ncheck \".env.example 存在且未被忽略\"   bash -c '[ -f .env.example ] && ! git check-ignore -q .env.example'\ncheck \"没有把 node_modules 提交进库\"  bash -c '! git ls-files | grep -q node_modules/'\n\nhr \"D2/D4/D6/D11 Go 工具链与服务\"\ncheck \"Go 已安装且 >= 1.22\"           bash -c 'go version | grep -qE \"go1\\.(2[2-9]|[3-9][0-9])\"'\ncheck \"go.mod 存在且模块路径正确\"     bash -c 'grep -q \"^module github.com/xuesh/homecube$\" go.mod'\ncheck \"全部 Go 代码能编译\"            bash -c 'go build ./... '\ncheck \"D2 的 8080 服务代码存在\"       bash -c '[ -f lab/s0/d02/main.go ]'\ncheck \"D4 的两档配置函数存在\"         bash -c 'grep -q \"func mustGetenv\" lab/s0/d04/main.go && grep -q \"func getenvOr\" lab/s0/d04/main.go'\ncheck \"D6 的统一响应体 Envelope 存在\" bash -c 'grep -q \"type Envelope struct\" cmd/svc-homeos/main.go'\ncheck \"D6 的 healthz 与 whoami 都在\"  bash -c 'grep -q \"/healthz\" cmd/svc-homeos/main.go && grep -q \"/whoami\" cmd/svc-homeos/main.go'\ncheck \"D11 演示了 405 与 422\"         bash -c 'grep -q \"StatusMethodNotAllowed\" lab/s0/d11/main.go && grep -q \"StatusUnprocessableEntity\" lab/s0/d11/main.go'\ncheck \"没有明文密码常量（D4 目标）\"   bash -c '! grep -rqn \"POSTGRES_PASSWORD=homecube\" --include=\"*.go\" .'\n\nhr \"D3/D7/D8/D9 容器与环境\"\ncheck \"Docker 引擎在运行\"             bash -c 'docker info >/dev/null 2>&1'\ncheck \"homecube-pg 容器在跑\"          bash -c 'docker ps --filter name=homecube-pg --filter status=running -q | grep -q .'\ncheck \"5432 端口可连\"                 bash -c 'nc -z -w 2 127.0.0.1 5432'\ncheck \"compose 文件存在\"              bash -c '[ -f deploy/docker-compose.yml ]'\ncheck \"compose 配置语法正确\"          bash -c 'docker compose -f deploy/docker-compose.yml config -q'\ncheck \"compose 里用了 service_healthy\" bash -c 'grep -q \"service_healthy\" deploy/docker-compose.yml'\ncheck \"compose 里 DB 主机名是 postgres\" bash -c 'grep -qE \"HC_DB_HOST:?\\s*postgres\" deploy/docker-compose.yml'\ncheck \"具名卷 pgdata 已挂载\"          bash -c 'docker inspect homecube-pg --format \"{{range .Mounts}}{{.Name}}{{end}}\" | grep -q pgdata'\ncheck \"数据库里有备份文件\"            bash -c 'ls backups/*.sql >/dev/null 2>&1'\n\nhr \"D5/D10 前端与工程化\"\ncheck \"Node 已安装且 >= 18\"           bash -c 'node -v | grep -qE \"v(1[89]|[2-9][0-9])\"'\ncheck \"前端项目存在\"                  bash -c '[ -d web ] || [ -d app-mobile ]'\ncheck \"锁文件已提交（未被忽略）\"      bash -c '( [ -f web/pnpm-lock.yaml ] || [ -f app-mobile/pnpm-lock.yaml ] || [ -f web/package-lock.json ] ) && ! git check-ignore -q web/pnpm-lock.yaml'\ncheck \"Makefile 存在\"                bash -c '[ -f Makefile ]'\ncheck \"Makefile 的关键目标齐全\"      bash -c 'for t in help up down logs ps pgshell build test web; do grep -qE \"^\\.PHONY.*\\\\b$t\\\\b|^$t:\" Makefile || exit 1; done'\ncheck \"make help 能跑通\"              bash -c 'make help >/dev/null'\ncheck \"Makefile 用的是 TAB 不是空格\"  bash -c '! grep -qP \"^    [^ ]\" Makefile'\n\nhr \"服务可达性（需要环境在跑）\"\nif docker ps --filter name=homecube-pg --filter status=running -q | grep -q .; then\n  check \"svc-homeos /healthz 返回 200\" curl -sf -o /dev/null http://127.0.0.1:8080/healthz\n  check \"svc-homeos 响应是合法 JSON\"   bash -c 'curl -s http://127.0.0.1:8080/healthz | python3 -c \"import json,sys; json.load(sys.stdin)\"'\n  check \"/whoami 无身份时返回 401\"     bash -c '[ \"$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:8080/whoami)\" = 401 ]'\nelse\n  printf '⏭️  环境未启动，跳过可达性检查（先跑 make up）\\n'\nfi\n\nprintf '\\n════════════════════════════════\\n'\nprintf '通过 %d 条，失败 %d 条\\n' \"$PASS\" \"$FAIL\"\nif [ \"$FAIL\" -eq 0 ]; then\n  printf '🎉 S0 全部通过。可以进入 S1 了。\\n'\n  exit 0\nfi\nprintf '把上面 ❌ 的条目修掉再跑一次。\\n'\nexit 1\n",
       "run": "cd homecube && bash scripts/s0-check.sh",
-      "expect": "── D1 版本管理 ──\n✅ 仓库已 git init 且有提交\n✅ 当前分支是 main\n✅ .gitignore 挡住了 .env\n✅ .env.example 存在且未被忽略\n✅ 没有把 node_modules 提交进库\n\n── D2/D4/D6/D11 Go 工具链与服务 ──\n✅ Go 已安装且 >= 1.22\n✅ go.mod 存在且模块路径正确\n✅ 全部 Go 代码能编译\n✅ D2 的 8080 服务代码存在\n✅ D4 的两档配置函数存在\n✅ D6 的统一响应体 Envelope 存在\n✅ D6 的 healthz 与 whoami 都在\n✅ D11 演示了 405 与 422\n✅ 没有明文密码常量（D4 目标）\n\n── D3/D7/D8/D9 容器与环境 ──\n✅ Docker 引擎在运行\n✅ homecube-pg 容器在跑\n✅ 5432 端口可连\n✅ compose 文件存在\n✅ compose 配置语法正确\n✅ compose 里用了 service_healthy\n✅ compose 里 DB 主机名是 postgres\n✅ 具名卷 pgdata 已挂载\n✅ 数据库里有备份文件\n\n── D5/D10 前端与工程化 ──\n✅ Node 已安装且 >= 18\n✅ 前端项目存在\n✅ 锁文件已提交（未被忽略）\n✅ Makefile 存在\n✅ Makefile 的关键目标齐全\n✅ make help 能跑通\n✅ Makefile 用的是 TAB 不是空格\n\n── 服务可达性（需要环境在跑） ──\n✅ svc-homeos /healthz 返回 200\n✅ svc-homeos 响应是合法 JSON\n✅ /whoami 无身份时返回 401\n\n════════════════════════════════\n通过 30 条，失败 0 条\n🎉 S0 全部通过。可以进入 S1 了。"
+      "expect": "── D1 版本管理 ──\n✅ 仓库已 git init 且有提交\n✅ 当前分支是 main\n✅ .gitignore 挡住了 .env\n✅ .env.example 存在且未被忽略\n✅ 没有把 node_modules 提交进库\n\n── D2/D4/D6/D11 Go 工具链与服务 ──\n✅ Go 已安装且 >= 1.22\n✅ go.mod 存在且模块路径正确\n✅ 全部 Go 代码能编译\n✅ D2 的 8080 服务代码存在\n✅ D4 的两档配置函数存在\n✅ D6 的统一响应体 Envelope 存在\n✅ D6 的 healthz 与 whoami 都在\n✅ D11 演示了 405 与 422\n✅ 没有明文密码常量（D4 目标）\n\n── D3/D7/D8/D9 容器与环境 ──\n✅ Docker 引擎在运行\n✅ homecube-pg 容器在跑\n✅ 5432 端口可连\n✅ compose 文件存在\n✅ compose 配置语法正确\n✅ compose 里用了 service_healthy\n✅ compose 里 DB 主机名是 postgres\n✅ 具名卷 pgdata 已挂载\n✅ 数据库里有备份文件\n\n── D5/D10 前端与工程化 ──\n✅ Node 已安装且 >= 18\n✅ 前端项目存在\n✅ 锁文件已提交（未被忽略）\n✅ Makefile 存在\n✅ Makefile 的关键目标齐全\n✅ make help 能跑通\n✅ Makefile 用的是 TAB 不是空格\n\n── 服务可达性（需要环境在跑） ──\n✅ svc-homeos /healthz 返回 200\n✅ svc-homeos 响应是合法 JSON\n✅ /whoami 无身份时返回 401\n\n════════════════════════════════\n通过 30 条，失败 0 条\n🎉 S0 全部通过。可以进入 S1 了。",
+      "build": [
+        {
+          "n": 1,
+          "title": "脚本骨架与 check 函数",
+          "add": "#!/usr/bin/env bash\n# S0 阶段自查：把两周的成果变成 12 条可执行断言\n# 用法：bash scripts/s0-check.sh\n# 退出码：0 = 全过，非 0 = 有失败（可以直接被 make / CI 调用）\nset -uo pipefail   # 注意：不加 -e，因为要跑完所有检查再汇总\n\nPASS=0\nFAIL=0\n\n# check <描述> <命令...>\n# 成功打印 ✅ 并吞掉输出；失败打印 ❌ 并把命令的输出显示出来帮你定位\ncheck() {\n  local desc=\"$1\"; shift\n  local out rc\n  out=\"$(\"$@\" 2>&1)\"; rc=$?\n  if [ $rc -eq 0 ]; then\n    printf '✅ %s\\n' \"$desc\"\n    PASS=$((PASS + 1))\n  else\n    printf '❌ %s\\n' \"$desc\"\n    if [ -n \"$out\" ]; then\n      printf '     ↳ %s\\n' \"$(echo \"$out\" | head -3 | tr '\\n' '|')\"\n    fi\n    FAIL=$((FAIL + 1))\n  fi\n}\n",
+          "place": "文件开头",
+          "note": "先声明计数器、定义 check 函数（执行命令、判断成败、打印符号）、定义 hr 分隔线。check 函数是所有检查项的基础，必须先定义。",
+          "check": "bash scripts/s0-check.sh 执行后无标准输出——脚本只定义了 check 函数、hr 函数和计数器，还没有任何检查项被调用。验证：bash -n scripts/s0-check.sh 无输出说明语法正确。"
+        },
+        {
+          "n": 2,
+          "title": "D1 版本管理检查",
+          "add": "\nhr() { printf '\\n── %s ──\\n' \"$1\"; }\n\ncd homecube || { echo \"项目目录不存在\"; exit 1; }\n\nhr \"D1 版本管理\"\ncheck \"仓库已 git init 且有提交\"      bash -c '[ -d .git ] && [ \"$(git rev-list --count HEAD 2>/dev/null || echo 0)\" -ge 1 ]'\ncheck \"当前分支是 main\"               bash -c 'test \"$(git rev-parse --abbrev-ref HEAD)\" = main'\ncheck \".gitignore 挡住了 .env\"        bash -c 'git check-ignore -q .env'\ncheck \".env.example 存在且未被忽略\"   bash -c '[ -f .env.example ] && ! git check-ignore -q .env.example'\ncheck \"没有把 node_modules 提交进库\"  bash -c '! git ls-files | grep -q node_modules/'\n",
+          "place": "紧接 check 函数之后",
+          "note": "先检查最基础的东西：仓库是否存在、分支是否正确、.gitignore 是否生效。这些是后面所有检查的前提。",
+          "check": "这一步还跑不起来：脚本调用了 cd homecube 并执行 D1 检查，但缺少末尾的汇总输出和 exit 语句，脚本会直接掉到末尾没有总结。第 6 步补上汇总之后才第一次能跑。"
+        },
+        {
+          "n": 3,
+          "title": "D2/D4/D6/D11 Go 检查",
+          "add": "\nhr \"D2/D4/D6/D11 Go 工具链与服务\"\ncheck \"Go 已安装且 >= 1.22\"           bash -c 'go version | grep -qE \"go1\\.(2[2-9]|[3-9][0-9])\"'\ncheck \"go.mod 存在且模块路径正确\"     bash -c 'grep -q \"^module github.com/xuesh/homecube$\" go.mod'\ncheck \"全部 Go 代码能编译\"            bash -c 'go build ./... '\ncheck \"D2 的 8080 服务代码存在\"       bash -c '[ -f lab/s0/d02/main.go ]'\ncheck \"D4 的两档配置函数存在\"         bash -c 'grep -q \"func mustGetenv\" lab/s0/d04/main.go && grep -q \"func getenvOr\" lab/s0/d04/main.go'\ncheck \"D6 的统一响应体 Envelope 存在\" bash -c 'grep -q \"type Envelope struct\" cmd/svc-homeos/main.go'\ncheck \"D6 的 healthz 与 whoami 都在\"  bash -c 'grep -q \"/healthz\" cmd/svc-homeos/main.go && grep -q \"/whoami\" cmd/svc-homeos/main.go'\ncheck \"D11 演示了 405 与 422\"         bash -c 'grep -q \"StatusMethodNotAllowed\" lab/s0/d11/main.go && grep -q \"StatusUnprocessableEntity\" lab/s0/d11/main.go'\ncheck \"没有明文密码常量（D4 目标）\"   bash -c '! grep -rqn \"POSTGRES_PASSWORD=homecube\" --include=\"*.go\" .'\n",
+          "place": "紧接 D1 检查之后",
+          "note": "检查 Go 工具链、代码文件、关键函数和结构体是否存在。这些检查不依赖环境运行，只看文件内容。",
+          "check": "这一步还跑不起来：Go 检查项已加入，但脚本仍然缺少末尾的汇总和 exit。第 6 步补上汇总之后才第一次能跑。"
+        },
+        {
+          "n": 4,
+          "title": "D3/D7/D8/D9 容器检查",
+          "add": "\nhr \"D3/D7/D8/D9 容器与环境\"\ncheck \"Docker 引擎在运行\"             bash -c 'docker info >/dev/null 2>&1'\ncheck \"homecube-pg 容器在跑\"          bash -c 'docker ps --filter name=homecube-pg --filter status=running -q | grep -q .'\ncheck \"5432 端口可连\"                 bash -c 'nc -z -w 2 127.0.0.1 5432'\ncheck \"compose 文件存在\"              bash -c '[ -f deploy/docker-compose.yml ]'\ncheck \"compose 配置语法正确\"          bash -c 'docker compose -f deploy/docker-compose.yml config -q'\ncheck \"compose 里用了 service_healthy\" bash -c 'grep -q \"service_healthy\" deploy/docker-compose.yml'\ncheck \"compose 里 DB 主机名是 postgres\" bash -c 'grep -qE \"HC_DB_HOST:?\\s*postgres\" deploy/docker-compose.yml'\ncheck \"具名卷 pgdata 已挂载\"          bash -c 'docker inspect homecube-pg --format \"{{range .Mounts}}{{.Name}}{{end}}\" | grep -q pgdata'\ncheck \"数据库里有备份文件\"            bash -c 'ls backups/*.sql >/dev/null 2>&1'\n",
+          "place": "紧接 Go 检查之后",
+          "note": "检查 Docker 引擎、容器状态、compose 配置、卷挂载。这些检查依赖 Docker 环境在跑。",
+          "check": "这一步还跑不起来：容器检查项需要 Docker 守护进程在运行，且脚本仍缺少末尾汇总。启动 Docker Desktop 并补上第 6 步之后才第一次能跑。"
+        },
+        {
+          "n": 5,
+          "title": "D5/D10 前端与工程化检查",
+          "add": "\nhr \"D5/D10 前端与工程化\"\ncheck \"Node 已安装且 >= 18\"           bash -c 'node -v | grep -qE \"v(1[89]|[2-9][0-9])\"'\ncheck \"前端项目存在\"                  bash -c '[ -d web ] || [ -d app-mobile ]'\ncheck \"锁文件已提交（未被忽略）\"      bash -c '( [ -f web/pnpm-lock.yaml ] || [ -f app-mobile/pnpm-lock.yaml ] || [ -f web/package-lock.json ] ) && ! git check-ignore -q web/pnpm-lock.yaml'\ncheck \"Makefile 存在\"                bash -c '[ -f Makefile ]'\ncheck \"Makefile 的关键目标齐全\"      bash -c 'for t in help up down logs ps pgshell build test web; do grep -qE \"^\\.PHONY.*\\\\b$t\\\\b|^$t:\" Makefile || exit 1; done'\ncheck \"make help 能跑通\"              bash -c 'make help >/dev/null'\ncheck \"Makefile 用的是 TAB 不是空格\"  bash -c '! grep -qP \"^    [^ ]\" Makefile'\n\nhr \"服务可达性（需要环境在跑）\"\nif docker ps --filter name=homecube-pg --filter status=running -q | grep -q .; then\n  check \"svc-homeos /healthz 返回 200\" curl -sf -o /dev/null http://127.0.0.1:8080/healthz\n  check \"svc-homeos 响应是合法 JSON\"   bash -c 'curl -s http://127.0.0.1:8080/healthz | python3 -c \"import json,sys; json.load(sys.stdin)\"'\n  check \"/whoami 无身份时返回 401\"     bash -c '[ \"$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:8080/whoami)\" = 401 ]'\nelse\n  printf '⏭️  环境未启动，跳过可达性检查（先跑 make up）\\n'\nfi\n",
+          "place": "紧接容器检查之后",
+          "note": "检查 Node 版本、前端项目、锁文件、Makefile。这些检查不依赖环境运行。",
+          "check": "这一步还跑不起来：前端和工程化检查、服务可达性检查已加入，但脚本仍缺少末尾的汇总输出和 exit。第 6 步补上汇总之后才第一次能跑。"
+        },
+        {
+          "n": 6,
+          "title": "服务可达性检查与汇总",
+          "add": "\nprintf '\\n════════════════════════════════\\n'\nprintf '通过 %d 条，失败 %d 条\\n' \"$PASS\" \"$FAIL\"\nif [ \"$FAIL\" -eq 0 ]; then\n  printf '🎉 S0 全部通过。可以进入 S1 了。\\n'\n  exit 0\nfi\nprintf '把上面 ❌ 的条目修掉再跑一次。\\n'\nexit 1\n",
+          "place": "文件末尾",
+          "note": "最后检查服务是否可达（/healthz、/whoami），并汇总通过/失败数。放在最后是因为它依赖前面所有环境都已就绪。",
+          "check": "这一步加完脚本第一次完整可用。`cd homecube && bash scripts/s0-check.sh`，逐条打印 ✅/❌ 并汇总通过/失败数。全过时输出 `🎉 S0 全部通过。可以进入 S1 了。` 并退出码 0；有失败时输出 `把上面 ❌ 的条目修掉再跑一次。` 并退出码 1（未实跑，输出参照 expect 字段）。"
+        }
+      ]
     },
     "steps": [
       {

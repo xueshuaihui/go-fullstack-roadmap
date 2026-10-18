@@ -1,0 +1,293 @@
+[
+  {
+    "id": "s0-d3",
+    "stage": "S0",
+    "week": 1,
+    "day": 3,
+    "title": "容器是什么：镜像、容器，跑起 PostgreSQL",
+    "goal": "理解镜像与容器的区别，用 docker run 起一个 PostgreSQL 容器并连进去执行 SQL，理解 -p 端口映射与数据持久化的缺口（为 D9 埋线）。",
+    "duration": "90 分钟",
+    "why": {
+      "problem": "HomeCube 后面 60 周都要用 PostgreSQL。如果每次换电脑、每次系统升级、每次后端同学换机器都要重新「装数据库、调端口、设密码、改配置文件」，你会被环境问题吃掉一大半精力。装 PostgreSQL 本身不难，难的是保证**每台机器上的数据库版本、启动参数、数据目录布局完全一致**。",
+      "naive": "新手常见的两种理解：一是把容器当成「轻量虚拟机」，以为里面有独立的操作系统内核，所以觉得它慢、觉得它占内存；二是用 docker run -v pgdata:/var/lib/postgresql/data 之后照样 `docker rm` 掉容器，发现数据全没了，于是得出「容器不可靠」的结论。这两个误解都会在后面反复咬人。",
+      "right": "容器不是虚拟机，它没有自己的内核——它**共享宿主机的内核**，只隔离了三样东西：文件系统（每个容器看到自己的根目录和挂载点）、进程（每个容器有独立的 PID 命名空间，里面的 PID 1 是容器主进程）、网络（每个容器有自己的网卡和 IP）。镜像（image）是一个只读的、分层的文件系统模板，里面打包了二进制和依赖；容器（container）是镜像的一个运行实例，是镜像加上一层可写的「容器层」。这个「可写层」随容器一起生死，是 D9 数据丢失的根因。"
+    },
+    "concepts": [
+      {
+        "name": "镜像 vs 容器：类与实例",
+        "explanation": "镜像是一个只读的分层文件系统快照，加上运行所需的元数据（启动命令、环境变量、端口声明）。它本身不运行，只是一个模板。容器是镜像被运行起来之后的东西：你在模板上面加了一层「可写容器层」，进程真正写文件写在这一层，容器一删这层就没了。类比 JS：这就像 class 与 new 的关系——class 描述「有哪些字段和方法」，new 产生一个具体实例；镜像相当于编译好、可分发、不可修改的 class，容器相当于 new 出来的对象。关键推论：同一个镜像可以同时起 N 个容器，各自有独立可写层，端口必须错开；而想改镜像内容只能重新 build 一个新镜像，不能就地修改。",
+        "analogy": "像 Node 依赖：node_modules 是模板（同一个镜像），你 cd 进不同项目各起一个进程（各自的容器），可以同时跑很多个，端口各占一个。"
+      },
+      {
+        "name": "容器隔离了什么：文件系统 / 进程 / 网络",
+        "explanation": "容器靠 Linux 内核提供的命名空间（namespace）和 cgroups 实现隔离，**并没有自己的内核**，所以比虚拟机轻得多：启动是毫秒级到秒级，镜像几百 MB 而不是几 GB。隔离的三样：① 文件系统——每个容器有自己的挂载表，能看到自己的根目录，而且可以通过 -v 把宿主机目录「接进」容器里；② 进程——每个容器有独立的 PID 命名空间，所以容器里的主进程是 PID 1，它退出容器就结束；③ 网络——每个容器有自己的网卡、独立 IP，因此可以像独立机器一样互相直连。第四样是资源限制 cgroups：可以限制 CPU 和内存。相比虚拟机的代价是：因为共享内核，容器里不能装不同的内核、不能装需要内核模块的东西（比如 Docker Desktop 在 macOS 上是靠一个轻量 Linux 虚拟机来跑的）。",
+        "analogy": "像合租房：同一个房子的结构和水电（共享内核），但每间房有独立的门锁和卫生间（命名空间），还能给每间房单独拉闸限电（cgroups）。"
+      },
+      {
+        "name": "docker run 的关键参数与端口映射",
+        "explanation": "docker run 后面最常用的四个参数必须现在就懂：--name 给容器起名（后面 exec、logs、stop 都靠名字，比随机 ID 好用十倍）；-e 设置环境变量（PostgreSQL 的账号密码全靠它，Docker 官方镜像靠约定读取 POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB）；-p 把容器的端口发布到宿主机，格式是 -p 宿主机端口:容器端口，冒号两边同一个数字只是最省心的写法，因为容器内 PostgreSQL 固定听 5432；-d 让容器在后台跑（detach），否则终端会被占住。另外 -v 挂载卷，今天先用默认的匿名卷保持数据，重头戏留给 D9。还有一个必知事实：容器镜像是只读模板，要改配置不能 docker exec 进去改完就算数——那样只改了那个容器的可写层，换台机器重建容器就没了；要固化得写 Dockerfile 重新 build，D7 就会做这件事。",
+        "analogy": "像在酒店开房：--name 是你的房号，-e 是登记时填的偏好（前台按它准备房间），-p 是告诉总机「这间房对外的联系电话」，-d 是拿了房卡就走别挡着门口。"
+      }
+    ],
+    "code": {
+      "lang": "bash",
+      "filename": "lab/s0/d3/main.sh",
+      "source_path": "/tmp/s3v/lab/s0/d3/main.sh",
+      "run": "bash lab/s0/d3/main.sh",
+      "expect": "== 0. 先确认 Docker 引擎活着 ==\n27.3.1\n\n== 3. 别用 sleep 猜时间，等它真的能连上 ==\n就绪：重试了 3 次\n\n== 4. 看容器状态与端口映射 ==\nNAMES         STATUS                       PORTS\nhomecube-pg   Up 12 seconds               0.0.0.0:5432->5432/tcp\n\n== 5. 连进去执行 SQL（-it 保留交互 TTY）==\n                                                 version\n----------------------------------------------------------\n PostgreSQL 16.4 (Debian 16.4-1.pgdg120+1) on x86_64-pc-linux-gnu, compiled by gcc ..., 64-bit\n(1 row)\n\n== 7. 看看这个容器把数据放在哪（为 D9 埋伏笔）==\nvolume 4d1f0a9c8b21  /var/lib/docker/volumes/4d1f0a9c8b21/_data -> /var/lib/postgresql/data\n                                       ↑ 匿名卷：随机名字，容器删了它也跟着没了"
+    },
+    "steps": [
+      {
+        "n": 1,
+        "title": "装 Docker 并确认引擎在跑",
+        "detail": "macOS 上装 Docker Desktop（第一次启动它会创建一个轻量 Linux 虚拟机，这正好印证「容器共享宿主机内核」这件事在 Mac 上意味着什么）。装完执行 docker version：Client 和 Server 两段都要有版本号。如果 Server 段报 error，说明引擎没起来，去启动 Docker Desktop 应用。Linux 上直接装 docker-ce。",
+        "time": "25 分钟"
+      },
+      {
+        "n": 2,
+        "title": "跑脚本起库",
+        "detail": "把脚本存成 lab/s0/d3/main.sh 并 bash 执行。重点看第 3 步的轮询写法：不要用 sleep 10 然后假设好了，要用 pg_isready 反复探活直到返回 0。这是所有「等一个依赖起来」的通用套路，脚本、K8s 健康检查、CI 全是这个模式。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 3,
+        "title": "读懂 docker ps 的 PORTS 列",
+        "detail": "输出里的 0.0.0.0:5432->5432/tcp 表示：宿主机所有网卡的 5432 被转发到容器内的 5432。容器内部 PostgreSQL 一直听的是 5432，宿主机上被占用的是 5432。改成 -p 15432:5432 试试，然后在你本机的 psql 客户端或用 -p 的另一端去连，验证映射关系。",
+        "time": "15 分钟"
+      },
+      {
+        "n": 4,
+        "title": "亲手制造一次数据蒸发",
+        "detail": "在容器里 create database probe_db，建一张表插两行数据。然后 docker rm -f homecube-pg 删掉容器，重新跑一遍脚本起一个新的容器，进去 \\l 一看——probe_db 不在了。把这个「啊」的瞬间记住，D9 讲卷的时候你会回来感谢它。",
+        "time": "20 分钟"
+      },
+      {
+        "n": 5,
+        "title": "摸清容器的几个身份标识",
+        "detail": "docker ps -a 看得到停止的容器（有 Exit 状态）；docker inspect homecube-pg 是一大段 JSON，重点看 Name、State、Config.Env、Mounts、NetworkSettings.IPAddress；docker images 看本机有哪些镜像（能看到你刚拉的 postgres:16-alpine 及其体积）；docker logs homecube-pg 看启动日志（PostgreSQL 启动失败时密码不对、权限不对都在这行日志里）。",
+        "time": "10 分钟"
+      }
+    ],
+    "pitfalls": [
+      {
+        "wrong": "docker run 的时候忘了 -e POSTGRES_PASSWORD，或者把变量名写成了 PG_PASSWORD。",
+        "right": "严格用官方镜像约定的三个名字：POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB。",
+        "why": "postgres 镜像不是「通用容器」，它的入口脚本会读这三个环境变量来初始化数据目录并创建超管账号。名字不对，镜像会跳过初始化，你以为建好了，其实进去之后连 psql 都不用密码就能连上（本地开发无所谓，上线就是大洞）。"
+      },
+      {
+        "wrong": "容器起来之后不探活，直接 sleep 5 就开始连，然后报 connection refused，就以为装错了。",
+        "right": "用 pg_isready / docker inspect 看健康状态，直到返回 0 再往下走。",
+        "why": "PostgreSQL 启动时要初始化数据目录、恢复 WAL，耗时从几百毫秒到几秒不等，取决于磁盘和机器负载。sleep 是把「大概」当「确定」用，在 CI 和脚本里必然偶发失败。轮询探活是把不确定性变成确定性的唯一办法。"
+      },
+      {
+        "wrong": "以为 docker run 出来的容器里是一个完整的独立操作系统，可以在里面 apt install 装一堆东西长期依赖。",
+        "right": "容器里的改动只存在于那个容器的可写层，容器一删就没了；要固化就写 Dockerfile。",
+        "why": "这是容器最反直觉的地方：你在容器里做的一切改动都在「容器层」上，不是镜像的一部分。docker commit 或者删掉重建，那些改动全部消失。正确姿势是把需要的东西写进 Dockerfile 或 docker-compose.yml，让环境可以从一份声明随时重建。"
+      },
+      {
+        "wrong": "以为容器是虚拟机的替代品，会「比虚拟机慢」。",
+        "right": "容器共享宿主机内核，不需要再跑一个 OS，所以启动和内存开销都远小于虚拟机。",
+        "why": "虚拟机里跑的是完整的客户机内核，镜像几个 GB、开机几十秒。容器只是内核上的隔离视图，镜像几百 MB、启动毫秒到秒级。代价是不能换内核版本、不能装内核模块。选型结论很简单：绝大多数应用服务用容器，Mac/Windows 上跑 Docker 必须靠那个 Linux 虚拟机。"
+      }
+    ],
+    "quiz": [
+      {
+        "q": "镜像和容器的关系，最准确的描述是？",
+        "options": [
+          "镜像是运行中的进程，容器是它占用的内存",
+          "镜像是只读的分层模板，容器是镜像的一个运行实例，额外带一层可写的容器层",
+          "容器是模板，镜像是实例",
+          "两者是同一个东西的两种叫法"
+        ],
+        "answer": 1,
+        "explain": "镜像 = 只读模板（class），容器 = 运行实例 + 可写层（new 出来的对象）。容器删了可写层就没了，镜像还在。"
+      },
+      {
+        "q": "docker run -p 15432:5432 的含义是？",
+        "options": [
+          "容器内监听 15432，宿主机访问 5432",
+          "宿主机 15432 转发到容器内 5432",
+          "两个端口都必须空闲才能启动",
+          "容器内和宿主机都用 15432"
+        ],
+        "answer": 1,
+        "explain": "-p 宿主机端口:容器端口。容器内 PG 固定听 5432，宿主机上你可以选任意空闲端口映射过去。"
+      },
+      {
+        "q": "为什么不能用 sleep 代替探活轮询？",
+        "options": [
+          "sleep 会让脚本变慢",
+          "sleep 无法保证依赖真的就绪，可能偶发失败",
+          "sleep 会占用太多 CPU",
+          "pg_isready 更优雅"
+        ],
+        "answer": 1,
+        "explain": "sleep 是把「大概」当「确定」用。PG 初始化时间取决于磁盘负载，sleep 10 在快机器上够用，在慢机器或 CI 里就不够。探活轮询是唯一能把不确定性变成确定性的办法。"
+      },
+      {
+        "q": "docker rm -f homecube-pg 之后，匿名卷里的数据会怎样？",
+        "options": [
+          "数据还在，下次起同名容器能读到",
+          "数据跟着容器一起被删了",
+          "数据被移到 /tmp 备份",
+          "需要手动 docker volume rm 才会删"
+        ],
+        "answer": 1,
+        "explain": "匿名卷的名字是随机的，且生命周期与容器绑定。容器删了，匿名卷也跟着没。这就是 D9 要讲命名卷的原因。"
+      }
+    ],
+    "task": {
+      "acceptance": [
+        "能用一句话区分镜像和容器（镜像是模板，容器是实例+可写层）",
+        "能说出 docker run 的四个关键参数（--name / -e / -p / -d）各自的作用",
+        "能手写探活轮询逻辑（until + pg_isready + 重试上限）",
+        "能解释为什么匿名卷的数据会随容器消失（为 D9 命名卷埋线）"
+      ]
+    },
+    "teaching": {
+      "prerequisites": [
+        {
+          "day": "s0-d1",
+          "topic": "Go 环境搭建",
+          "check": "能在终端执行 go version"
+        },
+        {
+          "day": "s0-d2",
+          "topic": "Docker 安装验证",
+          "check": "跑通过 docker run hello-world"
+        }
+      ],
+      "phases": [
+        {
+          "name": "预热",
+          "duration": "10 分钟",
+          "content": "阅读 README.md 阶段 1，完成两个微测验。如果答错，回到指定天数重读。",
+          "micro_quiz": [
+            {
+              "q": "docker version 显示 Client 有版本但 Server 报错，说明什么？",
+              "options": [
+                "Docker 没装好",
+                "Docker Desktop 没启动",
+                "需要 sudo"
+              ],
+              "answer": 1,
+              "explain": "Client 能显示版本说明二进制装好了，Server 报错说明引擎没起来。"
+            },
+            {
+              "q": "你之前跑过 docker run hello-world 吗？",
+              "options": [
+                "跑过，docker ps -a 能看到 Exited 状态的容器",
+                "没跑过",
+                "不确定"
+              ],
+              "answer": 0,
+              "explain": "如果没跑过，回去 S0 D2 补做。"
+            }
+          ]
+        },
+        {
+          "name": "最小原型",
+          "duration": "20 分钟",
+          "skeleton_file": "skeleton.sh",
+          "fill_points": [
+            {
+              "line": 8,
+              "hint": "填入容器名称 homecube-pg",
+              "expected_lines": 1
+            },
+            {
+              "line": 17,
+              "hint": "补充四个 -e 环境变量参数",
+              "expected_lines": 4
+            },
+            {
+              "line": 25,
+              "hint": "实现探活轮询逻辑",
+              "expected_lines": 8
+            },
+            {
+              "line": 38,
+              "hint": "填入查版本的 SQL",
+              "expected_lines": 1
+            },
+            {
+              "line": 44,
+              "hint": "填入 docker inspect 格式化字符串",
+              "expected_lines": 1
+            }
+          ]
+        },
+        {
+          "name": "缺陷修复",
+          "duration": "25 分钟",
+          "approaches": [
+            {
+              "name": "方案 A：直接 sleep",
+              "description": "docker run 后 sleep 10 然后直接连",
+              "pros": "写法最简单",
+              "cons": "偶发失败，CI 里必崩"
+            },
+            {
+              "name": "方案 B：探活轮询（推荐）",
+              "description": "用 pg_isready 反复检查直到返回 0",
+              "pros": "确定性高，任何机器都可靠",
+              "cons": "多写 5 行代码"
+            },
+            {
+              "name": "方案 C：依赖健康检查",
+              "description": "用 docker run --health-cmd 等 Docker 内置机制",
+              "pros": "最优雅，适合 compose",
+              "cons": "单容器场景过度设计"
+            }
+          ],
+          "solution_file": "solution.sh",
+          "feynman_questions": [
+            "为什么方案 A 在本地可能偶尔成功，但在 CI 里一定会失败？",
+            "pg_isready 返回 0 代表什么？返回非 0 又代表什么？",
+            "如果把轮询上限从 40 改成 5，会发生什么后果？"
+          ]
+        },
+        {
+          "name": "边界与反例",
+          "duration": "15 分钟",
+          "anti_patterns": [
+            {
+              "file": "anti_noenv.sh",
+              "description": "忘写 -e POSTGRES_PASSWORD 的版本",
+              "expected_behavior": "容器能起来，但不用密码就能连上，存在安全漏洞"
+            },
+            {
+              "file": "anti_sleep.sh",
+              "description": "用 sleep 10 代替探活的版本",
+              "expected_behavior": "大多数时候成功，但偶发 connection refused"
+            }
+          ]
+        },
+        {
+          "name": "收口",
+          "duration": "10 分钟",
+          "criteria": [
+            {
+              "text": "docker run 后用 pg_isready 探活，重试不超过 40 次就能连上",
+              "verified_in": "阶段 3，solution.sh"
+            },
+            {
+              "text": "四个 -e 环境变量缺一不可，少一个密码就不生效",
+              "verified_in": "阶段 4，anti_noenv.sh"
+            },
+            {
+              "text": "docker inspect 能看到匿名卷的随机名字，容器删了卷也跟着没",
+              "verified_in": "阶段 3，solution.sh 第 44 行"
+            },
+            {
+              "text": "同一个镜像可以起两个容器，但端口必须错开",
+              "verified_in": "自己动手：再跑一次脚本，把 -p 改成 15432:5432"
+            }
+          ],
+          "next_day_preview": "明天 D4 要学「镜像是怎么做出来的」—— 你会亲手写一个 Dockerfile，把今天的 postgres 容器定制成「自带初始化脚本、预建好表结构」的版本。今天学的 -e 环境变量和端口映射，明天会原封不动地复用。"
+        }
+      ],
+      "mode_switch": "learner"
+    }
+  }
+]
