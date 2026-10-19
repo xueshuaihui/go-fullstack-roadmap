@@ -157,12 +157,12 @@ export const phase1Days: DayTask[] = [
     hours: 4,
     tasks: [
       '用 `db.Exec` 插入一条，取 `LastInsertId()` 作为 Entry.ID 回填',
-      '用 `db.Query` 查多行，严格写 `for rows.Next() { rows.Scan(...) }` + `rows.Err()` + `defer rows.Close()`',
+      '**完整模板**：用 `db.Query` 查多行，严格写 `for rows.Next() { rows.Scan(...) }` + `defer rows.Close()`（Query 后立即 defer）+ `rows.Err()`；**Scan 参数个数与类型必须与 SELECT 列完全一致**',
       '用 `db.QueryRow` 查单行，区分 `sql.ErrNoRows` 与真正的查询错误',
-      '处理可空字段：用 `sql.NullString` 读 note，再转换成普通 string',
+      '处理可空字段：用 `sql.NullString` 读 note，检查 `ns.Valid` 后再取 `ns.String`；**适用场景：数据库允许 NULL 的列**',
       '封装 `AddEntry` / `ListEntries` / `GetEntry` 三个函数，参数用 `context.Context` 占位',
     ],
-    deliver: '`store.go` 里三个函数跑通，插入后能按 ID 查回、能列出全部',
+    deliver: '`store.go` 里三个函数跑通，插入后能按 ID 查回、能列出全部；一份 `sql.NullString` 处理 NULL 的实验记录',
     pitfall: '`rows.Scan` 的参数个数必须与 SELECT 列数一致；忘记 `rows.Close()` 会造成连接泄漏。',
   },
   {
@@ -170,13 +170,13 @@ export const phase1Days: DayTask[] = [
     title: '预编译语句与事务',
     hours: 3,
     tasks: [
-      '用 `db.Prepare` 预编译 INSERT，循环插入 5 条并复用 stmt',
-      '用 `db.Begin()` 开事务，`defer tx.Rollback()` 兜底，成功路径显式 `Commit()`',
+      '用 `db.Prepare` 预编译 INSERT，循环插入 5 条并复用 stmt；**理解优势：SQL 解析一次、执行计划缓存、参数化查询防止 SQL 注入；stmt 用完要 `defer stmt.Close()`**',
+      '用 `db.Begin()` 开事务，`defer tx.Rollback()` 兜底（Commit 后会返回 `sql.ErrTxDone`，可安全忽略），成功路径显式 `Commit()`',
       '故意在事务中途 `return err`，验证数据没有落库',
-      '在事务里批量插入 100 条，与「100 次独立 Exec」对比耗时',
+      '在事务里批量插入 100 条，与「100 次独立 Exec」对比耗时，观察事务的批量性能优势',
       '把 `AddEntry` 改造成支持传 `*sql.Tx` 的版本，为后续批量导入留口',
     ],
-    deliver: '一个批量导入函数：100 条在单事务内完成，中途失败可完整回滚',
+    deliver: '一个批量导入函数：100 条在单事务内完成，中途失败可完整回滚；一份预编译 vs 直接 Exec 的性能对比记录',
     pitfall: '`defer tx.Rollback()` 在 Commit 之后执行会返回 `sql.ErrTxDone`，可以忽略但不能不写。',
   },
   {
