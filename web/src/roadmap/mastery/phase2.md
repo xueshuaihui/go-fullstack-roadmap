@@ -207,7 +207,7 @@ func g() {
     defer mu.Unlock()
 }
 ::ask 调用 f 会怎样？
-::ans **死锁**（`fatal error: all goroutines are asleep - deadlock!`）。`sync.Mutex` 不可重入，同一 goroutine 重复 Lock 会永久阻塞。修法：拆出不加锁的内部函数 `gLocked()`，由 f 在持锁时调用；或者重新设计锁的边界，让 g 不假设自己需要锁。**「可重入锁」在 Go 里不存在，这是刻意设计**——它逼你把临界区想清楚，而不是靠递归加锁蒙混。
+::ans **死锁**（`fatal error: all goroutines are asleep - deadlock!`）。`sync.Mutex` 不可重入，同一 goroutine 重复 Lock 会永久阻塞。修法：拆出不加锁的内部函数 `gLocked()`，由 f 在持锁时调用；或者重新设计锁的边界，让 g 不假设自己需要锁。「**可重入锁**」在 Go 里不存在，这是刻意设计——它逼你把临界区想清楚，而不是靠递归加锁蒙混。
 ::debug go
 mu.Lock()
 if err := doSomething(); err != nil {
@@ -221,7 +221,7 @@ mu.Unlock()
 ::scene 账本服务有一个 `statsCache`，读很频繁（每次列表都查）、写很少（只在新增账目时失效）。
 ::ask 用 `Mutex` 还是 `RWMutex`？给出读写两侧的具体代码，并说明一个容易写错的点。
 ::hint 失效操作用什么锁？「检查-失效」是不是原子？
-::ans 用 `RWMutex`：读 `RLock/RUnlock`，失效 `Lock/Unlock`。易错点：**「判断缓存是否存在 → 不存在就回源 → 写回」不是原子的**，两个请求可能同时回源（缓存击穿）。要避免就得在写路径再加一层「单飞」（singleflight）或在锁内做整个回源——但锁内回源会阻塞所有读，通常不可接受。家庭账本量级可以直接接受少量重复回源，**但你要知道自己接受的是什么**。另一个易错点：失效操作用 `Lock` 而不是 `RLock`，用错编译能过、行为错。
+::ans 用 `RWMutex`：读 `RLock/RUnlock`，失效 `Lock/Unlock`。易错点：「**判断缓存是否存在 → 不存在就回源 → 写回**」不是原子的，两个请求可能同时回源（缓存击穿）。要避免就得在写路径再加一层「单飞」（singleflight）或在锁内做整个回源——但锁内回源会阻塞所有读，通常不可接受。家庭账本量级可以直接接受少量重复回源，**但你要知道自己接受的是什么**。另一个易错点：失效操作用 `Lock` 而不是 `RLock`，用错编译能过、行为错。
 ::crit 加锁代码里 `Lock` 与 `defer Unlock` 相邻，中间无逻辑
 ::crit 知道 Mutex 不可重入，能复现自己锁自己的死锁
 ::crit 能区分「锁保证正确性」和「WaitGroup 保证时序」，两者都用
@@ -250,7 +250,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
     w.WriteHeader(200)
 }
 ::ask 客户端在 1 秒后断开，这个 INSERT 还会执行吗？
-::ans 会。goroutine 里用的是 `db.Exec` 而不是 `ExecContext(ctx, ...)`，ctx 根本没传下去，所以「客户端走了」这件事对写库毫无影响。结果：请求已经结束、资源已释放，后台还在写一条用户不要的数据——这就是**「取消信号没有传播」**。修法：`db.ExecContext(ctx, ...)`，并且不要在 handler 里起不受控的 goroutine（要用也要有自己的生命周期管理）。
+::ans 会。goroutine 里用的是 `db.Exec` 而不是 `ExecContext(ctx, ...)`，ctx 根本没传下去，所以「客户端走了」这件事对写库毫无影响。结果：请求已经结束、资源已释放，后台还在写一条用户不要的数据——这就是「**取消信号没有传播**」。修法：`db.ExecContext(ctx, ...)`，并且不要在 handler 里起不受控的 goroutine（要用也要有自己的生命周期管理）。
 ::debug go
 ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 defer cancel()
@@ -318,7 +318,7 @@ func NewSQLite(db *sql.DB) *SQLite { ... }
 // main.go
 svc := ledger.New(store.NewSQLite(db))
 ::ask 这里有没有循环依赖？如果 `store` 需要返回 `[]ledger.Entry`，会不会出问题？
-::ans 当前没有环，因为 `store` 还没 import `ledger`。一旦 `store` 的方法签名里出现 `ledger.Entry`，`store → ledger`，而 `ledger → store`（接口），立刻成环。解决办法：`Entry` 定义在 `store` 包（数据层），`ledger` import `store` 拿类型和接口——但这样 `ledger` 依赖具体包，测试替换变难。更干净的是 `internal/model` 放 `Entry`，两边都依赖它。**「类型放哪」决定了依赖图的形状**，这是拆分时第一个要想清楚的事。
+::ans 当前没有环，因为 `store` 还没 import `ledger`。一旦 `store` 的方法签名里出现 `ledger.Entry`，`store → ledger`，而 `ledger → store`（接口），立刻成环。解决办法：`Entry` 定义在 `store` 包（数据层），`ledger` import `store` 拿类型和接口——但这样 `ledger` 依赖具体包，测试替换变难。更干净的是 `internal/model` 放 `Entry`，两边都依赖它。「**类型放哪**」决定了依赖图的形状，这是拆分时第一个要想清楚的事。
 ::predict go
 type Store interface {
     Create(ctx context.Context, e Entry) (int64, error)
@@ -361,7 +361,7 @@ grep -rn "net/http" internal/store/                         # 期望：无输出
 ::predict bash
 go test -race ./...
 ::ask `-race` 全绿说明什么？说明没有 bug 吗？
-::ans 只说明**「这次执行到的代码路径上没有检测到数据竞争」**。它不证明：没有逻辑错误、没有死锁（死锁是 hang 不是 race）、没有在未覆盖的分支里藏竞态。所以 `-race` 是必要条件不是充分条件——还要有并发路径的测试覆盖（比如同时起多个 goroutine 调同一个 Service），否则 `-race` 只是在测单线程。
+::ans 只说明「**这次执行到的代码路径上没有检测到数据竞争**」。它不证明：没有逻辑错误、没有死锁（死锁是 hang 不是 race）、没有在未覆盖的分支里藏竞态。所以 `-race` 是必要条件不是充分条件——还要有并发路径的测试覆盖（比如同时起多个 goroutine 调同一个 Service），否则 `-race` 只是在测单线程。
 ::predict go
 func export(months []string) error {
     var wg sync.WaitGroup
@@ -387,7 +387,7 @@ go test -race ./internal/ledger
 # ok  ...  0.02s
 # 但线上偶发 panic: concurrent map writes
 ::ask 测试全绿，线上却崩。可能的三个原因？
-::ans ① **测试没覆盖并发路径**：测试是串行调用的，`-race` 自然看不到竞态；② **竞态发生在测试没触及的代码**（比如某个只在特定参数下走的分支）；③ **map 的并发写在 `-race` 下也会报**，如果没报说明那次执行确实没并发到——`concurrent map writes` 是 runtime 的致命错误，一旦触发进程直接死，且 recover 无效。排查手段：在测试里显式起 N 个 goroutine 同时打同一个方法，跑 `-race`；生产侧靠 pprof/日志定位是哪个 map。**「测试绿」和「能并发」是两件事。**
+::ans ① **测试没覆盖并发路径**：测试是串行调用的，`-race` 自然看不到竞态；② **竞态发生在测试没触及的代码**（比如某个只在特定参数下走的分支）；③ **map 的并发写在 `-race` 下也会报**，如果没报说明那次执行确实没并发到——`concurrent map writes` 是 runtime 的致命错误，一旦触发进程直接死，且 recover 无效。排查手段：在测试里显式起 N 个 goroutine 同时打同一个方法，跑 `-race`；生产侧靠 pprof/日志定位是哪个 map。「**测试绿**」和「能并发」是两件事。
 ::transfer
 ::scene 阶段二验收要求「`-race` 报告出现过又消失」。你要留下可复现的证据。
 ::ask 设计一个能稳定复现竞态、并在修复后稳定消失的最小实验，写出关键代码与命令。
@@ -406,7 +406,7 @@ func TestRace(t *testing.T) {
     _ = count
 }
 ```
-`go test -race -run TestRace -count=1 ./...` → 必出 `WARNING: DATA RACE`，栈指向 `count++`。修复：加 `var mu sync.Mutex`，`mu.Lock(); count++; mu.Unlock()`，再跑 → 无报告。证据留存方式：把两次输出各存一个文件（`race-before.txt` / `race-after.txt`），commit 到仓库。**「报告出现过又消失」是可以被审计的事实，不是口头声明**——这也是阶段二唯一的硬验收。
+`go test -race -run TestRace -count=1 ./...` → 必出 `WARNING: DATA RACE`，栈指向 `count++`。修复：加 `var mu sync.Mutex`，`mu.Lock(); count++; mu.Unlock()`，再跑 → 无报告。证据留存方式：把两次输出各存一个文件（`race-before.txt` / `race-after.txt`），commit 到仓库。「**报告出现过又消失**」是可以被审计的事实，不是口头声明——这也是阶段二唯一的硬验收。
 ::crit `go test -race ./...` 全绿，且测试里真的有并发（不是串行调用）
 ::crit 能复现一次 DATA RACE 并留下 before/after 输出
 ::crit 并发代码里不靠闭包捕获循环变量，显式传参

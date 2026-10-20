@@ -13,13 +13,13 @@ func main() {
 srv := &http.Server{Addr: ":8080", Handler: mux}
 log.Fatal(srv.ListenAndServe())
 ::ask 这个 server 有什么隐患？
-::ans **没有任何超时**。`ReadTimeout`/`WriteTimeout`/`IdleTimeout`/`ReadHeaderTimeout` 默认全是 0，即「永不超时」。一个只发半截请求头的客户端可以永久占住连接（Slowloris），几百个这样的连接就能耗尽文件描述符。生产必须设：`ReadHeaderTimeout: 5s`、`ReadTimeout: 30s`、`WriteTimeout: 30s`、`IdleTimeout: 120s`。**「能用」和「能扛」之间差的就是这几个超时**，而且它们不会在功能测试里暴露。
+::ans **没有任何超时**。`ReadTimeout`/`WriteTimeout`/`IdleTimeout`/`ReadHeaderTimeout` 默认全是 0，即「永不超时」。一个只发半截请求头的客户端可以永久占住连接（Slowloris），几百个这样的连接就能耗尽文件描述符。生产必须设：`ReadHeaderTimeout: 5s`、`ReadTimeout: 30s`、`WriteTimeout: 30s`、`IdleTimeout: 120s`。「**能用**」和「能扛」之间差的就是这几个超时，而且它们不会在功能测试里暴露。
 ::debug go
 http.HandleFunc("/ledger", handle)
 http.ListenAndServe("localhost:8080", nil)
 ::sym 本机能访问，手机/另一台机器访问 `http://192.168.1.10:8080` 连不上，容器外也访问不了。
 ::ask 为什么？正确写法是什么？这样做安全吗？
-::ans `localhost:8080` 只监听回环接口（127.0.0.1），外部流量进不来。改为 `:8080`（等价 `0.0.0.0:8080`）监听所有网卡。安全性不该靠「只绑回环」来保证——那样连家里其他设备都用不了。正确做法是绑 `0.0.0.0` + 防火墙限制来源网段，或者前面放反向代理只暴露它。**「监听地址」和「访问控制」是两件事，别用前者替代后者**。
+::ans `localhost:8080` 只监听回环接口（127.0.0.1），外部流量进不来。改为 `:8080`（等价 `0.0.0.0:8080`）监听所有网卡。安全性不该靠「只绑回环」来保证——那样连家里其他设备都用不了。正确做法是绑 `0.0.0.0` + 防火墙限制来源网段，或者前面放反向代理只暴露它。「**监听地址**」和「访问控制」是两件事，别用前者替代后者。
 ::transfer
 ::scene 你要写一个最小可用的 `/hello`，返回统一 JSON `{"code":0,"message":"ok","data":{"msg":"hello"}}`，并保证 5 秒内 curl 能看到结果。
 ::ask 写出完整代码，并说明为什么要显式设置 `Content-Type`。
@@ -152,7 +152,7 @@ func OK[T any](w http.ResponseWriter, data T) {
 // 调用
 OK(w, nil)
 ::ask 响应里的 `data` 字段是什么？符合预期吗？
-::ans 是 `"data": null`。因为 `nil` 传给泛型 T 时 T 被推断成 `any` 之类，序列化成 null。如果前端期望「成功时 data 一定存在」，null 会引发判空。两种处理：成功但无数据时用 `struct{}{}`（序列化成 `{}`），或者让前端接受 null。**「空」在 JSON 里有三种形态：`null`、`{}`、`[]`**，选哪个要全项目统一，不能这里 null 那里 []。
+::ans 是 `"data": null`。因为 `nil` 传给泛型 T 时 T 被推断成 `any` 之类，序列化成 null。如果前端期望「成功时 data 一定存在」，null 会引发判空。两种处理：成功但无数据时用 `struct{}{}`（序列化成 `{}`），或者让前端接受 null。「**空**」在 JSON 里有三种形态：`null`、`{}`、`[]`，选哪个要全项目统一，不能这里 null 那里 []。
 ::predict go
 func Fail(w http.ResponseWriter, status, code int, msg string) {
     w.WriteHeader(status)
@@ -199,7 +199,7 @@ func NewRouter(svc *ledger.Service) http.Handler {
 }
 type Handler struct{ svc *ledger.Service }
 ::ask 这个设计有什么问题？如果以后要加中间件、要测试 handler，会卡在哪？
-::ans 问题一：`Handler` 直接依赖 `*ledger.Service` 具体类型，测试时必须构造真的 Service（连带真的 Store），没法用 fake。问题二：路由和 handler 耦合在一个函数里，加中间件要改这个函数。改法：`Handler` 依赖一个**自己定义的小接口**（只含用到的方法），路由函数接受 `http.Handler` 便于包中间件。**「能不能单独测一个 handler」是检验分层是否到位的最快标准**。
+::ans 问题一：`Handler` 直接依赖 `*ledger.Service` 具体类型，测试时必须构造真的 Service（连带真的 Store），没法用 fake。问题二：路由和 handler 耦合在一个函数里，加中间件要改这个函数。改法：`Handler` 依赖一个**自己定义的小接口**（只含用到的方法），路由函数接受 `http.Handler` 便于包中间件。「**能不能单独测一个 handler**」是检验分层是否到位的最快标准。
 ::predict go
 type Handler struct {
     svc *ledger.Service
@@ -260,7 +260,7 @@ curl -X POST localhost:8080/ledger -H 'Content-Type: application/json' \
   -d '{"amount":3550,"category":"餐饮","date":"2026-10-19"}'
 # {"code":0,"message":"ok","data":{"id":0}}
 ::ask 创建成功了，但 id 是 0。可能的原因？
-::ans ① SQLite 的 `LastInsertId()` 拿的是 `Result` 的返回值，如果用的是 `INSERT ... ON CONFLICT DO NOTHING` 且实际没插入，LastInsertId 返回上一次的或 0；② 代码里 `id, _ := res.LastInsertId()` 忽略了 error；③ 更常见：**返回的是结构体里没赋值的字段**（比如 `Entry{ID: ...}` 忘了填）。排查：直接 `sqlite3 db 'select max(id) from entries'` 对比。**「写成功了但 id 是 0」几乎总是「返回值没取对」，不是数据库问题**。
+::ans ① SQLite 的 `LastInsertId()` 拿的是 `Result` 的返回值，如果用的是 `INSERT ... ON CONFLICT DO NOTHING` 且实际没插入，LastInsertId 返回上一次的或 0；② 代码里 `id, _ := res.LastInsertId()` 忽略了 error；③ 更常见：**返回的是结构体里没赋值的字段**（比如 `Entry{ID: ...}` 忘了填）。排查：直接 `sqlite3 db 'select max(id) from entries'` 对比。「**写成功了但 id 是 0**」几乎总是「返回值没取对」，不是数据库问题。
 ::transfer
 ::scene 用户连点两次「保存」，产生两条一模一样的账目。
 ::ask 三种处理方案的优缺点，你会选哪个？为什么？
@@ -294,11 +294,11 @@ var items []Entry   // 没有 make
 // 查询无结果
 json.NewEncoder(w).Encode(ListResp{Items: items, ...})
 ::ask 响应里的 `items` 是什么？前端 `data.items.map(...)` 会怎样？
-::ans `"items": null`，前端 `null.map` 直接抛 `TypeError`。修法：`items := make([]Entry, 0, limit)`，或者用 `Items []Entry` 但初始化。**「空列表必须是 `[]` 不是 `null`」是 API 契约的一部分**，前后端都要约定清楚。这类问题在数据为空时才会暴露，联调初期经常被忽略，上线后「新用户打开页面白屏」。
+::ans `"items": null`，前端 `null.map` 直接抛 `TypeError`。修法：`items := make([]Entry, 0, limit)`，或者用 `Items []Entry` 但初始化。「**空列表必须是 `[]` 不是 `null`**」是 API 契约的一部分，前后端都要约定清楚。这类问题在数据为空时才会暴露，联调初期经常被忽略，上线后「新用户打开页面白屏」。
 ::debug sql
 SELECT * FROM entries ORDER BY date DESC LIMIT 20 OFFSET 40
 ::ask 翻到第 3 页时，如果这期间用户新增了一条今天的账目，会出现什么现象？
-::ans 会出现**重复或漏项**：新增的记录排在最前（date DESC），原来第 1 页的第 20 条被挤到第 2 页，而第 2 页已经读过了，于是第 3 页开头会重复出现一条已看过的记录（或反之漏掉一条）。这不是 bug，是 offset 分页的固有语义：**「第 N 页」在数据变化时不是稳定快照**。账本场景用户通常能接受，但如果你要做「无限滚动」，必须换游标分页（`WHERE (date, id) < (?, ?)`）。
+::ans 会出现**重复或漏项**：新增的记录排在最前（date DESC），原来第 1 页的第 20 条被挤到第 2 页，而第 2 页已经读过了，于是第 3 页开头会重复出现一条已看过的记录（或反之漏掉一条）。这不是 bug，是 offset 分页的固有语义：「**第 N 页**」在数据变化时不是稳定快照。账本场景用户通常能接受，但如果你要做「无限滚动」，必须换游标分页（`WHERE (date, id) < (?, ?)`）。
 ::transfer
 ::scene 你要实现 `GET /ledger?month=2026-10&limit=20&offset=0`，返回该月分页。
 ::ask 写出查询 SQL 与参数校验逻辑，并说明为什么 `total` 要单独查一次。
@@ -345,9 +345,9 @@ SELECT COUNT(*) FROM entries WHERE user_id = 1;
 ::ask 接口参数和响应要怎么设计，才能「现在用 offset，以后换 cursor 不改契约」？
 ::hint 响应里加一个字段，客户端「有就用，没有就回退 offset」。
 ::ans 请求：`?limit=20&offset=0&cursor=`（cursor 为空则用 offset）。响应：`{items, total, limit, offset, next_cursor}`。规则写进文档：**`next_cursor` 非空时，客户端应优先用它请求下一页；为空表示没有更多**。服务端实现可以先只填 `next_cursor: null`，等真正切换时再填值，客户端代码不用改。**向前兼容的关键是「现在就多返回一个字段」**，而不是等换实现时再改契约。
-::crit 能说出 OFFSET 的成本是 O(offset)，不是 O(limit)
-::crit 知道深分页慢的根因，能写出 keyset 分页的 WHERE 条件
-::crit 知道 `COUNT(*)` 可能比分页查询贵，能说出三种取舍
+::crit 对 10 万行表分别跑 `OFFSET 0` 和 `OFFSET 90000`，贴出两次耗时并解释差距来自哪里
+::crit 写出 keyset 分页的 `WHERE` 条件（`id < ?` + `LIMIT`），并用 `EXPLAIN QUERY PLAN` 确认走了索引
+::crit 给出三种 `COUNT(*)` 取舍（精确、估算、不返回）并各写一句代价
 ::crit 响应里预留了 `next_cursor` 字段，文档写明优先级规则
 
 <!--day 9-->
@@ -369,7 +369,7 @@ func (s *sqlStore) Create(ctx context.Context, e Entry) (int64, error) {
     return res.LastInsertId()
 }
 ::ask 两个实现的行为完全一致吗？有哪几处可能不同？
-::ans 至少四处：① **ID 起点**：内存从 1 开始，SQLite 的 rowid 也是 1，但删除后行为不同（SQLite 可能复用，`AUTOINCREMENT` 才不复用）；② **时间精度**：内存存 time.Time，SQLite 存字符串，精度可能从纳秒降到秒；③ **排序**：内存按插入顺序，SQLite 按 `ORDER BY`；④ **空值**：内存零值是 `""`，SQLite 可能是 NULL。**「换实现时行为不变」是接口的核心承诺**，但语言层面无法强制——只能靠同一套测试跑两个实现来验证。
+::ans 至少四处：① **ID 起点**：内存从 1 开始，SQLite 的 rowid 也是 1，但删除后行为不同（SQLite 可能复用，`AUTOINCREMENT` 才不复用）；② **时间精度**：内存存 time.Time，SQLite 存字符串，精度可能从纳秒降到秒；③ **排序**：内存按插入顺序，SQLite 按 `ORDER BY`；④ **空值**：内存零值是 `""`，SQLite 可能是 NULL。「**换实现时行为不变**」是接口的核心承诺，但语言层面无法强制——只能靠同一套测试跑两个实现来验证。
 ::predict go
 // 内存实现测试通过，切到 SQLite 后这个测试挂了
 if got[0].ID != 1 { t.Fatal("id 应为 1") }
@@ -386,7 +386,7 @@ sqlite3 ledger.db 'select count(*) from entries'   # 0
 ::scene 你要把内存实现换成 SQLite，同时保证所有已有测试仍然通过。
 ::ask 步骤是什么？哪一步最容易漏？
 ::hint 先写测试还是先换实现？
-::ans 步骤：① 先把「跑在内存实现上的测试」整理成表驱动，确保覆盖 Create/List/Sum 的主路径与边界；② 为 SQLite 实现加一个 `newTestStore(t)`，用 `file::memory:?cache=shared` 或临时文件；③ **用同一组测试函数跑两个实现**（`for name, factory := range map[string]func() Store{...}`）；④ 切换 main 的注入。最容易漏的是 ③——大多数人换完实现只跑原来的测试，而原测试只覆盖内存实现，等于没验证 SQLite。**「同一套契约测试跑所有实现」是把重构风险降到最低的手段**。
+::ans 步骤：① 先把「跑在内存实现上的测试」整理成表驱动，确保覆盖 Create/List/Sum 的主路径与边界；② 为 SQLite 实现加一个 `newTestStore(t)`，用 `file::memory:?cache=shared` 或临时文件；③ **用同一组测试函数跑两个实现**（`for name, factory := range map[string]func() Store{...}`）；④ 切换 main 的注入。最容易漏的是 ③——大多数人换完实现只跑原来的测试，而原测试只覆盖内存实现，等于没验证 SQLite。「**同一套契约测试跑所有实现**」是把重构风险降到最低的手段。
 ::crit 内存与 SQLite 两个实现跑同一套契约测试，全部通过
 ::crit 测试断言行为（能查回来）而不是实现细节（ID 从 1 开始）
 ::crit 启动日志明确输出「Store 实现 + 数据库绝对路径」
@@ -401,20 +401,20 @@ kill %1
 ./ledger-api &
 curl localhost:8080/ledger
 ::ask 重启后能查到刚才那条吗？如果查不到，最可能的原因是什么？
-::ans 正常情况下能查到——数据在 SQLite 文件里，与进程无关。查不到的三个高频原因：① **DSN 是相对路径**，两次启动的 CWD 不同，写到了两个文件；② **事务没提交**（`Begin` 后忘了 `Commit`），进程退出时回滚；③ **用的是内存实现**（`file::memory:` 或进程内 map），重启即丢。**「重启不丢」是区分「真持久化」和「假持久化」的唯一标准**，也是阶段三的硬验收。
+::ans 正常情况下能查到——数据在 SQLite 文件里，与进程无关。查不到的三个高频原因：① **DSN 是相对路径**，两次启动的 CWD 不同，写到了两个文件；② **事务没提交**（`Begin` 后忘了 `Commit`），进程退出时回滚；③ **用的是内存实现**（`file::memory:` 或进程内 map），重启即丢。「**重启不丢**」是区分「真持久化」和「假持久化」的唯一标准，也是阶段三的硬验收。
 ::predict bash
 sqlite3 ledger.db '.tables'
 # entries
 ls -l ledger.db*
 # ledger.db  ledger.db-wal  ledger.db-shm
 ::ask 如果只备份 `ledger.db`，会丢数据吗？
-::ans 会。开了 WAL 之后，最新的写入先落在 `ledger.db-wal`，满足条件才 checkpoint 回主库。只拷主文件可能丢掉最近的事务。正确备份：`sqlite3 ledger.db ".backup 'backup.db'"`（在线一致性备份），或者停服务后三个文件一起拷。**「备份了一个文件」和「备份了数据库」不是一回事**，这个差异只有在恢复时才会暴露——那时已经晚了。
+::ans 会。开了 WAL 之后，最新的写入先落在 `ledger.db-wal`，满足条件才 checkpoint 回主库。只拷主文件可能丢掉最近的事务。正确备份：`sqlite3 ledger.db ".backup 'backup.db'"`（在线一致性备份），或者停服务后三个文件一起拷。「**备份了一个文件**」和「备份了数据库」不是一回事，这个差异只有在恢复时才会暴露——那时已经晚了。
 ::debug bash
 # 服务跑在容器里，数据目录挂载为 /data
 docker run -v $(pwd)/data:/data myapp
 # 重启容器后数据没了
 ::ask 三个可能原因？
-::ans ① **挂载路径与 DSN 不一致**：DSN 写的是 `ledger.db`（相对 CWD，容器内是 `/app`），而挂载在 `/data`，数据写进了容器层，随容器删除而消失；② **挂载的是文件而不是目录**，宿主机文件不存在时 Docker 会创建一个空目录，SQLite 打不开；③ **以非 root 运行但挂载目录属主是 root**，写入失败（错误信息是 `readonly database`，容易误判）。排查：进容器 `ls -l /data` 看文件在不在，`os.Getwd()` 打日志看 CWD。**「数据丢了」先查「写到哪去了」，不要先怀疑数据库**。
+::ans ① **挂载路径与 DSN 不一致**：DSN 写的是 `ledger.db`（相对 CWD，容器内是 `/app`），而挂载在 `/data`，数据写进了容器层，随容器删除而消失；② **挂载的是文件而不是目录**，宿主机文件不存在时 Docker 会创建一个空目录，SQLite 打不开；③ **以非 root 运行但挂载目录属主是 root**，写入失败（错误信息是 `readonly database`，容易误判）。排查：进容器 `ls -l /data` 看文件在不在，`os.Getwd()` 打日志看 CWD。「**数据丢了**」先查「写到哪去了」，不要先怀疑数据库。
 ::transfer
 ::scene 你要写一个「重启不丢」的自动化验收。
 ::ask 脚本怎么写才能证明「数据真的在磁盘上」，而不是被进程内缓存骗了？
@@ -457,7 +457,7 @@ if err != nil {
 ::predict go
 // GET /ledger/0 和 GET /ledger/-1
 ::ask 这两个请求应该返回什么？直接查库会怎样？
-::ans 都应该返回 400（参数非法）。`id=0` 查库返回无结果（如果 id 从 1 开始），`id=-1` 也查不到——技术上「能用」，但语义上「0 和负数不是合法 ID」。直接在 handler 入口挡掉更省一次查询，也避免把负数传进 SQL（某些数据库对负数索引有奇怪行为）。**「语法合法但业务非法」的参数，应该在边界一刀切掉**。
+::ans 都应该返回 400（参数非法）。`id=0` 查库返回无结果（如果 id 从 1 开始），`id=-1` 也查不到——技术上「能用」，但语义上「0 和负数不是合法 ID」。直接在 handler 入口挡掉更省一次查询，也避免把负数传进 SQL（某些数据库对负数索引有奇怪行为）。「**语法合法但业务非法**」的参数，应该在边界一刀切掉。
 ::debug go
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
     id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -469,7 +469,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
     OK(w, e)
 }
 ::ask 这里把「所有错误」都当 404，会掩盖什么？
-::ans 掩盖了真正的服务端故障：数据库连接断了、SQL 写错了、超时了，客户端全都收到「账目不存在」，于是用户以为记录被删了，运维也看不到 5xx 报警。正确做法：Service 层用 `ErrNotFound` 哨兵区分「查不到」，其他错误原样包装上抛，handler 里 `errors.Is` 判断后分别映射 404 / 500。**「404 兜一切」是短期省事、长期最贵的写法**。
+::ans 掩盖了真正的服务端故障：数据库连接断了、SQL 写错了、超时了，客户端全都收到「账目不存在」，于是用户以为记录被删了，运维也看不到 5xx 报警。正确做法：Service 层用 `ErrNotFound` 哨兵区分「查不到」，其他错误原样包装上抛，handler 里 `errors.Is` 判断后分别映射 404 / 500。「**404 兜一切**」是短期省事、长期最贵的写法。
 ::transfer
 ::scene 账本要支持「软删除」（`deleted_at` 字段），删除后 `GET` 应返回 404，但管理员能恢复。
 ::ask 查询要加什么条件？最容易漏的地方是哪？
@@ -487,7 +487,7 @@ FROM entries
 WHERE user_id = ? AND date LIKE ?
 GROUP BY category
 ::ask 这个查询的结果里，如果某分类一条记录都没有，会出现吗？
-::ans 不会。`GROUP BY` 只对**存在的行**分组，没有行就没有组。如果前端期望「10 个分类都显示，没有的显示 0」，服务端必须补零：要么在应用层用分类表左连接，要么把分类列表和结果做 merge。**「没有数据」和「数据为 0」在 SQL 里是两件事**，前端图表经常因此少几根柱子。
+::ans 不会。`GROUP BY` 只对**存在的行**分组，没有行就没有组。如果前端期望「10 个分类都显示，没有的显示 0」，服务端必须补零：要么在应用层用分类表左连接，要么把分类列表和结果做 merge。「**没有数据**」和「数据为 0」在 SQL 里是两件事，前端图表经常因此少几根柱子。
 ::predict go
 rows, err := db.QueryContext(ctx, `SELECT category, SUM(amount) FROM entries
     WHERE date LIKE ? GROUP BY category`, month+"%")
@@ -504,12 +504,12 @@ curl 'localhost:8080/summary?month=2026-10'
 # {"data":{"total":0,"by_category":[]}}
 # 但数据库里明明有 5 条 10 月的记录
 ::ask 三个可能原因？
-::ans ① **月份格式**：库里 `date` 是 `2026-10-19`，但查询用了 `LIKE '2026-10'`（少了 `%`），匹配不上；② **user_id 不对**：鉴权还没做，用了 `user_id=0` 或某个默认值；③ **时区/日期截断**：写入时 `time.Now().Format(...)` 用的 UTC，本地 10 月 1 日凌晨的记录变成 9 月 30 日。排查方式：`sqlite3 db "select date from entries limit 5"` 看真实存储值，再手写同样条件的 SQL 跑一遍。**「统计为 0」先怀疑 WHERE 条件，不要怀疑聚合函数**。
+::ans ① **月份格式**：库里 `date` 是 `2026-10-19`，但查询用了 `LIKE '2026-10'`（少了 `%`），匹配不上；② **user_id 不对**：鉴权还没做，用了 `user_id=0` 或某个默认值；③ **时区/日期截断**：写入时 `time.Now().Format(...)` 用的 UTC，本地 10 月 1 日凌晨的记录变成 9 月 30 日。排查方式：`sqlite3 db "select date from entries limit 5"` 看真实存储值，再手写同样条件的 SQL 跑一遍。「**统计为 0**」先怀疑 WHERE 条件，不要怀疑聚合函数。
 ::transfer
 ::scene 你要返回「月度总额 + 按分类小计 + 笔数」，且前端图表需要全部分类（没有的补 0）。
 ::ask 用一条 SQL 还是多条？怎么补零？
 ::hint 想想分类表是否独立存在。
-::ans 用两条：① `SELECT category, SUM(amount) total, COUNT(*) cnt FROM entries WHERE ... GROUP BY category`；② `SELECT name FROM categories WHERE user_id=?` 拿全部分类，然后在应用层 merge，缺失的填 0。一条 SQL 做左连接也可以：`categories LEFT JOIN (聚合子查询)`，但 SQLite 的写法较啰嗦、且分类表为空时行为要额外处理。**「补零」是展示逻辑，放在应用层比塞进 SQL 更好维护**——SQL 只负责「有什么」，展示层负责「缺什么」。
+::ans 用两条：① `SELECT category, SUM(amount) total, COUNT(*) cnt FROM entries WHERE ... GROUP BY category`；② `SELECT name FROM categories WHERE user_id=?` 拿全部分类，然后在应用层 merge，缺失的填 0。一条 SQL 做左连接也可以：`categories LEFT JOIN (聚合子查询)`，但 SQLite 的写法较啰嗦、且分类表为空时行为要额外处理。「**补零**」是展示逻辑，放在应用层比塞进 SQL 更好维护——SQL 只负责「有什么」，展示层负责「缺什么」。
 ::crit `SUM` 用 `COALESCE` 兜底，空月份返回 0 而非报错
 ::crit 月份用半开区间，`date` 存储格式统一为 `YYYY-MM-DD`
 ::crit 分类小计能补零，前端拿到全部分类
@@ -582,7 +582,7 @@ if id == "" { id = uuid.NewString() }
 ctx := context.WithValue(r.Context(), reqIDKey, id)
 next.ServeHTTP(w, r.WithContext(ctx))
 ::ask 这个写法有两个隐患，分别是什么？
-::ans ① **无条件信任客户端传的 `X-Request-ID`**：恶意客户端可以传相同的 ID 制造日志混淆，或传超长字符串撑爆日志。应该校验格式（如 UUID/长度 ≤ 64），不合法就重新生成。② **`context.WithValue` 的 key 必须是非导出类型**：如果 key 是 string，不同包可能用同一个字符串 key 互相覆盖。要用 `type ctxKey int; const reqIDKey ctxKey = 1`。**「用 string 当 context key」是 Go 里明确反对的做法**。
+::ans ① **无条件信任客户端传的 `X-Request-ID`**：恶意客户端可以传相同的 ID 制造日志混淆，或传超长字符串撑爆日志。应该校验格式（如 UUID/长度 ≤ 64），不合法就重新生成。② **`context.WithValue` 的 key 必须是非导出类型**：如果 key 是 string，不同包可能用同一个字符串 key 互相覆盖。要用 `type ctxKey int; const reqIDKey ctxKey = 1`。「**用 string 当 context key**」是 Go 里明确反对的做法。
 ::debug bash
 # 日志里看到
 2026-10-19 10:00:01 POST /ledger 500 12ms
@@ -715,7 +715,7 @@ BASE=http://localhost:8080
 curl -s $BASE/healthz
 echo "ok"
 ::ask 这个脚本有什么问题？（提示：healthz 返回 500 时）
-::ans `curl -s` 对 500 也返回 0（curl 只要收到响应就成功），`set -e` 不会触发，脚本照样输出 `ok`。必须用 `curl -f`（fail on HTTP error）或显式检查状态码：`code=$(curl -s -o /dev/null -w '%{http_code}' $BASE/healthz); [ "$code" = 200 ] || exit 1`。**「HTTP 500 但 curl 退出码 0」是验收脚本最常见的假绿来源**。
+::ans `curl -s` 对 500 也返回 0（curl 只要收到响应就成功），`set -e` 不会触发，脚本照样输出 `ok`。必须用 `curl -f`（fail on HTTP error）或显式检查状态码：`code=$(curl -s -o /dev/null -w '%{http_code}' $BASE/healthz); [ "$code" = 200 ] || exit 1`。「**HTTP 500 但 curl 退出码 0**」是验收脚本最常见的假绿来源。
 ::transfer
 ::scene 写一个覆盖「注册 → 登录 → 创建 → 列表 → 统计 → 删除」的回归脚本。
 ::ask 脚本结构怎么组织？失败时怎么定位到具体步骤？
@@ -750,7 +750,7 @@ TOKEN=$(curl -fsS -X POST "$BASE/login" ... | jq -r '.data.token')
 ::predict bash
 go vet ./... && go build ./... && ./scripts/e2e.sh
 ::ask 三条都通过，能说明阶段三完成了吗？
-::ans 不能。它们只证明「能编译、静态检查过、脚本覆盖的路径正确」。阶段三的验收还要求：重启不丢（脚本必须杀进程）、分页边界正确（`limit=0`、`offset` 超界、空结果）、错误码映射正确（404 vs 500）、日志能按 request_id 追踪。**「CI 绿」和「验收通过」之间差的是「验收清单有没有被逐条覆盖」**。
+::ans 不能。它们只证明「能编译、静态检查过、脚本覆盖的路径正确」。阶段三的验收还要求：重启不丢（脚本必须杀进程）、分页边界正确（`limit=0`、`offset` 超界、空结果）、错误码映射正确（404 vs 500）、日志能按 request_id 追踪。「**CI 绿**」和「验收通过」之间差的是「验收清单有没有被逐条覆盖」。
 ::predict go
 // 分页边界测试
 cases := []struct{ limit, offset int }{{0, 0}, {-1, 0}, {101, 0}, {20, 999999}}

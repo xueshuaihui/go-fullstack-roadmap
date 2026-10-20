@@ -108,6 +108,45 @@ func verifyPassword(pw, encoded string) (bool, error) {
 2. 固定盐（全局一个 salt）——等于没有盐。
 3. 把哈希和密码一起返回给前端——`json:"-"` 或独立 DTO。
 
+#### PHC 字符串逐段拆开看
+
+```
+$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$aGFzaGJ5dGVz
+ └──┬───┘ └┬─┘ └────┬────┘ └───┬────┘ └───┬────┘
+  算法   版本     参数       盐(base64)  哈希(base64)
+```
+
+- `v=19` 是 Argon2 的版本号（十六进制 0x13），**不是你的应用版本**。
+- `m=65536` 单位是 **KiB**，65536 KiB = 64 MiB。写成 64 就变成 64 KiB，安全性归零。
+- `t=3` 迭代次数，`p=4` 并行度（对应几个 lane，不是「几个线程」）。
+- 盐和哈希都用 `RawStdEncoding`（无 `=` 填充），因为 `$` 是分隔符，填充符会带来歧义。
+
+验证函数里 `strings.Split(encoded, "$")` 会得到 **6 段**（第一个是空串）：`["", "argon2id", "v=19", "m=65536,t=3,p=4", "盐", "哈希"]`。所以判断是 `len(parts) != 6`，参数在 `parts[3]`，盐在 `parts[4]`——**下标错一位就是「永远验证失败」，而且不报错**。
+
+#### 这一步最容易写错的五个地方
+
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| 注册能成功，登录永远 401 | 验证时 `Split` 段数或下标错位，盐取成了哈希 | 用固定测试向量打日志，确认 `parts[4]` 是盐 |
+| 换台机器就验证失败 | `keyLen` 用了常量 32，但旧哈希是别的长度 | 用 `len(want)` 作为 `keyLen`（上面代码已这么做） |
+| 内存爆掉（OOM） | `m` 单位写成字节数（65536*1024 又乘了一次） | `m` 传 KiB：64 MiB → `65536` |
+| 单次哈希 20ms | 参数太低（本地开发机跑得快不代表安全） | 按「150–250ms」反推参数，见 D1 |
+| 密码改了但旧 token 还能用 | 这是 JWT 的问题，不是哈希的问题 | 见阶段四 D8 的 `token_version` |
+
+#### 5 分钟最小验证：三个断言一次跑完
+
+```go
+h, _ := hashPassword("same-password")
+fmt.Println(strings.Count(h, "$") == 5)     // true：6 段 = 5 个分隔符
+fmt.Println(len(h) > 60)                    // true：参数 + 盐 + 哈希都在串里
+ok, err := verifyPassword("same-password", h)
+fmt.Println(ok, err)                        // true <nil>
+ok, _ = verifyPassword("wrong", h)
+fmt.Println(ok)                             // false
+```
+
+四个输出都对，才说明「编码 → 解析 → 重算 → 恒定时间比较」这条链路是通的。只测「验证通过」不够——**验证失败的那条路径才是登录接口最常走的**。
+
 #### 判据
 ```go
 h1, _ := hashPassword("same-password")
@@ -197,6 +236,18 @@ CREATE TABLE users (
 );
 CREATE UNIQUE INDEX idx_users_email ON users(email);
 ```
+这里有个新手常犯的冗余：`UNIQUE` 在列上已经建了一个隐式唯一索引，再 `CREATE UNIQUE INDEX` 是**第二个索引**。两个索引意味着每次插入要维护两份，得不偿失。二者选一个即可——列上的 `UNIQUE` 更短，单独建索引的好处是能给索引起名字（迁移回滚时更好定位）。本项目的写法是：**列上不写 `UNIQUE`，只建命名索引**，这样 `DROP INDEX idx_users_email` 就能干净撤销。
+
+```sql
+CREATE TABLE users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    email         TEXT    NOT NULL,
+    password_hash TEXT    NOT NULL,
+    created_at    TEXT    NOT NULL
+);
+CREATE UNIQUE INDEX idx_users_email ON users(email);
+```
+
 **`UNIQUE` 是并发安全的最后一道防线。** 「先查邮箱是否存在，再插入」这个流程在两个并发请求下都能查到「不存在」，然后都插入成功。只有数据库的唯一约束能真正拦住。
 
 所以注册接口的正确写法是：
@@ -208,11 +259,15 @@ if isUniqueViolation(err) {
 ```
 而不是先 SELECT 再 INSERT。
 
+注意「不先查」不等于「不给友好提示」：前端在用户输入时就该做一次防抖的「邮箱是否可用」查询，那只是 UX 优化，**不能作为约束**。真正决定成败的是插入这一下。
+
 #### 邮箱规范化
 ```go
 email = strings.ToLower(strings.TrimSpace(email))
 ```
 不规范化会导致 `A@x.com` 和 `a@x.com` 被当成两个账号，用户自己都记不清注册的是哪个。注意：只在存储和比较时规范化，展示时保留原样（如果要保留大小写，就额外存一列 `email_display`）。
+
+严格按 RFC，`@` 前面的 local part 是区分大小写的，`@` 后面的域名不区分。但现实中没有邮件服务商把 `A@x.com` 和 `a@x.com` 当两个账号，所以主流做法是整体小写。**这是一个「标准如此、实践不如此」的典型取舍**，写下理由比背结论重要：家庭账本的用户就是家人，一个人不会有两个只差大小写的邮箱，整体小写最省事。
 
 #### 识别唯一约束冲突
 ```go
@@ -224,6 +279,30 @@ func isUniqueViolation(err error) bool {
 }
 ```
 SQLite 的错误是字符串，不同驱动措辞略有差异。**这类字符串判断要集中在一个函数里**，将来换 Postgres（有 `SQLSTATE 23505`）只改这一处。
+
+写这个函数时容易过度设计：有人会去匹配 `"UNIQUE constraint failed: users.email"` 这样带表和列的完整串，想着「顺便知道是哪个字段冲突」。不要这么做——一旦表改名、或冲突发生在别的唯一索引上，判断就静默失效，而你不会有任何报错。**只匹配「是不是唯一冲突」这一件事**。
+
+#### 5 分钟最小验证：让数据库亲口拒绝一次
+先不写 Go 代码，纯 SQL 验证约束真的存在：
+
+```bash
+sqlite3 /tmp/t.db <<'SQL'
+CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE UNIQUE INDEX idx_users_email ON users(email);
+INSERT INTO users (email,password_hash,created_at) VALUES ('a@x.com','h','2026-10-19');
+INSERT INTO users (email,password_hash,created_at) VALUES ('a@x.com','h','2026-10-19');
+SQL
+echo "exit=$?"
+```
+期望最后一句输出 `Error: stepping, UNIQUE constraint failed: users.email (19)`，`exit=1`。如果两句都成功，说明建表时索引没建上——**很多人在这里才发现自己把索引写进了另一个没执行的迁移文件**。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| 重复插入**成功**，库里两条同邮箱 | 唯一索引没建（只在代码里查了一次） | `sqlite3 db '.indexes users'` 确认索引存在 |
+| `UNIQUE constraint failed: users.email` 直接冒到 500 | 没做错误识别，`err` 原样往上返回 | 用 `isUniqueViolation` 转成 `ErrEmailTaken` → 409 |
+| `database table is locked` | 两个连接同时写，且没设 busy_timeout | DSN 加 `_busy_timeout=5000` |
+| `NOT NULL constraint failed: users.created_at` | 插入时漏传字段，或 Go 里 `time.Time` 零值没格式化 | 在 store 层统一填 `time.Now().UTC().Format(time.RFC3339)` |
 
 #### 判据
 ```sql
@@ -274,6 +353,40 @@ NIST SP 800-63B 明确建议：**要求长度，不要求大小写+数字+符号
 #### 不该在注册里做的事
 - 不要「注册成功自动登录」——把签发 token 的逻辑耦合进来，测试会变复杂。让前端再调一次 `/login`。
 - 不要在注册时校验「密码不含邮箱前缀」，规则越奇葩越容易被绕过。
+
+#### 注册这条链路的四层，出问题先定位在哪一层
+
+```
+HTTP 请求 → handler（解码 JSON） → Service（规范化/校验/哈希） → store（INSERT + 唯一约束） → 响应
+```
+
+排查顺序固定为**从外到内**，每层都有唯一的指纹：
+
+| 现象 | 出问题的层 | 具体检查 |
+| :--- | :--- | :--- |
+| 400 `INVALID_JSON` | handler | 请求体不是合法 JSON，或字段名拼错被 `DisallowUnknownFields` 拒绝 |
+| 400 `field=email` | Service | 规范化之后仍不含 `@`；注意先 `TrimSpace` 再判断 |
+| 400 `field=password` | Service | 长度不足 10；检查是不是把「字节数」当成了「字符数」 |
+| 409 `EMAIL_TAKEN` | store | 唯一约束冲突没被识别（`isUniqueViolation` 的字符串匹配失效） |
+| 500 | store / Service | 数据库不可写、哈希失败；看日志里的 `err` 链 |
+
+**不要一上来就怀疑数据库**：注册链路上最常见的失败其实在 handler（字段名不一致）和 Service（校验顺序）。
+
+#### 5 分钟最小验证：三次请求覆盖成功、重复、非法
+
+```bash
+$ curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8080/register \
+  -H 'Content-Type: application/json' -d '{"email":"a@x.com","password":"correct horse battery"}'
+201
+$ curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8080/register \
+  -H 'Content-Type: application/json' -d '{"email":"A@X.com","password":"correct horse battery"}'
+409
+$ curl -s -X POST localhost:8080/register -H 'Content-Type: application/json' \
+  -d '{"email":"b@x.com","password":"short"}' | jq -r '.code + " " + .message'
+INVALID_ARGUMENT password: 至少 10 位
+```
+
+三条的状态码和 `code` 都必须符合预期。特别注意第二条：**大小写不同却返回 409**，才证明规范化真的生效了——只测第一条会漏掉这个最容易忘的步骤。
 
 #### 判据
 ```bash
@@ -328,6 +441,81 @@ token, err := s.issueToken(u.ID, u.Email)
 
 #### 限流是登录接口的必需品
 即使哈希很慢，攻击者仍可以高频打接口。最低限度：**同一 IP + 同一邮箱，连续失败 5 次后延迟递增（指数退避），或锁定 15 分钟。** 阶段六会讲限流中间件的位置，现在至少要知道「没有限流 = 慢哈希只是让攻击变慢，而不是不可行」。
+
+#### `dummyHash` 从哪来
+不能随便写个字符串——它必须是**当前 cost 下真实算出来的 bcrypt 哈希**，否则 `verifyPassword` 会立刻因为格式不合法返回，时间差又回来了。生成一次，硬编码进代码：
+
+```go
+// 只跑一次，把输出粘贴进代码常量
+// go run - <<'EOF' ... bcrypt.GenerateFromPassword([]byte("dummy"), 12) ...
+const dummyHash = "$2a$12$Q7Zk9YJm3nD1oXq5Wv8bIe..."   // cost 必须与注册时一致
+```
+如果注册用的是 cost 12，dummy 也必须是 12。cost 不一致时，「用户不存在」比「密码错」快或慢一倍，侧信道依然存在——**这种 bug 没有任何测试会失败，只能靠读代码发现**。
+
+#### handler 怎么写
+```go
+func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
+    var in struct {
+        Email    string `json:"email"`
+        Password string `json:"password"`
+    }
+    dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))   // 4KB 足够
+    if err := dec.Decode(&in); err != nil {
+        Fail(w, http.StatusBadRequest, "INVALID_ARGUMENT", "请求体不合法")
+        return
+    }
+    if in.Email == "" || in.Password == "" {
+        Fail(w, http.StatusBadRequest, "INVALID_ARGUMENT", "邮箱和密码不能为空")
+        return
+    }
+
+    token, err := h.svc.Login(r.Context(), in.Email, in.Password)
+    switch {
+    case errors.Is(err, ledger.ErrInvalidCredentials):
+        // 401 而不是 400：凭证错误属于「认证失败」，不是「请求格式错」
+        Fail(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "邮箱或密码错误")
+    case errors.Is(err, ledger.ErrTooManyAttempts):
+        Fail(w, http.StatusTooManyRequests, "TOO_MANY_ATTEMPTS", "尝试过于频繁，请稍后再试")
+    case err != nil:
+        // 内部错误只记日志，不回原文
+        h.log.Error("login failed", "err", err, "req_id", ReqID(r.Context()))
+        Fail(w, http.StatusInternalServerError, "INTERNAL", "服务器开小差了")
+    default:
+        OK(w, http.StatusOK, map[string]string{"token": token})
+    }
+}
+```
+三个决定值得说清：**401 不是 400**（400 会让前端以为是参数格式问题，不去清空凭证）；**429 单独给码**（前端能提示「等一会儿」而不是「密码错了」）；**500 的 message 是固定文案**（`err` 里可能有 SQL 片段、文件路径）。
+
+#### 三种失败必须长得一样
+| 情况 | HTTP | code | message | 耗时 |
+| :--- | :--- | :--- | :--- | :--- |
+| 邮箱不存在 | 401 | `INVALID_CREDENTIALS` | 邮箱或密码错误 | ≈200ms |
+| 密码错误 | 401 | `INVALID_CREDENTIALS` | 邮箱或密码错误 | ≈200ms |
+| 邮箱格式非法 | 400 | `INVALID_ARGUMENT` | 邮箱和密码不能为空 | <1ms |
+
+前两行**在任何可观察维度上都必须相同**：状态码、code、message、响应头、耗时量级。第三行可以不同，因为「格式不对」不泄露账号是否存在。这条表就是验收标准——不要凭感觉判断「应该差不多了」，要跑 `time` 对比。
+
+#### 5 分钟最小验证：用 `time` 抓时间侧信道
+```bash
+for i in 1 2 3; do
+  /usr/bin/time -p curl -s -o /dev/null -X POST localhost:8080/login \
+    -d '{"email":"nobody@x.com","password":"whatever"}' 2>&1 | grep real
+done
+for i in 1 2 3; do
+  /usr/bin/time -p curl -s -o /dev/null -X POST localhost:8080/login \
+    -d '{"email":"a@x.com","password":"wrong"}' 2>&1 | grep real
+done
+```
+两组 `real` 应该在同一量级（比如都在 0.20s 附近）。如果第一组是 `0.001s`、第二组 `0.200s`，说明**用户不存在时没有跑 dummy 哈希**——攻击者用 200 次请求就能列出所有已注册邮箱。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| 登录成功但 token 是空串 | `issueToken` 返回 error 被忽略 | 检查 `switch` 里是否走了 `default` 却 token 为空 |
+| `bcrypt: hashedSecret too short to be a bcrypted password` | `dummyHash` 是随手编的字符串 | 用 `bcrypt.GenerateFromPassword` 真算一个 |
+| 正确密码也返回 401 | 注册时存的是明文，或哈希前 trim 了密码 | 注册与登录必须用同一个 `hashPassword` / `verifyPassword` |
+| 弱密码 1 秒才返回 | bcrypt cost 太高（14+）在低配机器上 | cost 10–12；也说明这里必须限流 |
 
 #### 判据
 ```bash
@@ -450,6 +638,61 @@ func mapJWTError(err error) error {
 3. **时间偏差** → 服务器与签发机时钟差几分钟会导致误判。用 NTP 同步，必要时给 `leeway`。
 4. **把 token 放在 URL 里** → 会进浏览器历史、代理日志、Referer。只能放 Header 或 HttpOnly Cookie。
 
+#### Claims 里放什么、不放什么
+```go
+type Claims struct {
+    UserID int64  `json:"uid"`
+    Email  string `json:"email"`
+    jwt.RegisteredClaims          // 内含 exp / iat / nbf / iss / sub / aud / jti
+}
+
+func (s *Service) issueToken(uid int64, email string) (string, error) {
+    now := time.Now()
+    c := Claims{
+        UserID: uid,
+        Email:  email,
+        RegisteredClaims: jwt.RegisteredClaims{
+            Subject:   strconv.FormatInt(uid, 10),
+            Issuer:    "family-ledger",
+            IssuedAt:  jwt.NewNumericDate(now),
+            ExpiresAt: jwt.NewNumericDate(now.Add(2 * time.Hour)),
+        },
+    }
+    return jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString([]byte(s.secret))
+}
+```
+**JWT 的 payload 是 base64，不是加密**——任何人拿到 token 都能解开看到 `email`。所以：不要放手机号、身份证、余额；不要放「权限列表」这种会变大的东西（token 每次请求都传，越长越慢）；也别把整个用户对象塞进去。
+
+只放三类：**身份**（uid）、**过期时间**、**吊销依据**（`token_version` 或 `jti`）。其余信息请求时查库。
+
+#### 5 分钟最小验证：亲手篡改一次
+```bash
+TOKEN=$(curl -s -X POST localhost:8080/login -d '{"email":"a@x.com","password":"correct"}' | jq -r .data.token)
+echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .    # 看清 payload 是明文
+
+# 只改 payload（uid 改成 2），签名段原样保留
+PAYLOAD=$(echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null \
+  | sed 's/"uid":[0-9]*/"uid":2/' | base64 | tr '+/' '-_' | tr -d '=')
+TAMPERED="$(echo "$TOKEN" | cut -d. -f1).$PAYLOAD.$(echo "$TOKEN" | cut -d. -f3)"
+```
+注意 base64 与 base64url 的区别：JWT 用 `-` `_` 代替 `+` `/`，并且去掉 `=` 填充。少了 `tr` 和 `tr -d` 这一步，拼出来的 token 会直接 `malformed`，测不到验签逻辑。
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TAMPERED" localhost:8080/ledger
+# 期望 401
+```
+**如果篡改后仍然 200，说明你根本没验签**——这是最严重的一类漏洞，比「忘了校验算法」更容易出现，因为很多示例代码只 `jwt.Parse` 而不检查 `err`。
+
+过期 token 的验证不用等两小时：签发时把 `ExpiresAt` 设成 `now.Add(-time.Minute)`，跑一次，确认返回 `TOKEN_EXPIRED` 而不是 `INVALID_TOKEN`。**这两个码必须能区分**，否则前端做不了静默刷新。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| 篡改 payload 仍返回 200 | `jwt.Parse` 的 `err` 被忽略，或用 `ParseUnverified` | 检查是否 `if err != nil` 后才用 `tok.Valid` |
+| 一直 `TOKEN_EXPIRED`，但刚签发 | 服务器时区/时钟不对，或 `ExpiresAt` 用了本地时间 | 全链路用 UTC；`date -u` 对比 |
+| `key is of invalid type` | `SignedString` 传了 `[]byte`，`ParseWithClaims` 返回了 `string` | 两边统一 `[]byte(secret)` |
+| 换机器后全部 token 失效 | `secret` 每次启动随机生成 | 从配置读，且多实例共用同一个值 |
+
 #### 判据
 ```bash
 # 篡改 payload 一位
@@ -510,6 +753,18 @@ func bearerToken(r *http.Request) string {
 - 不要在中间件里做「权限分级」（admin/user）——那是独立的 `WithRole` 中间件，职责分离。
 - 不要对 `/login`、`/register`、`/healthz` 套认证。**套错会导致登录接口要求登录**，这类 bug 很常见。
 
+`/healthz` 这一条尤其值得单独记住：它被套上认证后，健康检查请求会收到 401，编排系统认为容器不健康，于是**反复重启一个完全正常的服务**。而你在本地用手带 token 测一切正常，很难想到问题出在健康检查上。**任何「保活/探活」端点都必须是公开的。**
+
+#### 401 和 403 不是一回事
+- **401 Unauthorized**：你不知道你是谁（没带 token、token 无效、过期）。语义上应该带 `WWW-Authenticate` 头提示认证方式。
+- **403 Forbidden**：我知道你是谁，但你不能做这件事（普通用户访问管理接口）。
+
+```go
+w.Header().Set("WWW-Authenticate", `Bearer realm="ledger"`)
+Fail(w, http.StatusUnauthorized, "UNAUTHORIZED", "请重新登录")
+```
+中间件只管 401；403 出现在「已认证但缺权限」的地方（阶段五之后的角色判断）。混用的后果是前端无法区分「该刷新 token」和「该提示无权限」——**都变成「重新登录」，用户会困惑**。
+
 #### 路由分组
 ```go
 public := http.NewServeMux()
@@ -533,7 +788,27 @@ curl -i localhost:8080/ledger                                # 401
 curl -i -H "Authorization: Bearer x" localhost:8080/ledger   # 401 INVALID_TOKEN
 curl -i -H "Authorization: Bearer $TOKEN" localhost:8080/ledger  # 200
 curl -i -X POST localhost:8080/login -d '{...}'              # 不能被 401 拦住
+curl -i localhost:8080/healthz                               # 200，且不带 token
 ```
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| 登录接口也返回 401 | `/login` 被包进了认证 mux | 公开路径单独一个 mux，或按路径前缀放行 |
+| 容器反复重启，日志显示 healthz 401 | 健康检查端点被认证拦住 | `/healthz` 必须在公开组 |
+| 带合法 token 仍 401 | `Bearer ` 后有两个空格，或用了中文全角空格 | `TrimSpace`，并用 `EqualFold` 比较前缀 |
+| 下游 handler 拿不到 uid | 传的是 `r` 而不是 `r.WithContext(ctx)` | 必须 `next.ServeHTTP(w, r.WithContext(ctx))` |
+| 401 后前端一直转圈 | 响应没有 JSON body（只写了状态码） | 统一走 `Fail`，前端才能解析 `code` |
+
+#### 5 分钟最小验证：四条命令覆盖四种情况
+```bash
+T=$(curl -s -X POST localhost:8080/login -d '{"email":"a@x.com","password":"correct"}' | jq -r .data.token)
+for h in "" "Bearer x" "Bearer $T" "bearer $T"; do
+  printf '%-14s ' "${h:-none}"
+  curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: $h" localhost:8080/ledger
+done
+```
+期望 `401 / 401 / 200 / 200`。**最后一条是小写的 `bearer`**——它必须也是 200，这验证了 `EqualFold`。如果它是 401，说明你用了 `==` 比较，某些客户端（尤其是自己手写的脚本）会因此神秘失败。
 
 ::q 认证中间件为什么不该查数据库加载用户详情？
 ::a 每个请求都多一次查询，且大多数 handler 只需要 `user_id`。更关键的是它把「认证」和「用户信息加载」耦合，一旦查询失败就变成 500 而不是 401。需要详情时在 handler 里按需查。
@@ -544,6 +819,10 @@ curl -i -X POST localhost:8080/login -d '{...}'              # 不能被 401 拦
 
 <!--day 10 | normal-->
 #### 从 context 取值的标准写法
+先明确 `context.Context` 是什么：它是一个**随请求流动的只读容器**，能装三样东西——取消信号（`Done()`）、超时（`Deadline()`）、少量请求级数据（`Value()`）。请求进来时由 `net/http` 创建，一路传到最底层的 SQL 调用，中途谁都能读，谁都能派生出新的。
+
+认证中间件就是利用这一点：验证 token 后把 `uid` 放进 context，下游 handler 不需要再碰 token。
+
 ```go
 type ctxKey struct{}
 
@@ -565,6 +844,16 @@ if !ok {
 - key 用**未导出的自定义类型**，别的包无法构造同名 key，杜绝撞键。
 - 封装成 `userIDFrom` 函数，handler 不直接碰 `ctx.Value`，将来改存储方式只改一处。
 - **必须判断 `ok`**。缺失时直接 panic 是常见事故。
+
+为什么不能用字符串做 key？因为任何包都能写 `ctx.WithValue(ctx, "userID", x)`。你以为是自己的值，实际可能是别人塞的、类型还不同——`ctx.Value` 本身不做类型检查，取出来一断言就 panic。用未导出类型，外部包连这个类型都写不出来，物理上无法撞键。
+
+#### 一个必须记住的边界：context 不能是 nil
+```go
+svc.List(nil, uid)      // panic: nil pointer dereference
+```
+`context.Context` 的零值是 `nil`，而几乎所有标准库和数据库驱动都会立刻调用 `ctx.Done()`，直接 panic。**函数签名里收到 ctx，第一件事是确认它非 nil**，或者更实用的做法：在测试里统一用 `context.Background()`，handler 里永远用 `r.Context()`，不要自己造。
+
+反过来也别把 `context.Background()` 写进业务函数内部——那会让上层传下来的取消信号和超时失效，请求已经断了，查询还在跑。
 
 #### 改造所有账本 handler
 ```go
@@ -596,6 +885,26 @@ func (s *Service) List(ctx context.Context) ([]Entry, error) {
 # 不传 token 的请求不应到达 handler（被中间件拦住）
 ```
 在 handler 里临时 `log.Println(uid)`，确认每次都是正确用户。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `interface conversion: interface {} is nil, not int64` | 中间件没挂，或挂在 mux 之后没生效 | 先确认中间件套在最外层；handler 里用 `ok` 形式断言 |
+| 所有请求 uid 都是 0 | 中间件放进 ctx 的类型与取出时断言的类型不一致（`int` vs `int64`） | 统一用 `int64`，改一处改全部 |
+| 401 出现在本该 400 的请求上 | 中间件在认证前就拒绝了，参数校验根本没跑 | 这是正确行为：认证先于一切业务校验 |
+| `context deadline exceeded` | 把 `context.Background()` 传给了查询，或故意设了很短的超时 | 用 `r.Context()`，它带客户端断开信号 |
+
+#### 5 分钟最小验证
+```go
+// 临时在 handler 里打印，确认链路通了
+uid, ok := userIDFrom(r.Context())
+log.Println("uid=", uid, "ok=", ok)
+```
+```bash
+curl -s -H "Authorization: Bearer $TOKEN_A" localhost:8080/ledger > /dev/null
+curl -s localhost:8080/ledger > /dev/null          # 不带 token
+```
+第一条日志应该是 `uid=1 ok=true`，第二条应该**没有任何日志**（请求在中间件就被拦了）。如果第二条也打了日志，说明这个 handler 没走认证中间件——这往往意味着你给某条路由单独注册在了未包装的 mux 上。
 
 ::q 为什么把 uid 从 context 取出来后要作为显式参数传给 Service？
 ::a 显式参数让依赖可见、可测试、可编译期检查。埋在 ctx 里的话，Service 的测试必须构造带值的 ctx，调用者也看不出这个方法依赖用户身份，容易漏传导致越权。
@@ -638,6 +947,52 @@ if e.UserID != uid { return 403 } // 事后判断
 3. 403 暴露了「这个 ID 存在」，可被用来探测。
 
 **原则：把权限条件写进 WHERE，而不是写在 if 里。**
+
+#### 越权漏洞不止「查单条」这一种
+新手通常只记得给 `GET /ledger/{id}` 加 user_id，然后漏在别处。家庭账本里一共五类语句会泄漏数据，每一类都要单独检查：
+
+| 语句类型 | 漏掉的后果 | 具体例子 |
+| :--- | :--- | :--- |
+| 单条查询 | 直接看到别人的一笔账 | `WHERE id = ?` |
+| 列表查询 | 首页混进别人的记录 | `WHERE date LIKE ?` |
+| 聚合查询 | **算出全家的总额**，数字看着「对」但其实是别人的 | `SELECT SUM(amount) WHERE date LIKE ?` |
+| 分页计数 | `total` 把别人的数据算进去，分页器页数错 | `SELECT COUNT(*) WHERE date LIKE ?` |
+| 导出 | 一次导出所有人的账，最严重 | `SELECT * FROM entries` |
+
+聚合和计数最阴险：它们不返回明细，只返回一个数字。用户看到「本月支出 8600」不会觉得异常——直到某天发现这个数比自己记的账多了一倍。**排查这类 bug 时不要只看返回体，要看 SQL**。
+
+最可靠的做法不是「记得加」，而是**让签名逼你加**：
+
+```go
+type Store interface {
+    Get(ctx context.Context, userID, id int64) (Entry, error)
+    List(ctx context.Context, userID int64, q ListQuery) ([]Entry, int64, error)
+    Sum(ctx context.Context, userID int64, month string) (int64, error)
+    Delete(ctx context.Context, userID, id int64) (int64, error)
+}
+```
+把 `userID` 放在**第一个业务参数**的位置，且不提供任何不带它的重载。这样「忘加」会变成编译错误，而不是线上漏洞。**结构性约束强于纪律**——你不会每次都记得，但编译器每次都会检查。
+
+#### 5 分钟最小验证：造两个用户，把接口全打一遍
+```bash
+# A 建数据，B 拿 token 去撞每一个接口
+ID_A=$(curl -s -X POST localhost:8080/ledger -H "Authorization: Bearer $TOKEN_A" \
+  -d '{"amount":100,"category":"测试","date":"2026-10-19"}' | jq -r .data.id)
+
+for ep in "/ledger/$ID_A" "/ledger" "/summary?month=2026-10"; do
+  printf '%-24s ' "$ep"
+  curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN_B" "localhost:8080$ep"
+done
+```
+三个结果的含义不同，要分开看：`/ledger/$ID_A` 必须是 **404**；`/ledger` 必须 **200 但 `total=0`**（不是 404，因为集合本身是合法的）；`/summary` 必须返回 **0 元**。如果 `/summary` 返回了 100，就是聚合漏了 user_id——**这是最常见的越权形态，也是最难被用户发现的**。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| B 的列表里出现 A 的记录 | 列表 SQL 漏 `user_id` | 按上面的接口签名改造，编译期强制 |
+| `UPDATE` 影响 0 行但接口返回 200 | 没检查 `RowsAffected()` | 0 行 → `ErrNotFound` → 404 |
+| B 删除 A 的记录成功 | 删除 SQL 只有 `WHERE id = ?` | 加 `AND user_id = ?`，0 行返回 404 |
+| 测试通过但线上仍有串数据 | 测试里 A、B 用了同一个 ctx（uid 相同） | 测试里必须构造两个不同的 ctx |
 
 #### 用测试锁住它
 ```go
@@ -736,3 +1091,6 @@ curl -s "$BASE/login" -H 'Content-Type: application/json' \
 ::a 一旦有人为了让响应「复用」而把 `User` 结构体直接返回，或在别的 DTO 里嵌入了它，标签可能被绕过或遗忘。用独立 DTO 让响应结构里根本不存在该字段，是结构性的保证；再加一条测试断言作为回归防线。
 ::q 为什么说安全「不是做了几项，而是没有短板」？
 ::a 攻击者只走最短路径。做了慢哈希但允许账号枚举、或做了 JWT 但某条 SQL 漏了 user_id，整个防护就失效。安全是链式结构，强度等于最弱一环。
+::q 只给字段加 `json:"-"` 也可能泄漏，两条具体的泄漏路径是什么？
+::a ① 有人为了调试把它改成 `json:"password_hash"`，或写了个新结构体嵌入了 `store.User`，外层标签覆盖内层；② 新建 DTO 时用编辑器「复制所有字段」，标签不跟着字段语义走，`PasswordHash` 就被一起序列化了。结构体标签是**约定**，不是**保证**；只有「响应类型里根本不存在这个字段」才是结构性保证，再加一条 `strings.Contains(body, "argon2")` 的测试做回归。
+

@@ -17,6 +17,12 @@ go: cannot find main module; see 'go help modules'
 ::sym 文件明明在，`go run .` 却报找不到 main module。
 ::ask 缺的是什么？为什么「有 main.go」还不够？
 ::ans 缺 `go.mod`。Go 1.16 之后默认 module 模式：任何构建都必须先确定「模块根在哪」，`go.mod` 就是那个锚点。没有它，Go 不知道 import 路径的解析基准，所以连一个不 import 任何东西的 main 包也不肯编译。修法：`go mod init example.com/ledger`。顺带记住 `go env GOMOD`：正常应指向你的 go.mod，报 `/dev/null` 就是没在模块里。
+::predict go
+func main() {
+    n := 42
+}
+::ask 这段代码 `go build .` 会成功吗？`go vet ./...` 会替你报出来吗？
+::ans 不会成功，`go build` 直接失败：`declared and not used: n`。这是**编译错误**，不是 vet 的告警——Go 把「声明了没用」当硬错误，所以你连可执行文件都拿不到，`go vet` 根本没机会跑（vet 只能分析编译通过的代码）。这也解释了为什么 Go 代码里很少见到「留着以后用」的变量：不要就先删掉，暂时要保留就写 `_ = n` 显式丢弃。**编译错误和 vet 告警的区别**：前者让代码跑不起来，后者是「能跑但大概率是 bug」，比如 `fmt.Printf("%d", "str")` 格式串与参数不匹配。
 ::transfer
 ::scene 你要把入口从根目录挪到 `cmd/ledger/main.go`，模块根仍在仓库根，模块名 `example.com/ledger`。入口需要 import 你自己写的 `internal/store`。
 ::ask import 那一行应该怎么写？目录结构要怎么配合？
@@ -95,7 +101,7 @@ func main() {
 ::scene 你要读 10 万条账目做 CSV 导出，一开始写 `var out []Entry` 然后循环 append。
 ::ask 这行有什么性能问题？怎么改？改完大概省多少次内存分配？
 ::hint 想想 append 扩容的倍数，以及「已知总量」这个信息能换来什么。
-::ans `var out []Entry` 的 cap 是 0，前几次 append 会按 1→2→4→8… 反复扩容并拷贝，10 万条大约触发 17 次扩容、累计拷贝约 20 万次元素。已知行数时直接 `out := make([]Entry, 0, n)` 一次分配到位，扩容次数降为 0。如果行数未知，退一步用 `make([]Entry, 0, 1024)` 给个合理起点。**「预分配容量」是 Go 里性价比最高的优化之一**，写循环前先问自己：我知道大概多少个吗？
+::ans `var out []Entry` 的 cap 是 0，前几次 append 会按 1→2→4→8… 反复扩容并拷贝，10 万条大约触发 17 次扩容、累计拷贝约 20 万次元素。已知行数时直接 `out := make([]Entry, 0, n)` 一次分配到位，扩容次数降为 0。如果行数未知，退一步用 `make([]Entry, 0, 1024)` 给个合理起点。「**预分配容量**」是 Go 里性价比最高的优化之一，写循环前先问自己：我知道大概多少个吗？
 ::crit 能画出 `s[1:3]` 之后两个切片的 ptr/len/cap 三元组，并解释为什么改一个会影响另一个
 ::crit 能构造出「append 后旧切片看不到新元素」的最小例子
 ::crit 知道函数内 append 必须返回新切片，并能说明 len 是值传递
@@ -121,16 +127,16 @@ fmt.Println(len(s))
 fmt.Println(s[1])
 ::sym 输出 `6` 和 `195`，而你以为字符串是 5 个字符、第二个字符是 é。
 ::ask 为什么？要按「字符」处理应该怎么做？
-::ans `len(s)` 返回**字节数**，é 在 UTF-8 里占 2 字节，所以是 6。`s[1]` 取的是第 2 个**字节**（0xC3），打印成数字 195；如果按 `%c` 打印会得到乱码。按字符处理要转 `[]rune(s)`（得到 5 个 rune），或 `for i, r := range s`（i 是字节偏移，r 是 rune）。**「长度」在 Go 里默认指字节，涉及中文/emoji 时必须主动切换到 rune。**
+::ans `len(s)` 返回**字节数**，é 在 UTF-8 里占 2 字节，所以是 6。`s[1]` 取的是第 2 个**字节**（0xC3），打印成数字 195；如果按 `%c` 打印会得到乱码。按字符处理要转 `[]rune(s)`（得到 5 个 rune），或 `for i, r := range s`（i 是字节偏移，r 是 rune）。「**长度**」在 Go 里默认指字节，涉及中文/emoji 时必须主动切换到 rune。
 ::transfer
 ::scene 账本的备注字段要限制「最多 50 个字」，你写了 `if len(note) > 50 { return err }`。
 ::ask 这行对中文用户意味着什么？怎么改才对？
 ::hint 一个汉字在 UTF-8 里占几个字节？
 ::ans 一个常用汉字 3 字节，所以 `len > 50` 实际只允许 16 个汉字，用户会觉得「明明没超」。正确写法：`if utf8.RuneCountInString(note) > 50`，或者先 `[]rune(note)` 再判 len。如果产品要的是「显示宽度」（中文算 2），还得再算一层。**凡是给用户看的长度限制，都不能用字节数。**
-::crit 能解释 map 遍历顺序为什么是随机的，并写出稳定遍历的代码
-::crit 能说出 nil map 的三种合法操作和一种非法操作
+::crit 写出「遍历同一 map 两次、打印顺序不同」的程序，再用 `sort.Strings` 改成稳定输出
+::crit 列出 nil map 能做的三件事（读、`len`、`range`）和唯一不能做的事（写），并跑一次验证写会 panic
 ::crit 遇到中文/emoji 会主动区分 byte 与 rune，并能写出 rune 计数的写法
-::crit 知道 `range string` 的索引是字节偏移而不是字符序号
+::crit 用 `for i, c := range "中文a"` 打印出 `i` 是 0/3/6 而不是 0/1/2
 
 <!--day 5-->
 ::pre 知道函数、参数、返回值；理解「引用」和「值」的粗略区别。
@@ -143,7 +149,7 @@ func main() {
     fmt.Println(c.n)
 }
 ::ask 输出什么？
-::ans 输出 `0`。值接收者拿到的是**结构体的副本**，`c.n++` 改的是副本。改成 `func (c *Counter) Inc()` 才输出 1。判断规则很简单：**方法要不要改到原对象？要改就用指针接收者。**但更隐蔽的是「结构体较大时值接收者会复制」——一个 200 字节的结构体每次调用都拷 200 字节。
+::ans 输出 `0`。值接收者拿到的是**结构体的副本**，`c.n++` 改的是副本。改成 `func (c *Counter) Inc()` 才输出 1。判断规则很简单：**方法要不要改到原对象？要改就用指针接收者**。但更隐蔽的是「结构体较大时值接收者会复制」——一个 200 字节的结构体每次调用都拷 200 字节。
 ::predict go
 type Counter struct{ n int }
 func (c *Counter) Inc() { c.n++ }
@@ -196,7 +202,7 @@ func main() {
     fmt.Println(err == nil)
 }
 ::ask 输出 true 还是 false？
-::ans 输出 `false`。这是个经典陷阱：`e` 是 nil 指针，但返回成 `error` 接口后，接口的「类型」部分非 nil（是 `*MyErr`），「值」部分是 nil，整体不等于 nil。**返回具体类型指针时，nil 指针不等于 nil 接口。**修法：`if e == nil { return nil }`，或者返回 `error` 类型变量而不是具体指针。
+::ans 输出 `false`。这是个经典陷阱：`e` 是 nil 指针，但返回成 `error` 接口后，接口的「类型」部分非 nil（是 `*MyErr`），「值」部分是 nil，整体不等于 nil。**返回具体类型指针时，nil 指针不等于 nil 接口**。修法：`if e == nil { return nil }`，或者返回 `error` 类型变量而不是具体指针。
 ::debug go
 rows, err := db.Query("select id from entries")
 if err != nil { return err }
@@ -253,7 +259,7 @@ func main() {
 ::scene 你的 `Service` 需要一个「按月份查账目」的能力，当前依赖具体的 `*SQLiteStore`。你想让 `Service` 可测试（用内存实现替换）。
 ::ask 接口应该定义在哪个包？方法签名怎么写？为什么不在 store 包里定义？
 ::hint Go 的谚语：接口由使用方定义，而不是实现方。
-::ans 接口定义在**使用方**（`internal/ledger`），因为只有使用方知道自己需要哪些方法。签名用领域类型而不是 SQL 类型：`ListByMonth(ctx context.Context, userID int64, month string) ([]Entry, error)`，不要出现 `*sql.Rows`。如果在 store 包定义，使用方就被迫依赖 store 包，实现方新增方法还会撑大接口。**「接口属于调用者」是 Go 与 Java 最大的差异之一**，它让依赖方向始终指向内层。
+::ans 接口定义在**使用方**（`internal/ledger`），因为只有使用方知道自己需要哪些方法。签名用领域类型而不是 SQL 类型：`ListByMonth(ctx context.Context, userID int64, month string) ([]Entry, error)`，不要出现 `*sql.Rows`。如果在 store 包定义，使用方就被迫依赖 store 包，实现方新增方法还会撑大接口。「**接口属于调用者**」是 Go 与 Java 最大的差异之一，它让依赖方向始终指向内层。
 ::crit 能说出值接收者与指针接收者的方法集差异，并写出编译失败的例子
 ::crit 会在包里写 `var _ Interface = (*T)(nil)` 做编译期断言
 ::crit 能解释为什么接口定义在使用方，并举出「定义在实现方会怎样变糟」的具体后果
@@ -274,7 +280,7 @@ for i := 0; i < 3; i++ {
     defer fmt.Print(i)
 }
 ::ask 输出什么顺序？
-::ans 输出 `210`。defer 是**后进先出**的栈，且**参数在 defer 语句执行时就求值**——所以打印的是当时 i 的副本 0/1/2，只是按逆序执行。如果写成 `defer func(){ fmt.Print(i) }()`，输出会是 `333`，因为闭包捕获的是变量本身，执行时 i 已经是 3。**「defer 的参数立即求值，闭包捕获变量」这句话能解决 90% 的 defer 困惑。**
+::ans 输出 `210`。defer 是**后进先出**的栈，且**参数在 defer 语句执行时就求值**——所以打印的是当时 i 的副本 0/1/2，只是按逆序执行。如果写成 `defer func(){ fmt.Print(i) }()`，输出会是 `333`，因为闭包捕获的是变量本身，执行时 i 已经是 3。「**defer 的参数立即求值，闭包捕获变量**」这句话能解决 90% 的 defer 困惑。
 ::debug go
 func safeDiv(a, b int) (r int) {
     defer func() {
@@ -389,7 +395,7 @@ for rows.Next() {
     fmt.Println(id, note.String)
 }
 ::ask `note` 为什么用 `sql.NullString` 而不是 `string`？
-::ans 因为 `note` 列可能为 NULL，而 `*string`/`string` 扫 NULL 会报 `converting NULL to string is unsupported`。`sql.NullString{String, Valid}` 能区分「空字符串」和「NULL」。如果业务上「NULL 等价于空串」，也可以用 `COALESCE(note, '')` 在 SQL 里抹平——**但要想清楚：空串和 NULL 在你的业务里真的等价吗？**账本备注里「用户没填」和「用户填了空」其实没区别，用 COALESCE 更省事。
+::ans 因为 `note` 列可能为 NULL，而 `*string`/`string` 扫 NULL 会报 `converting NULL to string is unsupported`。`sql.NullString{String, Valid}` 能区分「空字符串」和「NULL」。如果业务上「NULL 等价于空串」，也可以用 `COALESCE(note, '')` 在 SQL 里抹平——**但要想清楚：空串和 NULL 在你的业务里真的等价吗**？账本备注里「用户没填」和「用户填了空」其实没区别，用 COALESCE 更省事。
 ::debug go
 stmt, _ := db.Prepare("INSERT INTO entries(amount) VALUES (?)")
 for i := 0; i < 3; i++ {
@@ -403,7 +409,7 @@ db.Close()
 ::scene 你要批量导入 5000 条账目，同事写了「循环里每次都 `db.QueryRow("SELECT id FROM entries WHERE ...")` 判重，没有就 INSERT」。
 ::ask 这个做法有几个问题？在不改业务语义的前提下怎么优化？
 ::hint 想想 5000 次网络/解析往返、以及「先查再插」的并发窗口。
-::ans 三个问题：① **N+1 往返**，5000 次查询 + 最多 5000 次插入 = 上万次往返，SQLite 本地也要几秒到几十秒；② **先查再插有竞态**，两个并发导入会同时通过判重然后都插入；③ 每次都重新 prepare SQL，浪费解析。优化：把判重交给数据库唯一约束（`UNIQUE(user_id, date, amount, category)`），用 `INSERT ... ON CONFLICT DO NOTHING` 一条语句完成「不存在才插」；批量放在一个事务里，用 `tx.Prepare` 复用语句。**「先查再写」几乎总是应该改成「让数据库判」**。
+::ans 三个问题：① **N+1 往返**，5000 次查询 + 最多 5000 次插入 = 上万次往返，SQLite 本地也要几秒到几十秒；② **先查再插有竞态**，两个并发导入会同时通过判重然后都插入；③ 每次都重新 prepare SQL，浪费解析。优化：把判重交给数据库唯一约束（`UNIQUE(user_id, date, amount, category)`），用 `INSERT ... ON CONFLICT DO NOTHING` 一条语句完成「不存在才插」；批量放在一个事务里，用 `tx.Prepare` 复用语句。「**先查再写**」几乎总是应该改成「让数据库判」。
 ::crit 知道 `Scan` 按列顺序填充，写查询时 SELECT 显式列名
 ::crit 会为可空列选 `sql.NullString` 或 `COALESCE`，并说出两者的取舍
 ::crit 遵守「谁创建谁关闭」，`Prepare` 后立刻 `defer stmt.Close()`
@@ -417,7 +423,7 @@ tx.Exec("INSERT INTO entries(amount) VALUES (100)")
 tx.Exec("INSERT INTO entries(amount) VALUES (200)")
 return nil          // 忘了 Commit
 ::ask 这两条数据会写进去吗？
-::ans 不会。没有 `Commit` 的事务在连接归还时会被回滚（`database/sql` 在 `tx` 被 GC 前若未提交，`Close` 时会 rollback）。这是**「写了但没生效」的经典形态**：代码不报错、日志正常、查询看不到。规则：`Begin` 之后立刻写 `defer tx.Rollback()`，成功路径显式 `Commit`——`Rollback` 在已提交后调用返回 `ErrTxDone`，无害。
+::ans 不会。没有 `Commit` 的事务在连接归还时会被回滚（`database/sql` 在 `tx` 被 GC 前若未提交，`Close` 时会 rollback）。这是「**写了但没生效**」的经典形态：代码不报错、日志正常、查询看不到。规则：`Begin` 之后立刻写 `defer tx.Rollback()`，成功路径显式 `Commit`——`Rollback` 在已提交后调用返回 `ErrTxDone`，无害。
 ::predict go
 func create(tx *sql.Tx) error {
     if _, err := tx.Exec("INSERT ..."); err != nil { return err }
@@ -467,7 +473,7 @@ func Transfer(ctx context.Context, db *sql.DB, from, to int64, cents int64) erro
     return tx.Commit()
 }
 ```
-校验必须在事务内：放外面就是「查完到扣款之间」的窗口，另一个事务可能已经把钱花掉了（TOCTOU）。SQLite 下用 `BEGIN IMMEDIATE` 或 `UPDATE ... WHERE balance >= ?` 加条件更新更稳。**「读-判断-写」三步必须在同一个事务里，否则判断就是过期的。**
+校验必须在事务内：放外面就是「查完到扣款之间」的窗口，另一个事务可能已经把钱花掉了（TOCTOU）。SQLite 下用 `BEGIN IMMEDIATE` 或 `UPDATE ... WHERE balance >= ?` 加条件更新更稳。「**读-判断-写**」三步必须在同一个事务里，否则判断就是过期的。
 ::crit 知道 `Begin` 后必须立刻 `defer tx.Rollback()`，成功路径显式 `Commit`
 ::crit 事务内的每条 `Exec` 都检查 error，绝不忽略
 ::crit 能解释「读-判断-写」为什么必须在同一事务内，并举出 TOCTOU 的后果

@@ -133,7 +133,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (int64, error) {
 // 但 handler 里原来的 HTTP 校验没删
 ```
 ::ask 会发生什么？
-::ans 重复校验，且**两处的错误响应可能不一致**（handler 返回 400/1001，service 返回 400/1002），前端无法预期。更糟的是维护时只改一处。重构的原则是「**搬移而不是复制**」：逻辑从 A 移到 B 后，A 处必须删掉。检查方法：重构后 grep 关键判断（`Amount <= 0`），应该只出现一次。**「复制粘贴式重构」是最常见的伪重构**，它让代码看起来分层了，实际规则有两份。
+::ans 重复校验，且**两处的错误响应可能不一致**（handler 返回 400/1001，service 返回 400/1002），前端无法预期。更糟的是维护时只改一处。重构的原则是「**搬移而不是复制**」：逻辑从 A 移到 B 后，A 处必须删掉。检查方法：重构后 grep 关键判断（`Amount <= 0`），应该只出现一次。「**复制粘贴式重构**」是最常见的伪重构，它让代码看起来分层了，实际规则有两份。
 ::predict
 ```go
 // 重构前 handler: 查不到返回 404
@@ -183,7 +183,7 @@ db, _ := gorm.Open(sqlite.Open("file:ledger.db?_pragma=busy_timeout(5000)"), &go
 // 生产环境
 ```
 ::ask 生产环境开 `logger.Info` 有什么问题？
-::ans 会把**每一条 SQL 和参数**打到日志里，包括金额、备注等用户数据，还可能包含密码哈希（注册时）。后果：日志体积暴涨、隐私泄漏、性能下降（同步写日志）。生产应该用 `logger.Warn` 或 `logger.Error`，只在排查时临时开 Info。更稳妥的做法是接一个自定义 logger，把慢查询（> 200ms）单独记录。**「SQL 日志」和「用户数据」必须有边界**。
+::ans 会把**每一条 SQL 和参数**打到日志里，包括金额、备注等用户数据，还可能包含密码哈希（注册时）。后果：日志体积暴涨、隐私泄漏、性能下降（同步写日志）。生产应该用 `logger.Warn` 或 `logger.Error`，只在排查时临时开 Info。更稳妥的做法是接一个自定义 logger，把慢查询（> 200ms）单独记录。「**SQL 日志**」和「用户数据」必须有边界。
 ::debug
 ```go
 db, _ := gorm.Open(sqlite.Open("ledger.db"), &gorm.Config{})
@@ -305,7 +305,7 @@ tx.Where("user_id = ?", uid).Find(&list)
 tx.Where("amount > ?", 100).Find(&list2)
 ```
 ::ask 第二条查询的 WHERE 是什么？
-::ans 是 `WHERE user_id = ? AND amount > 100`——**`tx.Where` 会修改 `tx` 自身的 Statement**，两次调用在同一个实例上累积。这是 GORM 最常见的一个陷阱：链式方法不是「返回新对象」，而是「修改当前对象并返回自己」（在非 `NewDB` 模式下）。所以要么每次都从 `r.db` 重新开始，要么用 `Session(NewDB: true)` 拿一个干净副本。**「链式调用会互相污染」这一条，能解释 80% 的 GORM 诡异查询**。
+::ans 是 `WHERE user_id = ? AND amount > 100`——**`tx.Where` 会修改 `tx` 自身的 Statement**，两次调用在同一个实例上累积。这是 GORM 最常见的一个陷阱：链式方法不是「返回新对象」，而是「修改当前对象并返回自己」（在非 `NewDB` 模式下）。所以要么每次都从 `r.db` 重新开始，要么用 `Session(NewDB: true)` 拿一个干净副本。「**链式调用会互相污染**」这一条，能解释 80% 的 GORM 诡异查询。
 ::debug
 ```go
 func (r *repo) List(ctx context.Context, uid int64) ([]Entry, error) {
@@ -368,7 +368,12 @@ tx.Debug().Where("user_id = ?", 1).Find(&a)
 tx.Debug().Where("amount > ?", 100).Find(&b)
 ```
 ::ask 第二条 SQL 里会不会有 `user_id = 1`？
-::ans 不会——因为每次都从 `NewDB: true` 的 session 开始（这里 `tx` 是同一个变量，但 `Where` 返回新 clone？不，`tx.Where()` 修改 `tx`）。这里有歧义，必须实测。**结论取决于 `tx` 是否被 `Where` 修改**：在 GORM v2 中，`tx.Where()` 在 `NewDB` session 上会 clone 出新实例（因为 `clone == 1` 时先 clone），所以 `tx` 本身不被修改。但这是实现细节，**不要依赖**——正确做法是每次调用都重新 `r.session(ctx)`，而不是复用中间变量。
+::ans 会。第二条 SQL 里会出现 `user_id = 1`，也就是**条件累积**了。原因是 `tx.Where(...)` 返回的实例已经不是「可克隆的初始实例」：GORM 只对 `clone == 1` 的 `*gorm.DB` 在每次链式调用前克隆一份新的 `Statement`，而链式方法返回的实例 `clone == 0`，后续 `Where` 会直接往同一个 `Statement` 里加条件。同一行的 `Find` 还会把 `Statement.SQL` 填上，下一次执行时旧条件仍在。修法不是「记住哪一步要小心」，而是**每个方法都从 `r.session(ctx)` 重新开始**，不复用中间变量：
+```go
+r.session(ctx).Where("user_id = ?", 1).Find(&a)
+r.session(ctx).Where("amount > ?", 100).Find(&b)   // 干净
+```
+验证方式：两次执行后用 `db.Debug()` 看实际 SQL，或用 `DryRun` 打出 `Statement.SQL.String()`；第二条没有 `user_id` 才算对。
 ::transfer
 ::scene 设计一个对照实验，用可观察的证据证明 `Session{NewDB, Context}` 优于 `WithContext`。
 ::ask 实验步骤、观察指标、预期结论分别是什么？
@@ -399,7 +404,7 @@ fmt.Println(y.Debug().Find(&[]Entry{}).Statement.SQL.String())   // 观察是否
 db.Model(&Entry{}).Where("id = ?", 1).Updates(Entry{Amount: 0})
 ```
 ::ask 金额会被改成 0 吗？
-::ans 不会。`Updates` 用结构体时**默认忽略零值字段**（0、""、false、nil），所以 `Amount: 0` 被跳过，SQL 里根本没有 `amount` 这一列。这是 GORM 最著名的坑之一。修法：① 用 map：`Updates(map[string]any{"amount": 0})`；② 用 `Select("amount").Updates(...)` 显式指定字段。**「更新为 0」和「不更新」在结构体里长得一样**，必须用 map 或 Select 区分。
+::ans 不会。`Updates` 用结构体时**默认忽略零值字段**（0、""、false、nil），所以 `Amount: 0` 被跳过，SQL 里根本没有 `amount` 这一列。这是 GORM 最著名的坑之一。修法：① 用 map：`Updates(map[string]any{"amount": 0})`；② 用 `Select("amount").Updates(...)` 显式指定字段。「**更新为 0**」和「不更新」在结构体里长得一样，必须用 map 或 Select 区分。
 ::predict
 ```go
 type Entry struct {
@@ -421,7 +426,7 @@ db.Model(&Entry{}).Where("id = ?", id).Updates(Entry{Amount: amount, Category: c
 // 而且 RowsAffected = 1（因为 category 变了或没变？）
 ```
 ::ask `RowsAffected` 能用来判断「记录是否存在」吗？
-::ans **不能**。SQLite 的 `UPDATE` 即使没有实际改变值，`RowsAffected` 也可能返回匹配行数（取决于驱动实现）；而 GORM 在「无字段可更新」时可能返回 0。用「`RowsAffected == 0` 判断不存在」在 UPDATE 上是不可靠的。正确做法：先 `SELECT` 确认存在（在同一事务里），或用 `UPDATE ... WHERE id = ? AND user_id = ?` 后**再查一次**。`DELETE` 的 `RowsAffected` 相对可靠（删了就是 1，没删就是 0）。**「影响行数」的语义在不同数据库/驱动上不一致，不要用它做业务判断**。
+::ans **不能**。SQLite 的 `UPDATE` 即使没有实际改变值，`RowsAffected` 也可能返回匹配行数（取决于驱动实现）；而 GORM 在「无字段可更新」时可能返回 0。用「`RowsAffected == 0` 判断不存在」在 UPDATE 上是不可靠的。正确做法：先 `SELECT` 确认存在（在同一事务里），或用 `UPDATE ... WHERE id = ? AND user_id = ?` 后**再查一次**。`DELETE` 的 `RowsAffected` 相对可靠（删了就是 1，没删就是 0）。「**影响行数**」的语义在不同数据库/驱动上不一致，不要用它做业务判断。
 ::transfer
 ::scene 实现 PATCH 语义的更新：只更新请求里出现的字段。
 ::ask 用结构体还是指针还是 map？怎么区分「没传」和「传了零值」？
@@ -458,7 +463,7 @@ func (r *repo) Transfer(ctx context.Context, from, to int64, cents int64) error 
 }
 ```
 ::ask 事务内的 `tx` 有没有绑定调用方的 ctx？
-::ans **没有**。`Transaction` 的回调收到的是 `tx`，它继承的是 `r.db` 的配置，**不会自动带上你 `WithContext(ctx)` 的 ctx**（GORM 的 `Transaction` 内部会创建新 session）。所以在事务内调用 `tx.Exec` 时，取消信号传不到驱动——客户端断开了，事务还在跑。修法：在回调里第一步 `tx = tx.WithContext(ctx)`，或者用 `r.db.Session(&gorm.Session{Context: ctx}).Transaction(...)` 并确认 ctx 被继承（实测）。**「事务内的 ctx 要显式补」是 GORM 的一个真实陷阱**。
+::ans **没有**。`Transaction` 的回调收到的是 `tx`，它继承的是 `r.db` 的配置，**不会自动带上你 `WithContext(ctx)` 的 ctx**（GORM 的 `Transaction` 内部会创建新 session）。所以在事务内调用 `tx.Exec` 时，取消信号传不到驱动——客户端断开了，事务还在跑。修法：在回调里第一步 `tx = tx.WithContext(ctx)`，或者用 `r.db.Session(&gorm.Session{Context: ctx}).Transaction(...)` 并确认 ctx 被继承（实测）。「**事务内的 ctx 要显式补**」是 GORM 的一个真实陷阱。
 ::predict
 ```go
 err := db.Transaction(func(tx *gorm.DB) error {
@@ -535,7 +540,7 @@ goose -dir migrations sqlite3 ledger.db up
 # Error: failed to parse migration: no Up statements
 ```
 ::ask 除了缺 `-- +goose Up`，还有哪些原因？
-::ans ① 标记写成了 `-- +goose up`（**大小写敏感**，必须 `Up`）；② 标记前后有空行问题（goose 要求标记独占一行）；③ 文件里有 BOM 或 CRLF 导致匹配失败（Windows 编辑器常见）；④ 文件名不符合 `NNNNN_` 前缀，goose 直接跳过。排查：`goose status` 看它识别了哪些文件；`file migrations/*.sql` 看编码。**「迁移没执行」先看 goose 有没有识别到这个文件**，不要先怀疑 SQL。
+::ans ① 标记写成了 `-- +goose up`（**大小写敏感**，必须 `Up`）；② 标记前后有空行问题（goose 要求标记独占一行）；③ 文件里有 BOM 或 CRLF 导致匹配失败（Windows 编辑器常见）；④ 文件名不符合 `NNNNN_` 前缀，goose 直接跳过。排查：`goose status` 看它识别了哪些文件；`file migrations/*.sql` 看编码。「**迁移没执行**」先看 goose 有没有识别到这个文件，不要先怀疑 SQL。
 ::transfer
 ::scene 设计项目的迁移序列：初始化表、加索引、加分类表、加预算表。
 ::ask 写出文件名与每个文件的核心 SQL，说明顺序理由。
@@ -574,14 +579,14 @@ if err := migrate(db); err != nil { log.Fatal(err) }
 // 但多个副本同时启动
 ```
 ::ask 多个实例同时跑迁移会怎样？
-::ans 可能冲突：两个实例同时执行 `ALTER TABLE`，一个成功一个报错（「列已存在」「表已存在」）→ 启动失败。SQLite 有写锁，第二个会等或 BUSY。修法：① **迁移作为部署的独立步骤**（`docker compose run --rm migrate`），应用启动只检查版本不执行；② 或者用 goose 的锁机制（`goose.WithLock`，但 SQLite 支持有限）；③ 家庭账本单实例部署，可以接受「启动时迁移」，但要明确写下这个前提。**「启动时自动迁移」在单实例下方便，在多副本下是事故源**。
+::ans 可能冲突：两个实例同时执行 `ALTER TABLE`，一个成功一个报错（「列已存在」「表已存在」）→ 启动失败。SQLite 有写锁，第二个会等或 BUSY。修法：① **迁移作为部署的独立步骤**（`docker compose run --rm migrate`），应用启动只检查版本不执行；② 或者用 goose 的锁机制（`goose.WithLock`，但 SQLite 支持有限）；③ 家庭账本单实例部署，可以接受「启动时迁移」，但要明确写下这个前提。「**启动时自动迁移**」在单实例下方便，在多副本下是事故源。
 ::debug
 ```bash
 goose -dir ./migrations sqlite3 ledger.db up
 # 应用启动后又报：no such column: deleted_at
 ```
 ::ask 迁移执行了，为什么应用还报列不存在？
-::ans ① **迁移连的不是同一个库**：goose 用 `ledger.db`（相对当前 shell 的 CWD），应用用的是绝对路径或容器内另一个路径——两个不同的文件；② **迁移只执行了一部分**（某个文件失败，goose 停在那里，后续没跑）；③ 应用的 GORM 模型里有 `deleted_at` 但迁移文件里忘了加这一列（模型先行，迁移没跟上）。排查：`goose status` 看版本号，`sqlite3 db '.schema entries'` 看实际列。**「迁移跑过了」要以「目标库的实际结构」为准，不是以「命令没报错」为准**。
+::ans ① **迁移连的不是同一个库**：goose 用 `ledger.db`（相对当前 shell 的 CWD），应用用的是绝对路径或容器内另一个路径——两个不同的文件；② **迁移只执行了一部分**（某个文件失败，goose 停在那里，后续没跑）；③ 应用的 GORM 模型里有 `deleted_at` 但迁移文件里忘了加这一列（模型先行，迁移没跟上）。排查：`goose status` 看版本号，`sqlite3 db '.schema entries'` 看实际列。「**迁移跑过了**」要以「目标库的实际结构」为准，不是以「命令没报错」为准。
 ::transfer
 ::scene 写一个「迁移 + 启动」的部署流程，保证结构变更可控。
 ::ask 单实例与多实例分别怎么做？给出命令。
@@ -643,7 +648,7 @@ db.Create(&entry)   // entry.CategoryID = 5（不存在的分类）
 // 成功
 ```
 ::ask 为什么没报外键错误？
-::ans SQLite **默认不开启外键约束**，即使建表时写了 `REFERENCES`。必须 `PRAGMA foreign_keys = ON`（且是连接级的，每次连接都要设）。GORM 的 sqlite 驱动可以通过 DSN 的 `_pragma=foreign_keys(1)` 开启。没开的话，`category_id=5` 指向不存在的行也能插入，数据完整性靠应用层保证——而应用层总会漏。**「写了外键」不等于「有外键约束」，SQLite 是唯一需要显式打开的主流数据库**。
+::ans SQLite **默认不开启外键约束**，即使建表时写了 `REFERENCES`。必须 `PRAGMA foreign_keys = ON`（且是连接级的，每次连接都要设）。GORM 的 sqlite 驱动可以通过 DSN 的 `_pragma=foreign_keys(1)` 开启。没开的话，`category_id=5` 指向不存在的行也能插入，数据完整性靠应用层保证——而应用层总会漏。「**写了外键**」不等于「有外键约束」，SQLite 是唯一需要显式打开的主流数据库。
 ::transfer
 ::scene 决定用外键还是保留字符串分类，给出决策文档。
 ::ask 列出决策依据（至少 4 条），并给出你的选择和迁移方案。
@@ -711,7 +716,7 @@ var byCat []CategorySum
 db.Model(&Entry{}).Select("category, COALESCE(SUM(amount),0) AS total, COUNT(*) AS cnt").
     Where(...).Group("category").Order("total DESC").Scan(&byCat)
 ```
-响应：`{month, total, count, max, by_category:[{category,total,count,ratio}]}`。`ratio` 在应用层算（避免 SQL 里除零）。**「一条 SQL 干完」看起来优雅，但可读性和可维护性往往更差**；两条简单查询加起来也就多一次往返。
+响应：`{month, total, count, max, by_category:[{category,total,count,ratio}]}`。`ratio` 在应用层算（避免 SQL 里除零）。「**一条 SQL 干完**」看起来优雅，但可读性和可维护性往往更差；两条简单查询加起来也就多一次往返。
 ::crit 分组统计用 `Select + Group + Scan`，不用 `Count`
 ::crit 聚合列加 `COALESCE`，空月份返回 0
 ::crit 自定义结构体字段与别名严格对应，或显式写 `column` tag
@@ -742,7 +747,7 @@ time sqlite3 ledger.db "SELECT ... WHERE user_id=1 AND date>='2026-10-01'..."
 # real 0.4s
 ```
 ::ask 有索引但还是很慢，可能是什么原因？
-::ans ① **索引没被用上**（先 `EXPLAIN` 确认）；② **回表代价高**：索引只含 `user_id,date`，但查询要 `category,amount`，每行都要回表——如果一个月有 1 万行，就是 1 万次随机读；③ **统计本身贵**：`SUM + GROUP BY` 要遍历所有匹配行，这是 O(n) 的，索引帮不了聚合；④ **SQLite 的页缓存太小**（`PRAGMA cache_size`）。优化方向：覆盖索引 `(user_id, date, category, amount)` 让查询不回表；或者预先聚合到月度汇总表（物化视图思路）。**「加了索引还是慢」通常是因为索引没覆盖查询需要的列**。
+::ans ① **索引没被用上**（先 `EXPLAIN` 确认）；② **回表代价高**：索引只含 `user_id,date`，但查询要 `category,amount`，每行都要回表——如果一个月有 1 万行，就是 1 万次随机读；③ **统计本身贵**：`SUM + GROUP BY` 要遍历所有匹配行，这是 O(n) 的，索引帮不了聚合；④ **SQLite 的页缓存太小**（`PRAGMA cache_size`）。优化方向：覆盖索引 `(user_id, date, category, amount)` 让查询不回表；或者预先聚合到月度汇总表（物化视图思路）。「**加了索引还是慢**」通常是因为索引没覆盖查询需要的列。
 ::transfer
 ::scene 给统计接口做一次性能验证，证明索引有效。
 ::ask 写出验证步骤与判定标准。
@@ -808,7 +813,7 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 }
 ```
 ::ask 这段有什么问题？
-::ans ① 顺序有隐患：`ValidationError` 如果被 `fmt.Errorf("%w")` 包装过，`errors.As` 仍能命中（正确）；但 `ErrNotFound` / `ErrConflict` 等哨兵没处理，会全部落到 500。② **500 的响应里没有 `request_id`**——用户报障时你无法定位。③ `slog.Error` 只打了 `err`，没打方法/路径/用户，排查时缺少上下文。修法：完整映射所有领域错误，500 响应带 `request_id`，日志补齐字段。**「内部错误」对用户是黑盒，对运维必须是白盒**。
+::ans ① 顺序有隐患：`ValidationError` 如果被 `fmt.Errorf("%w")` 包装过，`errors.As` 仍能命中（正确）；但 `ErrNotFound` / `ErrConflict` 等哨兵没处理，会全部落到 500。② **500 的响应里没有 `request_id`**——用户报障时你无法定位。③ `slog.Error` 只打了 `err`，没打方法/路径/用户，排查时缺少上下文。修法：完整映射所有领域错误，500 响应带 `request_id`，日志补齐字段。「**内部错误**」对用户是黑盒，对运维必须是白盒。
 ::debug
 ```bash
 curl -X POST /ledger -d '{"amount":0}'
@@ -1054,7 +1059,7 @@ r.List(ctx, 1, Query{Month: "2026-10"})
 // got 为空
 ```
 ::ask 数据明明插了，为什么查不到？
-::ans 常见三个原因：① **时间格式**：`entry.Date` 存的是 `2026-10-19`，但查询用 `time.Time` 做条件，序列化后带时分秒，`>= 2026-10-01 00:00:00` 与 `2026-10-19` 字符串比较出问题；② **月份边界算错**：`start/end` 用了 `AddDate(0,1,0)` 但时区不对；③ **每个测试用了不同的内存库**（DSN 里带了随机名），插入和查询连的不是同一个。排查：在测试里 `db.Debug()` 打出插入和查询的 SQL，直接看条件值。**「查不到」永远先看生成的 SQL**。
+::ans 常见三个原因：① **时间格式**：`entry.Date` 存的是 `2026-10-19`，但查询用 `time.Time` 做条件，序列化后带时分秒，`>= 2026-10-01 00:00:00` 与 `2026-10-19` 字符串比较出问题；② **月份边界算错**：`start/end` 用了 `AddDate(0,1,0)` 但时区不对；③ **每个测试用了不同的内存库**（DSN 里带了随机名），插入和查询连的不是同一个。排查：在测试里 `db.Debug()` 打出插入和查询的 SQL，直接看条件值。「**查不到**」永远先看生成的 SQL。
 ::transfer
 ::scene 设计 Repository 测试的夹具策略。
 ::ask 用内存库还是临时文件？迁移怎么跑？每个测试怎么隔离？
@@ -1093,7 +1098,7 @@ go test ./internal/httpapi -coverpkg=./internal/ledger,./internal/store -coverpr
 go tool cover -func=c.out | tail -5
 ```
 ::ask `-coverpkg` 的作用是什么？不加会怎样？
-::ans 不加时，覆盖率只统计**被测包自己**的代码——handler 测试里调用了大量 service 代码，但这些行不算进 httpapi 的覆盖率，于是数字虚低，你会误以为「handler 测试没覆盖业务」。加 `-coverpkg=...` 后，service/store 里被 handler 测试执行到的行也算进来，能看出「handler 测试实际覆盖了多少下层逻辑」。**「跨包覆盖」才是有意义的数字**。
+::ans 不加时，覆盖率只统计**被测包自己**的代码——handler 测试里调用了大量 service 代码，但这些行不算进 httpapi 的覆盖率，于是数字虚低，你会误以为「handler 测试没覆盖业务」。加 `-coverpkg=...` 后，service/store 里被 handler 测试执行到的行也算进来，能看出「handler 测试实际覆盖了多少下层逻辑」。「**跨包覆盖**」才是有意义的数字。
 ::debug bash
 ```bash
 go test -race ./...
@@ -1116,7 +1121,7 @@ go test -race -count=10 ./internal/ledger
 | P1 | 统计/聚合 | 错就是账不对 | 90%+ |
 | P2 | 参数校验 | 错是体验问题 | 80% |
 | P3 | 配置解析/日志格式 | 错影响运维 | 尽力 |
-**覆盖率目标按包定，不设全局数字**：`ledger` 85%+、`httpapi` 80%+、`store` 70%+（SQL 的极端分支难测）。**「P0 100%」比「全局 80%」有意义得多**。
+**覆盖率目标按包定，不设全局数字**：`ledger` 85%+、`httpapi` 80%+、`store` 70%+（SQL 的极端分支难测）。「**P0 100%**」比「全局 80%」有意义得多。
 ::crit 用 `-coverpkg` 看跨包覆盖，不只看单包数字
 ::crit `-race -count=10` 至少跑一次，能复现概率性竞态
 ::crit 覆盖率目标按风险分层，P0 项接近 100%
@@ -1134,7 +1139,7 @@ if b.Amount > 0 && used + e.Amount > b.Amount {
 }
 ```
 ::ask 这个检查有什么问题？
-::ans ① **并发下会漏判**：两个请求同时读到 `used = 900`，各自加 100 都判定「没超 1000」，实际到了 1100；② `used` 从哪来？如果每次 `SUM` 查，成本高；如果存字段，又要维护一致性；③ 超预算时**要不要阻止写入**？家庭账本里「超预算是提醒」而不是「禁止记账」——禁止会导致用户记不了账，反而更糟。正确做法：**超预算时写入成功，但响应里带 `budget_exceeded: true` 标志**。**「预算」是提示性约束，不是硬约束**。
+::ans ① **并发下会漏判**：两个请求同时读到 `used = 900`，各自加 100 都判定「没超 1000」，实际到了 1100；② `used` 从哪来？如果每次 `SUM` 查，成本高；如果存字段，又要维护一致性；③ 超预算时**要不要阻止写入**？家庭账本里「超预算是提醒」而不是「禁止记账」——禁止会导致用户记不了账，反而更糟。正确做法：**超预算时写入成功，但响应里带 `budget_exceeded: true` 标志**。「**预算**」是提示性约束，不是硬约束。
 ::predict
 ```go
 // 用 CHECK 约束做硬限制
@@ -1153,7 +1158,7 @@ curl -X POST /ledger -d '{"amount":5000,"category":"餐饮"}'
 ```json
 {"code":0,"data":{"id":42,"budget":{"limit":3000,"used":8000,"exceeded":true}}}
 ```
-或者提供独立的 `GET /budget/status?month=` 让前端主动查。**「提示」必须有一条明确的数据通道**，不能指望用户自己算。另外前端提示文案要说清「超了多少」，而不只是「超预算」。
+或者提供独立的 `GET /budget/status?month=` 让前端主动查。「**提示**」必须有一条明确的数据通道，不能指望用户自己算。另外前端提示文案要说清「超了多少」，而不只是「超预算」。
 ::transfer
 ::scene 设计预算功能的最小可用版本（stretch goal）。
 ::ask 表结构、检查时机、响应字段分别是什么？哪些可以不做？
@@ -1196,7 +1201,7 @@ curl -o out.csv '/ledger/export?month=2026-10'
 # 文件大小正确，但 Excel 打开只有一列，内容是 "date,amount,..."
 ```
 ::ask 为什么？
-::ans 可能原因：① **`Content-Type` 设成了 `text/plain`**，Excel 按纯文本处理不分列——应该 `text/csv; charset=utf-8`；② 文件的换行是 `\n` 而 Excel（Windows）期望 `\r\n`，导致整个文件被当成一行；③ 用了 `\t` 分隔却命名为 csv。前两个最常见。`encoding/csv` 默认用 `\n`，可以 `w.UseCRLF = true` 修复。**「导出文件打不开」先检查分隔符和换行符**。
+::ans 可能原因：① **`Content-Type` 设成了 `text/plain`**，Excel 按纯文本处理不分列——应该 `text/csv; charset=utf-8`；② 文件的换行是 `\n` 而 Excel（Windows）期望 `\r\n`，导致整个文件被当成一行；③ 用了 `\t` 分隔却命名为 csv。前两个最常见。`encoding/csv` 默认用 `\n`，可以 `w.UseCRLF = true` 修复。「**导出文件打不开**」先检查分隔符和换行符。
 ::transfer
 ::scene 实现全量加载版 CSV 导出（stretch goal 的第一版）。
 ::ask 写出 handler 骨架，说明为什么全量加载在这个量级可接受。
@@ -1218,7 +1223,7 @@ func (h *Handler) Export(w http.ResponseWriter, r *http.Request, uid int64) erro
     return cw.Error()
 }
 ```
-可接受的理由：家庭账本一个月最多几百条，一条 `Entry` 约 100 字节，全量加载不到 100KB。**「流式」是为了「数据量可能无限」的场景，不是所有导出的默认姿势**——先算一下最坏情况的内存占用，再决定要不要复杂化。
+可接受的理由：家庭账本一个月最多几百条，一条 `Entry` 约 100 字节，全量加载不到 100KB。「**流式**」是为了「数据量可能无限」的场景，不是所有导出的默认姿势——先算一下最坏情况的内存占用，再决定要不要复杂化。
 ::crit 用 `encoding/csv` 而不是手拼字符串，含逗号/引号/换行的字段正确
 ::crit `Content-Type: text/csv; charset=utf-8` + `Content-Disposition` 触发下载
 ::crit 金额导出为「元」且保留两位小数（用整数拼接，不用浮点）
@@ -1252,7 +1257,7 @@ wc -l out.csv    # 5001
 # 但数据库里有 8000 条
 ```
 ::ask 少了的 3000 条去哪了？怎么排查？
-::ans 可能原因：① **查询本身有限制**（比如默认 `LIMIT 5000`，或者分页参数没传对）；② **`rows.Next()` 提前结束**：数据库连接中断，`rows.Err()` 有错误但被忽略；③ **写入端提前断开**：客户端超时/取消，`csv.Write` 返回错误但没检查。排查：`rows.Err()` 必须检查；`cw.Error()` 必须检查；日志里记录「导出行数 vs 期望行数」。**「导出条数不对」必须有对账，不能让用户自己数**。
+::ans 可能原因：① **查询本身有限制**（比如默认 `LIMIT 5000`，或者分页参数没传对）；② **`rows.Next()` 提前结束**：数据库连接中断，`rows.Err()` 有错误但被忽略；③ **写入端提前断开**：客户端超时/取消，`csv.Write` 返回错误但没检查。排查：`rows.Err()` 必须检查；`cw.Error()` 必须检查；日志里记录「导出行数 vs 期望行数」。「**导出条数不对**」必须有对账，不能让用户自己数。
 ::transfer
 ::scene 决定这个项目到底用全量还是流式。
 ::ask 给出决策与判据，并说明如果将来要改流式，接口要不要变。
@@ -1272,7 +1277,7 @@ wc -l out.csv    # 5001
 // 前端又问：那列表返回的呢？
 ```
 ::ask 如果接口文档没写清单位，会发生什么？
-::ans 前端把「分」当「元」显示，35.5 元显示成 3550 元；或者前端传元、后端当分存，35.5 变成 0.355 元。这类 bug 的特点是**不会报错，只会数字不对**，而且往往在用户投诉后才发现。必须在文档里对每个金额字段标注单位：`amount_cents`（字段名自带单位）比 `amount` + 注释更可靠。**「字段名承载语义」比「文档承载语义」更不容易失效**。
+::ans 前端把「分」当「元」显示，35.5 元显示成 3550 元；或者前端传元、后端当分存，35.5 变成 0.355 元。这类 bug 的特点是**不会报错，只会数字不对**，而且往往在用户投诉后才发现。必须在文档里对每个金额字段标注单位：`amount_cents`（字段名自带单位）比 `amount` + 注释更可靠。「**字段名承载语义**」比「文档承载语义」更不容易失效。
 ::predict
 ```json
 // 响应
@@ -1310,7 +1315,7 @@ mux.HandleFunc("POST "+base+"/ledger", h.Create)
 错误：1001 参数错误 / 2001 未登录 / 3001 疑似重复
 curl: curl -X POST ... -H "Authorization: Bearer $T" -d '{...}'
 ```
-**「单位、必填、范围」三样缺一不可**，它们是联调时 80% 问题的来源。
+「**单位、必填、范围**」三样缺一不可，它们是联调时 80% 问题的来源。
 ::crit 所有金额字段名带单位（`_cents`），文档标注
 ::crit 路由前缀统一用常量，不存在「有的带前缀有的不带」
 ::crit 每个接口条目含字段约束、错误码、curl 示例
@@ -1341,7 +1346,7 @@ sqlite3 db 'select count(*) from entries'
 # 登录后刷新页面 → 又变成未登录
 ```
 ::ask 脚本测不出来，为什么？
-::ans 因为脚本是「取 token 放 header」，而浏览器是「依赖 Cookie」。刷新后掉登录说明 **Cookie 没被正确设置或没被带上**：① `Set-Cookie` 少了 `Path=/`（只在 `/api/v1/login` 路径生效）；② `Secure: true` 但用 http 访问，浏览器拒绝存；③ `SameSite=Strict` + 跨站前端，Cookie 不发送；④ 没设 `MaxAge`，变成会话 Cookie（关浏览器就没了，但刷新不该掉）。**「脚本通、浏览器不通」几乎总是 Cookie/跨域问题**，这类必须人工在浏览器验证。
+::ans 因为脚本是「取 token 放 header」，而浏览器是「依赖 Cookie」。刷新后掉登录说明 **Cookie 没被正确设置或没被带上**：① `Set-Cookie` 少了 `Path=/`（只在 `/api/v1/login` 路径生效）；② `Secure: true` 但用 http 访问，浏览器拒绝存；③ `SameSite=Strict` + 跨站前端，Cookie 不发送；④ 没设 `MaxAge`，变成会话 Cookie（关浏览器就没了，但刷新不该掉）。「**脚本通、浏览器不通**」几乎总是 Cookie/跨域问题，这类必须人工在浏览器验证。
 ::transfer
 ::scene 设计阶段五的端到端回归清单。
 ::ask 列出必须覆盖的场景（至少 10 条），标注哪些只能人工验。
@@ -1375,7 +1380,7 @@ govulncheck ./...
 docker compose up -d
 ```
 ::ask 三条都通过，阶段五算完成吗？
-::ans 还差：① **迁移在生产库上真的执行过**（不只是测试库）；② **GORM 的 session 模式全局一致**（grep 确认没有裸 `r.db.Where`）；③ **日志能用 request_id 串起来**（实际 grep 一次）；④ **预算/CSV 这两个 stretch goal 的完成度有明确说明**（做了多少、没做什么）；⑤ **性能有基线数据**（列表接口 P95）。**「测试绿」是必要条件，验收是「清单逐条有证据」**。
+::ans 还差：① **迁移在生产库上真的执行过**（不只是测试库）；② **GORM 的 session 模式全局一致**（grep 确认没有裸 `r.db.Where`）；③ **日志能用 request_id 串起来**（实际 grep 一次）；④ **预算/CSV 这两个 stretch goal 的完成度有明确说明**（做了多少、没做什么）；⑤ **性能有基线数据**（列表接口 P95）。「**测试绿**」是必要条件，验收是「清单逐条有证据」。
 ::predict
 ```bash
 grep -rn "r\.db\.Where\|r\.db\.First\|r\.db\.Find" internal/store/
@@ -1391,7 +1396,7 @@ goose -dir migrations sqlite3 ./data/ledger.db status
 # (never applied)             00001_create_users.sql
 ```
 ::ask 服务已经跑了一周，为什么迁移显示从未执行？
-::ans 因为服务跑的是**另一个数据库文件**（相对路径 vs 绝对路径），或者迁移是 `AutoMigrate` 建的（`AutoMigrate` 不会写 goose 的版本表）。这解释了「为什么生产表结构和迁移文件对不上」。修法：① 统一用绝对路径/环境变量指定 DB；② 启动日志打印 DB 绝对路径；③ 如果表已存在但 goose 版本为空，需要用 `goose up` 时加 `--allow-missing` 或手工 `goose stamp` 标记基线。**「迁移版本表」是判断「结构从哪来」的唯一依据**。
+::ans 因为服务跑的是**另一个数据库文件**（相对路径 vs 绝对路径），或者迁移是 `AutoMigrate` 建的（`AutoMigrate` 不会写 goose 的版本表）。这解释了「为什么生产表结构和迁移文件对不上」。修法：① 统一用绝对路径/环境变量指定 DB；② 启动日志打印 DB 绝对路径；③ 如果表已存在但 goose 版本为空，需要用 `goose up` 时加 `--allow-missing` 或手工 `goose stamp` 标记基线。「**迁移版本表**」是判断「结构从哪来」的唯一依据。
 ::transfer
 ::scene 写阶段五的验收报告。
 ::ask 报告必须包含哪些证据？哪些「没做到」要明确写出？

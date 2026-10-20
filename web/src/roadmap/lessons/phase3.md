@@ -80,6 +80,74 @@ func createEntry(w http.ResponseWriter, r *http.Request) {
 2. **JSON 数字默认解析到 `float64`**，如果目标字段是 `int64`，`json.Decoder` 会做转换但**超出精度会静默出问题**。金额建议在契约里就用整数分，或者用 `json.Number`。
 3. **`null` 和缺字段都会得到零值**，无法区分「没传」和「传了 0」。需要区分就用指针字段 `*int64`。
 
+第 2 点值得亲眼看一次，它决定了你会不会在金额上栽跟头：
+
+```go
+var v struct {
+    A int64 `json:"a"`
+}
+json.Unmarshal([]byte(`{"a": 9007199254740993}`), &v)
+fmt.Println(v.A)   // 9007199254740992 —— 末位被抹掉了，且没有报错
+```
+原因是 JSON 数字先变成 `float64`（53 位有效位）再转 `int64`。家庭账本的金额远到不了这个量级，但「**静默截断**」这个行为本身要记住：凡是 JSON 里的大整数（订单号、雪花 ID、金额分），都可能被精度吃掉。真需要精确就用 `json.Number` 或字符串传。
+
+#### 报错对照：这四个报错能定位 90% 的联调问题
+| 报错原文 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `unexpected EOF` | body 为空，或 `Content-Length` 与实际不符（curl 忘了 `-d`） | 客户端检查是否真的发了 body |
+| `json: cannot unmarshal string into Go struct field .amount of type int64` | 前端传了 `"3550"`（字符串），后端要 `int64` | 契约里定死类型；要兼容就在 DTO 用 `json.Number` 或自定义 `UnmarshalJSON` |
+| `json: unknown field "amout"` | 字段名拼错，`DisallowUnknownFields` 打开了 | 按报错里的字段名改前端，别急着关掉严格模式 |
+| `http: request body too large` | 超过 `MaxBytesReader` 的 1MB | 确认不是把文件当 JSON 传了；正常账目请求不该超过几 KB |
+
+#### 先跑通一个最小 echo 服务
+把下面这段存成 `main.go`，`go run .` 之后就能验证今天的全部知识点——它同时是 D3 路由、D4 信封的地基：
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "log"
+    "net/http"
+)
+
+type EchoIn struct {
+    Amount   int64  `json:"amount"`
+    Category string `json:"category"`
+    Date     string `json:"date"`
+    Note     string `json:"note,omitempty"`
+}
+
+func echo(w http.ResponseWriter, r *http.Request) {
+    var in EchoIn
+    dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+    dec.DisallowUnknownFields()
+    if err := dec.Decode(&in); err != nil {
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusBadRequest)
+        // 把解析错误原样带回，联调时非常有用；生产环境可换成固定文案
+        json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+        return
+    }
+    buf, err := json.Marshal(in)
+    if err != nil {
+        http.Error(w, `{"error":"encode"}`, http.StatusInternalServerError)
+        return
+    }
+    w.Header().Set("Content-Type", "application/json; charset=utf-8")
+    w.WriteHeader(http.StatusCreated)
+    w.Write(buf)
+}
+
+func main() {
+    mux := http.NewServeMux()
+    mux.HandleFunc("POST /echo", echo)
+    log.Println("listen :8080")
+    log.Fatal(http.ListenAndServe(":8080", mux))
+}
+```
+注意错误分支里也是「先设头、再 `WriteHeader`、最后写 body」——顺序颠倒会触发 `http: superfluous response.WriteHeader call`，头已经发出去，状态码改不动了。
+
 #### 写响应：先编码到 buffer，再一次性写
 ```go
 w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -91,6 +159,16 @@ if err := json.NewEncoder(w).Encode(resp); err != nil {
 ```
 `Encode` 是流式的，出错时头可能已经发出去了。所以严格场景应该先 `json.Marshal` 到 `[]byte`，成功后再 `WriteHeader + Write`——这样编码失败还能返回 500。
 
+#### 5 分钟最小验证：三个坏请求，看状态码是不是 400
+服务跑起来后，先别写业务，专打坏请求：
+
+```bash
+curl -si -X POST localhost:8080/echo -d '' | head -1            # 400：空 body
+curl -si -X POST localhost:8080/echo -d '{"amount":"3550"}' | head -1  # 400：类型不符
+curl -si -X POST localhost:8080/echo -d '{"amout":3550}' | head -1     # 400：未知字段
+```
+三条都必须是 `400`，且**没有一条是 500**。500 意味着错误没被拦在解析层，直接漏到了业务代码——那种 500 在线上最难查，因为日志里只有 panic 栈，看不出是客户端传错。
+
 #### 判据
 ```bash
 curl -i -X POST localhost:8080/ledger \
@@ -100,7 +178,11 @@ curl -i -X POST localhost:8080/ledger \
 
 curl -i -X POST localhost:8080/ledger -d '{"amount":"abc"}'
 # 400，而不是 500
+
+curl -i -X POST localhost:8080/ledger -d '{"amount":3550,"amout":1}'
+# 400，报错里明确指出 unknown field
 ```
+最后一条是「严格模式的收益证明」：如果不开 `DisallowUnknownFields`，这个请求会**成功**，然后你在库里发现 `note` 是空的，回头查半天才发现前端字段拼错。宁可 400 报出来。
 
 ::q 为什么推荐 `json.NewDecoder(r.Body)` 而不是 `io.ReadAll` + `json.Unmarshal`？
 ::a 前者直接流式解码，不用把整个 body 复制到内存；配合 `MaxBytesReader` 可以在超限时立即中断。后者要先把全部内容读进内存，大 body 会占用更多内存，还需要自己处理读取错误。
@@ -131,6 +213,31 @@ mux.HandleFunc("GET /ledger/{id}", getEntry)    // 更泛化
 ```
 `/ledger/summary` 会命中第一个，不会进 `{id}`。**但这也意味着如果你把 `{id}` 的解析写成 `strconv.ParseInt`，`summary` 永远走不到那个分支**——顺序无关，靠具体度匹配。
 
+这条规则有一个不直观的推论：**注册顺序完全不影响匹配**，只影响「同级冲突」时的报错。所以不要把「先注册的先命中」这种老框架经验带过来，`{id}` 写在 `summary` 前面也一样。
+
+#### 冲突的模式会让程序启动就 panic
+```go
+mux.HandleFunc("GET /ledger/{id}", getEntry)
+mux.HandleFunc("GET /ledger/{name}", getByName)   // 启动即 panic
+```
+报错原文是 `panic: pattern "GET /ledger/{name}" (registered at ...) conflicts with pattern "GET /ledger/{id}"`。这是 Go 1.22 mux 的一个优点：**路由冲突在启动时暴露，不在凌晨三点被第一个用户触发**。看到这个 panic 不要慌，它说的是「两个模式的匹配集合完全重叠，我无法决定用哪个」，改成一个就完事。
+
+注意区分两种情况：`/ledger/{id}` 与 `/ledger/summary` 是**包含关系**（更具体的赢），不 panic；`{id}` 与 `{name}` 是**等价关系**（无法分先后），panic。
+
+#### 查询参数：`r.URL.Query()` 永远返回字符串
+```go
+q := r.URL.Query()
+month := q.Get("month")              // 没传时是 ""
+if month == "" {
+    month = time.Now().Format("2006-01")
+}
+limit, err := strconv.Atoi(q.Get("limit"))
+if err != nil || limit <= 0 || limit > 100 {
+    limit = 20                       // 非法值直接兜底，不报错
+}
+```
+两个约定：「**没传**」和「传错」都走默认值，不返回 400（分页参数不值得让整个请求失败）；**默认值要写死上限**（`limit > 100` 就压到 20），否则 `?limit=100000` 就是一次内存放大攻击。
+
 #### 路径参数一定要校验
 ```go
 idStr := r.PathValue("id")
@@ -141,6 +248,26 @@ if err != nil {
 }
 ```
 不校验的后果：`/ledger/abc` 会被当成 0 去查库，然后返回 404，日志里看不出是「参数错」还是「真的没有这条」。
+
+还有一个隐蔽情况：`PathValue` 在模式没匹配到该参数时返回**空字符串**，不报错。所以「ID 是空的」和「ID 不合法」在代码里长得一样，必须先判空再 `ParseInt`，否则空串也会走到「不合法」分支，错误信息写不准。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| 启动 `panic: pattern ... conflicts with ...` | 两个模式匹配集合等价（`{id}` vs `{name}`） | 保留一个，另一个换成不同路径 |
+| `GET /ledger/` 返回 404 | 注册的是 `/ledger`，末尾多一个斜杠不算同一个模式 | 客户端别带尾斜杠，或额外注册 `GET /ledger/{$}` |
+| `r.PathValue("id")` 总是空串 | 模式写成了 `/ledger/:id`（旧框架语法）或忘了 `{}` | 改成 `{id}`；同时确认 Go ≥ 1.22 |
+| 405 但响应体是空的 | 默认 405 只带 `Allow` 头 | 需要 JSON 体就自己包一层 mux 做 method 分发（阶段三 D13 的中间件思路） |
+
+#### 5 分钟最小验证：路由表一次打完
+```bash
+go run . &
+for m in GET POST PUT DELETE; do
+  printf '%-7s ' "$m"; curl -s -o /dev/null -w '%{http_code}\n' -X $m localhost:8080/ledger
+done
+curl -si localhost:8080/ledger/1 | grep -i '^allow'   # 405 时看 Allow
+```
+第一条循环应该输出 `200 201 405 405`。如果没有 405 而是 404，说明你只注册了 `GET /ledger`，**方法限定没生效**——多半是写成了 `mux.HandleFunc("/ledger", ...)`。
 
 #### 判据
 ```bash
@@ -197,6 +324,64 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 ```
 注意 `Fail` 用 `Response[any]`：失败时 `data` 是 nil，`omitempty` 会把它省掉，响应更干净。
+
+#### `omitempty` 在这里埋了一个坑
+`Data T` 加了 `omitempty`，当 `T` 是 `int64` 而值是 `0`、或是 `""`、`false` 时，**整个 `data` 字段会消失**。于是 `OK(w, 0)` 返回的是 `{"code":"OK","message":"success"}`，前端 `res.data` 是 `undefined`，做加法得到 `NaN`。
+
+这不是理论问题：`GET /summary` 返回本月总支出 0 元时就会命中。三种处理方式，按推荐度排：
+
+1. **`Data` 不加 `omitempty`**，失败时显式输出 `"data": null`。结构永远稳定，前端不用判存在性。代价是失败响应多 15 字节。
+2. 给「零值有意义」的接口写专用 DTO（`SummaryResp{ Total int64 }`），`Total` 不加 omitempty，外层照旧。
+3. 用 `*T`，nil 才省略。但这样每个调用点都要取地址，很快你会写 `&total` 写到烦。
+
+`json.Marshal` 对 `omitempty` 的判定有个更奇怪的边界：**struct 永远不算空**，哪怕所有字段都是零值也照样输出 `{}`。所以「data 里嵌了一个全零的结构体」不会被省略，只有标量零值会被省略——同一个 tag，两种行为。
+
+#### 状态码与 code 的搭配约定
+| 场景 | HTTP | code | 说明 |
+| :--- | :--- | :--- | :--- |
+| 查询成功 | 200 | `OK` | |
+| 创建成功 | 201 | `OK` | 201 是传输层语义，body 结构不变 |
+| 参数格式错 | 400 | `INVALID_ARGUMENT` | 带 `field` 指出哪个字段 |
+| 未登录 / token 过期 | 401 | `UNAUTHENTICATED` / `TOKEN_EXPIRED` | 两者前端处理不同：一个跳登录，一个先刷新 |
+| 越权访问别人的数据 | 403 | `FORBIDDEN` | 不要用 404 掩盖，账本场景要能审计 |
+| 资源不存在 | 404 | `NOT_FOUND` | |
+| 冲突（邮箱已注册） | 409 | `EMAIL_TAKEN` | |
+| 服务端 bug | 500 | `INTERNAL` | message 固定文案，细节只进日志 |
+
+这张表先定下来，后面每个 handler 都往里填。**新加一个 code 要改这张表**——它是契约的一部分，散落在代码里的字符串最后一定会拼错（`INVALID_ARGUMENT` 和 `INVALID_ARGUMENTS` 同时存在）。把 code 定义成常量，编译期就能挡住拼写错误：
+
+```go
+const (
+    CodeOK       = "OK"
+    CodeInvalid  = "INVALID_ARGUMENT"
+    CodeNotFound = "NOT_FOUND"
+    CodeInternal = "INTERNAL"
+)
+```
+
+#### `writeJSON` 里三个不能省的顺序
+```go
+w.Header().Set("Content-Type", "application/json; charset=utf-8")  // ① 必须在 WriteHeader 之前
+w.WriteHeader(status)                                              // ② 只能调用一次
+_, _ = w.Write(buf)                                                // ③ 错误只能忽略
+```
+① 反了就是 `Content-Type` 丢失，浏览器按 `text/plain` 处理，前端 `res.json()` 直接抛错；② 调两次会打印 `http: superfluous response.WriteHeader call`，第二次的状态码被丢弃且**不会报错给客户端**；③ 客户端断开时 `Write` 会返回 error，但那时响应已经开始发了，除了记日志没有别的补救。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `http: superfluous response.WriteHeader call from ...` | 在 `writeJSON` 之前已经 `WriteHeader` 或 `http.Error` 过一次 | 保证每条分支只写一次头；`http.Error` 也算写头 |
+| 前端 `res.json is not a function` / `Unexpected token <` | `Content-Type` 没设，或 500 时返回了 `http.Error` 的纯文本 | 统一走 `writeJSON`，别混用 `http.Error` |
+| `{"code":"OK","message":"success"}` 少 `data` | `omitempty` 吃掉了零值 | 去掉 `omitempty`，或改用专用 DTO |
+| 中文变成 `\u9910\u996e` | `json.Marshal` 默认转义 HTML 与部分字符 | 可读性要求高时用 `Encoder.SetEscapeHTML(false)`；语义上无影响 |
+
+#### 5 分钟最小验证：三次请求，顶层字段必须一样
+```bash
+curl -s localhost:8080/ledger | jq -c 'keys'          # ["code","data","message"]
+curl -s localhost:8080/ledger/999 | jq -c 'keys'      # ["code","message"]
+curl -s localhost:8080/summary | jq -c '.data'        # 0 元时也要有 data
+```
+前两条用 `jq keys` 对比，失败响应少一个 `data` 是可以接受的（只要前端判空），但第三条暴露的正是上面那个 `omitempty` 坑——**总支出为 0 时必须能拿到 `0`，而不是 `undefined`**。
 
 #### 分页响应的形状
 ```go
@@ -291,10 +476,14 @@ func createEntry(svc *ledger.Service) http.HandlerFunc {
 #### 判据
 四个路由都能返回统一信封（哪怕数据是假的）。这一步不追求功能，追求「形状对了」。
 
+再加一条更实用的判据：**把四个路由的响应示例写进 `docs/api.md`，然后照着文档写 curl**。如果 curl 的返回和文档对不上，说明形状没定住——现在就改，别等到前端开始对接。骨架日省下的十分钟，会在联调那天变成两小时。
+
 ::q 为什么 handler 用「返回闭包的函数」而不是全局变量持有 svc？
 ::a 全局变量让依赖隐式、测试时无法替换、并发初始化有风险。闭包把依赖固定在函数创建时，测试可以传 mock，生产传真实实现，且没有全局状态。这是 Go 标准库和大多数项目的主流做法。
 ::q 为什么把 handler 放在 `internal/httpapi` 而不是跟 Service 放一个包？
 ::a 传输层和领域层的变更原因不同：改 API 形状（加字段、改状态码）不应该触碰业务规则，改业务规则也不应该影响路由。分包后依赖方向明确（httpapi → ledger），也让 handler 的测试不需要加载业务实现。
+::q 骨架日为什么要求「路由和响应形状先跑通、数据可以是假的」？如果反过来先写业务逻辑，会付出什么代价？
+::a 因为响应形状是前端、测试、后续所有 handler 共同依赖的契约。先定形状，后面每个 handler 只是往里填数据，改一处不影响别人；反过来先写业务，等发现 `items` 该是分页对象而不是数组时，四个 handler、前端解析、验收脚本要同时改。**骨架日的产出不是功能，是「形状正确 + 能 curl 通」**，这是后面三天不再返工的前提。
 
 <!--day 6 | normal-->
 #### 写入路径的四步，缺一步都出事
@@ -400,11 +589,49 @@ db.QueryRowContext(ctx, `SELECT COUNT(*) FROM entries WHERE date LIKE ?`, month+
 ```
 **`ORDER BY` 必须带唯一列兜底**（这里是 `id DESC`）。只按 `date` 排序时，同一天的多条记录顺序不确定，翻页会出现「第 1 页和第 2 页有重复/漏记录」。
 
+两条语句之间有一个容易被忽略的时间差：`COUNT` 和 `SELECT` 不是同一快照。如果这两条之间有人插入了一条记录，`total` 会比实际多 1，前端算出的总页数就多一页，最后一页是空的。家庭账本几乎不会遇到，但**知道它存在**能让你在排查「最后一页空」时不用怀疑人生。真要一致，就包进同一个只读事务。
+
+也能一条语句搞定，SQLite 3.25+ 支持窗口函数：
+
+```go
+// 一次扫描同时拿到本页数据和总数；数据量大时比 COUNT 全表更快（只扫一次索引）
+`SELECT id, amount, category, date, note, COUNT(*) OVER() AS total
+   FROM entries WHERE date LIKE ? ORDER BY date DESC, id DESC LIMIT ? OFFSET ?`
+```
+代价是当 offset 超出范围时结果集为空，**连 `total` 也拿不到**（没有行了）。所以要么保留两条语句，要么在空结果时补一条 `COUNT`。新手建议先用两条语句，逻辑更直白。
+
+#### 为什么这里不优化「深度分页」
+`LIMIT ? OFFSET 100000` 会让 SQLite 扫描并丢弃前 10 万行。教科书解法是键集分页（`WHERE (date, id) < (?, ?)`）。但家庭账本一天记 3 条，十年一万条，`offset` 最大也就几千——**优化的收益是几毫秒，成本是接口签名从 `offset` 变成 `cursor`，前端要重写翻页逻辑**。
+
+这里要建立的判断力是：**知道问题在哪、知道代价，然后有理由地不做**。判断标准写下来：单表行数 < 10 万且 offset < 1 万时，offset 分页完全够用；超过就上键集分页。这条写进代码注释，比「以后再说」有用。
+
 #### `total` 的语义要定清楚
 - `total` = 满足筛选条件的**总条数**（与 limit/offset 无关）。
 - 不是「本页条数」，也不是「剩余条数」。
 
 定不清楚的后果：前端算总页数 `ceil(total/limit)` 会错，分页器显示「第 1 页 / 共 1 页」但实际有 5 页。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `?limit=-1` 返回**全部数据** | SQLite 里 `LIMIT -1` 表示不限制 | 负数必须在 Go 侧归零，不能靠数据库兜底 |
+| `no such column: entries.amount` | 建表时列名不同（如 `value`），或 `SELECT` 里的列与 `Scan` 顺序不一致 | 先 `sqlite3 ledger.db '.schema entries'` 对齐 |
+| 翻页出现重复记录 | `ORDER BY` 只按 `date`，同日多条顺序不稳定 | 追加唯一列 `id DESC` |
+| `offset` 很大时最后一页重复上一页的数据 | 排序不稳定 + 两次查询之间数据变动 | 同上，加唯一列；必要时固定 `ORDER BY` 的所有列 |
+
+#### 5 分钟最小验证：两页拼起来必须等于全量
+```bash
+# 造 5 条同一天的数据，故意让 date 相同，逼出排序不稳定的问题
+for i in 1 2 3 4 5; do curl -s -X POST localhost:8080/ledger \
+  -d "{\"amount\":$((i*100)),\"category\":\"测试\",\"date\":\"2026-10-19\"}" > /dev/null; done
+
+curl -s 'localhost:8080/ledger?limit=2&offset=0' | jq -r '.data.items[].id' > /tmp/p1
+curl -s 'localhost:8080/ledger?limit=2&offset=2' | jq -r '.data.items[].id' > /tmp/p2
+curl -s 'localhost:8080/ledger?limit=2&offset=4' | jq -r '.data.items[].id' > /tmp/p3
+cat /tmp/p1 /tmp/p2 /tmp/p3 | sort | uniq -d    # 期望：无输出（没有重复）
+cat /tmp/p1 /tmp/p2 /tmp/p3 | wc -l            # 期望：等于 total
+```
+`sort | uniq -d` 是检查「跨页重复」最快的手段，比人眼对比强得多。如果这里出现 ID，别怀疑 `LIMIT`，去改 `ORDER BY`。
 
 #### 判据
 ```bash
@@ -435,7 +662,7 @@ curl -s 'localhost:8080/ledger?limit=2&offset=4' | jq '.data | {total, n: (.item
 | `month=2026-13` | 400，不是空列表 |
 | `month=` 空 | 用当前月 |
 
-**「返回空列表」和「返回错误」的选择要有理由**：`offset` 超出范围是合法请求（客户端可以乐观翻页），返回空列表更友好；`month=2026-13` 是非法输入，必须 400，否则前端以为「这个月没记账」。
+「**返回空列表**」和「返回错误」的选择要有理由：`offset` 超出范围是合法请求（客户端可以乐观翻页），返回空列表更友好；`month=2026-13` 是非法输入，必须 400，否则前端以为「这个月没记账」。
 
 #### 空列表 vs 越界，语义不同
 ```go
@@ -454,8 +681,85 @@ func validMonth(s string) bool {
 ```
 `time.Parse("2006-01", "2026-13")` 会失败，这是最省事的校验方式。空字符串单独处理成默认当前月。
 
+#### 把规则写成一个纯函数，才有得测
+边界表放在脑子里没法验证。把「参数归一化」抽成一个不碰数据库的纯函数，今天剩下的时间就用来给它写表驱动测试：
+
+```go
+// normalizePaging 是所有分页参数唯一的入口，handler 不自己判边界
+func normalizePaging(limit, offset int) (int, int) {
+    if limit < 0 {
+        limit = 0
+    }
+    if limit == 0 {
+        limit = defaultLimit      // 20
+    }
+    if limit > maxLimit {
+        limit = maxLimit          // 100
+    }
+    if offset < 0 {
+        offset = 0
+    }
+    return limit, offset
+}
+```
+
+注意 `limit=101` 的处理是**截到 100，不是回到 20**。区别看着小，语义差很远：用户传 101 是「我要尽可能多」，回到 20 会让他以为上限就是 20；截到 100 是「给你能给的最多」，符合意图。同理 `limit=0` 回到 20 而不是返回空——0 在多数客户端里等于「没传」。
+
+```go
+package ledger
+
+import "testing"
+
+func TestNormalizePaging(t *testing.T) {
+    cases := []struct {
+        name                  string
+        inLimit, inOffset     int
+        wantLimit, wantOffset int
+    }{
+        {"没传参数", 0, 0, 20, 0},
+        {"负数回落", -5, -1, 20, 0},
+        {"超上限截断到 100", 101, 0, 100, 0},
+        {"正常值原样放行", 50, 40, 50, 40},
+        {"恰好等于上限", 100, 0, 100, 0},
+    }
+    for _, c := range cases {
+        t.Run(c.name, func(t *testing.T) {
+            gotL, gotO := normalizePaging(c.inLimit, c.inOffset)
+            if gotL != c.wantLimit || gotO != c.wantOffset {
+                t.Fatalf("normalizePaging(%d,%d) = (%d,%d), want (%d,%d)",
+                    c.inLimit, c.inOffset, gotL, gotO, c.wantLimit, c.wantOffset)
+            }
+        })
+    }
+}
+```
+`t.Run` 让每条用例成为独立子测试，失败时报错会带用例名（`--- FAIL: TestNormalizePaging/超上限截断到_100`），一眼看出哪条规则破了。**这就是表驱动测试的全部价值：用例和断言混在一起时，你只能看到「挂了」，看不到「哪条规则挂了」。**
+
+#### `has_more` 怎么算
+```go
+hasMore := int64(offset+len(items)) < total
+```
+不能用 `total > limit`：`total=100, limit=20, offset=80` 时最后一条应该 `has_more=false`，而 `100>20` 永远为 true，前端会一直请求下一页。判据是「已经取回的位置有没有到末尾」，即 `offset + 本页条数 < total`。
+
+也不要让前端自己算 `offset+len(items) < total`——服务端已经知道这两个值，客户端各自实现一遍，迟早有一处写反。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `no test files` | 测试文件名不是 `_test.go`，或不在同一个包目录 | 命名改成 `paging_test.go`，与被测文件同目录 |
+| `--- FAIL: TestNormalizePaging/超上限截断到_100` | 实现和表格约定不一致（比如 101 回到了 20） | 以表格为准改实现，别改测试 |
+| `undefined: normalizePaging` | 测试文件用了 `package ledger_test` 但函数未导出 | 要么同包（`package ledger`），要么导出函数 |
+| 测试通过但线上仍返回全表 | handler 里没调用 `normalizePaging`，自己又判了一遍 | 边界只允许有一个入口，搜一遍 `limit` 出现的位置 |
+
 #### 判据
 写一个 `paging_test.go`，表驱动跑上面 8 行，全部通过才算今天完成。**分页 bug 是那种「上线三个月后才被用户发现」的类型**，必须靠测试挡住。
+
+```bash
+go test ./internal/ledger -run TestNormalizePaging -v
+# 期望 5 个 PASS，0 个 FAIL
+go test ./... -count=1     # 全仓测试，确认没影响别的
+```
+`-count=1` 关掉测试缓存，避免「改了代码但结果没变」的错觉——Go 默认会缓存通过的测试结果，新手经常被这个骗一次。
 
 ::q `offset` 超过总数时，返回空列表和返回 404 哪个更合适？
 ::a 返回空列表。因为请求本身合法（参数都在允许范围内），只是没有数据，客户端可以据此判断「到底了」。返回 404 会让客户端误以为「分页接口不存在」，也不符合「集合资源」的语义。
@@ -541,6 +845,8 @@ curl -s localhost:8080/ledger | jq '.data.items | length'
 ::a 因为测试替身要模拟真实实现的行为。真实实现会因 ctx 取消而返回错误，如果内存实现忽略 ctx，测试就测不出「handler 是否正确传播了取消」，掩盖真实环境的问题。
 ::q 换存储实现时如果必须改 handler，说明什么？
 ::a 说明 handler 直接依赖了具体实现（比如直接用了 `*store.SQLite` 的方法或它的类型），或者业务逻辑泄漏到了 handler 里。依赖方向应该始终是 handler → Service → 接口，实现只在 main 里出现。
+::q 换存储实现时，内存版要模拟 SQLite 的哪些行为？漏掉哪一条会导致「测试全绿、生产失败」？
+::a 至少四条：① 空结果返回 `make([]T,0)` 而不是 nil（否则 JSON 里是 `null`）；② ID 自增从 1 开始、删除后不复用；③ 排序稳定（`date DESC, id DESC`）；④ 查不到时返回 `ErrNotFound` 而不是零值 + nil。最容易漏的是第 ①条：内存版返回 nil，测试里 `len(items)==0` 通过，但前端拿到 `null` 直接崩。**测试替身要模拟「可观察行为」，不是模拟数据结构。**
 
 <!--day 10 | light-->
 #### 持久化验证：三步走
@@ -587,6 +893,8 @@ sqlite3 ledger.db ".backup 'backup.db'"    # 在线一致备份
 ::a 先绕过服务直接查库：`sqlite3 ledger.db 'select count(*) from entries'`。如果库里有数据，问题在读取端（DSN 不一致、查询条件错）；如果库里没有，问题在写入端（用了内存库、写入失败但错误被吞、事务回滚）。
 ::q 相对路径 `ledger.db` 有什么隐患？
 ::a 它相对于进程的当前工作目录。用不同方式启动（`./api` 与 `cd /var/lib && /opt/api`）会打开不同的文件，表现为「数据莫名消失」。生产环境应该用绝对路径或明确配置的数据目录。
+::q 写完一条数据后立刻执行 `ls -l ledger.db`，主库文件大小没变、修改时间也没更新，这说明数据丢了吗？跑什么命令能确认？
+::a 不说明丢了。开了 WAL（`PRAGMA journal_mode=WAL`）后，新写入先落在 `ledger.db-wal`，要等 checkpoint 才合并进主库。这时 `ls -l ledger.db-wal` 会看到它有大小、时间刚更新。确认方式是绕过服务直接查：`sqlite3 ledger.db 'select count(*) from entries'`——它会自动读 WAL，能看到最新数据；或者 `sqlite3 ledger.db 'PRAGMA journal_mode;'` 确认是不是 `wal`。
 
 <!--day 11 | normal-->
 #### 404 的三种来源，必须区分
@@ -729,17 +1037,39 @@ if err != nil {
 
 #### 判据
 ```bash
+# 先用 sqlite3 CLI 手算一遍，作为「正确答案」
+sqlite3 ledger.db "SELECT category, SUM(amount) FROM entries WHERE date LIKE '2026-10-%' GROUP BY category;"
+
+# 再和接口返回值逐项对照，数字必须一模一样
 curl -s 'localhost:8080/summary?month=2026-10' | jq .data
 # by_category 按金额降序，total 等于各项之和
 ```
+`sqlite3` 是本项目唯一的手工核对工具：接口算错了，你得先知道「对」长什么样才有得比。`-header -column` 两个参数能让输出对齐、带列名，比默认的 `|` 分隔好读得多。
 再插一条 0 元记录，确认它不影响总额但会出现在分类里（这个边界决定你的 SQL 是否需要 `HAVING SUM(amount) > 0`）。
 
 ::q 为什么 `Scan` 聚合结果时不要用 `Entry` 结构体？
 ::a `Entry` 没有 `total` 字段，GORM 会静默忽略这一列，你拿到的是空结构体或零值，且不报错。必须定义专用结构体（如 `CategorySum`）承载聚合列，字段名与 SQL 别名对应。
 ::q `total` 用「各分类相加」和「单独 SUM 一次」，哪个更可靠？
 ::a 单独 SUM 更可靠。分类相加依赖两个查询的条件完全一致，且分类中若有 NULL 或空字符串会被 GROUP BY 单独成组，容易漏算。单独一次 `SELECT COALESCE(SUM(amount),0)` 语义明确，也不受分组影响。
+::q `WHERE date LIKE '2026-1%'`（月份少写一位）会返回什么？为什么半开区间写法不会出这个问题？
+::a 会匹配 `2026-10`、`2026-11`、`2026-12` 三个月的全部数据——前缀匹配对「位数不足」毫无抵抗力，统计结果直接翻三倍且不报错。半开区间用显式边界 `>= '2026-10-01' AND < '2026-11-01'`，边界由 `time.Parse("2006-01", month)` 校验过的值算出，`2026-1` 会在解析阶段就被拒成 400。**前缀匹配依赖「格式永远规整」，而这正是外部输入最不可靠的地方。**
 
 <!--day 13 | core-->
+#### 中间件解决的是「每个 handler 都要写一遍」的问题
+先看不用中间件时代码长什么样。四个 handler，每个都要记日志：
+
+```go
+func list(w http.ResponseWriter, r *http.Request) {
+    start := time.Now()
+    defer func() { log.Printf("%s %s %v", r.Method, r.URL.Path, time.Since(start)) }()
+    // ↑ 这四行在 create / get / update / delete 里一模一样
+    ...
+}
+```
+复制四遍只是开始。等阶段四要加认证、阶段六要加 CORS 和限流，每个 handler 前面会堆五六行「和业务毫无关系」的代码，而且**总有一个人会忘记加**——忘记加日志只是少一条记录，忘记加认证就是数据泄漏。
+
+中间件把这段代码从「每个 handler 内部」搬到「handler 外面一层」，写一次，全站生效。这是它的全部价值，没有别的玄机。
+
 #### 中间件的类型签名，只有一个正确答案
 ```go
 type Middleware func(http.Handler) http.Handler
@@ -755,6 +1085,42 @@ func WithLogging(next http.Handler) http.Handler {
     })
 }
 ```
+注意 `http.HandlerFunc(...)` 这层转换：普通函数 `func(w, r)` 需要转成实现了 `ServeHTTP` 的类型才能满足 `http.Handler`。忘了这层转换，编译报错是 `cannot use func literal (type func(http.ResponseWriter, *http.Request)) as type http.Handler`——看到这个就知道少了个 `http.HandlerFunc`。
+
+#### 一个能跑的最小洋葱，先看顺序再谈别的
+```go
+package main
+
+import (
+    "log"
+    "net/http"
+)
+
+func tagged(name string) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            log.Println("[" + name + "] before")
+            next.ServeHTTP(w, r)
+            log.Println("[" + name + "] after")
+        })
+    }
+}
+
+func main() {
+    mux := http.NewServeMux()
+    mux.HandleFunc("GET /ping", func(w http.ResponseWriter, r *http.Request) {
+        log.Println("handler")
+        w.Write([]byte(`{"code":"OK"}`))
+    })
+
+    var h http.Handler = mux
+    h = tagged("inner")(h)
+    h = tagged("outer")(h)
+
+    log.Fatal(http.ListenAndServe(":8080", h))
+}
+```
+`curl localhost:8080/ping` 一次，日志必须是 `[outer] before → [inner] before → handler → [inner] after → [outer] after`。**这条顺序就是「洋葱」的全部含义**：进入时从外到内，返回时从内到外。中间件里 `next.ServeHTTP` 之前写的代码属于「进入」，之后写的属于「返回」。
 
 #### 套的顺序 = 执行的顺序（洋葱）
 ```go
@@ -772,10 +1138,27 @@ Recovery → CSRF → RateLimit → Auth → handler
 ```
 `Recovery` 必须在最外层，才能捕获内层所有 panic。
 
+顺序错了会怎样，`WithLogging` 和 `WithAuth` 这一对最能说明问题：
+
+| 套法 | 未登录请求的日志 | 后果 |
+| :--- | :--- | :--- |
+| `WithLogging(WithAuth(mux))`（日志在外） | 有 `status=401` | 能看到「多少请求被拒」，正常 |
+| `WithAuth(WithLogging(mux))`（日志在内） | **什么都没有** | 认证先返回，日志中间件根本没执行；401 全部隐形 |
+
+所以「日志放最外层」不是风格偏好，是**不然你会丢掉最需要统计的那部分请求**。
+
 #### 中间件不该做的事
 - **不要在里面写业务逻辑**（查账本、算统计）。中间件只处理横切关注点：日志、认证、限流、CORS、恢复。
 - **不要用中间件做参数校验**。它拿不到业务上下文，做出来的校验会和 handler 重复且不一致。
 - **不要每个路由单独套一份**，容易漏。统一套在 mux 外层。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `cannot use ... as http.Handler` | 忘了 `http.HandlerFunc` 转换 | 包一层再返回 |
+| 中间件里的日志一条都不打 | 套在了 `mux` 上，但 `srv.Handler` 赋值的是原来的 `mux` 变量 | 把包装后的 handler 赋给 `srv.Handler`，别复用旧变量 |
+| `runtime error: invalid memory address` 在中间件里 | `next` 是 nil（套的顺序写错，或 `WithXxx(nil)`） | 装配时保证最后一个是 mux |
+| 日志里所有请求 status 都是 200 | 只套了日志，没套状态码记录器 | 见今天的下一节（D14） |
 
 #### 传递数据的正确方式
 ```go
@@ -844,6 +1227,45 @@ log.Printf("method=%s path=%s status=%d dur=%s bytes=%d req_id=%s",
 #### 为什么不能只记「请求进来了」
 没有状态码和耗时，日志只能证明「有人访问过」，无法回答「哪个接口慢」「错误率多少」。这两个字段是所有可观测性的最小集合。
 
+#### 包装的代价：`ResponseWriter` 上还挂着别的接口
+`statusRecorder` 只嵌入了 `http.ResponseWriter`，于是包装后的对象**只剩三个方法**。原来底层那个 writer 可能还实现了：
+
+- `http.Flusher`（`Flush()`）——SSE、流式导出靠它把缓冲区推给客户端；
+- `http.Hijacker`（`Hijack()`）——WebSocket 升级、自定义 TCP 协议靠它接管连接；
+- `io.ReaderFrom`（`ReadFrom()`）——`io.Copy` 时会走 `sendfile`，少了它就退化成用户态拷贝。
+
+一旦被包装，在 handler 里写 `w.(http.Flusher)` 断言会**失败**，流式响应变成「全部攒完再发」。阶段五的 CSV 流式导出就会撞上这个坑，报错或表现为「进度不动」。
+
+现在不用急着写 `Flush()` 转发，但要知道两件事：① 断言失败时用 `comma-ok` 而不是裸断言，否则直接 panic；② 需要逐字节兼容时，用 Go 1.20 的 `http.NewResponseController(w).Flush()`，它会沿着包装链找到真正支持 `Flush` 的那一层——比手写四个转发方法可靠。
+
+#### 5 分钟最小验证：三种写法的状态码各是什么
+```go
+// 三个 handler，分别用三种方式写响应
+mux.HandleFunc("GET /a", func(w http.ResponseWriter, r *http.Request) {
+    w.Write([]byte("a"))                       // 隐式 200
+})
+mux.HandleFunc("GET /b", func(w http.ResponseWriter, r *http.Request) {
+    w.WriteHeader(http.StatusNotFound)         // 显式 404，无 body
+})
+mux.HandleFunc("GET /c", func(w http.ResponseWriter, r *http.Request) {
+    http.Error(w, "boom", http.StatusInternalServerError)  // 500 + 文本
+})
+```
+```bash
+for p in a b c; do curl -s -o /dev/null -w "$p=%{http_code} " localhost:8080/$p; done; echo
+# 期望：a=200 b=404 c=500
+grep -c 'status=' /tmp/server.log     # 期望 3，每条请求恰好一行
+```
+如果 `/a` 记成 `status=0`，说明 `Write` 没被重写；如果出现两行同路径日志，说明中间件被套了两次（常见于既在 `NewRouter` 里套、又在 `main` 里套）。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| 日志 `status=0` | handler 只调 `Write`，`statusRecorder.Write` 没补默认 200 | 在 `Write` 里判 `if s.status == 0 { s.status = 200 }` |
+| `interface conversion: *statusRecorder is not http.Flusher` | 包装丢了 `Flush` 方法 | 用 `http.NewResponseController`，或显式转发 `Flush` |
+| 同一请求两行日志 | 中间件套了两层 | 只在一个地方套（建议 `NewRouter` 内部） |
+| 日志里 `dur=0s` | `start` 在 `next.ServeHTTP` 之后才取 | 把 `start := time.Now()` 放在调用之前 |
+
 #### 判据
 ```bash
 curl -s localhost:8080/ledger/999999 > /dev/null
@@ -902,6 +1324,57 @@ type ValidationError struct {
 func (e *ValidationError) Error() string { return e.Field + ": " + e.Msg }
 ```
 好处：`errors.As` 能一次识别所有字段级错误，响应里能带上 `field` 供前端高亮。
+
+#### 别忘了 panic：错误地图之外还有一条路
+
+`writeError` 处理的是「返回了 error」的情况，但 handler 里也可能直接 panic（nil 解引用、切片越界、断言失败）。没有 recover，`net/http` 会打印堆栈并断开连接，客户端看到的是「连接被重置」而不是 500——**监控上这次请求直接消失**。
+
+```go
+func WithRecovery(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        defer func() {
+            if rec := recover(); rec != nil {
+                slog.Error("panic recovered",
+                    "panic", rec,
+                    "path", r.URL.Path,
+                    "stack", string(debug.Stack()),   // 必须记堆栈
+                )
+                Fail(w, http.StatusInternalServerError, "INTERNAL", "internal error")
+            }
+        }()
+        next.ServeHTTP(w, r)
+    })
+}
+```
+
+两个细节：`debug.Stack()` 只有在这里拿才有意义（出了 defer 就没了）；`WithRecovery` 必须是最外层中间件，否则它包不住内层中间件的 panic。
+
+#### 一页错误码表：写进 README，前后端共用
+
+| HTTP | code | 触发条件 | 前端动作 |
+| :--- | :--- | :--- | :--- |
+| 400 | `INVALID_ARGUMENT` | 字段校验失败（含 `field`） | 高亮对应输入框 |
+| 400 | `INVALID_JSON` | 请求体不是合法 JSON | 提示「请求格式错误」，多为前端 bug |
+| 401 | `UNAUTHORIZED` | 缺 token | 跳登录 |
+| 401 | `TOKEN_EXPIRED` | token 过期 | 静默刷新或提示重登 |
+| 401 | `INVALID_CREDENTIALS` | 登录邮箱或密码错 | 统一提示「邮箱或密码错误」 |
+| 404 | `NOT_FOUND` | 资源不存在或不属于当前用户 | 显示「记录不存在」并返回列表 |
+| 409 | `EMAIL_TAKEN` | 注册邮箱已存在 | 提示改用登录 |
+| 500 | `INTERNAL` | 未预期错误 | 提示「稍后重试」，带上 `request_id` |
+| 504 | `TIMEOUT` | `context.DeadlineExceeded` | 提示超时，可重试 |
+
+这张表的用处：**前端不需要猜「400 是哪种 400」**，后端也不需要每次解释。新增错误码时只改这张表和 `writeError` 的 switch，两处必须同时改——这是 review 时的检查点。
+
+#### 5 分钟最小验证：四类错误各打一次
+
+```bash
+$ curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8080/ledger -d '{"amount":0}'          # 400
+$ curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/ledger/abc                                # 400
+$ curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/ledger/999999                             # 404
+$ curl -s localhost:8080/ledger/999999 | jq -r '.code'                                              # NOT_FOUND
+```
+
+再加一条：临时在某个 handler 里写 `panic("test")`，请求它必须返回 **500 + `code=INTERNAL`**，且日志里有 panic 值和堆栈。**没验证过 recover 的服务，等于没有 recover。**
 
 #### 判据
 ```bash
@@ -1040,10 +1513,71 @@ echo "all checks passed"
 #### 脚本要放在仓库里
 `scripts/smoke.sh`，每次改完跑一遍。它的价值不在今天，在阶段四加认证、阶段五改 GORM 之后——那时你会改到很多共享代码，一个 20 行的脚本能挡住大部分回归。
 
+#### 没写过 bash？这四行先看懂再抄
+
+上面那段脚本里出现的语法，如果有一个不认识，抄下来也改不动。逐条过：
+
+```bash
+set -euo pipefail     # 三个开关合在一起：e=命令失败就退出；u=用到未定义变量就报错；o pipefail=管道里任一环失败就算失败
+BASE=${BASE:-http://localhost:8080}   # 取环境变量 BASE，为空时用冒号右边的默认值
+ID=$(curl ... | jq -r '.data.id')     # $( ) 把命令的输出当值赋给变量；| 把左边输出交给右边
+[ "$code" = "404" ] || { echo 失败; exit 1; }   # [ ] 是判断；|| 是「前面失败才执行后面」
+```
+
+四个最容易踩的点：
+
+1. **`${BASE:-默认值}` 不是字符串拼接**，它的意思是「BASE 有值就用它，没值或为空就用默认值」。写成 `$BASE:-xxx` 会被解析成「变量 `BASE:-xxx`」。
+2. **`$(...)` 里的失败不会让 `set -e` 生效**（某些 shell 版本），所以拿到的可能是空字符串而不是错误。关键变量要额外判断：`[ -n "$TOKEN" ] || exit 1`。
+3. **`[ ]` 里面的空格是语法，不是风格**。`[ "$a"="b" ]` 会被当成一个整体参数，永远为真——少一个空格，判断就静默失效。
+4. **`||` 后面的 `{ }` 里必须有分号和空格**：`|| { echo x; exit 1; }`。写成 `|| { echo x; exit 1 }` 会报语法错。
+
+#### `jq` 只需要会这四种
+
+| 写法 | 作用 | 典型用途 |
+| :--- | :--- | :--- |
+| `jq .` | 格式化整个 JSON | 肉眼看结构 |
+| `jq -r '.data.id'` | 取字段，去掉引号 | 拿 ID 存进变量 |
+| `jq -e '.data.amount == 3550'` | 断言，false 时**退出码非 0** | 脚本里做判断 |
+| `jq '.data.items \| length'` | 取数组长度 | 断言条数 |
+
+`-e` 是断言能进脚本的关键：没有它，`jq` 即使算出 `false` 也返回 0，脚本照样「通过」。macOS 自带的 jq 版本较老，`jq --version` 低于 1.6 时建议 `brew install jq`。
+
+#### `curl -fsS` 三个字母分别是什么
+
+- `-f`：HTTP >= 400 时返回**非零退出码**（不加的话 500 也算成功）。
+- `-s`：静默，不打印进度条。
+- `-S`：即使静默，也把错误信息打出来（配合 `-s` 用，否则报错时一片空白）。
+
+排查「脚本说通过但服务其实挂了」时，先检查这三个字母。**回归脚本的第一原则是「失败要吵」，不是「输出好看」。**
+
+#### 报错对照
+
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `jq: command not found` | 没装 jq | `brew install jq`，或把取值改成 `grep -o '"id":[0-9]*'` |
+| `parse error: Expected value before EOF` | curl 没拿到内容（服务没起），jq 拿到空串 | 先 `curl -v` 确认服务在，再用 `-fsS` |
+| 脚本中途退出但没有报错信息 | `set -e` 生效，失败命令自己没输出 | 每步加 `echo "[step] 名称"`，定位到具体步骤 |
+| `expected 404, got 000` | 连接失败时 `%{http_code}` 是 `000`，不是 404 | 先断言「能连上」，再断言业务状态码 |
+| 第二次运行报 409/唯一约束冲突 | 用了固定数据（同一个邮箱、同一天） | 用 `$(date +%s)` 造唯一值 |
+
+#### 5 分钟最小验证：先让脚本「失败一次」
+
+新建 `scripts/smoke.sh`，只写三行：
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+curl -fsS http://127.0.0.1:8080/healthz > /dev/null
+```
+
+`chmod +x scripts/smoke.sh` 后**在服务没启动的情况下**跑它，必须看到非零退出（`echo $?` 应该是 22 或 7，不是 0）。这一步比写完整脚本重要：**先证明它能红，才有资格相信它绿。**
+
 ::q 为什么 `curl` 要加 `-f`？
 ::a `-f`（fail）让 curl 在 HTTP 状态码 >= 400 时返回非零退出码，配合 `set -e` 脚本会立即失败。不加的话 curl 对 500 也返回 0，脚本永远显示「通过」，完全失去回归价值。
 ::q 这个 smoke 脚本在后续阶段最大的价值是什么？
 ::a 它把「接口行为」固化成了可执行断言。阶段四加认证后所有接口都需要 token，阶段五换 GORM 后 SQL 行为可能微变，这些改动都可能悄悄破坏某个边界；脚本能在几秒内告诉你哪条断了。
+::q 你想断言「列表里有 2 条记录」，写成 `curl -s ... | jq '.data.items | length'` 后怎么让脚本自动判断？为什么不能只 `echo` 出来看？
+::a 要写成 `[ "$(curl -s ... | jq '.data.items | length')" = "2" ] || { echo "期望 2 条，实际 $n"; exit 1; }`。`echo` 只是把数字打印给人看，脚本不会因此失败——**人看一眼的断言不是断言**。另外要注意：`jq -e` 用于布尔断言，`length` 返回数字时 `-e` 对 0 会返回 1（认为假），所以数字断言用字符串比较更稳。
 
 <!--day 18 | light-->
 #### 阶段验收清单（逐条打勾，不许「差不多」）
@@ -1069,7 +1603,50 @@ curl -s 'localhost:8080/summary?month=2026-10' | jq '.data.total'  # 4750
 
 **这张表不是总结，是依赖关系。** 任何一项没打牢，后面都会以「奇怪的 bug」形式回来找你。
 
+#### 验收红了怎么办：按现象回查，不要整段重读
+
+| 现象 | 最可能的断点 | 回去看 |
+| :--- | :--- | :--- |
+| 创建返回 200 而不是 201 | 状态码没显式写，或用了 `OK` 而不是 `OKStatus` | 阶段三 D4 / D6 |
+| 重启后 `total` 变成 0 | DSN 写成 `:memory:`，或工作目录变了 | 阶段三 D10 |
+| `summary` 的 total 比分类之和小 | 分类相加漏了空分类，或 `COALESCE` 没写 | 阶段三 D12 |
+| `?limit=1&offset=1` 返回 2 条 | `limit` 没生效（拼进 SQL 没走占位符） | 阶段三 D7 |
+| 分页两次请求 `total` 不同 | 没有一次算出总数，或 `total` 语义写成了「剩余条数」 | 阶段三 D7 |
+| 404 和 400 分不清 | `ErrNoRows` 在包装之后才判断，或 `PathValue` 没校验 | 阶段三 D11 |
+| 日志里 status 一直是 0 | `ResponseWriter` 包装器漏了 `Write` | 阶段三 D14 |
+
+**用法：先跑验收命令，看到哪一个红，只回那一行对应的一天。** 不要因为一条红了就把整个阶段重读一遍——那是效率最低的做法，而且会让你怀疑自己。
+
+#### 复盘要写下三样东西，不是「我学完了」
+
+```markdown
+## 阶段三复盘（2026-11-xx）
+
+### 1. 我踩过的三个坑（带报错原文）
+- `superfluous WriteHeader call`：在 middleware 里先 Write 了 body，handler 里再写状态码 → 顺序必须 Header → WriteHeader → Write
+- 分页第 2 页出现第 1 页的记录：`ORDER BY date DESC` 缺唯一列兜底，同一天多条顺序不稳
+- `sql: database is closed`：先 `db.Close()` 再 `srv.Shutdown()`，在途请求拿到已关闭的池
+
+### 2. 我说不清但能跑通的地方（下一阶段重点补）
+- 为什么 `http.MaxBytesReader` 要传 w？（提示：它要在超限时写 413）
+
+### 3. 我能不看资料写出来的东西
+- 统一信封的 writeJSON、中间件套的顺序、带 user_id 的查询
+```
+
+第 2 项最重要：「**能跑通但说不清**」就是下一个阶段的隐患。把它们列出来，阶段四遇到相关代码时回头补，比现在硬啃有效。
+
+#### 5 分钟最小验证：让验收脚本一次跑完
+
+```bash
+$ ./scripts/api-test.sh; echo "exit=$?"
+```
+
+必须看到 `exit=0` 且每一步都打了 PASS。如果某一步没打印就退出了，说明 `set -e` 在那一行生效——回去给那一步加 `echo` 和「期望 vs 实际」。
+
 ::q 到阶段三结束时，API 已经能被 Vue 调用，此时最缺的是什么？
 ::a 认证与数据隔离。任何人只要知道地址就能读写全部账目，也没有「这笔账属于谁」的概念。这是阶段四要解决的，也是从「能跑」到「能用」的分界线。
 ::q 为什么要在进入下一阶段前做一次完整回归？
 ::a 因为接下来要重构（加认证中间件、换 GORM），重构的前提是有可信的行为基线。基线不存在时，任何异常都无法判断是「新引入的 bug」还是「本来就这样」。
+::q 验收时 `?limit=1&offset=1` 返回了 2 条，你会从哪一行代码开始查？为什么不是先去看 SQL？
+::a 先看 handler 里 `limit` 的取值与校验（`parseIntDefault` / 上限截断），确认传进 Service 的到底是多少；再看 Service 是否把参数原样传给 store。理由是：分页参数在到达 SQL 之前会经过三层，「参数没传对」比「SQL 写错」概率高得多，而且查起来快。只有当参数确认无误后再看 SQL 的 `LIMIT ? OFFSET ?` 是否真的用了占位符。**排错要从最便宜的一层开始。**

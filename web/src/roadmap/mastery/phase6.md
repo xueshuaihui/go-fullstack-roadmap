@@ -70,7 +70,7 @@ if cfg.JWTSecret == "" {
 }
 ```
 ::ask 这样处理有什么问题？
-::ans 两个：① **多实例部署时每个实例的随机密钥不同**，A 实例签发的 token 在 B 实例验证失败，表现为「随机掉登录」；② **重启后密钥变了**，所有用户被踢下线。所以「随机生成兜底」只适合单实例 + 可接受掉登录的开发环境。生产必须：**缺失就 `log.Fatal`**，让部署流程明确失败。**「友好的降级」在安全配置上是危险的**。
+::ans 两个：① **多实例部署时每个实例的随机密钥不同**，A 实例签发的 token 在 B 实例验证失败，表现为「随机掉登录」；② **重启后密钥变了**，所有用户被踢下线。所以「随机生成兜底」只适合单实例 + 可接受掉登录的开发环境。生产必须：**缺失就 `log.Fatal`**，让部署流程明确失败。「**友好的降级**」在安全配置上是危险的。
 ::debug
 ```bash
 docker compose up
@@ -185,7 +185,7 @@ COPY --from=builder /out/app /app
 ENTRYPOINT ["/app"]
 ```
 ::ask 用 `scratch` 会缺什么？
-::ans ① **CA 证书**：任何 HTTPS 请求（调用外部 API）都会失败 `x509: certificate signed by unknown authority`；② **时区数据**：`time.LoadLocation("Asia/Shanghai")` 失败，只能用 UTC；③ **`/etc/passwd`**：`USER` 指令需要用户存在，scratch 里没有；④ 没有 shell，无法 `docker exec` 进去调试。所以要么用 `distroless`（含证书和 passwd），要么手动 COPY 证书与 `zoneinfo`。**「镜像越小越好」有下限——低于这个下限就开始缺运行时必需品**。
+::ans ① **CA 证书**：任何 HTTPS 请求（调用外部 API）都会失败 `x509: certificate signed by unknown authority`；② **时区数据**：`time.LoadLocation("Asia/Shanghai")` 失败，只能用 UTC；③ **`/etc/passwd`**：`USER` 指令需要用户存在，scratch 里没有；④ 没有 shell，无法 `docker exec` 进去调试。所以要么用 `distroless`（含证书和 passwd），要么手动 COPY 证书与 `zoneinfo`。「**镜像越小越好**」有下限——低于这个下限就开始缺运行时必需品。
 ::predict dockerfile
 ```dockerfile
 FROM alpine:3.20
@@ -193,7 +193,7 @@ RUN adduser -D -u 10001 app
 USER app
 ```
 ::ask 切到非 root 后，可能出现什么问题？
-::ans ① **数据目录权限**：挂载的 `./data` 属主是宿主机的 root，容器内 uid 10001 写不进去，报 `readonly database` 或 `permission denied`；② **端口 < 1024** 需要特权（8080 没问题）；③ 某些库要写 `/tmp` 或 `$HOME`，而 distroless 的 `$HOME` 可能不存在。修法：宿主机上 `chown -R 10001:10001 ./data`，或在 compose 里 `user: "10001:10001"` 并确保目录属主一致。**「非 root 运行」不是加一行 USER 就完事，要连带处理文件权限**。
+::ans ① **数据目录权限**：挂载的 `./data` 属主是宿主机的 root，容器内 uid 10001 写不进去，报 `readonly database` 或 `permission denied`；② **端口 < 1024** 需要特权（8080 没问题）；③ 某些库要写 `/tmp` 或 `$HOME`，而 distroless 的 `$HOME` 可能不存在。修法：宿主机上 `chown -R 10001:10001 ./data`，或在 compose 里 `user: "10001:10001"` 并确保目录属主一致。「**非 root 运行**」不是加一行 USER 就完事，要连带处理文件权限。
 ::debug bash
 ```bash
 docker run -v $(pwd)/data:/data myapp
@@ -231,7 +231,7 @@ services:
       - DB_PATH=/data/ledger.db
 ```
 ::ask 这份 compose 少了什么关键配置？
-::ans ① **没有健康检查**，编排系统不知道服务是否真的可用；② **没有重启策略**（`restart: unless-stopped`），进程崩了就停着；③ **没有资源限制**（内存/CPU），一个内存泄漏能拖垮宿主机；④ **没有日志轮转**，日志会无限增长撑爆磁盘；⑤ 镜像用 `latest`，部署不可复现。**「能 up 起来」和「能长期跑」差的就是这几项**。
+::ans ① **没有健康检查**，编排系统不知道服务是否真的可用；② **没有重启策略**（`restart: unless-stopped`），进程崩了就停着；③ **没有资源限制**（内存/CPU），一个内存泄漏能拖垮宿主机；④ **没有日志轮转**，日志会无限增长撑爆磁盘；⑤ 镜像用 `latest`，部署不可复现。「**能 up 起来**」和「能长期跑」差的就是这几项。
 ::predict yaml
 ```yaml
 volumes:
@@ -318,7 +318,7 @@ docker compose up -d
 # 但日志：no such table: budgets
 ```
 ::ask 迁移服务明明配置了，为什么表不存在？
-::ans ① `depends_on` 用了 `condition: service_started` 而不是 `service_completed_successfully`（API 在迁移还没跑完就启动了）；② 迁移服务跑的是**另一个数据库路径**（卷挂载不一致）；③ 迁移服务失败了但 `restart: "no"` 让它退出，API 的 `depends_on` 没拦住（旧版 compose 不支持 condition）。排查：`docker compose logs migrate` 看它到底做了什么。**「表不存在」先看迁移容器日志，不要先改代码**。
+::ans ① `depends_on` 用了 `condition: service_started` 而不是 `service_completed_successfully`（API 在迁移还没跑完就启动了）；② 迁移服务跑的是**另一个数据库路径**（卷挂载不一致）；③ 迁移服务失败了但 `restart: "no"` 让它退出，API 的 `depends_on` 没拦住（旧版 compose 不支持 condition）。排查：`docker compose logs migrate` 看它到底做了什么。「**表不存在**」先看迁移容器日志，不要先改代码。
 ::transfer
 ::scene 设计一套「部署 → 迁移 → 启动 → 验证」的完整流程。
 ::ask 写出流程与每步的失败处置。
@@ -384,7 +384,7 @@ curl -i localhost:8080/readyz
 # 但紧接着业务请求全部 503
 ```
 ::ask readyz 说健康，业务却失败，可能是什么？
-::ans ① readyz 只查了数据库 ping，但**迁移没跑**（表不存在）——ping 成功不代表结构对；② 数据库连接池耗尽（ping 用的是池里最后一个连接，业务请求排队超时）；③ readyz 有缓存（比如 30 秒内返回上次结果），实际已经挂了。修法：readyz 除了 ping，还应该跑一条**极轻量的真实查询**（`SELECT 1` 不够，最好 `SELECT count(*) FROM schema_version` 之类能验证结构的），且不缓存。**「能连上」和「能用」之间差一次真实查询**。
+::ans ① readyz 只查了数据库 ping，但**迁移没跑**（表不存在）——ping 成功不代表结构对；② 数据库连接池耗尽（ping 用的是池里最后一个连接，业务请求排队超时）；③ readyz 有缓存（比如 30 秒内返回上次结果），实际已经挂了。修法：readyz 除了 ping，还应该跑一条**极轻量的真实查询**（`SELECT 1` 不够，最好 `SELECT count(*) FROM schema_version` 之类能验证结构的），且不缓存。「**能连上**」和「能用」之间差一次真实查询。
 ::transfer
 ::scene 设计 liveness / readiness / startup 三类探针的完整策略。
 ::ask 各自检查什么、超时多少、失败后果是什么？
@@ -513,7 +513,7 @@ docker stop api
 # 容器退出码 137
 ```
 ::ask 137 意味着什么？怎么修？
-::ans 137 = 128 + 9（SIGKILL），说明**容器被强制杀死**，优雅关闭没在宽限期内完成。原因：① `Shutdown` 超时 > `stop_grace_period`（compose 默认 10s），编排系统先动手；② 有请求永远不返回（死循环、无超时的外部调用）；③ 后台 goroutine 不响应 ctx。修法：调大 `stop_grace_period: 30s`，同时把 `Shutdown` 超时设小一点（10s），并把慢操作都加上 ctx。**「退出码 137」= 你的关闭流程超时了，不是 docker 的问题**。
+::ans 137 = 128 + 9（SIGKILL），说明**容器被强制杀死**，优雅关闭没在宽限期内完成。原因：① `Shutdown` 超时 > `stop_grace_period`（compose 默认 10s），编排系统先动手；② 有请求永远不返回（死循环、无超时的外部调用）；③ 后台 goroutine 不响应 ctx。修法：调大 `stop_grace_period: 30s`，同时把 `Shutdown` 超时设小一点（10s），并把慢操作都加上 ctx。「**退出码 137**」= 你的关闭流程超时了，不是 docker 的问题。
 ::transfer
 ::scene 写一个可靠的优雅关闭验证脚本。
 ::ask 脚本步骤、断言、判定标准分别是什么？
@@ -594,7 +594,7 @@ location /api/ { proxy_pass http://api:8080; proxy_set_header Host $host; }
 location /     { root /usr/share/nginx/html; try_files $uri /index.html; }
 ```
 同样是同源，Cookie 设 `SameSite=Lax` 即可。
-**如果必须跨站**：`Access-Control-Allow-Origin: https://app.example.com`（具体源）、`Allow-Credentials: true`、`SameSite=None; Secure`——三者必须同时满足，缺一个 Cookie 就不会被带上。**「Cookie 带不上」第一查 SameSite，第二查 Secure 与协议**。
+**如果必须跨站**：`Access-Control-Allow-Origin: https://app.example.com`（具体源）、`Allow-Credentials: true`、`SameSite=None; Secure`——三者必须同时满足，缺一个 Cookie 就不会被带上。「**Cookie 带不上**」第一查 SameSite，第二查 Secure 与协议。
 ::crit 预检请求在中间件层返回 204，不进业务路由
 ::crit 不用 `*` + credentials 的组合
 ::crit 开发用代理、生产用反代，尽量保持同源
@@ -627,7 +627,7 @@ govulncheck ./...
 # v0.17.0  ← 已知有漏洞
 ```
 ::ask 为什么扫描说没漏洞，但依赖版本很旧？
-::ans 因为 `govulncheck` 只报「**当前模块图里、且可达**」的漏洞。如果旧版 `x/net` 只是间接依赖且漏洞函数没被调用，它不会报。但这不代表安全——一旦将来代码路径变化调用了那个函数，风险就出现了。做法：① 定期 `go get -u=patch` 保持补丁最新；② 关注依赖的安全公告；③ 对「明知有漏洞但不可达」的依赖，在文档里记录并设复查时间。**「扫描通过」是当下的快照，不是永久免疫**。
+::ans 因为 `govulncheck` 只报「**当前模块图里、且可达**」的漏洞。如果旧版 `x/net` 只是间接依赖且漏洞函数没被调用，它不会报。但这不代表安全——一旦将来代码路径变化调用了那个函数，风险就出现了。做法：① 定期 `go get -u=patch` 保持补丁最新；② 关注依赖的安全公告；③ 对「明知有漏洞但不可达」的依赖，在文档里记录并设复查时间。「**扫描通过**」是当下的快照，不是永久免疫。
 ::transfer
 ::scene 把漏洞扫描接入构建流程。
 ::ask 放在哪个环节？失败时阻断还是告警？给出具体配置。
@@ -688,7 +688,7 @@ http.SetCookie(w, &http.Cookie{
 | 本地开发(http localhost) | false | Lax | localhost 是安全上下文，但 Secure 仍会限制 |
 | 内网 http(192.168.x) | false | Lax | 明确接受明文风险，靠网络隔离 |
 | 生产 https | true | Lax（或 Strict） | 标准配置 |
-实现：`Secure: cfg.CookieSecure`，配置项由环境决定；启动日志打印实际值。**「安全属性」不是越多越好，要和实际协议匹配**——不匹配的结果不是「更安全」，是「功能失效 + 有人为了修好而全部关掉」。另外无论哪种环境，`HttpOnly` 都应该开（它不依赖协议），`Path=/` 都应该显式写。
+实现：`Secure: cfg.CookieSecure`，配置项由环境决定；启动日志打印实际值。「**安全属性**」不是越多越好，要和实际协议匹配——不匹配的结果不是「更安全」，是「功能失效 + 有人为了修好而全部关掉」。另外无论哪种环境，`HttpOnly` 都应该开（它不依赖协议），`Path=/` 都应该显式写。
 ::crit `HttpOnly` 在所有环境都开启
 ::crit `Secure` 由配置控制，与协议匹配，启动日志可见
 ::crit 删除 Cookie 时 `Path`/`Domain` 与原 Cookie 一致
@@ -713,7 +713,7 @@ srv := &http.Server{Handler: handler}
 handler := Recovery(Logging(RateLimit(Auth(csrf.Protect(key)(mux)))))
 ```
 ::ask 这个顺序有什么问题？
-::ans CSRF 在最内层（Auth 之后），意味着：① 未通过 CSRF 的恶意请求会先消耗限流配额、先做鉴权（鉴权要查库/验签，有成本）；② 如果 Auth 因为某种原因放行了（比如公开接口），CSRF 才生效，覆盖面不完整。推荐顺序：**Recovery → CSRF → RateLimit → Auth**。理由：Recovery 最外捕获所有 panic；CSRF 尽早拦截无效请求（最便宜，只验 token）；RateLimit 对「合法形状」的请求限流；Auth 最后做昂贵的身验。**「便宜且能拒绝的检查放前面」是中间件排序的通用原则**。
+::ans CSRF 在最内层（Auth 之后），意味着：① 未通过 CSRF 的恶意请求会先消耗限流配额、先做鉴权（鉴权要查库/验签，有成本）；② 如果 Auth 因为某种原因放行了（比如公开接口），CSRF 才生效，覆盖面不完整。推荐顺序：**Recovery → CSRF → RateLimit → Auth**。理由：Recovery 最外捕获所有 panic；CSRF 尽早拦截无效请求（最便宜，只验 token）；RateLimit 对「合法形状」的请求限流；Auth 最后做昂贵的身验。「**便宜且能拒绝的检查放前面**」是中间件排序的通用原则。
 ::debug bash
 ```bash
 # 前端带了 Cookie 但没带 CSRF token
@@ -732,7 +732,7 @@ curl -X POST localhost:8080/api/v1/ledger \
 **token 下发**：`GET /api/v1/csrf` 返回 `{token}`（同时通过 `csrf.Token(r)` 生成），前端存内存，写请求带 `X-CSRF-Token`。
 **豁免**：`/healthz`、`/readyz`（GET，无副作用，且编排系统不会带 token）；`/api/v1/login` 通常也豁免（用户还没会话，CSRF 无意义），但**要确保登录接口本身没有副作用**（比如不能「登录即创建资源」）。
 **不豁免**：所有写接口（POST/PUT/PATCH/DELETE），包括 logout（防止被强制登出）。
-**注意**：`SameSite=Lax` 已经挡住了大部分跨站 POST，CSRF token 是第二道防线。两者都要有，不是二选一。**「有 SameSite 就够了」是常见误解**——Lax 对顶层 GET 导航仍会带 Cookie，且老浏览器支持不一。
+**注意**：`SameSite=Lax` 已经挡住了大部分跨站 POST，CSRF token 是第二道防线。两者都要有，不是二选一。「**有 SameSite 就够了**」是常见误解——Lax 对顶层 GET 导航仍会带 Cookie，且老浏览器支持不一。
 ::crit `csrf.Protect()` 包住整个路由器，不在单个 handler 上
 ::crit 顺序为 Recovery → CSRF → RateLimit → Auth，且能说出理由
 ::crit 有明确的 token 下发途径，前端可稳定获取
@@ -747,14 +747,14 @@ curl -I https://ledger.example.com/
 # 200，但页面白屏
 ```
 ::ask 白屏最常见的原因是什么？
-::ans ① **静态资源 404**：Vue 的路由是 history 模式，直接访问 `/ledger` 时 Nginx 找不到对应文件，必须 `try_files $uri $uri/ /index.html`；② **API base URL 写死成 `localhost:8080`**，部署后浏览器请求自己的 localhost；③ **构建产物路径不对**（`base: '/'` vs `'/app/'`）。白屏时先看浏览器 Console 的 404/网络错误，再看 `index.html` 是否正确返回。**「白屏」= HTML 拿到了但 JS 没跑起来，先看资源加载**。
+::ans ① **静态资源 404**：Vue 的路由是 history 模式，直接访问 `/ledger` 时 Nginx 找不到对应文件，必须 `try_files $uri $uri/ /index.html`；② **API base URL 写死成 `localhost:8080`**，部署后浏览器请求自己的 localhost；③ **构建产物路径不对**（`base: '/'` vs `'/app/'`）。白屏时先看浏览器 Console 的 404/网络错误，再看 `index.html` 是否正确返回。「**白屏**」= HTML 拿到了但 JS 没跑起来，先看资源加载。
 ::predict bash
 ```bash
 # 手机上访问 http://192.168.1.10:8080
 # 登录成功，但点「添加账目」没反应
 ```
 ::ask 可能原因？
-::ans ① **监听地址是 `localhost`**（只回环），手机根本连不上——但这里「登录成功」说明连上了；② **Cookie 的 `Secure`** 导致 http 下 Cookie 不保存，第二个请求变成未登录，前端拿到 401 但没处理（表现为「没反应」）；③ **CORS 预检失败**（如果前端和后端不同源），浏览器的 OPTIONS 被拒；④ 前端错误没提示（catch 了但没展示）。排查：手机连电脑开 Safari/Chrome 远程调试，或后端日志看第二个请求是否 401。**「手机上点了没反应」八成是 401 + 前端没提示**。
+::ans ① **监听地址是 `localhost`**（只回环），手机根本连不上——但这里「登录成功」说明连上了；② **Cookie 的 `Secure`** 导致 http 下 Cookie 不保存，第二个请求变成未登录，前端拿到 401 但没处理（表现为「没反应」）；③ **CORS 预检失败**（如果前端和后端不同源），浏览器的 OPTIONS 被拒；④ 前端错误没提示（catch 了但没展示）。排查：手机连电脑开 Safari/Chrome 远程调试，或后端日志看第二个请求是否 401。「**手机上点了没反应**」八成是 401 + 前端没提示。
 ::debug bash
 ```bash
 docker compose logs api | tail -20
@@ -762,7 +762,7 @@ docker compose logs api | tail -20
 # 没有任何业务请求
 ```
 ::ask 前端说「请求发出去了」，日志里却没有，问题在哪？
-::ans 请求**没到后端**：① 前端 API base URL 指向了错误的 host/port；② Nginx 反代配置错误（`proxy_pass` 路径多了/少了 `/api` 前缀）；③ 请求被浏览器拦截（CORS 预检失败时，实际请求根本不会发出）；④ 混合内容（https 页面请求 http 接口被浏览器阻止）。排查：浏览器 Network 面板看请求状态（failed / CORS error / 404），以及 `docker compose logs nginx`。**「前端说发了，后端没收到」= 看 Network 面板，不要猜**。
+::ans 请求**没到后端**：① 前端 API base URL 指向了错误的 host/port；② Nginx 反代配置错误（`proxy_pass` 路径多了/少了 `/api` 前缀）；③ 请求被浏览器拦截（CORS 预检失败时，实际请求根本不会发出）；④ 混合内容（https 页面请求 http 接口被浏览器阻止）。排查：浏览器 Network 面板看请求状态（failed / CORS error / 404），以及 `docker compose logs nginx`。「**前端说发了，后端没收到**」= 看 Network 面板，不要猜。
 ::transfer
 ::scene 做最终的手机端验收。
 ::ask 列出验收清单（至少 8 项），并说明每项验证什么。

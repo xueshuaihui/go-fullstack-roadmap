@@ -22,6 +22,53 @@ func main() {
 }
 ```
 
+#### 从空目录到跑起来：六条命令，逐条看清楚
+
+下面的 `$` 是提示符，不要输入它。假设你从家目录开始。
+
+```bash
+$ mkdir -p ~/code/ledger && cd ~/code/ledger   # 建目录并进入；之后所有命令都在这里执行
+$ pwd                                          # 必须打印 /Users/你的名字/code/ledger
+$ go mod init ledger                           # 生成 go.mod，模块名就叫 ledger
+$ cat go.mod                                   # 应看到两行：module ledger / go 1.2x
+$ ls                                           # 应看到 go.mod
+$ go run .                                     # 现在还没有 .go 文件，会报 no Go files
+```
+
+然后把上一段 `package main` 那三行贴进 `main.go`（用编辑器新建，不要用 `echo` 拼，容易带坏引号），再跑：
+
+```bash
+$ go run .          # ledger
+$ go build -o ledger . && ./ledger   # ledger（这次产物留在磁盘上）
+$ ls -lh ledger     # 能看到一个几 MB 的可执行文件
+```
+
+六条命令里最容易错的是第 3 条和第 6 条：`go mod init` 必须在**你要放代码的那个目录**里执行，跑错目录就会在别处生成 `go.mod`，然后当前目录永远报 `cannot find main module`。
+
+#### 三个必遇的报错，先认一遍
+
+| 你看到的 | 真正的原因 | 修法 |
+| :--- | :--- | :--- |
+| `go: cannot find main module` | 当前目录（或它的任何上级）没有 `go.mod` | `cd` 到有 `go.mod` 的目录，或在当前目录 `go mod init` |
+| `no Go files in /.../ledger` | 目录里没有 `.go` 文件，或文件名叫 `main_test.go` | `ls` 确认有 `main.go`，且首行是 `package main` |
+| `package main is not in std` / `cannot find package` | `go run` 后面跟了一个不存在的路径 | 用 `go run .`（当前包），不要写 `go run ledger` |
+
+读报错有个固定顺序：**先看最后一行**（真正的错误类型），**再看它上面提到的文件和行号**。Go 把「谁调用谁」打印在中间，那不是错误本身。
+
+#### 5 分钟最小验证
+
+不用等任务，先证明工具链是活的：
+
+```bash
+$ go version && go env GOMOD && gofmt -l .
+```
+
+- `go version` 有输出 → 编译器在。
+- `go env GOMOD` 打印 `.../go.mod` 的绝对路径 → 你在模块里；打印 `/dev/null` → 不在模块里。
+- `gofmt -l .` 无输出 → 格式合规；输出文件名 → 跑 `gofmt -w .`。
+
+三条都符合预期，今天的地基就算打好了，剩下三小时可以放心折腾任务。
+
 #### 判据：四条命令全过才算跑通
 ```bash
 go run .                          # 输出 ledger
@@ -198,6 +245,34 @@ Go 的字符串是**只读字节序列**，UTF-8 编码。中文一个字 3 字�
 - 少量：`a + b`，简单但每次都分配新串。
 - 循环内：用 `strings.Builder`，预分配 `Grow`，避免 O(n²)。
 - 格式化：`fmt.Sprintf`，可读但慢。
+
+#### 术语预告：这里出现的 goroutine 是什么
+
+上面说「两个 goroutine 同时写 map 会崩」，但你还没学过 goroutine。现在只需要建立一个够用的印象：**goroutine 是 Go 运行时调度的轻量执行单元，`go f()` 就能让 `f` 在另一条执行线上跑**。它便宜（初始栈约 2KB），但不是免费的——多条执行线同时碰同一块内存，就会出问题。
+
+这一句在阶段二 D1 会展开成一整天，今天不必深究。但记住这个顺序：**先知道「并发会咬人」，再学「怎么用并发」**，比反过来安全。
+
+#### 三张必须记住的「崩法」对照
+
+| 代码 | 运行时结果 | 为什么 |
+| :--- | :--- | :--- |
+| `var m map[string]int; m["a"]=1` | `panic: assignment to entry in nil map` | nil map 没有底层哈希表，写入无处可放 |
+| `var s []int; s[0]=1` | `panic: index out of range [0] with length 0` | nil 切片 len=0，没有第 0 个元素 |
+| 两个 goroutine 同时 `m[k]=v` | `fatal error: concurrent map writes` | 运行时检测到并发写，**直接杀进程**，`recover` 拦不住 |
+
+注意前两个是 `panic`（可以 `recover`），第三个是 `fatal error`（不能）。这也是为什么「保险起见加个 recover」不能替代正确的并发设计。
+
+#### 5 分钟最小验证：中文到底占几个字节
+
+```go
+s := "你好Go"
+fmt.Println(len(s))                    // 8
+fmt.Println(len([]rune(s)))            // 4
+fmt.Println(utf8.RuneCountInString(s)) // 4
+fmt.Println(s[0], s[1], s[2])          // 228 189 160（三个字节拼出「你」）
+```
+
+四个输出必须和你预期一致。如果 `len(s)` 你猜的是 4，说明「字符串长度」在你脑子里还是「字数」——这正是后面做分类名截断、导出 CSV 时会踩的坑。
 
 #### 判据
 ```go
@@ -472,6 +547,48 @@ defer func() {
 }()
 ```
 
+#### 到底该 error 还是 panic：一张判断表
+
+| 情形 | 用什么 | 理由 |
+| :--- | :--- | :--- |
+| 用户输入不合法（金额为负、日期格式错） | `error` | 预期内的分支，调用方要能区分并返回 400 |
+| 文件不存在、记录查不到 | `error`（哨兵值） | 正常业务状态，不是故障 |
+| 配置缺失、端口被占用、迁移失败 | `panic` 或启动即 `log.Fatal` | 程序无法进入正确状态，继续跑只会更糟 |
+| 数组越界、nil 解引用、类型断言失败 | 运行时自动 panic | 编程错误，应当在测试期暴露 |
+| HTTP handler 里任何未预期的 panic | 中间件 `recover` 兜住转 500 | 单个请求不能拖垮整个进程 |
+
+一条经验法则：**能被调用方合理处理的，用 `error`；处理不了的，才让程序停。**
+
+#### recover 的三个边界（不知道就会白写）
+
+1. **只能捕获同一个 goroutine 的 panic**。你起的 `go func(){...}()` 里 panic，外层 `defer recover` 收不到——那个 goroutine 仍然会把进程带走。所以后台任务要**自己在顶部写 recover**。
+2. **必须在 `defer` 里直接调用**。`defer func(){ recover() }()` 有效；`defer recover()` 无效（此时 recover 已被当作普通函数调用，返回 nil）。
+3. **recover 之后函数不会「继续」**。它只是阻止 panic 继续向上传播，当前函数从 defer 之后直接返回，返回值是零值（或命名返回值当前的值）。
+
+#### 报错对照：三个和 defer 有关的现场
+
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `too many open files` | 循环里 `defer f.Close()`，句柄堆到函数结束 | 循环体包一层匿名函数，或显式 `f.Close()` |
+| 服务「卡死但 CPU 为 0」 | 某处 `Lock()` 后 panic/提前 return，`Unlock` 没执行 | 一律 `defer mu.Unlock()`（阶段二 D5） |
+| `panic: runtime error: ...` 但日志里没有堆栈 | recover 吞掉了 `r` 却没打 `debug.Stack()` | recover 里必须记录堆栈，否则等于销毁证据 |
+
+#### 5 分钟最小验证：亲手看一次 recover
+
+```go
+func main() {
+    defer func() {
+        if r := recover(); r != nil {
+            fmt.Println("recovered:", r)   // recovered: boom
+        }
+    }()
+    panic("boom")
+    // fmt.Println("这行永远不会执行")
+}
+```
+
+跑通后把 `defer` 那三行注释掉再跑一次：这次会看到 `panic: boom` 和完整堆栈，**退出码是 2**。两次输出的差别，就是「优雅降级」和「进程死亡」的差别。
+
 #### 第一周复盘：三个自检问题
 1. 能不能不看资料写出「切片扩容前后，append 是否影响原数组」的判断？
 2. 能不能说出「为什么 `%w` 影响的是控制流而不只是日志」？
@@ -536,6 +653,22 @@ SELECT SUM(amount) FROM entries WHERE date LIKE '2026-10%';  -- 正确
 SELECT category, SUM(amount) FROM entries GROUP BY category;
 ```
 三条都能出正确结果，说明你对 `WHERE`/`GROUP BY`/聚合函数的分工清楚了。
+
+#### 报错对照
+| 报错原文 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `Error: no such table: entries` | 建表语句没执行，或连到了另一个 db 文件 | 先 `.tables` 确认；`open` 时用绝对路径 |
+| `Error: table entries already exists` | 重复执行建表 | 用 `CREATE TABLE IF NOT EXISTS`（迁移里再讨论为什么生产不该这么写） |
+| `Error: datatype mismatch` | 往 `INTEGER` 列塞了 `'35.5'` 这种字符串 | SQLite 弱类型但会拦明显不合法值；金额一律先转成整数分 |
+| `Error: no such column: total` | 在 `WHERE` 里引用了 `SELECT` 里的别名 | `WHERE` 先于 `SELECT` 执行；改用子查询或重复写聚合表达式 |
+| 查出来中文是乱码 | 终端编码不是 UTF-8 | `export LANG=en_US.UTF-8`，或用 DB Browser 看 |
+
+#### 5 分钟最小验证：让 SQLite 自己解释它怎么查
+```bash
+sqlite3 ledger.db '.schema entries'
+sqlite3 ledger.db "EXPLAIN QUERY PLAN SELECT * FROM entries WHERE date LIKE '2026-10%' ORDER BY date DESC LIMIT 20;"
+```
+第二条会打印一行 `SEARCH entries USING INDEX idx_entries_date (date>? AND date<?)` 之类的计划。**今天只要看到「USING INDEX」就够了**，看不懂细节没关系——阶段五 D14 会专门讲。现在建立的习惯是：**先问数据库怎么执行，再讨论快不快**。
 
 ::q 为什么金额字段不用 `REAL`？
 ::a `REAL` 是二进制浮点，无法精确表示 0.1、0.2 这类十进制小数，累加会产生误差（`0.1+0.2=0.30000000000000004`）。账本要求分毫不差，所以用 `INTEGER` 存「分」，所有计算在整数域完成，展示时再除以 100。
@@ -812,6 +945,39 @@ for i := 0; i < 3; i++ {
 #### 把前 13 天拼成一个能用的东西
 目标只有一个：`add` 写进去，`list` 读出来，**关掉终端数据还在**。不做花活。
 
+今天最容易踩的不是语法，而是**顺序**：先写 `add` 还是先跑通 `main`？正确顺序是**先把「命令能进来」跑通**——进来一个 `add`，打印一行 `"would add"` 就够。因为参数解析、子命令分发这一层一旦定型，后面填业务只是往里塞代码；反过来先写 SQL，你会一边调 `database/sql` 一边怀疑是不是 `os.Args` 切错了，两个变量同时动，bug 无法定位。
+
+所以今天的四个里程碑按这个顺序推进，每完成一个就手动跑一次：
+
+| 里程碑 | 完成标志 | 跑不通时先看哪 |
+| :--- | :--- | :--- |
+| ① 命令分发 | `./ledger` 打印用法；`./ledger foo` 打印「未知命令」 | `os.Args` 下标 |
+| ② 参数解析 | `./ledger add -amount 35.5 -category 餐饮` 打印解析出的值 | flag 名与 `-` 前缀 |
+| ③ 落库 | 跑完 `sqlite3 ledger.db 'select * from entries'` 能看到行 | 表是否建过、字段数 |
+| ④ 读回 | `./ledger list` 打印表格，对齐 | `Flush()` 是否调用 |
+
+#### 一条要守一整年的纪律：金额只在边界上转换
+命令行里人输入的是「元」（`35.5`），数据库里存的是「分」（`3550`）。转换只能发生两次，而且必须都在边界：
+
+- **入口**：`ParseFloat` → `math.Round(x*100)` → `int64`，之后一律是分；
+- **出口**：`float64(分)/100` → `%.2f`，只用于打印。
+
+中间任何一层（查询、求和、比较、传参）出现 float，都是 bug 的种子。为什么必须 `Round`？`35.5*100` 在二进制浮点里可能算出 `3549.9999999999995`，直接 `int64()` 截断就变成 `3549`——少一分钱，而且只在某些金额上出现，对账时极难查。
+
+```go
+func parseYuanToCents(s string) (int64, error) {
+    v, err := strconv.ParseFloat(s, 64)
+    if err != nil {
+        return 0, fmt.Errorf("amount 不是合法数字: %q", s)
+    }
+    if v <= 0 {
+        return 0, fmt.Errorf("amount 必须为正数，收到 %q", s)
+    }
+    return int64(math.Round(v * 100)), nil   // Round 不是可选项
+}
+```
+
+#### 装配：main 只做接线
 ```go
 func main() {
     db, err := openDB("ledger.db")
@@ -844,22 +1010,54 @@ func main() {
 ```go
 func runAdd(db *sql.DB, args []string) error {
     fs := flag.NewFlagSet("add", flag.ContinueOnError)
-    amount := fs.Int64("amount", 0, "金额（分）")
+    amount := fs.String("amount", "", "金额（元，如 35.5）")
     category := fs.String("category", "", "分类")
     date := fs.String("date", time.Now().Format("2006-01-02"), "日期 YYYY-MM-DD")
     note := fs.String("note", "", "备注")
-    if err := fs.Parse(args); err != nil { return err }
+    if err := fs.Parse(args); err != nil {
+        return fmt.Errorf("解析参数: %w", err)   // 注意：-h 也会走到这里
+    }
+    cents, err := parseYuanToCents(*amount)
+    if err != nil {
+        return err
+    }
+    if *category == "" {
+        return fmt.Errorf("category 不能为空")
+    }
+    if _, err := time.Parse("2006-01-02", *date); err != nil {
+        return fmt.Errorf("date 必须是 YYYY-MM-DD，收到 %q", *date)
+    }
 
-    if *amount <= 0 { return fmt.Errorf("amount 必须为正数（单位分）") }
-    if *category == "" { return fmt.Errorf("category 不能为空") }
-
-    _, err := db.ExecContext(context.Background(),
+    _, err = db.ExecContext(context.Background(),
         `INSERT INTO entries (amount, category, date, note) VALUES (?, ?, ?, ?)`,
-        *amount, *category, *date, *note)
+        cents, *category, *date, *note)
     return err
 }
 ```
 参数校验在**写库之前**完成，错误信息指出是哪个字段——这条习惯会一路延续到 HTTP 层（阶段三 D15 的输入校验）。
+
+两个细节值得单独记一笔：
+
+- **用 `flag.ContinueOnError` 而不是 `flag.ExitOnError`**。后者会在解析失败时直接 `os.Exit(2)`，你的 `runAdd` 就再也测不了——测试里传一个坏参数，整个测试进程被干掉。前者把错误交回给你，退出码由 `main` 决定。
+- **`flag` 遇到第一个非 `-` 开头的参数就停止解析**。`./ledger add 35.5 -category 餐饮` 里 `35.5` 被当成位置参数，`category` 收不到值且不报错（`fs.Args()` 里能看到它）。所以要么全用 `-name value`，要么在 `Parse` 之后检查 `fs.NArg() == 0` 并在非零时报错。这一步能挡掉「参数没生效但程序不响」的诡异现象。
+
+#### 报错对照：今天最可能遇到的四条
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `flag provided but not defined: -amout` | 参数名打错，flag 不认缩写 | 用 `-h` 看当前子命令支持哪些参数 |
+| `./ledger add` 后什么也没输出、退出码 0 | `flag` 吃掉了参数但校验没触发（amount 传了空串时 `ParseFloat` 报错被忽略） | 检查是否 `_ = err` 把错误丢了 |
+| `no such table: entries` | 数据库文件是新建的，建表语句没跑 | 在 `openDB` 里执行 `CREATE TABLE IF NOT EXISTS` |
+| `database is locked` | 上一次运行异常退出，留下了锁；或同时开了两个进程写 | 关闭其它 `./ledger` 进程；确认 `db.Close()` 被 defer 了 |
+
+#### 5 分钟最小验证：先证明「能在终端里活下来」
+在写任何业务代码前，跑这三条，确认环境没问题：
+
+```bash
+go run . add -amount 0.01 -category 测试 && echo "写入 ok"
+sqlite3 ledger.db 'select count(*) from entries;'   # 期望 >= 1
+go run . list | head -3
+```
+第一条要能打印 `写入 ok`。如果它报 `flag provided but not defined`，说明 `go run .` 后面跟的参数被 Go 工具链当成自己的参数了——`go run .` 之后的所有参数都会传给程序，正常情况下没问题；真出问题时用 `go build -o ledger . && ./ledger add ...` 排除工具链干扰。
 
 #### 用 `text/tabwriter` 对齐输出
 ```go
@@ -872,13 +1070,17 @@ w.Flush()
 ```
 `float64(e.Amount)/100` 只在**展示层**出现，存储和计算全程是 int64 分。这条分界线要守住。
 
+`tabwriter` 有两个必踩的点：① **列数必须一致**，某行少一个 `\t` 就会把后面所有列左移，表头错位；② **不 `Flush()` 什么都不输出**——它是缓冲的，程序正常结束时不会自动刷。还有一个不算坑但要接受的事实：中文是双宽字符，`tabwriter` 按字节算宽度，含中文的列会比预期宽一点，对齐仍然成立，只是不紧凑。别为了「好看」去手写空格填充，那会在英文分类名上崩掉。
+
 #### 判据
 ```bash
-./ledger add -amount 3550 -category 餐饮 -date 2026-10-19 -note 午饭
-./ledger add -amount 1200 -category 交通 -date 2026-10-19
+go build -o ledger .
+./ledger add -amount 35.5 -category 餐饮 -date 2026-10-19 -note 午饭
+./ledger add -amount 12 -category 交通 -date 2026-10-19
 ./ledger list
+./ledger add -amount -3 -category 餐饮      # 期望非 0 退出码 + 明确报错
 ```
-`list` 两行都在，金额显示 `35.50` 和 `12.00`。
+`list` 两行都在，金额显示 `35.50` 和 `12.00`；第四条必须被拒，而不是写进一条负数。再补一条最容易漏的：`sqlite3 ledger.db 'select amount from entries'` 应该看到 `3550`、`1200` —— 如果看到 `35` 或 `3550.0`，说明转换放错了层。
 
 ::q 为什么 `float64(e.Amount)/100` 只允许出现在展示层？
 ::a 因为浮点除法会引入精度误差（比如 3550/100 在二进制下可能不精确）。存储、累加、比较必须全程用整数分，只在最后给人看的一步转成小数。如果中途转 float 再转回来，误差会累积，对账时出现「差一分」。
@@ -915,6 +1117,43 @@ func runSum(db *sql.DB, args []string) error {
 ./ledger sum -month 2026-10  # 4750 分 → 47.50 元
 ```
 只要有一条不成立，就回到对应那天：`list` 没有 → D11 的 `rows.Err`；`sum` 报错 → D9 的 `COALESCE`；重启丢数据 → D10 的连接参数写成了 `:memory:`。
+
+#### 顺手给 `list` 加上 `-limit`，把「默认值」练成肌肉记忆
+```go
+func runList(db *sql.DB, args []string) error {
+    fs := flag.NewFlagSet("list", flag.ContinueOnError)
+    limit := fs.Int("limit", 20, "最多显示多少条")
+    if err := fs.Parse(args); err != nil { return err }
+
+    if *limit <= 0 || *limit > 200 {
+        *limit = 20                       // 非法值兜底，不报错
+    }
+    rows, err := db.QueryContext(context.Background(),
+        `SELECT id, amount, category, date, note FROM entries
+         ORDER BY date DESC, id DESC LIMIT ?`, *limit)
+    if err != nil { return fmt.Errorf("list: %w", err) }
+    defer rows.Close()
+    ...
+}
+```
+注意 `LIMIT ?` 用占位符而不是字符串拼接（虽然它是 int，习惯要一致）。这条规则在阶段三会被放大成「URL 参数一律不可信」。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `sum` 打印 `0.00` 但库里明明有数据 | `date` 存的是 `2026-1-5`（月份没补零），`LIKE "2026-10%"` 匹配不到 | 入库前统一 `time.Parse` 再 `Format("2006-01-02")` |
+| `converting NULL to int64 is unsupported` | 忘了 `COALESCE`，空月份 `SUM` 返回 NULL | `COALESCE(SUM(amount), 0)` |
+| `sum` 输出 `4750.00` 而不是 `47.50` | 展示层忘了 `/100` | 只在打印时转元；也可以定义 `func yuan(c int64) string` |
+| `flag provided but not defined: -month` | 子命令写错（`sum` 用了 `list` 的 FlagSet） | 每个子命令一个独立 `FlagSet` |
+
+#### 5 分钟最小验证：空月份与跨年两件事
+```bash
+./ledger sum -month 2025-01     # 期望 "0.00 元"，不是报错、不是 NULL
+./ledger add -amount 100 -category 测试 -date 2025-12-31
+./ledger sum -month 2025-12     # 期望 1.00
+./ledger sum -month 2026-01     # 必须还是 0.00，不能把 12 月的算进来
+```
+最后一条是「跨年边界」——`LIKE "2026-01%"` 天然不会匹配 `2025-12-31`，但如果你哪天改成 `BETWEEN` 却把月份算错一天，它就会串。**先用手跑一遍边界，以后改成 SQL 聚合时才有个对照。**
 
 #### 复盘：这 15 天你到底拿到了什么
 不是「会写 Go」，而是四件具体的事：

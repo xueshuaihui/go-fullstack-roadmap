@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>94 天全部达标 · 家庭账本学习路线内容终检</title>
+<style>
+:root{--bg:#f7f6f3;--card:#fff;--ink:#1f2328;--sub:#6b7280;--line:#e6e3dd;--ok:#1a7f4b;--mid:#9a6b00;--bad:#b42318;--accent:#8c2f2f}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.7 -apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:40px 28px 80px}
+h1{font-size:27px;line-height:1.35;margin:0 0 6px;letter-spacing:-.2px}
+.lede{color:var(--sub);margin:0 0 26px;font-size:14px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:12px;margin:0 0 34px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.kpi b{display:block;font-size:23px;line-height:1.2;margin-bottom:2px}
+.kpi span{color:var(--sub);font-size:12.5px}
+.kpi .d{color:var(--ok);font-size:12px;font-weight:600}
+h2{font-size:19px;margin:38px 0 12px;padding-top:18px;border-top:1px solid var(--line)}
+h3{font-size:15.5px;margin:22px 0 8px}
+p{margin:8px 0}
+ul,ol{margin:8px 0 8px 22px;padding:0}
+li{margin:5px 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:12px 0}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th,td{text-align:left;padding:8px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+th{background:#faf9f6;font-weight:600;color:#3a3f45;position:sticky;top:0;z-index:2}
+.tbl-wrap{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:auto;max-height:76vh}
+.t-num{font-variant-numeric:tabular-nums;white-space:nowrap;font-size:13px}
+.t-num i{color:var(--ok);font-style:normal;font-size:11px;margin-left:3px}
+.t-title{min-width:200px;font-weight:500}
+.sub{color:var(--sub);font-size:11.5px}
+.t-id{white-space:nowrap;color:var(--sub);font-size:12.5px}
+.st{font-size:11.5px;padding:2px 8px;border-radius:6px;white-space:nowrap;font-weight:600}
+.st.ok{background:#eaf6ef;color:var(--ok)}
+.depth{font-size:10.5px;margin-left:6px;padding:0 5px;border-radius:4px;border:1px solid var(--line);color:var(--sub)}
+.depth.core{color:var(--accent);border-color:#e3c9c9;background:#fbf1f1}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 12px}
+.filters button{font:inherit;font-size:12.5px;padding:5px 11px;border-radius:999px;border:1px solid var(--line);background:var(--card);cursor:pointer;color:#374151}
+.filters button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+code{background:#f1efe9;padding:1px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.quote{border-left:3px solid var(--accent);padding:2px 0 2px 14px;color:#3f3f46;margin:12px 0}
+.foot{color:var(--sub);font-size:12.5px;margin-top:34px;text-align:center}
+@media print{.tbl-wrap{max-height:none} .filters{display:none}}
+</style></head><body><div class="wrap">
+
+<h1>94 天全部达标：从「结论备忘」改到「能自己跑起来」</h1>
+<p class="lede">家庭账本学习路线（Go + Vue，6 阶段 94 天）· 内容终检 2026-10-20 · 判定口径：可上手性 / 讲解完备度 / 练习充足度</p>
+
+<div class="kpis">
+  <div class="kpi"><b>94/94</b><span>逐日达标</span></div>
+  <div class="kpi"><b>1176 字</b><span>平均讲解正文 <span class="d">改前 537 字</span></span></div>
+  <div class="kpi"><b>0</b><span>正文不足 600 字 <span class="d">改前 60 天</span></span></div>
+  <div class="kpi"><b>0</b><span>代码块不足 3 个 <span class="d">改前 19 天</span></span></div>
+  <div class="kpi"><b>282</b><span>自测题 <span class="d">改前 265</span></span></div>
+  <div class="kpi"><b>67</b><span>本轮改动的天数</span></div>
+</div>
+
+<div class="quote"><b>结论：</b>94 天全部达到统一基线。正文从平均 537 字提到 1176 字（最短的一天也有 603 字），每一天都有可照抄的代码/命令、一张报错对照表、一段「5 分钟最小验证」，自测第三题统一改成「跑一下会看到什么」。改动集中在两处：<b>把「结论」补成「过程」</b>，<b>把「任务」补成「起手动作 + 验收命令」</b>。</div>
+
+<h2>一、达标基线（五条硬标准，逐条可脚本校验）</h2>
+<table><thead><tr><th>项</th><th>标准</th><th>为什么</th></tr></thead><tbody>
+<tr><td>正文</td><td>≥ 600 字（不含代码）</td><td>约一屏 A4，才够同时讲「为什么」和「怎么做」</td></tr>
+<tr><td>代码/命令</td><td>≥ 3 个可照抄的块；阶段一、二必须有完整 <code>func main</code></td><td>小白的第一障碍不是理解，是跑不起来；没有反馈就没有学习</td></tr>
+<tr><td>自测</td><td>≥ 3 题，第 3 题必须是「可观察结果型」</td><td>「请解释 X」可以背；「跑一下会看到什么」只能真跑</td></tr>
+<tr><td>掌握闭环</td><td>≥ 2 预测 + ≥ 1 排错 + ≥ 1 迁移 + ≥ 4 判据</td><td>四类练习作用不同：记忆 / 调试 / 迁移 / 验收</td></tr>
+<tr><td>任务</td><td>≥ 5 条，描述 ≥ 250 字，含起手动作与验收命令</td><td>「做什么」谁都会写，「第一步从哪下手」才是难点</td></tr>
+</tbody></table>
+
+<h2>二、改前 → 改后</h2>
+<table><thead><tr><th>指标</th><th>改前</th><th>改后</th><th>说明</th></tr></thead><tbody>
+<tr><td>平均正文</td><td>537 字</td><td><b>1176 字</b></td><td>总量 11.1 万字，按 280 字/分钟约 767 分钟纯阅读</td></tr>
+<tr><td>正文 &lt; 600 字</td><td>60 天</td><td><b>0 天</b></td><td>最短一天 603 字</td></tr>
+<tr><td>代码块 &lt; 3 个</td><td>19 天</td><td><b>0 天</b></td><td>补的块都是「能直接跑」的，不是伪代码</td></tr>
+<tr><td>自测题总数</td><td>265</td><td><b>282</b></td><td>新增全部为可观察结果型</td></tr>
+<tr><td>任务描述 &lt; 250 字</td><td>48 天</td><td><b>0 天</b></td><td>每天加了「起手 / 验收」一条，可照做</td></tr>
+<tr><td>任务条数 &lt; 5</td><td>0 天</td><td>0 天</td><td>本来就够，未动</td></tr>
+</tbody></table>
+
+<h2>三、按阶段看</h2>
+<table><thead><tr><th>阶段</th><th>天数</th><th>平均正文（改前→改后）</th><th>本轮改动</th></tr></thead><tbody>
+<tr><td>阶段 1 · Go 语法与数据库</td><td>15</td><td>645 → <b>1033</b> 字</td><td>6 天</td></tr><tr><td>阶段 2 · 并发与分包</td><td>9</td><td>586 → <b>1076</b> 字</td><td>6 天</td></tr><tr><td>阶段 3 · HTTP 与 REST</td><td>18</td><td>558 → <b>1189</b> 字</td><td>12 天</td></tr><tr><td>阶段 4 · 认证与安全</td><td>12</td><td>522 → <b>1144</b> 字</td><td>8 天</td></tr><tr><td>阶段 5 · GORM 与测试</td><td>26</td><td>466 → <b>1236</b> 字</td><td>24 天</td></tr><tr><td>阶段 6 · 部署与运维</td><td>14</td><td>509 → <b>1289</b> 字</td><td>11 天</td></tr>
+</tbody></table>
+
+<h2>四、逐日验收表（94 天）</h2>
+<div class="filters" id="f">
+  <button data-v="all" class="on">全部 94</button>
+  <button data-v="c">本轮改动 67</button>
+  <button data-v="p1">阶段一</button><button data-v="p2">阶段二</button><button data-v="p3">阶段三</button>
+  <button data-v="p4">阶段四</button><button data-v="p5">阶段五</button><button data-v="p6">阶段六</button>
+</div>
+<div class="tbl-wrap"><table id="tbl"><thead><tr>
+<th>天</th><th>主题</th><th>正文<br><span class="sub">字 / 读时</span></th><th>代码块</th><th>预测/自测/排错/迁移/任务</th><th>任务字数</th><th>判定</th>
+</tr></thead><tbody><tr data-p="1" data-c="1">
+<td class="t-id"><b>P1</b>·D1</td>
+<td class="t-title">工具链与模块：让 Go 先跑起来<span class="depth light">速通</span></td>
+<td class="t-num">1409<i>+790</i><br><span class="sub">8 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/7</td>
+<td class="t-num">696</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="1" data-c="0">
+<td class="t-id"><b>P1</b>·D2</td>
+<td class="t-title">变量、基本类型与显式转换<span class="depth core">硬骨头</span></td>
+<td class="t-num">657<br><span class="sub">5 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">558</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="1" data-c="0">
+<td class="t-id"><b>P1</b>·D3</td>
+<td class="t-title">切片：底层数组、len/cap 与扩容<span class="depth core">硬骨头</span></td>
+<td class="t-num">838<br><span class="sub">6 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">512</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="1" data-c="1">
+<td class="t-id"><b>P1</b>·D4</td>
+<td class="t-title">map 与字符串处理<span class="depth normal">常规</span></td>
+<td class="t-num">1229<i>+714</i><br><span class="sub">8 分钟</span></td>
+<td class="t-num">7</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">343</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="1" data-c="0">
+<td class="t-id"><b>P1</b>·D5</td>
+<td class="t-title">结构体、方法与值/指针接收者<span class="depth core">硬骨头</span></td>
+<td class="t-num">654<br><span class="sub">6 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">524</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="1" data-c="0">
+<td class="t-id"><b>P1</b>·D6</td>
+<td class="t-title">错误处理：包装、哨兵与 errors.Is<span class="depth core">硬骨头</span></td>
+<td class="t-num">988<br><span class="sub">7 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">446</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="1" data-c="0">
+<td class="t-id"><b>P1</b>·D7</td>
+<td class="t-title">接口：隐式实现与由调用方定义<span class="depth core">硬骨头</span></td>
+<td class="t-num">667<br><span class="sub">6 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">434</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="1" data-c="1">
+<td class="t-id"><b>P1</b>·D8</td>
+<td class="t-title">defer / panic / recover + 第一周复盘<span class="depth normal">常规</span></td>
+<td class="t-num">1640<i>+1064</i><br><span class="sub">10 分钟</span></td>
+<td class="t-num">7</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">324</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="1" data-c="1">
+<td class="t-id"><b>P1</b>·D9</td>
+<td class="t-title">SQL 基础：手写建表与单表增查<span class="depth normal">常规</span></td>
+<td class="t-num">1141<i>+604</i><br><span class="sub">8 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/7</td>
+<td class="t-num">657</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="1" data-c="0">
+<td class="t-id"><b>P1</b>·D10</td>
+<td class="t-title">database/sql 接入 SQLite<span class="depth core">硬骨头</span></td>
+<td class="t-num">691<br><span class="sub">6 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">558</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="1" data-c="0">
+<td class="t-id"><b>P1</b>·D11</td>
+<td class="t-title">Exec / Query / QueryRow / rows.Scan<span class="depth core">硬骨头</span></td>
+<td class="t-num">887<br><span class="sub">7 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">407</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="1" data-c="0">
+<td class="t-id"><b>P1</b>·D12</td>
+<td class="t-title">预编译语句与事务<span class="depth core">硬骨头</span></td>
+<td class="t-num">690<br><span class="sub">6 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">326</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="1" data-c="0">
+<td class="t-id"><b>P1</b>·D13</td>
+<td class="t-title">持久化生命周期与连接管理<span class="depth normal">常规</span></td>
+<td class="t-num">618<br><span class="sub">5 分钟</span></td>
+<td class="t-num">3</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">377</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="1" data-c="1">
+<td class="t-id"><b>P1</b>·D14</td>
+<td class="t-title">ledger-cli 骨架：add 与 list<span class="depth normal">常规</span></td>
+<td class="t-num">2404<i>+2020</i><br><span class="sub">14 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">445</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="1" data-c="1">
+<td class="t-id"><b>P1</b>·D15</td>
+<td class="t-title">sum 子命令、阶段验收与复盘<span class="depth light">速通</span></td>
+<td class="t-num">984<i>+629</i><br><span class="sub">8 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">316</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="2" data-c="1">
+<td class="t-id"><b>P2</b>·D1</td>
+<td class="t-title">goroutine：并发的起点<span class="depth normal">常规</span></td>
+<td class="t-num">852<i>+312</i><br><span class="sub">7 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">412</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="2" data-c="0">
+<td class="t-id"><b>P2</b>·D2</td>
+<td class="t-title">channel：通信代替共享内存<span class="depth core">硬骨头</span></td>
+<td class="t-num">686<br><span class="sub">6 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">472</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="2" data-c="1">
+<td class="t-id"><b>P2</b>·D3</td>
+<td class="t-title">select 与超时控制<span class="depth core">硬骨头</span></td>
+<td class="t-num">1023<i>+428</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">8</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">411</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="2" data-c="1">
+<td class="t-id"><b>P2</b>·D4</td>
+<td class="t-title">WaitGroup 与竞态复现<span class="depth core">硬骨头</span></td>
+<td class="t-num">1115<i>+689</i><br><span class="sub">8 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">395</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="2" data-c="1">
+<td class="t-id"><b>P2</b>·D5</td>
+<td class="t-title">Mutex 修复竞态<span class="depth core">硬骨头</span></td>
+<td class="t-num">1000<i>+426</i><br><span class="sub">8 分钟</span></td>
+<td class="t-num">7</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">371</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="2" data-c="0">
+<td class="t-id"><b>P2</b>·D6</td>
+<td class="t-title">context：取消与超时的传播<span class="depth core">硬骨头</span></td>
+<td class="t-num">1034<br><span class="sub">7 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">387</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="2" data-c="0">
+<td class="t-id"><b>P2</b>·D7</td>
+<td class="t-title">包组织、导出规则与 internal<span class="depth normal">常规</span></td>
+<td class="t-num">746<br><span class="sub">5 分钟</span></td>
+<td class="t-num">3</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">275</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="2" data-c="1">
+<td class="t-id"><b>P2</b>·D8</td>
+<td class="t-title">重构 ledger-cli 为三个包<span class="depth normal">常规</span></td>
+<td class="t-num">1889<i>+1500</i><br><span class="sub">12 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">304</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="2" data-c="1">
+<td class="t-id"><b>P2</b>·D9</td>
+<td class="t-title">并发导出、-race 全绿与阶段验收<span class="depth light">速通</span></td>
+<td class="t-num">1343<i>+1057</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">3</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">320</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="0">
+<td class="t-id"><b>P3</b>·D1</td>
+<td class="t-title">最小 HTTP 服务<span class="depth light">速通</span></td>
+<td class="t-num">851<br><span class="sub">6 分钟</span></td>
+<td class="t-num">3</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">351</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="1">
+<td class="t-id"><b>P3</b>·D2</td>
+<td class="t-title">Handler 读写：JSON 请求与响应<span class="depth core">硬骨头</span></td>
+<td class="t-num">1588<i>+1013</i><br><span class="sub">11 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">353</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="1">
+<td class="t-id"><b>P3</b>·D3</td>
+<td class="t-title">Go 1.22 路由：方法与路径参数<span class="depth normal">常规</span></td>
+<td class="t-num">1570<i>+1127</i><br><span class="sub">10 分钟</span></td>
+<td class="t-num">7</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">450</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="1">
+<td class="t-id"><b>P3</b>·D4</td>
+<td class="t-title">统一响应信封 Response[T]<span class="depth core">硬骨头</span></td>
+<td class="t-num">2320<i>+1841</i><br><span class="sub">13 分钟</span></td>
+<td class="t-num">7</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">607</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="1">
+<td class="t-id"><b>P3</b>·D5</td>
+<td class="t-title">账本 API 骨架落地<span class="depth light">速通</span></td>
+<td class="t-num">690<i>+115</i><br><span class="sub">7 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">254</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="0">
+<td class="t-id"><b>P3</b>·D6</td>
+<td class="t-title">POST /ledger：内存版写入与校验<span class="depth normal">常规</span></td>
+<td class="t-num">739<br><span class="sub">6 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">352</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="1">
+<td class="t-id"><b>P3</b>·D7</td>
+<td class="t-title">GET /ledger：列表与分页结构<span class="depth core">硬骨头</span></td>
+<td class="t-num">1423<i>+974</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">326</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="1">
+<td class="t-id"><b>P3</b>·D8</td>
+<td class="t-title">分页边界与 total 语义<span class="depth core">硬骨头</span></td>
+<td class="t-num">1540<i>+983</i><br><span class="sub">10 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">297</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="0">
+<td class="t-id"><b>P3</b>·D9</td>
+<td class="t-title">内存换 SQLite：store 层落地<span class="depth normal">常规</span></td>
+<td class="t-num">664<br><span class="sub">6 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">329</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="0">
+<td class="t-id"><b>P3</b>·D10</td>
+<td class="t-title">重启不丢：持久化验证<span class="depth light">速通</span></td>
+<td class="t-num">681<br><span class="sub">5 分钟</span></td>
+<td class="t-num">3</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">276</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="0">
+<td class="t-id"><b>P3</b>·D11</td>
+<td class="t-title">GET /ledger/{id} 与 404 语义<span class="depth normal">常规</span></td>
+<td class="t-num">797<br><span class="sub">7 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">299</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="1">
+<td class="t-id"><b>P3</b>·D12</td>
+<td class="t-title">GET /summary：按月聚合<span class="depth normal">常规</span></td>
+<td class="t-num">846<i>+91</i><br><span class="sub">7 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">314</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="1">
+<td class="t-id"><b>P3</b>·D13</td>
+<td class="t-title">中间件机制<span class="depth core">硬骨头</span></td>
+<td class="t-num">1660<i>+1211</i><br><span class="sub">11 分钟</span></td>
+<td class="t-num">8</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">316</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="1">
+<td class="t-id"><b>P3</b>·D14</td>
+<td class="t-title">日志中间件与 ResponseWriter 包装<span class="depth core">硬骨头</span></td>
+<td class="t-num">1489<i>+1006</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">281</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="1">
+<td class="t-id"><b>P3</b>·D15</td>
+<td class="t-title">统一错误处理与输入校验<span class="depth core">硬骨头</span></td>
+<td class="t-num">1256<i>+937</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">305</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="0">
+<td class="t-id"><b>P3</b>·D16</td>
+<td class="t-title">深分页认知与 cursor 预留<span class="depth core">硬骨头</span></td>
+<td class="t-num">819<br><span class="sub">7 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">478</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="1">
+<td class="t-id"><b>P3</b>·D17</td>
+<td class="t-title">curl 回归脚本<span class="depth light">速通</span></td>
+<td class="t-num">1562<i>+1385</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">3</td>
+<td class="t-num">2/3/1/1/7</td>
+<td class="t-num">260</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="3" data-c="1">
+<td class="t-id"><b>P3</b>·D18</td>
+<td class="t-title">阶段验收与复盘<span class="depth light">速通</span></td>
+<td class="t-num">905<i>+672</i><br><span class="sub">7 分钟</span></td>
+<td class="t-num">3</td>
+<td class="t-num">2/3/1/1/8</td>
+<td class="t-num">289</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="4" data-c="0">
+<td class="t-id"><b>P4</b>·D1</td>
+<td class="t-title">密码哈希原理与 Argon2id 参数<span class="depth core">硬骨头</span></td>
+<td class="t-num">820<br><span class="sub">6 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">301</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="4" data-c="1">
+<td class="t-id"><b>P4</b>·D2</td>
+<td class="t-title">实现 hashPassword / verifyPassword<span class="depth core">硬骨头</span></td>
+<td class="t-num">1212<i>+817</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">311</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="4" data-c="0">
+<td class="t-id"><b>P4</b>·D3</td>
+<td class="t-title">bcrypt 备选方案与成本校准<span class="depth normal">常规</span></td>
+<td class="t-num">685<br><span class="sub">6 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">287</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="4" data-c="1">
+<td class="t-id"><b>P4</b>·D4</td>
+<td class="t-title">users 表与唯一约束<span class="depth normal">常规</span></td>
+<td class="t-num">1552<i>+1179</i><br><span class="sub">10 分钟</span></td>
+<td class="t-num">7</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">314</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="4" data-c="1">
+<td class="t-id"><b>P4</b>·D5</td>
+<td class="t-title">POST /register<span class="depth normal">常规</span></td>
+<td class="t-num">963<i>+534</i><br><span class="sub">7 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/7</td>
+<td class="t-num">293</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="4" data-c="1">
+<td class="t-id"><b>P4</b>·D6</td>
+<td class="t-title">POST /login：校验密码<span class="depth core">硬骨头</span></td>
+<td class="t-num">1534<i>+1125</i><br><span class="sub">11 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/8</td>
+<td class="t-num">284</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="4" data-c="0">
+<td class="t-id"><b>P4</b>·D7</td>
+<td class="t-title">JWT 签发<span class="depth core">硬骨头</span></td>
+<td class="t-num">603<br><span class="sub">6 分钟</span></td>
+<td class="t-num">3</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">445</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="4" data-c="1">
+<td class="t-id"><b>P4</b>·D8</td>
+<td class="t-title">JWT 验证与错误分类<span class="depth core">硬骨头</span></td>
+<td class="t-num">1387<i>+872</i><br><span class="sub">10 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">319</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="4" data-c="1">
+<td class="t-id"><b>P4</b>·D9</td>
+<td class="t-title">认证中间件<span class="depth core">硬骨头</span></td>
+<td class="t-num">1359<i>+851</i><br><span class="sub">10 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">341</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="4" data-c="1">
+<td class="t-id"><b>P4</b>·D10</td>
+<td class="t-title">context 取值与 handler 改造<span class="depth normal">常规</span></td>
+<td class="t-num">1469<i>+1082</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">7</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">281</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="4" data-c="1">
+<td class="t-id"><b>P4</b>·D11</td>
+<td class="t-title">数据隔离：每条查询都带 user_id<span class="depth core">硬骨头</span></td>
+<td class="t-num">1440<i>+1007</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">7</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">385</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="4" data-c="0">
+<td class="t-id"><b>P4</b>·D12</td>
+<td class="t-title">敏感字段隔离与阶段验收<span class="depth normal">常规</span></td>
+<td class="t-num">707<br><span class="sub">6 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">289</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D1</td>
+<td class="t-title">分层目录设计<span class="depth normal">常规</span></td>
+<td class="t-num">1320<i>+720</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">257</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D2</td>
+<td class="t-title">接口定义与手动依赖注入<span class="depth core">硬骨头</span></td>
+<td class="t-num">899<i>+531</i><br><span class="sub">7 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">336</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="0">
+<td class="t-id"><b>P5</b>·D3</td>
+<td class="t-title">分层重构落地<span class="depth normal">常规</span></td>
+<td class="t-num">808<br><span class="sub">6 分钟</span></td>
+<td class="t-num">3</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">283</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D4</td>
+<td class="t-title">GORM 接入与连接池配置<span class="depth core">硬骨头</span></td>
+<td class="t-num">1623<i>+1109</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">272</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D5</td>
+<td class="t-title">模型定义与 tag<span class="depth normal">常规</span></td>
+<td class="t-num">1462<i>+918</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">7</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">325</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="0">
+<td class="t-id"><b>P5</b>·D6</td>
+<td class="t-title">Session 核心模式：隔离 + context<span class="depth core">硬骨头</span></td>
+<td class="t-num">779<br><span class="sub">6 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">309</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D7</td>
+<td class="t-title">WithContext 与 Session 的对照实验<span class="depth core">硬骨头</span></td>
+<td class="t-num">891<i>+607</i><br><span class="sub">7 分钟</span></td>
+<td class="t-num">8</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">319</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D8</td>
+<td class="t-title">GORM CRUD 与零值陷阱<span class="depth core">硬骨头</span></td>
+<td class="t-num">1493<i>+960</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">8</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">284</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D9</td>
+<td class="t-title">事务与 ctx 传递<span class="depth core">硬骨头</span></td>
+<td class="t-num">1535<i>+868</i><br><span class="sub">10 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">295</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D10</td>
+<td class="t-title">goose 迁移文件<span class="depth normal">常规</span></td>
+<td class="t-num">1312<i>+825</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">7</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">329</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D11</td>
+<td class="t-title">用迁移替换 AutoMigrate<span class="depth normal">常规</span></td>
+<td class="t-num">1081<i>+590</i><br><span class="sub">8 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">264</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D12</td>
+<td class="t-title">分类表与关联<span class="depth normal">常规</span></td>
+<td class="t-num">1336<i>+794</i><br><span class="sub">8 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">258</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D13</td>
+<td class="t-title">统计接口：按月按分类聚合<span class="depth core">硬骨头</span></td>
+<td class="t-num">1210<i>+850</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">264</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D14</td>
+<td class="t-title">统计性能与索引验证<span class="depth core">硬骨头</span></td>
+<td class="t-num">1312<i>+700</i><br><span class="sub">8 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/7</td>
+<td class="t-num">266</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D15</td>
+<td class="t-title">集中式错误处理<span class="depth core">硬骨头</span></td>
+<td class="t-num">1434<i>+1092</i><br><span class="sub">10 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">376</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D16</td>
+<td class="t-title">结构化日志与 request ID<span class="depth core">硬骨头</span></td>
+<td class="t-num">1080<i>+763</i><br><span class="sub">8 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">533</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D17</td>
+<td class="t-title">表驱动测试：service 层<span class="depth normal">常规</span></td>
+<td class="t-num">1219<i>+1029</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">283</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D18</td>
+<td class="t-title">Handler 测试与 httptest<span class="depth core">硬骨头</span></td>
+<td class="t-num">1190<i>+697</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/7</td>
+<td class="t-num">294</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D19</td>
+<td class="t-title">Repository 测试：内存 SQLite<span class="depth core">硬骨头</span></td>
+<td class="t-num">1390<i>+1000</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">285</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D20</td>
+<td class="t-title">覆盖率与竞态<span class="depth normal">常规</span></td>
+<td class="t-num">1583<i>+1010</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">7</td>
+<td class="t-num">2/3/1/1/7</td>
+<td class="t-num">271</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D21</td>
+<td class="t-title">预算检查（stretch goal）<span class="depth light">速通</span></td>
+<td class="t-num">976<i>+737</i><br><span class="sub">8 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/7</td>
+<td class="t-num">277</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D22</td>
+<td class="t-title">CSV 导出：全量加载版（stretch goal）<span class="depth light">速通</span></td>
+<td class="t-num">1089<i>+850</i><br><span class="sub">8 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">301</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D23</td>
+<td class="t-title">CSV 流式导出（stretch goal 优化）<span class="depth light">速通</span></td>
+<td class="t-num">1333<i>+1090</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">266</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D24</td>
+<td class="t-title">接口清单与前端联调准备<span class="depth normal">常规</span></td>
+<td class="t-num">1656<i>+888</i><br><span class="sub">10 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/8</td>
+<td class="t-num">266</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D25</td>
+<td class="t-title">端到端回归<span class="depth normal">常规</span></td>
+<td class="t-num">1046<i>+692</i><br><span class="sub">8 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/8</td>
+<td class="t-num">278</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="5" data-c="1">
+<td class="t-id"><b>P5</b>·D26</td>
+<td class="t-title">阶段验收与复盘<span class="depth light">速通</span></td>
+<td class="t-num">1079<i>+706</i><br><span class="sub">7 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">307</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="6" data-c="1">
+<td class="t-id"><b>P6</b>·D1</td>
+<td class="t-title">配置管理：文件 + 环境变量 + 默认值<span class="depth normal">常规</span></td>
+<td class="t-num">1213<i>+891</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">282</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="6" data-c="1">
+<td class="t-id"><b>P6</b>·D2</td>
+<td class="t-title">敏感配置与启动即失败<span class="depth normal">常规</span></td>
+<td class="t-num">1048<i>+830</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">10</td>
+<td class="t-num">2/3/1/1/7</td>
+<td class="t-num">291</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="6" data-c="1">
+<td class="t-id"><b>P6</b>·D3</td>
+<td class="t-title">多阶段 Dockerfile<span class="depth normal">常规</span></td>
+<td class="t-num">1061<i>+721</i><br><span class="sub">8 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">283</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="6" data-c="1">
+<td class="t-id"><b>P6</b>·D4</td>
+<td class="t-title">镜像瘦身与非 root 运行<span class="depth normal">常规</span></td>
+<td class="t-num">1637<i>+1332</i><br><span class="sub">9 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">283</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="6" data-c="1">
+<td class="t-id"><b>P6</b>·D5</td>
+<td class="t-title">compose 编排<span class="depth core">硬骨头</span></td>
+<td class="t-num">1798<i>+1302</i><br><span class="sub">11 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">250</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="6" data-c="1">
+<td class="t-id"><b>P6</b>·D6</td>
+<td class="t-title">迁移接入部署流程<span class="depth normal">常规</span></td>
+<td class="t-num">1064<i>+766</i><br><span class="sub">8 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/7</td>
+<td class="t-num">272</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="6" data-c="0">
+<td class="t-id"><b>P6</b>·D7</td>
+<td class="t-title">健康检查：/healthz 与 /readyz<span class="depth normal">常规</span></td>
+<td class="t-num">655<br><span class="sub">6 分钟</span></td>
+<td class="t-num">3</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">260</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="6" data-c="1">
+<td class="t-id"><b>P6</b>·D8</td>
+<td class="t-title">优雅关闭<span class="depth core">硬骨头</span></td>
+<td class="t-num">1669<i>+1240</i><br><span class="sub">11 分钟</span></td>
+<td class="t-num">7</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">420</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="6" data-c="0">
+<td class="t-id"><b>P6</b>·D9</td>
+<td class="t-title">验证优雅关闭<span class="depth core">硬骨头</span></td>
+<td class="t-num">1088<br><span class="sub">7 分钟</span></td>
+<td class="t-num">5</td>
+<td class="t-num">2/3/1/1/7</td>
+<td class="t-num">284</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="6" data-c="1">
+<td class="t-id"><b>P6</b>·D10</td>
+<td class="t-title">CORS 与反向代理<span class="depth normal">常规</span></td>
+<td class="t-num">2179<i>+1815</i><br><span class="sub">12 分钟</span></td>
+<td class="t-num">6</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">318</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="6" data-c="1">
+<td class="t-id"><b>P6</b>·D11</td>
+<td class="t-title">依赖漏洞扫描<span class="depth normal">常规</span></td>
+<td class="t-num">1157<i>+650</i><br><span class="sub">7 分钟</span></td>
+<td class="t-num">7</td>
+<td class="t-num">2/3/1/1/7</td>
+<td class="t-num">276</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="6" data-c="1">
+<td class="t-id"><b>P6</b>·D12</td>
+<td class="t-title">Cookie 安全属性<span class="depth core">硬骨头</span></td>
+<td class="t-num">1746<i>+1006</i><br><span class="sub">11 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">348</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="6" data-c="0">
+<td class="t-id"><b>P6</b>·D13</td>
+<td class="t-title">CSRF 中间件与顺序<span class="depth core">硬骨头</span></td>
+<td class="t-num">782<br><span class="sub">6 分钟</span></td>
+<td class="t-num">4</td>
+<td class="t-num">2/3/1/1/5</td>
+<td class="t-num">381</td>
+<td><span class="st ok">达标</span></td></tr><tr data-p="6" data-c="1">
+<td class="t-id"><b>P6</b>·D14</td>
+<td class="t-title">Vue 联调、手机验收与复盘<span class="depth light">速通</span></td>
+<td class="t-num">955<i>+372</i><br><span class="sub">6 分钟</span></td>
+<td class="t-num">3</td>
+<td class="t-num">2/3/1/1/6</td>
+<td class="t-num">254</td>
+<td><span class="st ok">达标</span></td></tr></tbody></table></div>
+
+<h2>五、除了字数，还补了什么</h2>
+<div class="grid2">
+<div class="card"><h3>1. 每张表都指向「会怎么坏」</h3><p>报错对照表统一写成<b>现象 → 原因 → 修法</b>三列，且第一列是报错原文（可直接搜）。新增 30+ 张，覆盖 <code>database is locked</code>、<code>superfluous WriteHeader</code>、<code>DATA RACE</code>、<code>UNIQUE constraint failed</code>、<code>no such file or directory</code>（其实是缺动态链接器）等真实报错。</p></div>
+<div class="card"><h3>2. 每天一个「5 分钟最小验证」</h3><p>先跑一个 5 分钟的实验，再去做 3 小时任务。例：Docker 那天先 <code>docker run --rm ledger-api id</code> 看 uid；分页那天先造 5 条同日期数据逼出排序不稳定。</p></div>
+<div class="card"><h3>3. 自测第三题改成「跑一下会看到什么」</h3><p>例如 P5D7 问「连续两次 <code>Where</code> 后第二条 SQL 带不带第一个条件」，答案是「跑 <code>go test -run TestSessionIsolation -v</code> 对比两条 SQL」。这类题背不出来，只能动手。</p></div>
+<div class="card"><h3>4. 修掉了几处会把人带偏的错误</h3><p>P1D14 的金额单位前后矛盾（一处「分」一处「元」）已统一为「入口转分、出口转元」；P1D9 的任务把 <code>amount</code> 写成 <code>REAL</code> 已改回 <code>INTEGER</code> 分；P5D7 原本写「这里有歧义，必须实测」的答案改成了确定结论 + 验证方法。</p></div>
+<div class="card"><h3>5. 补上跨阶段「互相打脸」的地方</h3><p>P6D5 的健康检查用 <code>wget</code>，但 P6D4 建议用 distroless（没有 wget）——现在明确给出「给二进制加 healthcheck 子命令」的解法；P6D12 明确了 CSRF cookie 必须 <code>HttpOnly: false</code>，与 session cookie 相反。</p></div>
+<div class="card"><h3>6. 任务都带验收命令</h3><p>例：P5D19「把 <code>GetEntry</code> 的 user_id 去掉，隔离用例必须变红」；P6D6「在 00002 里塞一条错误 SQL，确认 api 不会启动」。<b>能被破坏的验收，才是真的验收。</b></p></div>
+</div>
+
+<h2>六、怎么验证的</h2>
+<div class="card">
+<ul>
+<li><b>结构校验：</b>脚本解析 <code>lessons/*.md</code>、<code>mastery/*.md</code>、<code>days/*.ts</code>，对 94 天逐项计算：正文字数（去代码、去空白）、代码块数、自测/预测/排错/迁移/判据数、任务条数与字数。上面所有数字均来自同一次全量解析。</li>
+<li><b>构建：</b><code>npm run build</code> 通过；内容体积增加约 57KB。</li>
+<li><b>渲染抽查：</b>用无头 Chrome 打开 <code>#/day/1/14</code>、<code>#/day/3/3</code>、<code>#/day/5/21</code>、<code>#/day/6/12</code>，确认：无 <code>::q</code>/<code>**</code> 字面量泄漏、表格与代码块正常渲染、自测为 3 题。</li>
+<li><b>内容抽查：</b>对改动最大的 10 天逐段通读，检查「示例能不能跑」「报错表是不是原文」「5 分钟验证有没有明确期望值」。</li>
+</ul>
+</div>
+
+<h2>七、给学生的一句话</h2>
+<div class="quote">这份材料不会让你「读完就会」。它给你的是一条每天可验证的路径：<b>先花 5 分钟跑一个最小实验，再读讲解，再合上答案自测，再亲手弄坏一处代码看它怎么报错，最后做当天的任务</b>。卡住时不要重读，去看「报错对照」那一栏——大多数卡点不是概念不懂，而是报错没读懂。</div>
+
+<p class="foot">口径：94 天 × 5 项硬标准，全量脚本解析；判定为「达标」需五项同时满足。<br>2026-10-20 · 家庭账本学习路线</p>
+</div>
+<script>
+const f=document.getElementById('f'),tb=document.getElementById('tbl');
+f.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
+ [...f.children].forEach(x=>x.classList.toggle('on',x===b));
+ const v=b.dataset.v;
+ [...tb.tBodies[0].rows].forEach(r=>{
+   let show=true;
+   if(v==='c') show = r.dataset.c==='1';
+   else if(v.startsWith('p')) show = r.dataset.p===v.slice(1);
+   r.style.display=show?'':'none';
+ })})
+</script></body></html>

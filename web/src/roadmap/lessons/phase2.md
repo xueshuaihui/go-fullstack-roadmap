@@ -36,6 +36,23 @@ wg.Wait()
 ```
 三行都打印出来（顺序不定），进程不会提前退出。如果你没写 `wg.Wait()`，很可能一行都没有。
 
+#### 5 分钟最小验证：亲眼看到「并行」和「main 退出」
+```go
+start := time.Now()
+for i := 0; i < 5; i++ {
+    go func() { time.Sleep(100 * time.Millisecond) }()
+}
+time.Sleep(120 * time.Millisecond)
+fmt.Println("5 个并发任务耗时约", time.Since(start).Round(10*time.Millisecond))  // ≈100ms
+
+start = time.Now()
+for i := 0; i < 5; i++ { time.Sleep(100 * time.Millisecond) }
+fmt.Println("5 个串行任务耗时约", time.Since(start).Round(10*time.Millisecond))  // ≈500ms
+```
+第二段不用 goroutine，耗时是 5 倍。**这就是「并发」唯一需要被证明的东西**：多个任务的时间重叠了。如果两段都是 500ms，说明 goroutine 没跑起来（最常见原因：循环里调用的是同步函数，或者被 `runtime.GOMAXPROCS(1)` 限制到了单核且任务都是 CPU 密集型）。
+
+再删掉中间那句 `time.Sleep(120ms)`，跑一次，你会发现**可能一条输出都没有**——`main` 返回即进程结束，所有 goroutine 被无条件终止，不会等它们完成。这个现象要亲手看一次，它是后面所有「为什么要 WaitGroup / 为什么要 context」的起点。
+
 ::q 为什么 `main` 函数里的 `go func(){...}()` 经常「没执行」？
 ::a 因为 `main` 返回时进程立即结束，运行时不会等待未完成的 goroutine。子 goroutine 可能还没来得及被调度就被终止。要保证执行完，必须用 `sync.WaitGroup`、channel 或 `context` 显式同步。
 ::q 起 100 个 goroutine 每个都 panic，会发生什么？
@@ -98,7 +115,7 @@ func sumAll(ctx context.Context, nums []int) int {
 3. `range ch` 负责收完并退出。
 
 #### 什么时候不该用 channel
-Go 的官方建议是：**「通过通信共享内存」只在数据所有权需要转移时用**；如果只是多个 goroutine 读写同一份结构，`sync.Mutex` 更简单、更快、更好读。用 channel 实现一个计数器（发一个 1、收一个 1）是典型的反模式。
+Go 的官方建议是：「**通过通信共享内存**」只在数据所有权需要转移时用；如果只是多个 goroutine 读写同一份结构，`sync.Mutex` 更简单、更快、更好读。用 channel 实现一个计数器（发一个 1、收一个 1）是典型的反模式。
 
 #### 判据
 ```go
@@ -193,6 +210,40 @@ case <-ctx.Done():
 ```
 100ms 后必须打印超时，且进程不挂住。
 
+#### 两个 select 特有的坑
+**① nil channel 永远阻塞，但可以关掉一个 case。** 声明 `var ch chan int`（没 `make`）时，`<-ch` 永远阻塞。这看着像 bug，其实是个技巧：
+
+```go
+for {
+    select {
+    case v, ok := <-a:
+        if !ok { a = nil }        // 读了已关闭的 channel，置 nil 让它从此不再被选中
+    case v, ok := <-b:
+        if !ok { b = nil }
+    }
+    if a == nil && b == nil { return }   // 两个都读完才退出
+}
+```
+把 channel 置 nil 后，对应的 case 永远不会就绪，于是 `select` 自动「少一路」——比写一堆布尔标志干净。
+
+**② `time.After` 在循环里会泄漏定时器。** 每次循环都 `case <-time.After(d)` 会创建一个新的 `Timer`，在它到期前不会被 GC 回收。一万次循环就是一万个待触发的定时器。改成循环外 `ticker := time.NewTicker(d)` + `defer ticker.Stop()`。
+
+#### 5 分钟最小验证：让 select 真的选两次
+```go
+a := make(chan int, 1)
+b := make(chan int, 1)
+a <- 1
+b <- 2
+for i := 0; i < 6; i++ {
+    select {
+    case v := <-a: fmt.Println("a", v)
+    case v := <-b: fmt.Println("b", v)
+    }
+    a <- 1; b <- 2                   // 补回去，让两个 case 每次都同时就绪
+}
+```
+两个 case 都就绪时，Go 会**随机**选一个（避免饥饿）。跑几次，输出顺序会变。**不要依赖 select 的选择顺序**——这是新手最常见的错误假设，写出来的代码在压力测试时才暴露。
+
 ::q `select` 里两个 case 同时就绪，会选哪个？
 ::a 随机选一个。Go 的实现会在就绪的 case 中随机挑选，以避免固定顺序导致某些分支长期饥饿。这意味着**不能依赖 select 的顺序做优先级控制**，需要优先级时必须显式写两段 select。
 ::q channel 已关闭，`case job, ok := <-jobs` 不判断 `ok` 会怎样？
@@ -245,6 +296,38 @@ func worker(wg sync.WaitGroup) { ... }  // 复制了计数器，Done 作用在�
 go run -race main.go   # 出现 WARNING: DATA RACE
 ```
 把这段输出保存下来，它是你后面「修好了」的对照基线。修完再跑，必须完全无输出。
+
+#### 修它：三种方式，代价不同
+```go
+// ① 互斥锁：最通用，能保护一段逻辑而不只是一个变量
+var mu sync.Mutex
+mu.Lock(); counter++; mu.Unlock()
+
+// ② 原子操作：只适合单个标量的读改写，没有锁开销
+var counter atomic.Int64
+counter.Add(1)
+
+// ③ 不共享：每个 goroutine 算局部结果，最后汇总（并发里最优解）
+results := make([]int, 1000)
+go func(i int) { results[i] = 1 }(i)   // 写不同下标，无竞争
+```
+选择顺序是 **③ > ② > ①**：能不共享就不共享，必须共享单个变量就用原子，要保护「读-判断-写」这种复合逻辑才用锁。注意 ③ 里 `results[i]` 各写各的下标是安全的，但**多个 goroutine 同时 `append` 同一个 slice 不安全**——这是面试题里的经典陷阱。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `counter` 每次跑结果都不同，且总小于 1000 | 典型的丢更新 | 加锁 / 原子 / 不共享 |
+| `fatal error: all goroutines are asleep - deadlock!` | `Wait()` 在 `Add` 之前执行，或 channel 无人读 | 把 `Add` 挪到启动前；检查 channel 的收发配对 |
+| `panic: sync: WaitGroup is reused before previous Wait has returned` | `Wait` 还没返回就又开始 `Add` | 每次 `Wait` 结束再复用；或新建一个 WaitGroup |
+| `-race` 报的是标准库内部地址 | 你传入的对象被并发读写（如共享 `*bytes.Buffer`） | 每个 goroutine 用自己的 buffer，最后合并 |
+
+#### 5 分钟最小验证：跑十次，看结果是不是「每次都不一样」
+```bash
+for i in $(seq 10); do go run main.go; done | sort | uniq -c
+```
+未修复时你会看到好几个不同的数字，每个出现一两次。「**每次都不一样**」就是竞态的指纹——如果每次都稳定输出 1000，反而要怀疑循环根本没并发起来（比如误用了同步调用）。
+
+修好后再跑一遍，必须是 `10  1000`（十次全是 1000）。加 `-race` 再跑一次，必须无输出。
 
 ::q `counter++` 为什么会丢更新？
 ::a 它不是原子操作，编译后是「加载 → 加一 → 存回」三条指令。两个 goroutine 若都先加载了旧值 5，各自加一存回 6，两次自增只生效一次。修复要么加锁，要么用 `atomic.Int64`。
@@ -327,6 +410,29 @@ go run -race main.go   # 无输出
 go test -race ./...     # 全绿
 ```
 加上 Mutex 后，1000 次并发自增的结果必须**每次都是 1000**，连跑十次。
+
+#### 锁写对了也会死锁：顺序问题
+```go
+// goroutine A
+mu1.Lock(); defer mu1.Unlock()
+mu2.Lock(); defer mu2.Unlock()
+
+// goroutine B（顺序相反）
+mu2.Lock(); defer mu2.Unlock()
+mu1.Lock(); defer mu1.Unlock()
+```
+各自都「正确」地加了锁，但两个 goroutine 交错执行时，A 拿着 mu1 等 mu2，B 拿着 mu2 等 mu1，永久等待。Go 运行时检测到「所有 goroutine 都睡了」时会打印 `fatal error: all goroutines are asleep - deadlock!` 并退出——**只有全部睡着才报，部分死锁时它不会报**，程序表现为「某些请求永远不返回」。
+
+避免办法只有一条：**全局约定加锁顺序**（比如永远先锁 ID 小的那个），并在注释里写清楚。多把锁的场景下，这条纪律比任何工具都管用。
+
+#### 5 分钟最小验证：把 `-race` 当成日常命令
+```bash
+go run -race main.go
+go test -race -count=10 ./... | tail -3
+```
+`-count=10` 是为了让调度多换几种交错方式。竞态代码可能跑一次不报、跑十次才报——「**跑一次没报**」不等于没有竞态。
+
+修好后的判据只有一条：`-race` **完全无输出**。出现 `WARNING: DATA RACE` 就是没修好，哪怕 `counter` 这次的数字刚好是 1000。
 
 ::q `defer mu.Unlock()` 相比在函数末尾写 `mu.Unlock()` 好在哪里？
 ::a 保证任何返回路径（包括中途 return 和 panic）都会解锁。手写 Unlock 时，一旦函数中间 `return` 或发生 panic，锁不会被释放，后续所有 Lock 永久阻塞，表现为服务整体卡死。
@@ -458,6 +564,30 @@ go build ./...                   # 无环、无未使用导入
 #### 重构的目标不是「分层好看」，是「能测、能换」
 重构前后行为必须完全一致——所以**先跑一遍 D14/D15 的验收命令，把输出存下来**，重构完逐条对比。没有基线就不叫重构，叫重写。
 
+具体做法是把基线落到文件里，而不是「我记得刚才输出是对的」：
+
+```bash
+go build -o /tmp/ledger.before .
+/tmp/ledger.before list > /tmp/baseline.txt
+/tmp/ledger.before sum -month 2026-10 > /tmp/baseline-sum.txt
+wc -l /tmp/baseline.txt          # 记住行数，重构后必须一样
+```
+重构完成后 `diff /tmp/baseline.txt <(./ledger list)`，**空的才算成功**。
+
+#### 动手顺序：先搬走、再改签名、最后换实现
+新手最常见的失败是「一次性把所有文件改完，然后面对 30 个编译错误」。改成三步，每步都能编译：
+
+1. **建包、搬代码、不改逻辑**：把 `runAdd` 里的 SQL 原样剪进 `internal/store/sqlite.go`，函数签名先不动（还是接 `*sql.DB`）。这一步只验证「包能建起来、`go build ./...` 通过」。
+2. **提接口**：在 `ledger` 包里写 `Store` 接口，让 `store.SQLite` 实现它，加上编译期断言 `var _ ledger.Store = (*SQLite)(nil)`。这一步不碰 main。
+3. **改装配**：`main` 里改成 `svc := ledger.NewService(store.New(db))`，`runCLI` 从接 `*sql.DB` 改成接 `*ledger.Service`。
+
+每一步都 `go build ./... && 跑一次 list`。三步里任何一步失败，你都只需要怀疑刚动的那个文件。
+
+#### 为什么接口只有四个方法
+`Insert / Get / ListByMonth / SumByMonth` 正好是 Service 现在用到的全部，一个不多。接口不是「把 store 的所有能力列一遍」，而是「**上层需要什么，就声明什么**」。多写一个 `Delete`、`Update`，实现方（尤其是后面的测试替身）就多一个必须实现的方法——测试替身会越写越长，最后没人愿意维护。
+
+这也是「接口定义在使用方」的实际含义：接口写在 `ledger` 包里，因为它描述的是**Service 的需求**，不是 SQLite 的能力。
+
 #### 第一步：把 SQL 挪进 store，接口定义在使用方
 ```go
 // internal/ledger/service.go
@@ -529,13 +659,30 @@ func main() {
 ```
 `main` 变成一张接线图，三行业务代码都不在里面。这是后面换 HTTP、加中间件、写测试的前提。
 
+#### 报错对照：分层重构的四个典型错误
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `import cycle not allowed` | `ledger` 里为了省事直接写了 `store.SQLite`，或 store 里又调了 `ledger.NewService` | 依赖必须单向：store → ledger，ledger 里只出现接口名 |
+| `undefined: ledger.Entry` | 类型留在了 store 包，或者包名与目录名不一致 | `Entry` 属于领域包；检查 `package` 声明 |
+| `*store.SQLite does not implement ledger.Store (wrong type for method ListByMonth)` | 参数或返回值差一点（`[]Entry` vs `[]ledger.Entry`、`int` vs `int64`） | 以编译期断言那行的报错为准，逐字对齐签名 |
+| `declared and not used: db` | 搬完 SQL 后 main 里的 `db` 只用于 `store.New(db)` 之外的地方没了 | 该删就删；`defer db.Close()` 保留在 main 是正确做法 |
+
+#### 5 分钟最小验证：依赖方向对不对，一条命令就够
+```bash
+go build ./... && go vet ./...
+go list -deps ./internal/ledger | grep -c 'internal/store'   # 期望输出 0
+go list -f '{{.ImportPath}} -> {{join .Imports " "}}' ./internal/store
+```
+第一条过了只说明能编译，**第二条才验证架构**：`ledger` 的依赖图里不能出现 store。如果你用了 go.mod 里的模块名，注意 `grep` 的路径要跟着改（`grep internal/store` 更宽松）。第三条用来眼看依赖方向：store 的 imports 里应该有 `ledger`，反过来不该有。
+
 #### 判据
 ```bash
 go build ./...
 go run . list          # 输出必须和重构前逐字一致
+diff /tmp/baseline.txt <(./ledger list) && echo "行为一致"
 go list -deps ./internal/ledger | grep store   # 应当为空
 ```
-最后一条是关键：**ledger 包不应该依赖 store 包**。如果有输出，说明接口放错位置了。
+第三条是关键：**ledger 包不应该依赖 store 包**。如果有输出，说明接口放错位置了。第四条不要只看「有没有输出」——`diff` 无输出才等于一致，它和 grep 的空输出是两回事，别混着看。
 
 ::q `go list -deps ./internal/ledger` 里出现 store 包，说明什么问题？
 ::a 说明 ledger 反向依赖了实现包，依赖方向变成双向（store 为了实现接口也要导入 ledger），进一步就会 import cycle。正确形态是 ledger 只定义接口、不导入任何实现，实现方单向导入 ledger。
@@ -575,6 +722,35 @@ func exportAll(ctx context.Context, svc *ledger.Service, months []string, dir st
 关键点：**每个 goroutine 写自己的文件**，没有共享状态，所以不需要锁。并发不是目的，「无共享」才是能安全并发的条件。
 
 如果必须共享（比如都往一个 CSV 追加），就要么加锁，要么改成 channel 汇总由单一 goroutine 写——后者通常更简单。
+
+#### `make(chan error, len(months))` 里的缓冲不是随手写的
+把缓冲去掉（`make(chan error)`），这段代码会**偶尔**卡死。原因：`wg.Wait()` 等所有 goroutine 结束，而 goroutine 在 `errCh <- err` 处阻塞——没人读 channel，它永远发不出去。于是主 goroutine 在 `Wait`，工作 goroutine 在发送，互相等。
+
+两种修法，含义不同：
+- **带缓冲 `len(months)`**：每个 goroutine 最多发一次，缓冲区一定够，永不阻塞。**这是这里该用的**。
+- 另起一个 goroutine 专门 drain：适合「可能发多次」的场景，但要多写一个 goroutine 和退出条件。
+
+判断标准很简单：**发送次数有上界，就把上界写进缓冲**。写不出上界时，才需要 drain。
+
+还有一个更隐蔽的问题：`for err := range errCh { return err }` 只返回第一个错误，**其余错误被丢掉**。家庭账本够用；如果导出 12 个月、坏了 3 个，你只想知道「哪几个坏了」，就该收集成 `[]error` 再 `errors.Join`（Go 1.20+）。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| 程序偶发卡在不退出 | 无缓冲 errCh + `wg.Wait()` 死锁 | 缓冲设成发送次数的上界 |
+| `WARNING: DATA RACE` 指向 `append` | 多个 goroutine 往同一个 slice 追加，len 与底层数组共享 | 每个 goroutine 写自己的变量，最后合并；或加锁 |
+| `too many open files` | 每个 goroutine 各开一个文件却没关，或 `rows` 没 Close | `defer f.Close()`；`rows.Close()` 后还要查 `rows.Err()` |
+| 导出的 CSV 少了几行 | 主 goroutine 提前返回，没等全部完成 | 检查 `wg.Wait()` 是否在所有 `Add` 之后 |
+| `-race` 全绿但线上仍算错 | 竞态只在特定调度下发生，测试没覆盖到那条路径 | 用 `-race -count=10` 反复跑，或显式构造并发 |
+
+#### 5 分钟最小验证：用一条命令看并发是否真的并发了
+```bash
+# 造 12 个月的数据，导出并计时
+time ./ledger export -dir /tmp/out
+ls /tmp/out | wc -l          # 期望 12
+grep -c 'ERROR' /tmp/out.log # 期望 0
+```
+`time` 的 `real` 应该明显小于「12 × 单月耗时」——否则说明 goroutine 其实串行了（常见原因：在循环里同步等待、或者 `svc.ListByMonth` 内部加了全局锁）。**并发代码的第一验收不是「结果对」，是「真的并发了」。**
 
 #### 阶段验收
 ```bash

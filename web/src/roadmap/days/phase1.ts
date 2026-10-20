@@ -127,7 +127,7 @@ export const phase1Days: DayTask[] = [
     hours: 3,
     tasks: [
       '装 `sqlite3` CLI（或 DB Browser），`sqlite3 ledger.db` 进入交互',
-      '手写 `CREATE TABLE entries(id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL NOT NULL, category TEXT NOT NULL, date TEXT NOT NULL, note TEXT)`',
+      '手写 `CREATE TABLE entries(id INTEGER PRIMARY KEY AUTOINCREMENT, amount INTEGER NOT NULL, category TEXT NOT NULL, date TEXT NOT NULL, note TEXT NOT NULL DEFAULT \'\')`；**金额用 INTEGER 存分，别用 REAL**',
       '插入 3 条账目，用 `SELECT * FROM entries` 查回',
       '练 `WHERE date LIKE \'2026-10%\'`、`ORDER BY date DESC`、`LIMIT 2 OFFSET 1`；**大数据集时改用范围查询 `WHERE date >= \'2026-10-01\' AND date < \'2026-11-01\'` 能利用索引**',
       '练聚合：`SELECT category, SUM(amount) FROM entries GROUP BY category`',

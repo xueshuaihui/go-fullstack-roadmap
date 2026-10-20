@@ -24,6 +24,45 @@ internal/
 
 **领域层不知道 HTTP 存在，也不知道 GORM 存在。** 这条守住了，前面说的三个问题才能都答「不需要」。
 
+#### 一次请求穿过三层长什么样
+以「查本月总额」为例，看每层各自只做一件事：
+
+```go
+// ① httpapi：只负责 HTTP
+func (h *Handler) summary(w http.ResponseWriter, r *http.Request) {
+    uid, ok := userIDFrom(r.Context())
+    if !ok { Fail(w, 401, "UNAUTHORIZED", "no user"); return }
+    month := r.URL.Query().Get("month")
+    if month != "" && !validMonth(month) {
+        Fail(w, 400, "INVALID_ARGUMENT", "month 格式应为 YYYY-MM"); return
+    }
+    data, err := h.svc.Summary(r.Context(), uid, month)   // 只调一次
+    if err != nil { writeError(w, err); return }
+    OK(w, data)
+}
+
+// ② ledger：只负责业务规则
+func (s *Service) Summary(ctx context.Context, uid int64, month string) (Summary, error) {
+    if month == "" { month = time.Now().Format("2006-01") }
+    sums, err := s.store.SumByCategory(ctx, uid, month)
+    if err != nil { return Summary{}, fmt.Errorf("summary: %w", err) }
+    var total int64
+    for _, x := range sums { total += x.Amount }
+    return Summary{Month: month, Total: total, Items: sums}, nil
+}
+
+// ③ store：只负责 SQL
+func (s *Gorm) SumByCategory(ctx context.Context, uid int64, month string) ([]ledger.CategorySum, error) {
+    var out []ledger.CategorySum
+    err := s.db.WithContext(ctx).Model(&Entry{}).
+        Select("category, SUM(amount) AS amount").
+        Where("user_id = ? AND date >= ? AND date < ?", uid, month+"-01", nextMonth(month)).
+        Group("category").Scan(&out).Error
+    return out, err
+}
+```
+注意三层的 `month` 处理各司其职：httpapi 只校验格式，ledger 负责「空就用当前月」，store 只把月份翻译成 SQL 条件。「**默认值**」属于业务规则，写在 ledger；「格式」属于输入校验，写在 httpapi。 混在一起时，换个入口（CLI）就会缺默认值。
+
 #### 常见的错误分层
 - `models` 包被三层共用，里面既有 `gorm` tag 又有 `json` tag——领域对象被两个外部协议污染，最后必然冲突（比如 `json:"-"` 的密码字段又要存库）。
 - Service 接收 `*http.Request`——领域层依赖传输层，彻底倒挂。
@@ -34,6 +73,27 @@ internal/
 go list -deps ./internal/ledger | grep -E "net/http|gorm.io"   # 必须为空
 ```
 这条命令是分层的自动检测。有输出就说明领域层被污染。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `import cycle not allowed` | 三层互相引用（handler 里 import store，store 里 import handler） | 只允许 handler → service → repository，反向一律禁止 |
+| `undefined: ledger.Entry` | 领域类型定义在 `model` 包里，而 `model` 又 import 了 `ledger` | 领域类型只放在 `ledger`，`model` 只放 DB 结构体（如果确实需要两套） |
+| `go list` 检查有输出但「只是测试文件引用了」 | `_test.go` 里 import 了 gorm | 测试也要守边界；需要真的数据库时用 `-tags=integration` 隔离 |
+| 改一个字段要动 4 个文件 | 没有 DTO，DB 结构体直接被三层共用 | 传输层用自己的请求/响应结构体，别把 `gorm` tag 带到 JSON 里 |
+
+#### 5 分钟最小验证：用一条命令画出依赖图
+```bash
+go list -f '{{.ImportPath}} -> {{join .Imports " "}}' ./internal/... | grep -E 'internal/(httpapi|ledger|store)'
+```
+输出应该长这样（顺序可能不同）：
+
+```
+.../internal/httpapi -> .../internal/ledger ...
+.../internal/store   -> .../internal/ledger ...
+.../internal/ledger  -> context errors fmt time      ← 没有任何 internal 包
+```
+看两件事：`ledger` 那行**不出现任何 internal 包**；`httpapi` 那行不出现 `store`。这两条成立，分层就是干净的。**依赖图比目录树可信**——目录可以是空的，引用才是真的。
 
 ::q 为什么领域层不能导入 `net/http`？
 ::a 领域逻辑应该能被 HTTP、CLI、定时任务等多种入口复用。导入 `net/http` 意味着规则和传输协议绑定，换入口要复制逻辑，也无法脱离 HTTP 单测。领域层只接受普通参数、返回普通错误。
@@ -84,12 +144,50 @@ func main() {
 
 判据：**这个依赖在测试时需要替换吗？** 需要就抽接口，不需要就别抽。
 
+#### 为什么不用 DI 框架
+`wire`、`dig`、`fx` 都能做依赖注入，但对一个 6 个文件的家庭账本来说，它们带来的第一个问题是「**值从哪来的**」变得不可见：报错信息是运行时的 `cannot resolve *store.Gorm`，而手写接线报错是编译期的 `undefined: st`。
+
+什么时候值得上框架？依赖超过 30 个、或者需要按环境切换整套实现时。到那时你会自然感觉到「main 太长了」，再换也不迟。**先手写，长到痛再抽——这是 Go 社区的主流路径，不是偷懒。**
+
+#### 手写 DI 最容易犯的错：顺序和重复
+```go
+// ❌ 顺序错：用了还没创建的 st
+svc := ledger.NewService(st, cfg.JWTSecret)
+st := store.NewGorm(db)
+
+// ❌ 重复创建：两处 NewGorm 会开两个连接池
+st1 := store.NewGorm(db)
+st2 := store.NewGorm(db)
+```
+顺序错会编译失败（好事）；重复创建不报错，但两个连接池各自持有 SQLite 连接，写操作会互相等锁，表现为「偶发 `database is locked`」。**一个进程里，每个依赖只 `New` 一次**，这是接线图要遵守的唯一纪律。
+
 #### 判据
 ```go
 // main 里加一行编译期断言
 var _ ledger.Store = (*store.Gorm)(nil)
 ```
 再写一个假实现，确认 `ledger.NewService(fake)` 能编译通过——说明 Service 真的只依赖接口。
+
+假实现的写法有个技巧：**先只实现一个方法，让编译错误替你列出所有没实现的方法**。
+
+```go
+// internal/ledger/fake_test.go
+type fakeStore struct{ entries []Entry }
+
+func (f *fakeStore) CreateEntry(ctx context.Context, e Entry) (int64, error) {
+    f.entries = append(f.entries, e)
+    return int64(len(f.entries)), nil
+}
+
+// 其余方法先不写，编译一次，报错会逐个列出缺哪个
+var _ Store = (*fakeStore)(nil)
+```
+第一次 `go build ./...` 会报 `*fakeStore does not implement ledger.Store (missing method GetEntry)`，改完再报下一个。**这比对着接口文件手抄六个方法签名可靠得多**，也不会漏。
+
+```bash
+go build ./... && go vet ./...
+go test ./internal/ledger -run TestNothing -count=1   # 只为确认包能编译
+```
 
 ::q 为什么 `GetEntry` 的参数里要显式包含 `userID`？
 ::a 让数据隔离成为接口契约的一部分。实现方拿不到 userID 就没法正确过滤，写错会编译失败；调用方也无法「忘记传」。把安全条件放进类型签名，比靠注释提醒可靠得多。
@@ -144,6 +242,8 @@ git diff --stat        # 看清改了哪些文件
 ::a 整体重写无法定位问题来源，一旦行为不一致，你面对的是几百行新代码而不是一处改动。逐步搬迁每步都能跑 smoke，出错时原因就在刚刚那一步，回滚成本也低。
 ::q 重构过程中 smoke 脚本挂了，应该先继续还是先修？
 ::a 必须先修。带着已知失败继续往下走，后续改动会叠加在错误状态上，最终无法判断是哪一步引入的问题。重构的前提是每一步都可运行。
+::q 搬到一半 `smoke.sh` 红了，怎么在十分钟内定位是哪一步引入的？
+::a 按「每搬一个方法 → 跑一次 smoke → 绿了才提交」的节奏走，红了就是**最后一次提交**的问题，`git stash` 或 `git checkout` 回上一个绿的提交对比即可。如果没按这个节奏，就先看 smoke 报的是哪一条：404 变 500 → 错误没转译（`ErrNoRows` 漏了）；字段缺失 → DTO 少映射；条数不对 → 默认值（`limit` 从 20 变 0）。**报错位置比报错内容更快指向层。**
 
 <!--day 4 | core-->
 #### 接入 GORM 前必须做的三件事
@@ -174,6 +274,42 @@ dsn := "file:ledger.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pra
 
 #### 版本要求
 GORM 用 **v2.3.19 及以上**（含若干 session/context 相关修复）。`go get gorm.io/gorm@latest` 后看 `go.mod` 确认。
+
+#### 连接池该配几个：SQLite 的答案和 MySQL 不一样
+教科书上的「`MaxOpenConns = CPU × 2 + 磁盘数`」是给网络数据库的。SQLite 是**单文件 + 库级写锁**，配多了只会互相等锁：
+
+| 参数 | SQLite 建议 | 理由 |
+| :--- | :--- | :--- |
+| `MaxOpenConns` | **1**（或读写分离时读池 4 / 写池 1） | 只有一个写者，多余连接排队等待，还容易撞 `database is locked` |
+| `MaxIdleConns` | 与 MaxOpen 相同 | 小于 MaxOpen 会导致连接频繁创建销毁，SQLite 建立连接要重新打开文件 |
+| `ConnMaxLifetime` | `0`（不限）或几小时 | 本地文件没有服务端超时，不需要主动断 |
+
+配成 1 之后，并发请求会**在连接池里排队**，而不是在数据库里抢锁。排队是可控的（可以设 `ConnMaxIdleTime` 和请求超时），抢锁是不可控的（`busy_timeout` 到了就报错）。
+
+如果启用了 WAL 且读多写少，可以开两个 `*sql.DB`：读池 `MaxOpenConns=4`、写池 `=1`，分别包一层。这是后期优化，**D4 这天先配 1，把功能跑通**。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `database is locked (5) (SQLITE_BUSY)` | 多连接同时写，或没设 `busy_timeout` | DSN 加 `_pragma=busy_timeout(5000)`，并把 `MaxOpenConns` 降到 1 |
+| `no such table: entries` | 没跑迁移；或 DSN 的相对路径指向了另一个文件 | 先确认 `sqlite3 <dsn 里的路径> '.tables'` |
+| `Stats().MaxOpenConnections` 是 0 | 没调用 `SetMaxOpenConns`，Go 默认「无限」 | 显式设置；`0` 在 Go 里表示无限制 |
+| 日志里每条 SQL 都在刷 | GORM logger 是 `Info` | 生产改 `Warn`；`Info` 还会把参数值打进日志，有泄漏风险 |
+| `foreign key constraint failed` 但表里没外键 | `foreign_keys` 没开，写完才发现约束从未生效 | DSN 加 `_pragma=foreign_keys(1)`；已建的表要重建才生效 |
+
+#### 5 分钟最小验证：三条命令确认配置真的生效
+```go
+sqlDB, err := db.DB()
+if err != nil { log.Fatal(err) }
+var mode string
+db.Raw("PRAGMA journal_mode").Scan(&mode)
+var fk int
+db.Raw("PRAGMA foreign_keys").Scan(&fk)
+var busy int
+db.Raw("PRAGMA busy_timeout").Scan(&busy)
+log.Printf("journal=%s fk=%d busy=%d maxopen=%d", mode, fk, busy, sqlDB.Stats().MaxOpenConnections)
+```
+期望输出 `journal=wal fk=1 busy=5000 maxopen=1`。**四个值任何一个不对，都说明 DSN 或配置没生效**——这行日志值得留在 `main` 里长期打印，是排查数据库问题的第一手信息。
 
 #### 判据
 ```go
@@ -229,6 +365,67 @@ Date   string `gorm:"index:idx_user_date,priority:2"`
 SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='entries';
 ```
 确认 `idx_user_date` 存在且列顺序是 `(user_id, date)`。
+
+#### 拆 DTO 到底从哪天开始
+先给结论：**单表、单客户端、字段少于 10 个时，一个结构体挂两种 tag 完全够用**，别为了「架构正确」提前拆。出现下面任一信号再拆：
+
+```go
+// 信号一：两个协议要的字段名不一样
+type Entry struct {
+    Amount int64 `gorm:"not null" json:"amount"`        // 想改 API 的金额单位成「元」
+}                                                       // 改 json 不影响 gorm，但语义已经分叉
+
+// 信号二：有些字段只能存不能传
+PasswordHash string `gorm:"not null" json:"-"`          // 靠 tag 挡住，漏一处就是泄漏
+
+// 信号三：查询结果形状和表不一样（聚合）
+type CategorySum struct { Category string; Amount int64 }  // 没有对应的表
+```
+拆法很轻：
+
+```go
+// store/entry_row.go —— 只给数据库看
+type entryRow struct {
+    ID       int64  `gorm:"primaryKey"`
+    UserID   int64  `gorm:"index:idx_user_date,priority:1"`
+    Amount   int64
+    Category string
+    Date     string
+    Note     string
+}
+func (entryRow) TableName() string { return "entries" }
+
+// ledger/entry.go —— 业务与 API 共用
+type Entry struct {
+    ID int64 `json:"id"`; UserID int64 `json:"-"`; Amount int64 `json:"amount"`
+    Category string `json:"category"`; Date string `json:"date"`; Note string `json:"note"`
+}
+```
+然后写两个纯函数 `toRow(Entry) entryRow` / `fromRow(entryRow) Entry`。代价是 20 行样板，收益是「改 API 不会动到表」。**家庭账本到阶段五结束都还不需要拆**，知道拆法就够了。
+
+#### 不要用 `AutoMigrate` 上线
+`db.AutoMigrate(&Entry{})` 很方便，但它只做加法（建表、加列、加索引），**不做改类型、不删列、不处理数据回填**。开发期用它省事，生产必须走 D9 的 goose 迁移文件——因为上线那天你需要的是「可审阅、可回滚、有版本号」的 DDL，而不是程序启动时悄悄改表结构。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| 表名变成 `entries` 之外的复数形式（如 `entry_s`） | GORM 复数化规则猜错 | 显式写 `TableName()` |
+| `unsupported type: time.Time` 或日期比较结果不对 | 用了 `time.Time` 但没统一 UTC | 日期改 `string`，或全链路 UTC |
+| `index idx_user_date already exists` | 迁移重复执行 | 用 goose 管理版本，不要重复跑同一段 SQL |
+| 加了字段但查出来是零值 | `AutoMigrate` 加了列，旧行是 NULL，`Scan` 到非指针字段失败 | 给新列设 `default`，或迁移里回填 |
+
+#### 5 分钟最小验证：让 GORM 自己交代建表语句
+```go
+stmt := db.Session(&gorm.Session{DryRun: true}).Migrator().CreateTable(&Entry{})
+log.Println(stmt.Statement.SQL.String())
+```
+输出应该包含 `CREATE TABLE`、`entries`、`amount integer`、`date text`，以及索引创建语句。**先读一遍它生成的 SQL，再让它真正执行**——比建完再去 `sqlite_master` 里猜快得多。
+
+```bash
+sqlite3 ledger.db '.schema entries'
+sqlite3 ledger.db 'PRAGMA index_list(entries);'
+```
+第二条会列出每个索引的 `name / unique / origin`，`origin=c` 表示是 `CREATE INDEX` 建的，`u` 表示是 `UNIQUE` 约束自动建的。看到两个功能相同的索引，就回去删掉一个。
 
 ::q 复合索引 `(user_id, date)` 的顺序为什么不能反？
 ::a 索引按定义的列顺序构建，只有「最左前缀」能被利用。`(user_id, date)` 支持「按 user_id 查」和「按 user_id+date 查」；`(date, user_id)` 只支持「按 date 查」，而账本的查询几乎都带 user_id，等于白建。
@@ -340,6 +537,25 @@ func (r *Repo) session(ctx context.Context) *gorm.DB {
 ```
 所有方法都以 `r.session(ctx)` 开头。**把正确做法变成默认路径，比记住规则可靠。**
 
+#### 为什么「从 session 开始」就够了，而「复用中间变量」不行
+
+GORM 只在**链式调用的第一步**保证给你一份干净的 `Statement`。一旦你拿到 `q := base.Where(...)`，`q` 就已经带上了条件；再对它继续 `Where`，新条件会并进同一份 `Statement`——于是第二次查询会连第一次的条件一起带上。
+
+```go
+q := r.session(ctx).Where("user_id = ?", 1)
+q.Where("amount > ?", 100).Find(&a)   // WHERE user_id = 1 AND amount > 100
+q.Find(&b)                            // ⚠️ WHERE user_id = 1 AND amount > 100 —— 条件还在
+```
+
+正确写法是每次重新取：
+
+```go
+r.session(ctx).Where("user_id = ?", 1).Where("amount > ?", 100).Find(&a)
+r.session(ctx).Find(&b)               // 干净
+```
+
+**这条规则的收益不在今天，在并发下**：两个请求共用 `r.db` 时，一旦某处复用了带条件的中间变量，A 用户的 `user_id` 就可能出现在 B 用户的查询里。这类 bug 不报错、只在数据上体现，而且极难复现——所以要用「每次都新建」而不是「记得别复用」来防。
+
 #### 事务里怎么办
 ```go
 tx := r.session(ctx).Begin()
@@ -357,6 +573,21 @@ err := r.session(ctx).Where("id = ?", id).First(&e).Error
 // 用 db.Debug() 看 SQL：不能出现上一次查询残留的条件
 ```
 再跑并发隔离测试，确认无串数据。
+
+#### 5 分钟最小验证：一个临时测试看清「污染」
+```go
+func TestSessionIsolation(t *testing.T) {
+    db := newTestDB(t).Debug()          // Debug 会把 SQL 打到测试输出
+    base := db.Session(&gorm.Session{NewDB: true}).Where("user_id = ?", 1)
+
+    var a, b []entryRow
+    base.Where("amount > ?", 100).Find(&a)
+    base.Find(&b)                       // 期望：不带 amount > 100
+}
+```
+跑 `go test -run TestSessionIsolation -v`，对比两条打印出来的 SQL。**第一条带两个条件是对的，第二条只该带 `user_id`**。如果第二条也带着 `amount > 100`，说明 `base` 被复用了——这正是把 `Where` 的结果存进变量带来的问题，正确做法是每次从 `r.session(ctx)` 起链。
+
+顺便记住：`Statement.SQL.String()` 只有在语句**执行之后**才有内容。想提前看 SQL 用 `db.DryRun = true`（或 `Session(&gorm.Session{DryRun: true})`）。
 
 ::q 事务内为什么不能调用 `r.session(ctx)` 取新的 DB 实例？
 ::a 那会从连接池拿另一条连接，与当前事务不在同一个事务上下文里，导致「事务内的写入」和「事务外的查询」看到不同数据，回滚也管不到。事务内所有操作必须复用 `tx`。
@@ -383,6 +614,26 @@ db.Model(&Entry{}).Where("id = ?", id).Select("amount", "note").Updates(Entry{Am
 
 // 3. 指针字段 + Select
 ```
+第三种写法在这里容易讲不清，直接看代码——用 `*int64` 表示「这个字段要不要更新」：
+
+```go
+type EntryPatch struct {
+    Amount *int64  `json:"amount"`
+    Note   *string `json:"note"`
+}
+// 前端传 {"amount":0} → Amount 指向 0，Select("*") 或逐字段挑出非 nil 的列名
+db.Model(&Entry{}).Where("id = ? AND user_id = ?", id, uid).
+    Select("amount").Updates(EntryPatch{Amount: &zero})
+```
+三种写法怎么选，一句话：**内部代码用 `map`（简单直接），对外 API 用指针结构体（能区分「没传」和「传了 0」）**。`Select` + 结构体的写法最不推荐——它把「哪些列可更新」写成了一个字符串列表，加字段时容易忘。
+
+#### `Save` 是另一个极端：它会写所有字段
+```go
+db.Save(&Entry{ID: 1, Amount: 3550})   // 其他字段被写成零值！
+```
+`Save` 的逻辑是「有主键就 UPDATE 全字段，没主键就 INSERT」。这意味着你只传了 `ID` 和 `Amount`，`category`、`date`、`user_id` 会被**覆盖成零值**——一条数据就这样被悄悄清空了。
+
+更危险的是 `Save` 带 `user_id = 0` 时会把归属改掉，等于把这条账「送」给了 uid 0。**家庭账本里禁用 `Save`**，统一用 `Updates(map)` + `Where`，只有「整对象替换」的语义才用它。
 
 #### 更要命的是「全表更新」
 ```go
@@ -422,6 +673,27 @@ patch := map[string]any{"amount": int64(0)}
 err := repo.UpdateEntry(ctx, uid, id, patch)
 // 查询确认库里真的是 0，而不是旧值
 ```
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `WHERE conditions required` | 无 `Where` 的全局更新，GORM 拦截了 | 加 `Where`；**不要**用 `AllowGlobalUpdate` 绕过 |
+| 接口返回 200 但数据没变（备注清空失败） | 结构体 `Updates` 跳过零值 | 改 `map` 或指针 + `Select` |
+| `ErrRecordNotFound` 出现在列表接口 | 用 `First` 查列表 | 列表用 `Find`，它不报这个错 |
+| 更新后 `created_at` 变成零值 | 用了 `Save` 传了不完整的结构体 | 禁用 `Save`，用 `Updates` |
+| 删除后还能查到 | 配了软删除（`gorm.DeletedAt`），普通查询自动过滤但数据还在 | 这是预期行为；用 `Unscoped()` 才能查到 |
+
+#### 5 分钟最小验证：一次更新，三个断言
+```go
+// 用 Debug() 打开 SQL 打印，肉眼确认 WHERE 和 SET 里都有该有的列
+res := db.Debug().Model(&Entry{}).
+    Where("id = ? AND user_id = ?", id, uid).
+    Updates(map[string]any{"amount": int64(0), "note": ""})
+log.Printf("rows=%d err=%v", res.RowsAffected, res.Error)
+```
+要看三件事：SQL 里 `SET` **同时包含** `amount=0` 和 `note=''`（证明零值没被跳过）；`WHERE` 里**包含** `user_id`（证明隔离没丢）；`rows=1`（证明真的改到了）。
+
+如果 `rows=0` 而记录确实存在，先查 `user_id` 是不是传错了——**这是「更新静默失败」最常见的真实原因**，不是 GORM 的问题。
 
 ::q `Updates(Entry{Amount: 0})` 为什么不生效？
 ::a GORM 用结构体更新时忽略零值字段（0、""、false、nil），以免误把未赋值的字段写成零。要更新为零值必须用 `map[string]any` 或 `Select` 显式指定列。
@@ -463,6 +735,72 @@ err := r.session(ctx).Transaction(func(tx *gorm.DB) error {
 
 #### 隔离级别与 SQLite 的现实
 SQLite 实际是「串行化」写：同一时刻只有一个写事务。所以「两个事务同时改余额」不会出现丢失更新——第二个会等 `busy_timeout` 或直接失败。这简化了很多问题，但也意味着**长事务会阻塞全部写入**。
+
+#### 完整实现：一次事务写两张表
+「记一笔账 + 累加预算已用金额」是最典型的双写场景，拆开写必然出现「账记了但预算没变」：
+
+```go
+func (r *Repo) CreateEntryWithBudget(ctx context.Context, e ledger.Entry) (int64, error) {
+    var id int64
+    err := r.session(ctx).Transaction(func(tx *gorm.DB) error {
+        row := entryRow{UserID: e.UserID, Amount: e.Amount, Category: e.Category, Date: e.Date, Note: e.Note}
+        if err := tx.Create(&row).Error; err != nil {
+            return fmt.Errorf("insert entry: %w", err)
+        }
+        id = row.ID
+
+        // 预算可能不存在：用 RowsAffected 判断，不要用 ErrRecordNotFound
+        res := tx.Model(&budgetRow{}).
+            Where("user_id = ? AND month = ? AND category = ?", e.UserID, e.Date[:7], e.Category).
+            Update("used", gorm.Expr("used + ?", e.Amount))
+        if res.Error != nil {
+            return fmt.Errorf("update budget: %w", res.Error)
+        }
+        // 没有预算记录是正常情况（不是所有分类都设了预算），不返回错误
+        return nil
+    })
+    return id, err
+}
+```
+两个细节值得停一下：
+
+1. **`Update("used", gorm.Expr("used + ?", ...))` 是原子操作**，不要写成「先查 used 再写回 used+n」。后者在并发下会丢更新，而这条 SQL 由数据库保证 `used = used + n` 的原子性。
+2. **`RowsAffected == 0` 在这里不是错误**。预算表里没这个分类的预算，说明用户没设预算，业务上完全正常。这跟 D8 的更新语义相反——**同样的 `0 行`，在两个场景里含义不同**，必须按业务判断。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `transaction has already been committed or rolled back` | 在回调返回后继续用 `tx`（比如起了 goroutine 异步写） | 所有写操作必须在回调内完成；异步任务另开事务 |
+| `sql: transaction has already been committed` | 手动 `Begin()` 后重复 `Commit()` | 用 `Transaction(...)` 回调，别手写 |
+| 第二步失败但第一步的数据还在 | 用了两个独立 session / 两个连接，不在同一事务 | 事务内只用 `tx`，不要再 `r.session(ctx)` |
+| `database is locked` 在事务里出现 | 事务内又开了另一个写事务 | 事务内不要嵌套 `Transaction`，或用 `tx.Transaction`（SavePoint） |
+
+#### 5 分钟最小验证：两步都验，包括 panic
+```go
+// ① 错误回滚：让第二步故意失败
+err := r.session(ctx).Transaction(func(tx *gorm.DB) error {
+    if err := tx.Create(&entryRow{UserID: 1, Amount: 100, Category: "x", Date: "2026-10-19"}).Error; err != nil { return err }
+    return errors.New("boom")
+})
+// 断言：err != nil，且 select count(*) 没变
+
+// ② panic 回滚：回调里直接 panic
+func() {
+    defer func() { recover() }()   // 拦住 panic，否则进程退出
+    _ = r.session(ctx).Transaction(func(tx *gorm.DB) error {
+        tx.Create(&entryRow{UserID: 1, Amount: 100, Category: "x", Date: "2026-10-19"})
+        panic("boom")
+    })
+}()
+// 断言：count 仍然没变
+```
+② 是最容易被忽略的一条：**很多人以为只有 `return err` 才回滚**。实际上 GORM 在回调里 recover 了 panic、回滚、再重新抛出，所以你在外层必须自己 recover，否则整个进程挂掉——而生产环境里一个 handler 的 panic 如果没被 Recovery 中间件接住，就是一次 502。
+
+```bash
+# 用 sqlite3 直接核对，别信接口返回
+sqlite3 ledger.db 'select count(*) from entries where category = "x";'
+```
+期望两次实验后都是 `0`。
 
 #### 判据
 ```go
@@ -540,6 +878,51 @@ goose -dir migrations sqlite3 ledger.db down       # 能回滚
 ```
 `down` 一定要验证一次——没验证过的回滚等于没有回滚。
 
+#### 版本记录存在哪
+goose 会在同一个库里建一张 `goose_db_version` 表，每次 `Up` 写一行 `(version_id, is_applied, tstamp)`。所以：
+
+```bash
+sqlite3 ledger.db 'select version_id, is_applied from goose_db_version order by id;'
+# 1|1
+# 2|1        ← 最后一条是当前版本
+```
+这张表是「数据库现在是第几版」的唯一真相来源。**不要手动去改它**——除非你非常清楚在做什么（D11 的「已有数据的老库怎么让 goose 认为 00001 已执行」就是唯一合理的场景）。
+
+它还有一个副作用：迁移和业务表在同一个库文件里。备份、导出数据时要记得这张表也在里面，不然恢复后 goose 会以为一条都没执行，重跑一遍全部 `CREATE TABLE` 直接报错。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| `goose: no migrations found` | `-dir` 指错，或文件没匹配 `NNNNN_name.sql` | 确认路径与文件名格式；`goose status` 会列出它看到的文件 |
+| `migration 1: ERROR: table entries already exists` | 老库已经有表，goose 认为 00001 没执行 | 补一条版本记录，或先把 00001 写成 `CREATE TABLE IF NOT EXISTS` |
+| `no up migration found` / `no down migration found` | SQL 里漏了 `-- +goose Up` 或 `-- +goose Down` 注释 | 两个标记块都要有，且顺序不能反 |
+| `down` 执行完表还在 | Down 里只删了索引，忘了 `DROP TABLE` | Down 必须与 Up 完全对称 |
+| 修改了 00001 但库没变化 | 已执行的迁移不会重跑 | 新建 `00002_xxx.sql`，永不改历史文件 |
+
+#### 5 分钟最小验证：空库与有数据的库各跑一遍
+```bash
+# ① 空库：从 0 到最新，必须干净通过
+rm -f /tmp/fresh.db
+goose -dir migrations sqlite3 /tmp/fresh.db up
+sqlite3 /tmp/fresh.db '.tables'
+
+# ② 回滚一步再前进，验证 down 与 up 对称
+goose -dir migrations sqlite3 /tmp/fresh.db down
+goose -dir migrations sqlite3 /tmp/fresh.db up
+
+# ③ 有数据的库：迁移不能丢数据
+sqlite3 ledger.db 'select count(*) from entries;'   # 记下数字
+goose -dir migrations sqlite3 ledger.db up
+sqlite3 ledger.db 'select count(*) from entries;'   # 必须一致
+```
+三条里最容易被跳过的是 ③。「**迁移把数据弄丢了**」是上线事故的经典形态，而它只在有数据的库上才暴露。养成习惯：任何迁移，先在一个有真实数据的副本上跑一遍。
+
+```bash
+cp ledger.db /tmp/rehearsal.db
+goose -dir migrations sqlite3 /tmp/rehearsal.db up
+```
+用副本排练，成本几乎为零。
+
 ::q `AutoMigrate` 在生产环境的三个致命问题是什么？
 ::a 没有版本记录（不知道当前结构版本）、不能回滚（改错无法退）、字段改名会变成新增列导致数据静默丢失。此外多实例并发启动会同时改表，可能互相阻塞或产生不一致。
 ::q 为什么已经执行过的迁移文件不能修改？
@@ -585,10 +968,60 @@ goose -dir migrations sqlite3 ledger.db up
 sqlite3 ledger.db "select count(*) from entries"  # 行数不变
 ```
 
+#### 把迁移做成子命令，而不是启动副作用
+```go
+func main() {
+    if len(os.Args) > 1 && os.Args[1] == "migrate" {
+        if err := runMigrate(os.Args[2:]); err != nil {   // up / down / status
+            log.Fatalf("migrate: %v", err)
+        }
+        return
+    }
+    runServer()      // 正常启动，这里不再调 goose
+}
+
+func runMigrate(args []string) error {
+    sqlDB, err := sql.Open("sqlite3", cfg.DBPath)
+    if err != nil { return err }
+    defer sqlDB.Close()
+
+    goose.SetBaseFS(migrations.FS)
+    if err := goose.SetDialect("sqlite3"); err != nil { return err }
+
+    cmd := "up"
+    if len(args) > 0 { cmd = args[0] }
+    switch cmd {
+    case "up":     return goose.Up(sqlDB, ".")
+    case "down":   return goose.Down(sqlDB, ".")
+    case "status": return goose.Status(sqlDB, ".")
+    default:       return fmt.Errorf("未知迁移命令: %s", cmd)
+    }
+}
+```
+同一个镜像既能当服务、又能当迁移工具（`docker compose run --rm api migrate up`），**不需要额外打一个二进制**。阶段六 D6 会把这条命令接进 compose 的独立服务。
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| 新库起来后 `no such table` | 忘了执行 `migrate up`（AutoMigrate 已关掉） | 启动流程加一步；本地用 `make migrate` |
+| 已有库报 `table entries already exists` | goose 认为 00001 未执行 | 插版本记录，或把 00001 写成幂等 DDL |
+| `goose: no migrations found` | `embed` 路径与 `SetBaseFS` 的相对路径不一致 | `//go:embed *.sql` + `goose.Up(sqlDB, ".")` |
+| 新老环境结构不一致 | 手写 DDL 与 GORM 生成的有差异 | 用 `sqlite_master` 逐条 diff 后再切 |
+
+#### 5 分钟最小验证：切完还能回滚
+```bash
+go build -o /tmp/app . && /tmp/app migrate status
+/tmp/app migrate down && sqlite3 ledger.db '.tables'    # 表没了
+/tmp/app migrate up   && sqlite3 ledger.db '.tables'    # 表回来了
+```
+最后再看一眼数据：`sqlite3 ledger.db 'select count(*) from entries'`。如果 `down` 里是 `DROP TABLE`，数据当然没了——**这正是「生产别轻易 down」的原因**：迁移能回滚结构，回滚不了数据。
+
 ::q 手写迁移 SQL 和 `AutoMigrate` 生成的结构可能有哪些差异？
 ::a 列类型（`INTEGER`/`BIGINT`、`TEXT`/`VARCHAR`）、默认值写法、`NOT NULL` 约束、索引名称与列顺序、是否 `AUTOINCREMENT`。这些差异在 SQLite 上部分不影响行为，但会让新老环境不一致，日后排查困难。
 ::q 已有数据的库如何让 goose 认为初始迁移已执行？
 ::a 可以用 `goose fix` 生成基线，或手动往 `goose_db_version` 表插入对应版本记录；也可以把 00001 写成 `CREATE TABLE IF NOT EXISTS` 并让索引创建幂等，使其在已有库上安全执行。绝不要 DROP 重建。
+::q 单实例部署时把 `goose.Up` 放在启动流程里也能跑，为什么后面还要改成独立步骤？
+::a 单实例确实能跑，问题是它把「结构变更」和「进程启动」耦合了：多副本会并发迁移；迁移失败表现为「服务起不来」而不是「部署失败」，回滚时不知道该退代码还是退结构；也无法在迁移前插入备份步骤。拆成独立命令后，「备份 → 迁移 → 起服务」变成可审阅、可重试的三步。
 
 <!--day 12 | normal-->
 #### 分类表：从字符串到实体
@@ -621,6 +1054,29 @@ type Entry struct {
 2. **软删除**：GORM 的 `DeletedAt` 会让 `Preload` 自动过滤已删记录，但**不会阻止外键指向已删分类**。需要在删除分类时检查是否被引用。
 3. **级联**：SQLite 必须显式 `PRAGMA foreign_keys=ON`，否则 `ON DELETE CASCADE` 不生效（阶段五 D4 已配置）。
 
+#### 删除一个分类，三种做法
+分类被账目引用后，「删除」这个动作在业务上没有唯一答案。三种处理都要能说清代价：
+
+| 做法 | 实现 | 优点 | 代价 |
+| :--- | :--- | :--- | :--- |
+| 禁止删除 | 先 `COUNT(*) FROM entries WHERE category_id = ?`，>0 返回 409 | 数据最干净，历史可追溯 | 用户被卡住，只能先改账 |
+| 迁移到「未分类」 | 事务里 `UPDATE entries SET category_id = ?` 再删 | 用户无感 | 丢失原始分类信息，统计会变 |
+| 级联删除账目 | `ON DELETE CASCADE` | 实现最省事 | **删一个分类等于删一批账**，极度危险 |
+
+家庭账本选第一种，并且给出可操作的提示：
+
+```go
+func (s *Service) DeleteCategory(ctx context.Context, uid, id int64) error {
+    n, err := s.store.CountEntriesByCategory(ctx, uid, id)
+    if err != nil { return fmt.Errorf("count refs: %w", err) }
+    if n > 0 {
+        return fmt.Errorf("%w: 该分类下还有 %d 笔账目，请先修改或删除", ErrCategoryInUse, n)
+    }
+    return s.store.DeleteCategory(ctx, uid, id)
+}
+```
+把 `n` 带进错误信息，前端就能直接显示「还有 12 笔账目，请先处理」——**错误信息里带可行动的数字，比一句「操作失败」有用十倍**。
+
 #### 判据
 ```sql
 -- 两个用户各自建「餐饮」，必须都成功
@@ -629,6 +1085,22 @@ INSERT INTO categories (user_id, name) VALUES (2, '餐饮');
 -- 同一用户重复建，必须失败
 INSERT INTO categories (user_id, name) VALUES (1, '餐饮');  -- UNIQUE constraint failed
 ```
+
+#### 报错对照
+| 现象 | 原因 | 修法 |
+| :--- | :--- | :--- |
+| 第二个用户建「餐饮」报唯一冲突 | 唯一索引只有 `name`，漏了 `user_id` | 改成 `(user_id, name)` 复合唯一 |
+| `Preload` 后 `Category.Name` 是空串 | 外键是 0，或分类被软删除了 | 校验外键 > 0；查已删分类用 `Unscoped().Preload` |
+| 列表接口发了 21 条 SQL | 在循环里 `Preload`，或对每条记录单独查分类 | `Preload` 只能写在主查询上，一次加载全部 |
+| 删分类后账目还在但分类名空白 | 外键约束没开，删了父行留下悬空引用 | `PRAGMA foreign_keys=1`；删除前先查引用 |
+
+#### 5 分钟最小验证：一次看穿 N+1
+```bash
+# 打开 GORM 的 Info 日志，请求一次列表，数一下 SQL 条数
+curl -s 'localhost:8080/ledger?limit=20' > /dev/null
+grep -c 'SELECT' /tmp/server.log
+```
+20 条数据时，期望是 **2 条**（1 条主查询 + 1 条 Preload）。如果是 21 条，说明在循环里查分类——这是 N+1 的指纹。「**日志里的 SQL 条数**」比任何性能工具都直观，养成看它的习惯。
 
 ::q 为什么分类的唯一索引要包含 `user_id`？
 ::a 因为分类是用户私有的。只对 `name` 加唯一会导致第二个用户无法创建「餐饮」，这是典型的「约束范围错了」。复合唯一 `(user_id, name)` 才能表达「同一用户内不重名」。
@@ -687,11 +1159,53 @@ for i := range rows {
 }
 ```
 
+#### 三个会让统计「看起来对但差一点」的地方
+
+1. **百分比之和不是 100**。每个分类各自四舍五入，累加可能是 99 或 101。前端要显示「合计 100%」就得做「最大余数法」：先取整，再把差额补给余数最大的那一项。家庭账本可以直接在文档里注明「百分比为近似值」，比悄悄差 1% 好。
+2. **0 元记录要不要出现在分类里**。`GROUP BY` 会把金额为 0 的分类也列出来（`SUM=0`）。想过滤就加 `HAVING SUM(amount) > 0`；想保留就在前端显示为「0 元」。**两种都行，但要在接口文档里写清楚**，否则前端画饼图会出现一个 0% 的空扇区。
+3. **空分类**。`category = ''` 会单独成为一组。要么建表时 `NOT NULL DEFAULT '未分类'`，要么查询时 `CASE WHEN category = '' THEN '未分类'`。**别让空字符串流到前端**——那是把数据质量问题转嫁给用户。
+
+#### 聚合查询要不要加索引
+
+```sql
+-- 看它到底走了什么
+EXPLAIN QUERY PLAN
+SELECT category, SUM(amount) FROM entries
+WHERE user_id = 1 AND date >= '2026-10-01' AND date < '2026-11-01'
+GROUP BY category;
+```
+
+期望看到 `SEARCH entries USING INDEX idx_user_date (user_id=?)`。如果出现 `SCAN entries`，说明复合索引没用上——最常见的原因是索引建成了 `(date, user_id)`（顺序反了），或者查询条件对列做了函数运算（`substr(date,1,7) = ?`）。
+
+`GROUP BY` 本身会建临时 B 树做聚合，数据量大时无法避免；但**先过滤再聚合**（WHERE 走索引）和**先聚合再过滤**（HAVING）的成本差一个数量级。
+
+#### 5 分钟最小验证：三种边界各造一条数据
+
+```bash
+# 0 元记录
+curl -s -X POST localhost:8080/api/v1/ledger -H "Authorization: Bearer $T" \
+  -d '{"amount_cents":0,"category":"其他","date":"2026-10-19"}'
+# 空分类（如果允许）
+curl -s -X POST localhost:8080/api/v1/ledger -H "Authorization: Bearer $T" \
+  -d '{"amount_cents":100,"category":"","date":"2026-10-19"}'
+
+curl -s "localhost:8080/api/v1/summary?month=2026-10" -H "Authorization: Bearer $T" | jq .data
+```
+
+检查三件事：`total` 是否等于各分类之和、`percent` 是否处理了 0 元项、空分类是否被归到「未分类」。**边界数据不是测试的补充，是测试的主体**——正常数据几乎不会出问题。
+
 #### 判据
 ```bash
+# 1) 用 sqlite3 CLI 手算，作为「正确答案」
+sqlite3 -header -column ledger.db \
+  "SELECT category_id, SUM(amount) AS total FROM entries \
+   WHERE user_id = 1 AND date LIKE '2026-10-%' GROUP BY category_id;"
+
+# 2) 接口结果逐项对照，数字必须一致
 curl -s "localhost:8080/summary?month=2026-10" -H "Authorization: Bearer $T" | jq .data
 # by_category 按 total 降序，各项相加 == total，percent 之和 ≈ 100
 ```
+聚合类接口最容易「看起来对、其实错」——差几百块钱在页面上不显眼。**先手算再对照**是唯一可靠的核对方式，`sqlite3` 的 `-header -column` 让输出带列名并对齐。
 再插一笔不同类型的账，确认新分类出现在列表里且顺序正确。
 
 ::q `Scan` 聚合结果时，结构体字段名必须和什么对应？
