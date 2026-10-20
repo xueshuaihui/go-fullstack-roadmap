@@ -17,6 +17,14 @@
 4. 有「5 分钟最小验证」与「报错对照（现象 → 原因 → 修法）」两个小节。
 5. 排错 ≥1、迁移 ≥1、判据 ≥4 且可动手验证。
 
+## 发布约定（GitHub Pages）
+
+- 发布方式：`cd web && npm run build` → 把 `web/dist/index.html` 与 `web/dist/assets/*` 拷到**仓库根目录**（Pages 源 = main 分支 `/`，legacy build），并删掉 `assets/` 里不再被引用的旧 `index-*.js|css`。不提交 `web/dist`。
+- `web/vite.config.ts` 的 `base` 必须保留：`command === 'build' ? '/go-fullstack-roadmap/' : '/'`。漏了它产物就是 `/assets/*`，在子路径下全 404（这个坑踩过两次，`ec4d40f` 有原始注释可参考）。
+- 仓库根必须有 `.nojekyll`，否则 legacy build 跑 Jekyll，出现 `Page build failed`。
+- 判断「是否真的发上去了」：抓线上 HTML 引用的 bundle 名，和本地 `web/dist/assets` 比对；对不上就是没发，不要归因于缓存。
+- 本地复现 Pages 子路径：软链仓库根到 `<tmp>/go-fullstack-roadmap`，在 `<tmp>` 起静态服务。
+
 ## 已知坑
 
 - 代码块不要用 ``` 围栏写进 `mastery/*.md` 的 predict/debug（解析器已兼容过滤，但裸写更稳）。
