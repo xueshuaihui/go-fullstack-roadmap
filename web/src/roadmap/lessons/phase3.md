@@ -1038,7 +1038,8 @@ if err != nil {
 #### 判据
 ```bash
 # 先用 sqlite3 CLI 手算一遍，作为「正确答案」
-sqlite3 ledger.db "SELECT category, SUM(amount) FROM entries WHERE date LIKE '2026-10-%' GROUP BY category;"
+sqlite3 -header -column ledger.db \
+  "SELECT category, SUM(amount) FROM entries WHERE date LIKE '2026-10-%' GROUP BY category;"
 
 # 再和接口返回值逐项对照，数字必须一模一样
 curl -s 'localhost:8080/summary?month=2026-10' | jq .data
